@@ -1,0 +1,56 @@
+Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à [b]Cyberpunk 2077 sur Windows[/b]. Branchez le volant et le pédalier sur une même base ou sélectionnez un périphérique DirectInput différent pour chaque axe. L’application [b]Chrome Axis[/b] permet de calibrer les commandes, de visualiser les valeurs en direct, d’ajuster les zones mortes et d’enregistrer des profils nommés. Vous pouvez conserver les commandes du jeu pour chaque axe de votre choix.
+
+Ce prototype cible [b]Cyberpunk 2077 2.5[/b]. La prise en charge du matériel dépend des axes et boutons exposés par vos pilotes Windows.
+
+[size=4][b]Fonctionnalités[/b][/size]
+
+• Calibrez le volant et les deux pédales, y compris si les pédales partagent un axe. Choisissez des axes séparés dans le pilote, si possible, pour mesurer les deux pressions simultanément.
+• Enregistrez vos configurations sous différents profils. Chacun garde sa calibration, ses affectations d’accessoires et ses réglages de retour de force.
+• Associez des touches aux boutons du volant, aux directions de croix, aux palettes, à un levier de vitesses, à un frein à main ou à un axe d’accessoire.
+• Activez le retour de force DirectInput sur un axe de direction compatible. L’effort varie selon le véhicule et les secousses de collision peuvent être désactivées séparément.
+• Essayez la direction, l’accélération et le freinage progressifs au clavier dans [b]Simulation[/b], même sans volant, pédalier ni profil enregistré.
+
+[size=4][b]Prérequis et compatibilité[/b][/size]
+
+• [b]Windows x64 et Cyberpunk 2077 2.5[/b], avec [font=Courier New]Cyberpunk2077.exe[/font] en version [b]3.0.88.46235[/b]. Le plugin vérifie cette version au chargement.
+• [b]RED4ext 1.31.1[/b]. [url=https://www.nexusmods.com/cyberpunk2077/mods/2380]Nexus Mods[/url] · [url=https://github.com/wopss/RED4ext/releases/tag/v1.31.1]Version 1.31.1 sur GitHub[/url]
+• [b]redscript[/b], avec [b]0.5.32[/b] comme version de référence pour cette version du mod. [url=https://www.nexusmods.com/cyberpunk2077/mods/1511]Nexus Mods[/url] · [url=https://github.com/jac3km4/redscript/releases/tag/v0.5.32]Version 0.5.32 sur GitHub[/url]
+• Pour utiliser du matériel, le pilote doit exposer ses axes et boutons via [b]DirectInput[/b]. Vérifiez-les dans les contrôleurs de jeu Windows ([font=Courier New]joy.cpl[/font]). Le retour de force nécessite aussi un actionneur DirectInput sur l’axe de direction calibré.
+
+[size=4][b]Installer et configurer le volant[/b][/size]
+
+1. Fermez le jeu et installez les prérequis. Dans Vortex, importez le ZIP avec [b]Installer depuis un fichier[/b], puis activez et déployez le mod. Pour une installation manuelle, extrayez le ZIP à la racine du jeu, avec [font=Courier New]archive[/font] et [font=Courier New]red4ext[/font] au même niveau que [font=Courier New]bin[/font].
+2. Ouvrez [font=Courier New]red4ext/plugins/chrome_axis/ChromeAxis.exe[/font] depuis le [b]dossier du jeu[/b]. Dans [b]Matériel USB[/b], cliquez sur [b]Actualiser[/b], puis choisissez le périphérique pour le [b]Volant[/b], l’[b]Accélérateur[/b] et le [b]Frein[/b]. Pour conserver les commandes habituelles sur un axe, sélectionnez [b]Commandes du jeu[/b].
+3. Cliquez sur [b]Calibrer les axes[/b]. Capturez le centre et les deux butées du volant, puis le repos et la pleine course de chaque pédale. Vérifiez les jauges et ajustez [b]Zone morte (%)[/b] si une commande bouge au repos. Cliquez sur [b]Enregistrer le profil[/b]. Le bouton [b]Sélectionner un profil…[/b] permet de choisir ou de créer un profil nommé.
+4. Cliquez sur [b]Activer l’USB en jeu[/b]. L’USB est désactivé par défaut. Après l’enregistrement et l’activation, vous pouvez fermer l’application. Installez V au siège conducteur, laissez le jeu au premier plan, centrez le volant et relâchez les pédales et les accessoires. Le HUD affiche [b]USB PRÊT[/b] quand les commandes sont armées, puis brièvement [b]SIGNAL USB[/b] à l’envoi d’une commande.
+
+Pour régler le retour de force, enregistrez d’abord l’axe de direction, ouvrez [b]Retour de force…[/b], puis activez l’effet pour le profil courant. Commencez à faible intensité. Le réglage va de [b]1 % à 35 %[/b] de la force nominale DirectInput. Le panneau vérifie si le pilote expose un actionneur et permet d’inverser l’effet si le volant pousse vers la butée.
+
+Pour reprendre les commandes habituelles du jeu, ouvrez l’application et cliquez sur [b]Désactiver l’USB en jeu[/b].
+
+[size=4][b]Essayer sans matériel[/b][/size]
+
+Ouvrez [b]Simulation[/b], cliquez sur [b]Activer dans le jeu[/b] et [b]laissez Chrome Axis ouvert[/b]. Installez V au siège conducteur et relâchez les touches de simulation avant l’essai. Avec Verr. num. activé, maintenez [b]Pavé 4 / 6[/b] pour braquer à gauche ou à droite, [b]Pavé 8[/b] pour accélérer et [b]Pavé 2[/b] pour freiner. Vous pouvez aussi utiliser [b]F6 / F7 / F8 / F10[/b] dans le même ordre. Le HUD affiche [b]SIMULATION[/b] quand le jeu reçoit le signal de l’application. Pour terminer, cliquez sur [b]Arrêter la simulation[/b] ou fermez l’application.
+
+[size=4][b]Palettes, leviers et accessoires[/b][/size]
+
+Ouvrez [b]Matériel USB → Accessoires…[/b] et sélectionnez la base ou le périphérique USB qui expose la commande. Dans [b]Boîte / palettes…[/b], capturez les commandes de montée et de descente pour un levier séquentiel, ou chaque position d’une grille en H de 6, 7 ou 8 rapports, marche arrière comprise. Attribuez les touches, cliquez sur [b]Appliquer[/b] dans l’assistant puis sur [b]Enregistrer[/b] dans le panneau des accessoires. L’USB en jeu doit être activé pour utiliser les affectations.
+
+Chrome Axis transforme les entrées d’accessoires en touches. Pour changer de rapport, configurez les mêmes touches dans un mod de transmission. Une boîte en H nécessite une touche par rapport dans ce mod. En séquentiel, [b]Pavé + / −[/b] sont les touches proposées à essayer avec Manual Transmission V10 4.3. Cette combinaison reste à tester en jeu. [url=https://www.nexusmods.com/cyberpunk2077/mods/28342]Manual Transmission V10[/url]
+
+[size=4][b]Dépannage et mises à jour[/b][/size]
+
+• [b]Le HUD reste sur USB EN ATTENTE.[/b] Gardez le jeu au premier plan, centrez le volant, relâchez les pédales et vérifiez chaque commande configurée dans [font=Courier New]joy.cpl[/font]. Si le pilote ne présente plus l’axe enregistré, vérifiez ses réglages et refaites la calibration.
+• [b]Les jauges réagissent dans l’application mais le véhicule ne bouge pas.[/b] Consultez le dernier [font=Courier New]red4ext/logs/chromeaxis-*.log[/font]. [font=Courier New]Chrome Axis USB configuration directory[/font] indique le dossier lu par le plugin. Comparez-le à [b]Dossier des profils[/b] dans l’application. [font=Courier New]USB axes[/font] indique l’état de chaque axe. Si le journal du mod est absent, consultez [font=Courier New]red4ext-*.log[/font] pour vérifier le chargement du plugin et la compilation des scripts.
+• [b]Windows signale [font=Courier New]MSVCP140.dll[/font] ou [font=Courier New]VCRUNTIME140.dll[/font] manquant.[/b] Installez le redistribuable Microsoft Visual C++ v14 x64. [url=https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version]Téléchargement Microsoft[/url]
+• [b]Mettre à jour ou désinstaller.[/b] Fermez le jeu et l’application, puis sauvegardez le dossier [font=Courier New]red4ext/plugins/chrome_axis/Profil[/font] en entier. Pour une mise à jour, désactivez l’ancienne version dans Vortex et déployez le retrait, déployez la nouvelle version, restaurez [font=Courier New]Profil[/font], puis cliquez sur [b]Recharger[/b]. Pour désinstaller, retirez le mod dans Vortex et déployez le changement. En installation manuelle, retirez le dossier du plugin Chrome Axis et [font=Courier New]archive/pc/mod/chrome_axis_hud.archive[/font].
+
+Pour signaler un problème, indiquez les modèles de volant et de pédales, leur branchement, les versions du jeu et des prérequis, les étapes pour reproduire le problème et un extrait du dernier journal pertinent.
+
+[size=4][b]Crédits et utilisation de l’IA[/b][/size]
+
+Le branchement sur les commandes analogiques du jeu et la structure des champs de Cyberpunk 2.5 s’appuient sur [b]Direct Wheel 3.4.1[/b] comme référence. Merci à Grant Perdue (clevergrant), SERG (natpoh) et DesignWithTommy. [url=https://github.com/DesignWithTommy/cp2077-wheel-mod/releases/tag/v3.4.1]Direct Wheel 3.4.1[/url] · [url=https://github.com/clevergrant/cp2077-wheel-mod]Projet d’origine de Grant Perdue[/url] · [url=https://www.nexusmods.com/cyberpunk2077/mods/29246]Moza and Direct Drive Wheel Support de SERG sur Nexus Mods[/url]
+
+Merci à Octavian Dima et aux contributeurs de RED4ext, à jac3km4 et aux contributeurs de redscript, et aux auteurs de Barlow. Le ZIP inclut [font=Courier New]THIRD_PARTY_NOTICES.md[/font] et [font=Courier New]licenses/Barlow-OFL.txt[/font]. [url=https://github.com/wopss/RED4ext.SDK/commit/5246e659d783e5834cc08a90e56c8932c9ed3449]SDK RED4ext[/url] · [url=https://github.com/jac3km4/redscript]redscript[/url] · [url=https://github.com/google/fonts/blob/main/ofl/barlowcondensed/OFL.txt]Licence Barlow[/url]
+
+Des outils OpenAI ont aidé à rédiger cette page et à créer les visuels de présentation. OpenAI ImageGen a également servi à retirer le fond du logo affiché dans le HUD ([font=Courier New]chrome_axis/hud/logo.xbm[/font] dans [font=Courier New]chrome_axis_hud.archive[/font]).

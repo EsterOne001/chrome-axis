@@ -1,0 +1,16 @@
+#pragma code_page(65001)
+#include <winres.h>
+#include "chrome_axis/accessories_dialog.hpp"
+#include "chrome_axis/keyboard_dialog.hpp"
+
+IDD_ACCESSORY_KEYBOARD DIALOGEX 0, 0, 412, 230
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN
+CAPTION "Choisir une touche · Chrome Axis"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    CONTROL "", IDC_MODAL_FORM, "Static", SS_LEFT | NOT WS_VISIBLE, 12, 56, 388, 144
+    LTEXT "Cliquez sur la touche à attribuer. Les touches grisées sont indisponibles.", IDC_MODAL_INTRO, 22, 65, 366, 12
+    LTEXT "Navigation", -1, 271, 87, 50, 12
+    LTEXT "Pavé numérique", -1, 328, 87, 61, 12
+    PUSHBUTTON "Annuler", IDCANCEL, 307, 204, 82, 20
+END

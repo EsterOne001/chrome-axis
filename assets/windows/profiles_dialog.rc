@@ -1,0 +1,23 @@
+#pragma code_page(65001)
+#include <winres.h>
+#include "chrome_axis/accessories_dialog.hpp"
+#include "chrome_axis/profiles_dialog.hpp"
+
+IDD_PROFILES DIALOGEX 0, 0, 365, 211
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN
+CAPTION "Profils · Chrome Axis"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    CONTROL "", IDC_MODAL_FORM, "Static", SS_LEFT | NOT WS_VISIBLE, 12, 56, 341, 54
+    CONTROL "", IDC_MODAL_RESULTS, "Static", SS_LEFT | NOT WS_VISIBLE, 12, 117, 341, 54
+
+    LTEXT "&Profil à charger", -1, 24, 65, 315, 12
+    COMBOBOX IDC_PROFILE_LIST, 24, 82, 317, 102, CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT "&Nom de la copie du profil actif", -1, 24, 127, 315, 12
+    EDITTEXT IDC_PROFILE_NAME, 24, 144, 191, 18, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON "&Créer une copie", IDC_PROFILE_COPY, 223, 143, 118, 20
+
+    DEFPUSHBUTTON "&Charger", IDOK, 161, 182, 87, 20
+    PUSHBUTTON "Annuler", IDCANCEL, 257, 182, 84, 20
+END

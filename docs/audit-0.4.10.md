@@ -1,0 +1,24 @@
+# Audit de Chrome Axis 0.4.10
+
+Périmètre vérifié le 11 novembre 2026. Application Win32, calibration et profils, lecture DirectInput, simulation, affectations, retour de force, plugin RED4ext, HUD et archive de distribution. Le build de jeu ciblé est Cyberpunk 2077 2.5 (`3.0.88.46235`).
+
+Les huit tests CTest passent en Release. Le script compile avec le cache d’origine de Cyberpunk 2.5. Le ZIP a été relu pour vérifier la version du DLL et de l’exécutable, ainsi que l’intégrité du script et de la texture HUD.
+
+| Fonction | Constat et correction | Validation |
+| --- | --- | --- |
+| Installation et profils | Une ouverture depuis un ZIP peut exécuter Chrome Axis dans un dossier temporaire. L’application identifie cet emplacement et bloque l’enregistrement de nouveaux réglages dans cette copie. Les profils nommés restent modifiables quand la sauvegarde d’origine est en lecture seule. | Tests de résolution du dossier de jeu, des liens physiques Vortex, des chemins temporaires et de la copie d’un profil. |
+| Application | La prévisualisation USB et les captures s’interrompent quand l’application perd le premier plan. Les jauges se redessinent seulement quand le déplacement à l’écran ou l’état de l’axe change. Les assistants demandent confirmation avant d’abandonner leurs modifications. | Vérification des parcours profils, accessoires et clavier dans une instance isolée. |
+| Calibration et commandes analogiques | Vérification des profils partiels, des pédales combinées, des zones mortes et du réarmement au neutre. Le plugin écarte les données d’un ancien contexte conducteur. | Tests de calibration, de normalisation et de reconnexion simulée. |
+| Accessoires, palettes et boîte | Une association qui désigne un bouton ou une croix absente reste désarmée après reconnexion. Seuls les boutons utilisés sont vérifiés auprès du pilote, et le résultat est conservé jusqu’à la réouverture du périphérique. Les contrôles du clavier visuel et les associations existantes utilisent les mêmes codes Windows. | Tests d’armement, de périphérique partiellement disponible et de capture de rapports. Vérification du clavier dans l’application. |
+| Simulation | Le remplacement de l’instance qui publie la simulation réarme le clavier sans réactiver brièvement le volant ou ses accessoires. Un arrêt ou un signal expiré rend la main aux commandes configurées. | Test avec deux instances de publication et expiration du signal. |
+| Retour de force | La direction doit être armée et les données récentes. Le mod contrôle le contexte autour de l’appel au pilote, limite chaque effet à 100 ms et renouvelle une force identique au plus tôt après 60 ms, contre environ 20 ms auparavant. Un changement de volant ou d’axe dans l’application demande de réactiver le retour de force pour ce profil. | Tests du modèle de force et des limites de réglage. Le délai réel et le ressenti dépendent du pilote et du volant. |
+| Plugin et HUD | Un échec au chargement est remonté à RED4ext. Le script évite les lectures du HUD hors conduite et tolère les interfaces qui ne sont pas encore disponibles. L’archive contient la texture transparente et son atlas. | Compilation REDscript contre le cache d’origine de Cyberpunk 2.5, vérification du contenu du ZIP. |
+
+## Essais en jeu à prioriser
+
+1. **Volant et pédalier**. Tester les pédales séparées puis combinées, le passage au menu, Alt-Tab, la sortie du véhicule et le débranchement en roulant dans le jeu. Vérifier le retour au neutre et le réarmement après reconnexion.
+2. **Retour de force**. Comparer une base à engrenages ou courroie avec une base à entraînement direct, à faible intensité. Tester le centrage, le sens, un choc, la perte du premier plan et le changement de profil. Certains pilotes peuvent suspendre un appel DirectInput. L’expiration de l’effet limite la durée demandée au matériel, mais le temps de réponse réel du pilote reste à mesurer.
+3. **Transmission**. Tester les palettes et une boîte en H, y compris marche arrière et point mort, avec les mêmes touches configurées dans le mod de transmission. Le signal Chrome Axis confirme l’envoi à Windows, et l’essai en jeu confirme que le mod de transmission l’interprète.
+4. **Performances**. Comparer sur le même trajet l’USB désactivé, l’USB actif et le retour de force actif, avec les mêmes réglages graphiques et les mêmes périphériques. Relever le temps CPU et le temps de trame avant d’ajuster la fréquence de lecture. La baisse du nombre de renouvellements du moteur vient du code et ne constitue pas une mesure de FPS.
+
+Un pilote peut exposer un même matériel différemment selon son branchement et ses réglages. Les tests couvrent le chemin DirectInput, le format actuel de profils et le build de jeu indiqué ci-dessus. Une mise à jour de Cyberpunk, un autre pilote ou un autre mod de transmission demande un essai de compatibilité.

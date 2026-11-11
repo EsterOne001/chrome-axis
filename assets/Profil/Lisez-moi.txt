@@ -1,0 +1,8 @@
+Chrome Axis utilise ce dossier pour enregistrer chrome_axis.ini.
+Le fichier accessories.ini contient les affectations de touches des accessoires.
+Le fichier usb.enabled demande au plugin de lire les entrées USB dans le jeu.
+Le dossier Profils contient les profils nommés. active_profile.txt indique le profil sélectionné.
+Chaque profil peut enregistrer ses propres réglages de retour de force dans force_feedback.ini.
+
+Ouvrez Chrome Axis (ChromeAxis.exe) depuis red4ext/plugins/chrome_axis dans le dossier du jeu.
+Conservez chrome_axis.ini et accessories.ini pour réutiliser vos réglages.
