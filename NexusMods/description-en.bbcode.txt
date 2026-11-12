@@ -1,56 +1,71 @@
-Chrome Axis adds analog steering, throttle and brake to [b]Cyberpunk 2077 on Windows[/b]. Connect your wheel and pedals through a wheelbase or select a separate DirectInput device for each axis. The included [b]Chrome Axis[/b] app lets you calibrate your setup, see live input, set dead zones and save named profiles. You can keep the game's own controls for any axis.
+[b]Chrome Axis 0.4.15 · Cyberpunk 2077 2.5 · Windows x64[/b]
 
-This prototype targets [b]Cyberpunk 2077 2.5[/b]. Hardware behavior depends on the axes and buttons your Windows drivers expose.
+[size=6][b]English[/b][/size]
 
-[size=4][b]What you can do[/b][/size]
+[center][img]https://raw.githubusercontent.com/EsterOne001/chrome-axis/0f9eb565fe6a3bf159654a4f4289877e2c203394/NexusMods/images/01-couverture-nexus.jpg[/img][/center]
 
-• Calibrate a wheel and two pedals, including pedals that share an axis. If your driver offers separate pedal axes, select them to measure both pedals simultaneously.
-• Save different setups as profiles. Each keeps its axis calibration, accessory bindings and force-feedback settings.
-• Bind wheel buttons, D-pad directions, paddles, a shifter, a handbrake or an accessory axis to keyboard keys.
-• Enable optional DirectInput force feedback on a compatible steering axis. Steering resistance varies with the vehicle, and collision jolts can be turned off separately.
-• Try progressive steering, throttle and braking with the keyboard in [b]Simulation[/b], even without a wheel, pedals or a saved profile.
+Chrome Axis adds [b]analog steering, throttle and brake[/b] to Cyberpunk 2077 on PC. Calibrate a USB wheel and pedals on the same base or on separate DirectInput devices. The included app gives you live input readings, adjustable dead zones and named profiles.
 
-[size=4][b]Requirements and compatibility[/b][/size]
+• [b]Wheel and pedals.[/b] Save your profile and enable USB input. You can then close the app.
+• [b]Keyboard simulation.[/b] Try progressive inputs without hardware. Keep the app open while driving.
 
-• [b]Windows x64 and Cyberpunk 2077 patch 2.5[/b], with [font=Courier New]Cyberpunk2077.exe[/font] file version [b]3.0.88.46235[/b]. The plugin checks this version when it loads.
-• [b]RED4ext 1.31.1[/b]. [url=https://www.nexusmods.com/cyberpunk2077/mods/2380]Nexus Mods[/url] · [url=https://github.com/wopss/RED4ext/releases/tag/v1.31.1]GitHub release 1.31.1[/url]
-• [b]redscript[/b], with [b]0.5.32[/b] as the reference version for this release. [url=https://www.nexusmods.com/cyberpunk2077/mods/1511]Nexus Mods[/url] · [url=https://github.com/jac3km4/redscript/releases/tag/v0.5.32]GitHub release 0.5.32[/url]
-• For physical controls, use a device whose driver exposes the axes or buttons through [b]DirectInput[/b]. Check them in Windows Game Controllers ([font=Courier New]joy.cpl[/font]). Force feedback also requires a DirectInput actuator on the calibrated steering axis.
+[center][img]https://staticdelivery.nexusmods.com/mods/3333/images/38104/38104-1794443253-714861765.jpg[/img][/center]
 
-[size=4][b]Install and set up a wheel[/b][/size]
+[size=4][b]New in 0.4.15[/b][/size]
 
-1. Close the game and install the requirements. In Vortex, import the Chrome Axis ZIP using [b]Install From File[/b], then enable and deploy it. For a manual install, extract the ZIP into the game folder so that [font=Courier New]archive[/font] and [font=Courier New]red4ext[/font] sit alongside [font=Courier New]bin[/font].
-2. Open [font=Courier New]red4ext/plugins/chrome_axis/ChromeAxis.exe[/font] from the [b]game folder[/b]. The app is in French. In [b]Matériel USB[/b], click [b]Actualiser[/b] and select a device for [b]Volant[/b] (wheel), [b]Accélérateur[/b] (throttle) and [b]Frein[/b] (brake). Select [b]Commandes du jeu[/b] to keep the game's controls for an axis.
-3. Click [b]Calibrer les axes[/b]. Capture the wheel at its centre and both limits, then each pedal at rest and fully pressed. Check the live values and adjust [b]Zone morte (%)[/b] if a control moves at rest. Click [b]Enregistrer le profil[/b] to save your setup. Use [b]Sélectionner un profil…[/b] to switch to or create a named profile.
-4. Click [b]Activer l’USB en jeu[/b]. USB input starts disabled. Once you've saved and enabled it, you can close the app. Sit in the driver's seat with the game in the foreground, centre the wheel and release the pedals and accessories to arm them. The HUD shows [b]USB PRÊT[/b] when your configured controls are armed and briefly shows [b]SIGNAL USB[/b] when the mod applies input.
+The language selector is a square split diagonally to the right of [b]Simulation[/b]. Click the [b]French flag in the upper left[/b] or the [b]British flag in the lower right[/b]. The chosen half lights up immediately. [b]Restart Chrome Axis[/b] to apply the change.
 
-For force feedback, save the steering axis first, then open [b]Retour de force…[/b] and enable it for the current profile. Start at low intensity. The setting ranges from [b]1% to 35%[/b] of nominal DirectInput force. The panel checks whether the driver exposes the required actuator and offers an invert option if the wheel pulls away from centre.
+[b]Help → Language → Automatic (Windows)[/b] uses French when Windows displays in French and English otherwise. Your app language applies to all profiles. The in-game HUD uses Cyberpunk’s display language, with French for a French game and English for other game languages.
 
-To return to the game's regular controls, open the app and select [b]Désactiver l’USB en jeu[/b].
+[size=4][b]Requirements and installation[/b][/size]
 
-[size=4][b]Try it without hardware[/b][/size]
+[b]Chrome Axis 0.4.15[/b] targets [b]Cyberpunk 2077 2.5 on Windows x64[/b] ([font=Courier New]Cyberpunk2077.exe[/font] version [b]3.0.88.46235[/b]). Install [url=https://github.com/wopss/RED4ext/releases/tag/v1.31.1]RED4ext 1.31.1[/url] and [url=https://github.com/jac3km4/redscript/releases/tag/v0.5.32]redscript 0.5.32[/url].
 
-Open [b]Simulation[/b], then click [b]Activer dans le jeu[/b] and [b]leave Chrome Axis running[/b]. In the game, sit in the driver's seat and release the simulation keys once before testing. Hold [b]Numpad 4 / 6[/b] to steer left or right, [b]Numpad 8[/b] to accelerate and [b]Numpad 2[/b] to brake, with Num Lock on. [b]F6 / F7 / F8 / F10[/b] are the alternatives in the same order. The HUD displays [b]SIMULATION[/b] when the game receives the app's signal. To finish, click [b]Arrêter la simulation[/b] or close the app.
+Close the game. Use [b]Install From File[/b] in Vortex to import the ZIP, then enable and deploy the mod. For a manual install, extract the ZIP to the game folder. Open [font=Courier New]red4ext/plugins/chrome_axis/ChromeAxis.exe[/font] from the installed game.
 
-[size=4][b]Paddles, shifters and accessories[/b][/size]
+[size=4][b]Drive with a wheel[/b][/size]
 
-Open [b]Matériel USB → Accessoires…[/b], then choose the wheelbase or standalone USB device that exposes the input. In [b]Boîte / palettes…[/b], capture the up/down positions for a sequential shifter, or individual positions on a 6-, 7- or 8-speed H-pattern shifter, including reverse. Assign the keys, click [b]Appliquer[/b] in the wizard, then [b]Enregistrer[/b] in the accessory panel. USB input must be enabled for bindings to work in the game.
+1. In [b]USB Hardware[/b], click [b]Refresh[/b] and select devices for [b]Wheel[/b], [b]Throttle[/b] and [b]Brake[/b]. [b]Game controls[/b] keeps the regular controls for that axis.
+2. Click [b]Calibrate axes[/b]. Capture the wheel at center and both limits, and each pedal at rest and fully pressed. Check for −100% to +100% steering and 0% to 100% per pedal. Adjust [b]Deadzone (%)[/b] if an input drifts at rest, then click [b]Save profile[/b].
+3. USB input starts disabled. Click [b]Enable USB in game[/b] and close Chrome Axis. With V in the driver’s seat and the game in the foreground, center the wheel and release the pedals and paddles to arm them. To stop USB input, open the app and click [b]Disable USB in game[/b].
 
-Chrome Axis maps accessory inputs to keys. For manual shifting, set the same keys in a separate transmission mod. An H-pattern shifter needs a transmission mod that accepts a separate key for each gear. For sequential shifting, [b]Numpad + / −[/b] are suggested bindings to try with Manual Transmission V10 4.3. That combination still needs an in-game test. [url=https://www.nexusmods.com/cyberpunk2077/mods/28342]Manual Transmission V10[/url]
+Pedals that share a single axis can use a common rest position with travel in opposite directions. Use separate axes in your driver settings to register both pedals at once. [b]Select profile…[/b] switches profiles or creates a named copy of your saved setup. Profiles store calibration, dead zones, accessory bindings and force feedback. The game reads the active profile. The USB switch applies across profiles.
 
-[size=4][b]Troubleshooting and updates[/b][/size]
+[center][img]https://staticdelivery.nexusmods.com/mods/3333/images/38104/38104-1794443254-676232214.png[/img][/center]
 
-• [b]The HUD stays on USB EN ATTENTE.[/b] Keep the game in the foreground, centre the wheel, release the pedals and check that each configured input responds in [font=Courier New]joy.cpl[/font]. For a device that no longer exposes the saved axis, check its driver settings and recalibrate.
-• [b]The gauges move in the app but the car does not respond.[/b] Check the newest [font=Courier New]red4ext/logs/chromeaxis-*.log[/font]. [font=Courier New]Chrome Axis USB configuration directory[/font] shows which profile folder the plugin reads. Compare it with [b]Dossier des profils[/b] in the app. [font=Courier New]USB axes[/font] reports the state of each axis. If the mod log is missing, check [font=Courier New]red4ext-*.log[/font] for plugin loading or script compilation errors.
-• [b]Windows reports a missing [font=Courier New]MSVCP140.dll[/font] or [font=Courier New]VCRUNTIME140.dll[/font].[/b] Install the Microsoft Visual C++ v14 x64 Redistributable. [url=https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version]Microsoft download[/url]
-• [b]Updating or uninstalling.[/b] Close the game and app, and back up the entire [font=Courier New]red4ext/plugins/chrome_axis/Profil[/font] folder. For an update, disable and deploy the removal of the old release in Vortex, deploy the new release, restore [font=Courier New]Profil[/font], then click [b]Recharger[/b]. To uninstall, remove the mod in Vortex and deploy the change. For a manual install, remove the Chrome Axis plugin folder and [font=Courier New]archive/pc/mod/chrome_axis_hud.archive[/font].
+[i]Chrome Axis 0.4.15 in English. The British half of the language selector is highlighted. USB Hardware is shown before connecting a device.[/i]
 
-When reporting a bug, include your wheel and pedal models, how they're connected, your game and framework versions, steps to reproduce and the latest relevant log excerpt.
+The in-game HUD shows [b]MOD LOADED[/b] when Chrome Axis is present, [b]USB WAITING[/b] while controls get ready and [b]USB READY[/b] once they are armed. [b]USB INPUT[/b] flashes when the mod sends an axis value or accessory key. [b]SIMULATION[/b] indicates that the game receives the keyboard simulation signal.
 
-[size=4][b]Credits and AI disclosure[/b][/size]
+[size=4][b]Try it with a keyboard[/b][/size]
 
-The analog vehicle hook and the Cyberpunk 2.5 field layout were developed with reference to [b]Direct Wheel 3.4.1[/b]. Thanks to Grant Perdue (clevergrant), SERG (natpoh) and DesignWithTommy. [url=https://github.com/DesignWithTommy/cp2077-wheel-mod/releases/tag/v3.4.1]Direct Wheel 3.4.1[/url] · [url=https://github.com/clevergrant/cp2077-wheel-mod]Grant Perdue’s original project[/url] · [url=https://www.nexusmods.com/cyberpunk2077/mods/29246]SERG’s Moza and Direct Drive Wheel Support on Nexus Mods[/url]
+Open [b]Simulation[/b] and hold a key with the app in the foreground to see its input build in the preview. Click [b]Enable in game[/b] and [b]leave the app open[/b]. You can minimize it. Sit in the driver’s seat, bring the game to the foreground and release the keys once to arm the controls.
 
-Thanks to Octavian Dima and the RED4ext contributors, jac3km4 and the redscript contributors, and the Barlow Project Authors. The release includes [font=Courier New]THIRD_PARTY_NOTICES.md[/font] and [font=Courier New]licenses/Barlow-OFL.txt[/font]. [url=https://github.com/wopss/RED4ext.SDK/commit/5246e659d783e5834cc08a90e56c8932c9ed3449]RED4ext SDK[/url] · [url=https://github.com/jac3km4/redscript]redscript[/url] · [url=https://github.com/google/fonts/blob/main/ofl/barlowcondensed/OFL.txt]Barlow license[/url]
+• [b]Steer left / right[/b] — F6 / F7 or Numpad 4 / 6.
+• [b]Accelerate / brake[/b] — F8 / F10 or Numpad 8 / 2.
 
-OpenAI tools assisted with the page copy and promotional artwork. OpenAI ImageGen was also used to remove the background from the in-game HUD logo ([font=Courier New]chrome_axis/hud/logo.xbm[/font] in [font=Courier New]chrome_axis_hud.archive[/font]).
+Turn on Num Lock to use the numpad. To end the test, click [b]Stop simulation[/b], switch to [b]USB Hardware[/b] or close Chrome Axis.
+
+[center][img]https://staticdelivery.nexusmods.com/mods/3333/images/38104/38104-1794443255-876442495.png[/img][/center]
+
+[i]The English Simulation tab shows keyboard shortcuts and input meters in preview mode.[/i]
+
+[size=4][b]Force feedback and accessories[/b][/size]
+
+• [b]Force feedback[/b] requires a DirectInput actuator on the calibrated steering axis. Save the calibration, open [b]Force feedback…[/b], enable it for the active profile and start at low strength. Steering effort varies with vehicle speed, mass and sideways motion. You can set 1–35% of nominal DirectInput force, reverse the effect and turn collision jolts off separately.
+• [b]Accessories…[/b] lets you assign buttons, D-pad directions and axes to keys using a visual keyboard. The number row and numpad are separate. [b]Shifter / paddles…[/b] handles sequential controls and 6-, 7- or 8-speed H-patterns with reverse. Apply the mappings, save them and enable USB input. Manual shifting requires a separate transmission mod with matching keys. H-pattern shifting requires one bindable command per gear in that mod.
+
+[size=4][b]Troubleshooting[/b][/size]
+
+• [b]USB WAITING.[/b] Center the wheel, release the pedals and paddles, and check the inputs in Windows Game Controllers ([font=Courier New]joy.cpl[/font]).
+• [b]The app sees movement but the car stays still.[/b] Check [font=Courier New]red4ext/logs/chromeaxis-*.log[/font]. Compare [font=Courier New]Chrome Axis USB configuration directory[/font] in the log with [b]Profiles folder[/b] in the app. If the mod log is missing, check [font=Courier New]red4ext-*.log[/font] for plugin or script loading errors.
+• [b]Missing [font=Courier New]MSVCP140.dll[/font] or [font=Courier New]VCRUNTIME140.dll[/font].[/b] Install the Microsoft Visual C++ v14 x64 Redistributable. [url=https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version]Microsoft download[/url]
+• [b]Updates.[/b] Close the game and the app, then back up the entire [font=Courier New]Profil[/font] folder. Remove the previous version before installing the new one. Restore the backup and click [b]Reload[/b].
+
+The ZIP includes both full setup guides, [font=Courier New]README.en.md[/font] in English and [font=Courier New]README.md[/font] in French.
+
+[size=4][b]Credits[/b][/size]
+
+Unofficial fan mod maintained by EsterOne001. The analog vehicle hook and Cyberpunk 2.5 field layout use Direct Wheel 3.4.1 as a reference. Thanks to Grant Perdue, SERG (natpoh), DesignWithTommy, the RED4ext and redscript contributors, and the Barlow Project Authors. Full credits and licenses are included in the ZIP. [url=https://github.com/EsterOne001/chrome-axis]Chrome Axis source[/url] · [url=https://github.com/clevergrant/cp2077-wheel-mod]Grant Perdue’s original project[/url] · [url=https://github.com/DesignWithTommy/cp2077-wheel-mod/releases/tag/v3.4.1]Direct Wheel 3.4.1[/url] · [url=https://www.nexusmods.com/cyberpunk2077/mods/29246]SERG’s Moza and Direct Drive Wheel Support[/url]
+
+Codex assisted with the page copy. OpenAI ImageGen created the promotional illustration and removed the background from the in-game HUD logo.

@@ -51,6 +51,9 @@ std::array<HFONT, 3> makeFonts(HWND window, UINT dpi);
 
 void paintHeader(HDC dc, UINT dpi, LONG width, int textLeft, LONG plateEdge, HICON logo,
                  HFONT body, HFONT wordmark, const wchar_t* subtitle);
+enum class Flag { france, unitedKingdom };
+bool shapeLanguageButton(HWND button, int size, Flag flag);
+void paintLanguageButton(const DRAWITEMSTRUCT& item, UINT dpi, Flag flag, bool active);
 void paintAction(const DRAWITEMSTRUCT& item, HFONT font, UINT dpi, COLORREF base, bool primary, bool stop = false);
 void paintComboItem(const DRAWITEMSTRUCT& item, HFONT font, UINT dpi);
 

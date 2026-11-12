@@ -3,12 +3,12 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "chrome_axis/configuration.hpp"
 #include "chrome_axis/feedback.hpp"
+#include "app_text.hpp"
 #include "dialog_theme.hpp"
 
 namespace chrome_axis {
 namespace {
 
-constexpr wchar_t title[] = L"Retour de force · Chrome Axis";
 
 enum class Compatibility { noCalibration, disconnected, unsupported, supported };
 
@@ -25,13 +25,13 @@ const wchar_t* compatibilityText(Compatibility state)
 {
     switch (state) {
     case Compatibility::noCalibration:
-        return L"Enregistrez d’abord la calibration de l’axe de direction.";
+        return tr(Text::DlgFeedbackNoCalibration);
     case Compatibility::disconnected:
-        return L"Le volant de ce profil est déconnecté. Rebranchez-le, puis actualisez les périphériques.";
+        return tr(Text::DlgFeedbackDisconnected);
     case Compatibility::unsupported:
-        return L"Le pilote DirectInput n’annonce pas de retour de force sur l’axe de direction calibré.";
+        return tr(Text::DlgFeedbackUnsupported);
     case Compatibility::supported:
-        return L"Axe de direction compatible. Le retour de force s’applique en jeu avec l’USB activé.";
+        return tr(Text::DlgFeedbackSupported);
     }
     return L"";
 }
@@ -67,16 +67,16 @@ void FeedbackDialog::initialise(HWND window) const
     SetDlgItemTextW(window, IDC_FEEDBACK_STATUS, compatibilityText(state));
     if (!saved) {
         SetDlgItemTextW(window, IDC_MODAL_INTRO,
-            L"Les réglages enregistrés sont illisibles. Enregistrez pour les remplacer.");
+            tr(Text::DlgFeedbackUnreadable));
     } else if (settings.enabled && !supported) {
         SetDlgItemTextW(window, IDC_MODAL_INTRO,
-            L"Enregistrez pour désactiver le retour de force de ce profil.");
+            tr(Text::DlgFeedbackDisableProfile));
     }
 
     if (supported) {
-        addToggle(window, IDC_FEEDBACK_ENABLE, L"Désactivé", L"Activé", settings.enabled);
+        addToggle(window, IDC_FEEDBACK_ENABLE, tr(Text::DlgFeedbackDisabled), tr(Text::DlgFeedbackEnabled), settings.enabled);
     } else {
-        addChoice(window, IDC_FEEDBACK_ENABLE, L"Désactivé");
+        addChoice(window, IDC_FEEDBACK_ENABLE, tr(Text::DlgFeedbackDisabled));
         SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_SETCURSEL, 0, 0);
         EnableWindow(GetDlgItem(window, IDC_FEEDBACK_ENABLE), FALSE);
     }
@@ -85,8 +85,8 @@ void FeedbackDialog::initialise(HWND window) const
         addChoice(window, IDC_FEEDBACK_STRENGTH, label.c_str());
     }
     SendDlgItemMessageW(window, IDC_FEEDBACK_STRENGTH, CB_SETCURSEL, static_cast<WPARAM>(settings.strength - 1), 0);
-    addToggle(window, IDC_FEEDBACK_IMPACTS, L"Désactivés", L"Activés", settings.impacts);
-    addToggle(window, IDC_FEEDBACK_DIRECTION, L"Normal", L"Inversé", settings.invert);
+    addToggle(window, IDC_FEEDBACK_IMPACTS, tr(Text::DlgFeedbackImpactsDisabled), tr(Text::DlgFeedbackImpactsEnabled), settings.impacts);
+    addToggle(window, IDC_FEEDBACK_DIRECTION, tr(Text::DlgFeedbackNormal), tr(Text::DlgFeedbackInverted), settings.invert);
     updateControls(window);
 }
 
@@ -101,8 +101,7 @@ void FeedbackDialog::updateControls(HWND window) const
 void FeedbackDialog::save(HWND window) const
 {
     if (isTemporaryProfileDirectory(file.parent_path())) {
-        MessageBoxW(window, L"Extrayez le ZIP ou ouvrez Chrome Axis depuis le dossier du jeu avant "
-            L"d’enregistrer le retour de force.", title, MB_OK | MB_ICONWARNING);
+        MessageBoxW(window, tr(Text::DlgFeedbackExtractBeforeSaving), tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONWARNING);
         return;
     }
     const auto selected = [&](int id) { return SendDlgItemMessageW(window, id, CB_GETCURSEL, 0, 0); };
@@ -118,8 +117,8 @@ void FeedbackDialog::save(HWND window) const
     };
     std::string error;
     if (!saveFeedbackSettings(file, settings, error)) {
-        MessageBoxW(window, L"Impossible d’enregistrer le retour de force. Vérifiez que le dossier Profil est accessible en écriture.",
-                    title, MB_OK | MB_ICONERROR);
+        MessageBoxW(window, tr(Text::DlgFeedbackSaveError),
+                    tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONERROR);
         return;
     }
     EndDialog(window, IDOK);
@@ -129,7 +128,15 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 {
     if (message == WM_INITDIALOG) {
         SetWindowLongPtrW(window, DWLP_USER, lParam);
-        DialogTheme::attach(window, L"Retour de force", IDC_FEEDBACK_STATUS, 0, {IDOK});
+        SetWindowTextW(window, tr(Text::DlgFeedbackTitle));
+        SetDlgItemTextW(window, IDC_FEEDBACK_ENABLE_LABEL, tr(Text::DlgFeedbackEnable));
+        SetDlgItemTextW(window, IDC_FEEDBACK_STRENGTH_LABEL, tr(Text::DlgFeedbackStrength));
+        SetDlgItemTextW(window, IDC_FEEDBACK_IMPACTS_LABEL, tr(Text::DlgFeedbackImpacts));
+        SetDlgItemTextW(window, IDC_FEEDBACK_DIRECTION_LABEL, tr(Text::DlgFeedbackDirection));
+        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgFeedbackIntro));
+        SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
+        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
+        DialogTheme::attach(window, tr(Text::DlgFeedbackHeading), IDC_FEEDBACK_STATUS, 0, {IDOK});
         reinterpret_cast<const FeedbackDialog*>(lParam)->initialise(window);
         return TRUE;
     }
@@ -163,7 +170,7 @@ bool editForceFeedback(HWND owner, const std::filesystem::path& directory,
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_FORCE_FEEDBACK), owner,
                                         dialogProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)
-        MessageBoxW(owner, L"Impossible d’ouvrir les réglages du retour de force.", title, MB_OK | MB_ICONERROR);
+        MessageBoxW(owner, tr(Text::DlgFeedbackOpenError), tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONERROR);
     return result == IDOK;
 }
 

@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chrome Axis 0.4.15 · Nexus Mods</title>
+  <link rel="icon" type="image/png" href="logos/chrome-axis-hud-transparent.png">
+  <style>
+    @font-face { font-family: Barlow Condensed; src: url("../assets/fonts/BarlowCondensed-SemiBold.ttf"); font-weight: 600; font-display: swap; }
+    :root { color-scheme: dark; background: #0c0e11; color: #eef0f2; font: 17px/1.62 system-ui, sans-serif; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; }
+    [hidden] { display: none !important; }
+    a { color: #7de3ee; text-underline-offset: 0.2em; }
+    a:hover { color: #c1f7fb; }
+    :focus-visible { outline: 2px solid #fcee0a; outline-offset: 4px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .toolbar { position: sticky; top: 0; z-index: 1; background: #12151a; border-bottom: 1px solid #353a42; }
+    .toolbar-inner { max-width: 1000px; margin: auto; padding: 10px 22px; display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .brand { display: flex; gap: 6px; align-items: center; font: 600 1.25rem/1.1 Barlow Condensed, system-ui, sans-serif; }
+    .brand img { width: 35px; height: 35px; }
+    .toolbar nav { display: flex; gap: 4px; background: #0c0e11; border: 1px solid #343941; padding: 3px; border-radius: 5px; }
+    .toolbar nav a { display: inline-flex; justify-content: center; align-items: center; min-height: 36px; min-width: 72px; padding: 2px 8px; border-radius: 3px; color: #e4e8ec; text-decoration: none; font-size: .8rem; }
+    .toolbar nav a[aria-current="true"] { background: #fcee0a; color: #101113; font-weight: 700; }
+    main { max-width: 1000px; margin: 22px auto 55px; padding: 0 22px; }
+    .language + .language { margin-top: 28px; }
+    .page-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; justify-content: space-between; align-items: center; padding: 12px 20px; border: 1px solid #353a42; border-top: 2px solid #fcee0a; background: #14171c; color: #c1c8d0; font-size: .82rem; }
+    .page-meta a { font-weight: 650; }
+    .hero, .figure { margin: 0; }
+    .hero { border-inline: 1px solid #353a42; }
+    .hero img, .figure img { display: block; width: 100%; height: auto; }
+    .body { background: #12151a; border: 1px solid #353a42; padding: 22px clamp(16px, 5vw, 54px) 30px; }
+    .body > p, .body > ul, .body > ol { max-width: 72ch; }
+    .body > p, .body > ul, .body > ol { margin: 0 0 15px; }
+    .body > p:first-child { font-size: 1.12rem; }
+    h3, h4 { font-family: Barlow Condensed, system-ui, sans-serif; font-weight: 600; line-height: 1.12; }
+    h3 { font-size: 1.7rem; margin: 32px 0 11px; }
+    h3::before { content: ""; display: inline-block; width: .55em; height: 3px; background: #fcee0a; vertical-align: .19em; margin-right: .37em; }
+    h4 { font-size: 1.32rem; }
+    ol, ul { padding-left: 1.42em; }
+    li + li { margin-top: 5px; }
+    code { padding: .08em .25em; background: #252a31; border-radius: 3px; font-size: .84em; overflow-wrap: anywhere; }
+    .figure { max-width: 720px; margin: 20px auto 25px; }
+    .figure img { border: 1px solid #434a54; }
+    figcaption { color: #c0c8d1; font-size: .83rem; margin-top: 6px; }
+    .gallery { margin-top: 14px; border: 1px solid #353a42; background: #12151a; }
+    .gallery summary { padding: 13px 16px; cursor: pointer; font-weight: 650; }
+    .gallery-grid { list-style: none; margin: 0; padding: 0 16px 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .gallery-grid li { margin: 0; min-width: 0; }
+    .gallery-grid a { display: flex; height: 100%; flex-direction: column; border: 1px solid #3c424b; text-decoration: none; color: #eef0f2; }
+    .gallery-grid a:hover { border-color: #7de3ee; }
+    .gallery-grid img { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: contain; background: #0d1014; }
+    .gallery-grid span { display: block; padding: 7px 9px; font-size: .8rem; }
+    @media (max-width: 550px) {
+      :root { font-size: 16px; }
+      main { margin: 10px auto 24px; padding: 0 10px; }
+      .toolbar-inner { padding: 7px 10px; }
+      .toolbar nav a { min-width: 65px; }
+      .page-meta { padding: 10px; gap: 4px 10px; }
+      .body { padding: 15px 12px 20px; }
+      .gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-inline: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="toolbar-inner">
+      <div class="brand"><img src="logos/chrome-axis-hud-transparent.png" alt="" width="35" height="35">Chrome Axis</div>
+      <nav aria-label="Français / English">
+        <a href="#fr" lang="fr">Français</a>
+        <a href="#en" lang="en">English</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <h1 class="sr-only">Chrome Axis · Nexus Mods</h1>
+    <section id="fr" class="language" lang="fr" aria-labelledby="title-fr">
+      <h2 id="title-fr" class="sr-only">Français</h2>
+      <div class="page-meta">
+        <span>0.4.15 · Cyberpunk 2077 2.5 · Windows x64</span>
+        <span><a href="description-fr.bbcode.txt">BBCode FR</a> · <a href="description-bilingue.bbcode.txt">BBCode bilingue</a> · <a href="guide-publication.md#français">Guide de publication</a></span>
+      </div>
+      <figure class="hero"><img src="images/fr/01-cover.jpg" alt="Chrome Axis, volant et pédales analogiques pour Cyberpunk 2077. Illustration promotionnelle." width="1600" height="900"></figure>
+      <article class="body">
+<p>Chrome Axis ajoute la <strong>direction, l’accélérateur et le frein analogiques</strong> à Cyberpunk 2077 sur PC. Calibrez le volant et les pédales sur la même base ou sur des périphériques DirectInput distincts. L’application propose des jauges en direct, des zones mortes réglables et des profils nommés.</p>
+<ul>
+<li><strong>Volant et pédalier</strong>. Enregistrez le profil et activez l’USB. Vous pouvez ensuite fermer l’application.</li>
+<li><strong>Simulation clavier</strong>. Testez les commandes progressives sans matériel. Gardez l’application ouverte pendant la conduite.</li>
+</ul>
+<figure class="figure"><a href="images/fr/03-first-drive.jpg" aria-label="Guide de démarrage pour la calibration USB et la simulation clavier."><img src="images/fr/03-first-drive.jpg" alt="" width="1600" height="900" loading="lazy"></a><figcaption>Guide de démarrage pour la calibration USB et la simulation clavier.</figcaption></figure>
+<h3>Nouveauté de la 0.4.15</h3>
+<p>Le sélecteur de langue est un carré divisé en diagonale, à droite de <strong>Simulation</strong>. Cliquez sur le <strong>drapeau français en haut à gauche</strong> ou sur le <strong>drapeau britannique en bas à droite</strong>. La moitié choisie s’illumine aussitôt. <strong>Relancez Chrome Axis</strong> pour appliquer le changement.</p>
+<p><strong>Aide → Langue → Automatique (Windows)</strong> choisit le français si Windows s’affiche en français, et l’anglais dans les autres cas. La langue de l’application s’applique à tous vos profils. Le HUD suit la langue d’affichage de Cyberpunk. Il s’affiche en français si le jeu est en français, et en anglais dans les autres cas.</p>
+<h3>Prérequis et installation</h3>
+<p><strong>Chrome Axis 0.4.15</strong> cible <strong>Cyberpunk 2077 2.5 sur Windows x64</strong> (<code>Cyberpunk2077.exe</code> en version <strong>3.0.88.46235</strong>). Installez <a href="https://github.com/wopss/RED4ext/releases/tag/v1.31.1">RED4ext 1.31.1</a> et <a href="https://github.com/jac3km4/redscript/releases/tag/v0.5.32">redscript 0.5.32</a>.</p>
+<p>Fermez le jeu. Dans Vortex, importez le ZIP avec <strong>Installer depuis un fichier</strong>, puis activez et déployez le mod. Pour une installation manuelle, extrayez le ZIP à la racine du jeu. Ouvrez <code>red4ext/plugins/chrome_axis/ChromeAxis.exe</code> depuis le dossier du jeu.</p>
+<h3>Conduire au volant</h3>
+<ol>
+<li>Dans <strong>Matériel USB</strong>, cliquez sur <strong>Actualiser</strong> et choisissez les périphériques du <strong>Volant</strong>, de l’<strong>Accélérateur</strong> et du <strong>Frein</strong>. <strong>Commandes du jeu</strong> conserve les commandes habituelles pour l’axe choisi.</li>
+<li>Cliquez sur <strong>Calibrer les axes</strong>. Capturez le centre et les butées du volant, puis le repos et la pleine course de chaque pédale. Vérifiez que la direction va de −100 % à +100 % et que chaque pédale va de 0 % à 100 %. Ajustez <strong>Zone morte (%)</strong> si une commande bouge au repos, puis cliquez sur <strong>Enregistrer le profil</strong>.</li>
+<li>L’USB en jeu est désactivé par défaut. Cliquez sur <strong>Activer l’USB en jeu</strong>, puis fermez Chrome Axis. Installez V au siège conducteur, gardez le jeu au premier plan, centrez le volant et relâchez les pédales et les palettes pour armer les commandes. Pour arrêter l’USB, ouvrez l’application et cliquez sur <strong>Désactiver l’USB en jeu</strong>.</li>
+</ol>
+<p>Des pédales sur un axe combiné peuvent partager un point de repos, avec des courses opposées. Sélectionnez des axes séparés dans le pilote pour mesurer les deux pédales simultanément. <strong>Sélectionner un profil…</strong> permet de changer de profil ou de créer une copie nommée des réglages enregistrés. Chaque profil garde sa calibration, ses zones mortes, ses affectations d’accessoires et son retour de force. Le jeu lit le profil actif. L’activation USB est commune à tous les profils.</p>
+<figure class="figure"><a href="images/fr/04-calibration.png" aria-label="L’onglet Matériel USB affiche le choix des périphériques, les zones mortes et les jauges en direct."><img src="images/fr/04-calibration.png" alt="" width="878" height="681" loading="lazy"></a><figcaption>Chrome Axis 0.4.15 en français. La moitié française du sélecteur est éclairée. L’onglet Matériel USB est affiché avant le branchement d’un périphérique.</figcaption></figure>
+<p>Le HUD affiche <strong>MOD CHARGÉ</strong> lorsque Chrome Axis est présent, <strong>USB EN ATTENTE</strong> tant que les commandes se préparent, puis <strong>USB PRÊT</strong> une fois qu’elles sont armées. <strong>SIGNAL USB</strong> apparaît brièvement à l’envoi d’une valeur d’axe ou d’une touche d’accessoire. <strong>SIMULATION</strong> indique que le jeu reçoit le signal de la simulation clavier.</p>
+<h3>Essayer au clavier</h3>
+<p>Ouvrez <strong>Simulation</strong> et maintenez une touche avec l’application au premier plan pour voir l’entrée progresser dans l’aperçu. Cliquez sur <strong>Activer dans le jeu</strong> et <strong>laissez l’application ouverte</strong>. Vous pouvez la réduire. Installez V au siège conducteur, placez le jeu au premier plan et relâchez les touches pour armer les commandes.</p>
+<ul>
+<li><strong>Braquer à gauche / à droite</strong> — F6 / F7 ou pavé numérique 4 / 6.</li>
+<li><strong>Accélérer / freiner</strong> — F8 / F10 ou pavé numérique 8 / 2.</li>
+</ul>
+<p>Activez Verr. num. pour utiliser le pavé numérique. Pour terminer l’essai, cliquez sur <strong>Arrêter la simulation</strong>, revenez dans <strong>Matériel USB</strong> ou fermez Chrome Axis.</p>
+<figure class="figure"><a href="images/fr/05-simulation.png" aria-label="L’onglet Simulation affiche les raccourcis et les jauges d’entrée en mode aperçu."><img src="images/fr/05-simulation.png" alt="" width="878" height="681" loading="lazy"></a><figcaption>L’onglet Simulation en français affiche les raccourcis et les jauges d’entrée en mode aperçu.</figcaption></figure>
+<h3>Retour de force et accessoires</h3>
+<ul>
+<li>Le <strong>retour de force</strong> nécessite un actionneur DirectInput sur l’axe de direction calibré. Enregistrez la calibration, ouvrez <strong>Retour de force…</strong>, activez-le pour le profil en cours et commencez à faible intensité. L’effort varie avec la vitesse, la masse et le déplacement latéral du véhicule. Réglez l’intensité de 1 à 35 % de la force nominale DirectInput, inversez le sens au besoin et désactivez les secousses de collision séparément.</li>
+<li><strong>Accessoires…</strong> associe boutons, directions de croix et axes à des touches grâce au clavier visuel. La rangée de chiffres et le pavé numérique sont distincts. <strong>Boîte / palettes…</strong> couvre le séquentiel et les grilles en H à 6, 7 ou 8 rapports, marche arrière comprise. Appliquez les affectations, enregistrez-les et activez l’USB en jeu. Le changement manuel des rapports nécessite un mod de transmission configuré avec les mêmes touches. Pour une grille en H, ce mod doit accepter une touche par rapport.</li>
+</ul>
+<h3>Dépannage</h3>
+<ul>
+<li><strong>USB EN ATTENTE.</strong> Centrez le volant, relâchez les pédales et les palettes, puis vérifiez les commandes dans les contrôleurs de jeu Windows (<code>joy.cpl</code>).</li>
+<li><strong>Les jauges bougent et le véhicule reste immobile.</strong> Consultez <code>red4ext/logs/chromeaxis-*.log</code>. Comparez <code>Chrome Axis USB configuration directory</code> dans le journal avec le chemin ouvert par <strong>Dossier des profils</strong>. Si le journal du mod est absent, consultez <code>red4ext-*.log</code> pour vérifier le chargement du plugin et des scripts.</li>
+<li><strong><code>MSVCP140.dll</code> ou <code>VCRUNTIME140.dll</code> manquant.</strong> Installez le redistribuable Microsoft Visual C++ v14 x64. <a href="https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version">Téléchargement Microsoft</a></li>
+<li><strong>Mises à jour.</strong> Fermez le jeu et l’application, puis sauvegardez tout le dossier <code>Profil</code>. Retirez l’ancienne version avant d’installer la nouvelle. Restaurez la sauvegarde et cliquez sur <strong>Recharger</strong>.</li>
+</ul>
+<p>Le ZIP inclut les deux guides complets, <code>README.md</code> en français et <code>README.en.md</code> en anglais.</p>
+<h3>Crédits</h3>
+<p>Mod de fans non officiel maintenu par EsterOne001. L’intégration des commandes analogiques et la structure des champs de Cyberpunk 2.5 s’appuient sur Direct Wheel 3.4.1. Merci à Grant Perdue, SERG (natpoh), DesignWithTommy, aux contributeurs de RED4ext et de redscript et aux auteurs de Barlow. Les crédits complets et les licences sont dans le ZIP. <a href="https://github.com/EsterOne001/chrome-axis">Code source de Chrome Axis</a> · <a href="https://github.com/clevergrant/cp2077-wheel-mod">Projet d’origine de Grant Perdue</a> · <a href="https://github.com/DesignWithTommy/cp2077-wheel-mod/releases/tag/v3.4.1">Direct Wheel 3.4.1</a> · <a href="https://www.nexusmods.com/cyberpunk2077/mods/29246">Moza and Direct Drive Wheel Support de SERG</a></p>
+<p>Codex a aidé à rédiger cette fiche. OpenAI ImageGen a servi à créer l’illustration promotionnelle et à détourer le logo affiché dans le HUD.</p>
+      </article>
+      <details class="gallery">
+        <summary>Galerie · 10 visuels</summary>
+        <ul class="gallery-grid">
+          <li><a href="images/fr/01-cover.jpg"><img src="images/fr/01-cover.jpg" alt="" width="1600" height="900" loading="lazy"><span>Couverture</span></a></li>
+          <li><a href="images/fr/02-square.jpg"><img src="images/fr/02-square.jpg" alt="" width="960" height="960" loading="lazy"><span>Visuel carré</span></a></li>
+          <li><a href="images/fr/03-first-drive.jpg"><img src="images/fr/03-first-drive.jpg" alt="" width="1600" height="900" loading="lazy"><span>Premier trajet</span></a></li>
+          <li><a href="images/fr/04-calibration.png"><img src="images/fr/04-calibration.png" alt="" width="878" height="681" loading="lazy"><span>Calibration</span></a></li>
+          <li><a href="images/fr/05-simulation.png"><img src="images/fr/05-simulation.png" alt="" width="878" height="681" loading="lazy"><span>Simulation</span></a></li>
+          <li><a href="images/fr/06-accessories.png"><img src="images/fr/06-accessories.png" alt="" width="716" height="665" loading="lazy"><span>Accessoires</span></a></li>
+          <li><a href="images/fr/07-key-picker.png"><img src="images/fr/07-key-picker.png" alt="" width="737" height="470" loading="lazy"><span>Clavier visuel</span></a></li>
+          <li><a href="images/fr/08-profiles.png"><img src="images/fr/08-profiles.png" alt="" width="655" height="435" loading="lazy"><span>Profils</span></a></li>
+          <li><a href="images/fr/09-shifter-paddles.png"><img src="images/fr/09-shifter-paddles.png" alt="" width="716" height="665" loading="lazy"><span>Boîte et palettes</span></a></li>
+          <li><a href="images/fr/10-force-feedback.png"><img src="images/fr/10-force-feedback.png" alt="" width="716" height="474" loading="lazy"><span>Retour de force</span></a></li>
+        </ul>
+      </details>
+    </section>
+    <section id="en" class="language" lang="en" aria-labelledby="title-en">
+      <h2 id="title-en" class="sr-only">English</h2>
+      <div class="page-meta">
+        <span>0.4.15 · Cyberpunk 2077 2.5 · Windows x64</span>
+        <span><a href="description-en.bbcode.txt">English BBCode</a> · <a href="description-bilingue.bbcode.txt">Bilingual BBCode</a> · <a href="guide-publication.md#english">Publishing guide</a></span>
+      </div>
+      <figure class="hero"><img src="images/en/01-cover.jpg" alt="Chrome Axis, analog wheel and pedal support for Cyberpunk 2077. Promotional artwork." width="1600" height="900"></figure>
+      <article class="body">
+<p>Chrome Axis adds <strong>analog steering, throttle and brake</strong> to Cyberpunk 2077 on PC. Calibrate a USB wheel and pedals on the same base or on separate DirectInput devices. The included app gives you live input readings, adjustable dead zones and named profiles.</p>
+<ul>
+<li><strong>Wheel and pedals.</strong> Save your profile and enable USB input. You can then close the app.</li>
+<li><strong>Keyboard simulation.</strong> Try progressive inputs without hardware. Keep the app open while driving.</li>
+</ul>
+<figure class="figure"><a href="images/en/03-first-drive.jpg" aria-label="Quick-start guide for USB calibration and keyboard simulation."><img src="images/en/03-first-drive.jpg" alt="" width="1600" height="900" loading="lazy"></a><figcaption>Quick-start guide for USB calibration and keyboard simulation.</figcaption></figure>
+<h3>New in 0.4.15</h3>
+<p>The language selector is a square split diagonally to the right of <strong>Simulation</strong>. Click the <strong>French flag in the upper left</strong> or the <strong>British flag in the lower right</strong>. The chosen half lights up immediately. <strong>Restart Chrome Axis</strong> to apply the change.</p>
+<p><strong>Help → Language → Automatic (Windows)</strong> uses French when Windows displays in French and English otherwise. Your app language applies to all profiles. The in-game HUD uses Cyberpunk’s display language, with French for a French game and English for other game languages.</p>
+<h3>Requirements and installation</h3>
+<p><strong>Chrome Axis 0.4.15</strong> targets <strong>Cyberpunk 2077 2.5 on Windows x64</strong> (<code>Cyberpunk2077.exe</code> version <strong>3.0.88.46235</strong>). Install <a href="https://github.com/wopss/RED4ext/releases/tag/v1.31.1">RED4ext 1.31.1</a> and <a href="https://github.com/jac3km4/redscript/releases/tag/v0.5.32">redscript 0.5.32</a>.</p>
+<p>Close the game. Use <strong>Install From File</strong> in Vortex to import the ZIP, then enable and deploy the mod. For a manual install, extract the ZIP to the game folder. Open <code>red4ext/plugins/chrome_axis/ChromeAxis.exe</code> from the installed game.</p>
+<h3>Drive with a wheel</h3>
+<ol>
+<li>In <strong>USB Hardware</strong>, click <strong>Refresh</strong> and select devices for <strong>Wheel</strong>, <strong>Throttle</strong> and <strong>Brake</strong>. <strong>Game controls</strong> keeps the regular controls for that axis.</li>
+<li>Click <strong>Calibrate axes</strong>. Capture the wheel at center and both limits, and each pedal at rest and fully pressed. Check for −100% to +100% steering and 0% to 100% per pedal. Adjust <strong>Deadzone (%)</strong> if an input drifts at rest, then click <strong>Save profile</strong>.</li>
+<li>USB input starts disabled. Click <strong>Enable USB in game</strong> and close Chrome Axis. With V in the driver’s seat and the game in the foreground, center the wheel and release the pedals and paddles to arm them. To stop USB input, open the app and click <strong>Disable USB in game</strong>.</li>
+</ol>
+<p>Pedals that share a single axis can use a common rest position with travel in opposite directions. Use separate axes in your driver settings to register both pedals at once. <strong>Select profile…</strong> switches profiles or creates a named copy of your saved setup. Profiles store calibration, dead zones, accessory bindings and force feedback. The game reads the active profile. The USB switch applies across profiles.</p>
+<figure class="figure"><a href="images/en/04-calibration.png" aria-label="The USB Hardware tab shows device selection, dead zones and live input."><img src="images/en/04-calibration.png" alt="" width="878" height="681" loading="lazy"></a><figcaption>Chrome Axis 0.4.15 in English. The British half of the language selector is highlighted. USB Hardware is shown before connecting a device.</figcaption></figure>
+<p>The in-game HUD shows <strong>MOD LOADED</strong> when Chrome Axis is present, <strong>USB WAITING</strong> while controls get ready and <strong>USB READY</strong> once they are armed. <strong>USB INPUT</strong> flashes when the mod sends an axis value or accessory key. <strong>SIMULATION</strong> indicates that the game receives the keyboard simulation signal.</p>
+<h3>Try it with a keyboard</h3>
+<p>Open <strong>Simulation</strong> and hold a key with the app in the foreground to see its input build in the preview. Click <strong>Enable in game</strong> and <strong>leave the app open</strong>. You can minimize it. Sit in the driver’s seat, bring the game to the foreground and release the keys once to arm the controls.</p>
+<ul>
+<li><strong>Steer left / right</strong> — F6 / F7 or Numpad 4 / 6.</li>
+<li><strong>Accelerate / brake</strong> — F8 / F10 or Numpad 8 / 2.</li>
+</ul>
+<p>Turn on Num Lock to use the numpad. To end the test, click <strong>Stop simulation</strong>, switch to <strong>USB Hardware</strong> or close Chrome Axis.</p>
+<figure class="figure"><a href="images/en/05-simulation.png" aria-label="The Simulation tab shows keyboard shortcuts and live input meters."><img src="images/en/05-simulation.png" alt="" width="878" height="681" loading="lazy"></a><figcaption>The English Simulation tab shows keyboard shortcuts and input meters in preview mode.</figcaption></figure>
+<h3>Force feedback and accessories</h3>
+<ul>
+<li><strong>Force feedback</strong> requires a DirectInput actuator on the calibrated steering axis. Save the calibration, open <strong>Force feedback…</strong>, enable it for the active profile and start at low strength. Steering effort varies with vehicle speed, mass and sideways motion. You can set 1–35% of nominal DirectInput force, reverse the effect and turn collision jolts off separately.</li>
+<li><strong>Accessories…</strong> lets you assign buttons, D-pad directions and axes to keys using a visual keyboard. The number row and numpad are separate. <strong>Shifter / paddles…</strong> handles sequential controls and 6-, 7- or 8-speed H-patterns with reverse. Apply the mappings, save them and enable USB input. Manual shifting requires a separate transmission mod with matching keys. H-pattern shifting requires one bindable command per gear in that mod.</li>
+</ul>
+<h3>Troubleshooting</h3>
+<ul>
+<li><strong>USB WAITING.</strong> Center the wheel, release the pedals and paddles, and check the inputs in Windows Game Controllers (<code>joy.cpl</code>).</li>
+<li><strong>The app sees movement but the car stays still.</strong> Check <code>red4ext/logs/chromeaxis-*.log</code>. Compare <code>Chrome Axis USB configuration directory</code> in the log with <strong>Profiles folder</strong> in the app. If the mod log is missing, check <code>red4ext-*.log</code> for plugin or script loading errors.</li>
+<li><strong>Missing <code>MSVCP140.dll</code> or <code>VCRUNTIME140.dll</code>.</strong> Install the Microsoft Visual C++ v14 x64 Redistributable. <a href="https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version">Microsoft download</a></li>
+<li><strong>Updates.</strong> Close the game and the app, then back up the entire <code>Profil</code> folder. Remove the previous version before installing the new one. Restore the backup and click <strong>Reload</strong>.</li>
+</ul>
+<p>The ZIP includes both full setup guides, <code>README.en.md</code> in English and <code>README.md</code> in French.</p>
+<h3>Credits</h3>
+<p>Unofficial fan mod maintained by EsterOne001. The analog vehicle hook and Cyberpunk 2.5 field layout use Direct Wheel 3.4.1 as a reference. Thanks to Grant Perdue, SERG (natpoh), DesignWithTommy, the RED4ext and redscript contributors, and the Barlow Project Authors. Full credits and licenses are included in the ZIP. <a href="https://github.com/EsterOne001/chrome-axis">Chrome Axis source</a> · <a href="https://github.com/clevergrant/cp2077-wheel-mod">Grant Perdue’s original project</a> · <a href="https://github.com/DesignWithTommy/cp2077-wheel-mod/releases/tag/v3.4.1">Direct Wheel 3.4.1</a> · <a href="https://www.nexusmods.com/cyberpunk2077/mods/29246">SERG’s Moza and Direct Drive Wheel Support</a></p>
+<p>Codex assisted with the page copy. OpenAI ImageGen created the promotional illustration and removed the background from the in-game HUD logo.</p>
+      </article>
+      <details class="gallery">
+        <summary>Gallery · 10 images</summary>
+        <ul class="gallery-grid">
+          <li><a href="images/en/01-cover.jpg"><img src="images/en/01-cover.jpg" alt="" width="1600" height="900" loading="lazy"><span>Cover</span></a></li>
+          <li><a href="images/en/02-square.jpg"><img src="images/en/02-square.jpg" alt="" width="960" height="960" loading="lazy"><span>Square artwork</span></a></li>
+          <li><a href="images/en/03-first-drive.jpg"><img src="images/en/03-first-drive.jpg" alt="" width="1600" height="900" loading="lazy"><span>First drive</span></a></li>
+          <li><a href="images/en/04-calibration.png"><img src="images/en/04-calibration.png" alt="" width="878" height="681" loading="lazy"><span>Calibration</span></a></li>
+          <li><a href="images/en/05-simulation.png"><img src="images/en/05-simulation.png" alt="" width="878" height="681" loading="lazy"><span>Simulation</span></a></li>
+          <li><a href="images/en/06-accessories.png"><img src="images/en/06-accessories.png" alt="" width="716" height="665" loading="lazy"><span>Accessories</span></a></li>
+          <li><a href="images/en/07-key-picker.png"><img src="images/en/07-key-picker.png" alt="" width="737" height="470" loading="lazy"><span>Visual key picker</span></a></li>
+          <li><a href="images/en/08-profiles.png"><img src="images/en/08-profiles.png" alt="" width="655" height="435" loading="lazy"><span>Profiles</span></a></li>
+          <li><a href="images/en/09-shifter-paddles.png"><img src="images/en/09-shifter-paddles.png" alt="" width="716" height="665" loading="lazy"><span>Shifter and paddles</span></a></li>
+          <li><a href="images/en/10-force-feedback.png"><img src="images/en/10-force-feedback.png" alt="" width="716" height="474" loading="lazy"><span>Force feedback</span></a></li>
+        </ul>
+      </details>
+    </section>
+  </main>
+  <script>
+    const links = document.querySelectorAll('.toolbar nav a');
+    const sections = document.querySelectorAll('.language');
+    function selectLanguage() {
+      const locale = location.hash === '#en' ? 'en' : 'fr';
+      document.documentElement.lang = locale;
+      for (const section of sections) section.hidden = section.lang !== locale;
+      for (const link of links) {
+        if (link.hash === '#' + locale) link.setAttribute('aria-current', 'true');
+        else link.removeAttribute('aria-current');
+      }
+    }
+    window.addEventListener('hashchange', () => {
+      selectLanguage();
+      window.scrollTo(0, 0);
+    });
+    selectLanguage();
+  </script>
+</body>
+</html>

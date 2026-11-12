@@ -13,6 +13,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let hudLabelShadow: wref<inkText>;
   private let hudStatus: Int32;
   private let hudRetry: Int32;
+  private let hudFrench: Bool;
 
   private func OnPlayerAttach(request: ref<PlayerAttachRequest>) -> Void {
     this.player = request.owner as PlayerPuppet;
@@ -43,6 +44,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudLabelShadow = null;
     this.hudStatus = 0;
     this.hudRetry = 0;
+    this.hudFrench = false;
   }
 
   public func AttachHud(root: ref<inkCompoundWidget>) -> Void {
@@ -91,6 +93,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   }
 
   private func UpdateHud(game: GameInstance, status: Int32) -> Void {
+    if status != 0 && this.hudStatus == 0 {
+      this.hudFrench = this.IsFrenchInterface(game);
+    }
     let changed = this.hudStatus != status;
     this.hudStatus = status;
     if status == 0 {
@@ -120,6 +125,15 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     }
   }
 
+  private func IsFrenchInterface(game: GameInstance) -> Bool {
+    let settings: ref<UserSettings> = GameInstance.GetSettingsSystem(game);
+    if !IsDefined(settings) {
+      return false;
+    }
+    let language: ref<ConfigVarListName> = settings.GetVar(n"/language", n"OnScreen") as ConfigVarListName;
+    return IsDefined(language) && Equals(language.GetValue(), n"fr-fr");
+  }
+
   private func ApplyHudStatus() -> Void {
     if !IsDefined(this.hudLabel) || !IsDefined(this.hudBadge) {
       return;
@@ -128,19 +142,19 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     let color: HDRColor;
     switch this.hudStatus {
       case 1:
-        text = "MOD CHARGÉ";
+        text = this.hudFrench ? "MOD CHARGÉ" : "MOD LOADED";
         color = HDRColor(0.77, 0.81, 0.87, 1.0);
         break;
       case 2:
-        text = "USB EN ATTENTE";
+        text = this.hudFrench ? "USB EN ATTENTE" : "USB WAITING";
         color = HDRColor(1.0, 0.84, 0.18, 1.0);
         break;
       case 3:
-        text = "USB PRÊT";
+        text = this.hudFrench ? "USB PRÊT" : "USB READY";
         color = HDRColor(0.40, 0.95, 1.0, 1.0);
         break;
       case 4:
-        text = "SIGNAL USB";
+        text = this.hudFrench ? "SIGNAL USB" : "USB INPUT";
         color = HDRColor(0.46, 1.0, 0.62, 1.0);
         break;
       case 5:

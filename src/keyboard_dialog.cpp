@@ -1,6 +1,7 @@
 #include "chrome_axis/keyboard_dialog.hpp"
 
 #include "chrome_axis/accessories_dialog.hpp"
+#include "app_text.hpp"
 #include "dialog_theme.hpp"
 #include "ui_theme.hpp"
 
@@ -119,10 +120,10 @@ bool Keyboard::build(HKL layout)
     const bool useLayout = completeLayout(layout);
     add(0, L"⌫", 243, 104, 25);
     add(0, L"Tab", 22, 122, 25);
-    add(0, L"Verr.", 22, 140, 28);
-    add(0, L"Entrée", 238, 140, 30);
-    add(0, L"Maj", 22, 158, 29);
-    add(0, L"Maj", 239, 158, 29);
+    add(0, tr(Text::DlgKeyboardCapsLock), 22, 140, 28);
+    add(0, tr(Text::DlgKeyboardEnter), 238, 140, 30);
+    add(0, tr(Text::DlgKeyboardShift), 22, 158, 29);
+    add(0, tr(Text::DlgKeyboardShift), 239, 158, 29);
     for (const auto& row : mainRows) {
         for (std::size_t index = 0; index < row.fallback.size(); ++index) {
             const auto mapped = MapVirtualKeyExW(row.scanCodes[index], MAPVK_VSC_TO_VK_EX, layout);
@@ -141,17 +142,17 @@ bool Keyboard::build(HKL layout)
     add(0, L"Ctrl", 244, 176, 24);
 
     add(0, L"Ins", 271, 104);
-    add(0, L"Déb.", 288, 104);
+    add(0, tr(Text::DlgKeyboardHome), 288, 104);
     add(0, L"Pg↑", 305, 104);
-    add(0, L"Sup", 271, 122);
-    add(0, L"Fin", 288, 122);
+    add(0, tr(Text::DlgKeyboardDelete), 271, 122);
+    add(0, tr(Text::DlgKeyboardEnd), 288, 122);
     add(0, L"Pg↓", 305, 122);
     add(VK_UP, L"", 288, 158);
     add(VK_LEFT, L"", 271, 176);
     add(VK_DOWN, L"", 288, 176);
     add(VK_RIGHT, L"", 305, 176);
 
-    add(0, L"Verr.", 328, 104);
+    add(0, tr(Text::DlgKeyboardNumLock), 328, 104);
     add(0, L"/", 345, 104);
     add(0, L"*", 362, 104);
     add(VK_SUBTRACT, L"", 379, 104);
@@ -210,7 +211,12 @@ INT_PTR CALLBACK keyboardProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     switch (message) {
     case WM_INITDIALOG: {
         SetWindowLongPtrW(window, DWLP_USER, lParam);
-        DialogTheme::attach(window, L"Choisir une touche", 0, 0, {});
+        SetWindowTextW(window, tr(Text::DlgKeyboardTitle));
+        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgKeyboardIntro));
+        SetDlgItemTextW(window, IDC_KEYBOARD_NAVIGATION_LABEL, tr(Text::DlgKeyboardNavigation));
+        SetDlgItemTextW(window, IDC_KEYBOARD_NUMPAD_LABEL, tr(Text::DlgKeyboardNumpad));
+        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
+        DialogTheme::attach(window, tr(Text::DlgKeyboardHeading), 0, 0, {});
         if (!Keyboard(window).build(GetKeyboardLayout(0))) {
             EndDialog(window, -1);
             return TRUE;
@@ -254,7 +260,7 @@ std::optional<unsigned int> chooseAccessoryKey(HWND owner, unsigned int currentK
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORY_KEYBOARD),
         owner, keyboardProc, isAccessoryKey(currentKey) ? currentKey : 0);
     if (result == -1)
-        MessageBoxW(owner, L"Impossible d’ouvrir le clavier.", L"Chrome Axis", MB_OK | MB_ICONERROR);
+        MessageBoxW(owner, tr(Text::DlgKeyboardOpenError), L"Chrome Axis", MB_OK | MB_ICONERROR);
     if (result > 0 && isAccessoryKey(static_cast<unsigned int>(result)))
         return static_cast<unsigned int>(result);
     return std::nullopt;

@@ -4,6 +4,8 @@
 #define IDC_PROFILE_LIST 2601
 #define IDC_PROFILE_NAME 2602
 #define IDC_PROFILE_COPY 2603
+#define IDC_PROFILE_LIST_LABEL 2604
+#define IDC_PROFILE_NAME_LABEL 2605
 
 #ifndef RC_INVOKED
 #include <windows.h>

@@ -49,6 +49,65 @@ const wchar_t* installedFace(HDC dc, std::initializer_list<const wchar_t*> faces
     return nullptr;
 }
 
+HRGN flagRegion(RECT rect, Flag flag, int border = 0)
+{
+    InflateRect(&rect, -border, -border);
+    const POINT upperLeft[]{{rect.left, rect.top}, {rect.right - border, rect.top}, {rect.left, rect.bottom - border}};
+    const POINT lowerRight[]{{rect.right, rect.top + border}, {rect.right, rect.bottom}, {rect.left + border, rect.bottom}};
+    return CreatePolygonRgn(flag == Flag::france ? upperLeft : lowerRight, 3, WINDING);
+}
+
+bool clipFlag(HDC dc, const RECT& rect, Flag flag, int border)
+{
+    const auto region = flagRegion(rect, flag, border);
+    if (!region)
+        return false;
+    const auto result = ExtSelectClipRgn(dc, region, RGN_AND);
+    DeleteObject(region);
+    return result != ERROR;
+}
+
+void paintFlag(HDC dc, const RECT& rect, Flag flag, bool bright)
+{
+    const auto x = [&](int value) { return rect.left + MulDiv(value, rect.right - rect.left, 48); };
+    const auto y = [&](int value) { return rect.top + MulDiv(value, rect.bottom - rect.top, 32); };
+    const auto shade = [bright](COLORREF color) {
+        return bright ? color : RGB(GetRValue(color) * 3 / 5, GetGValue(color) * 3 / 5, GetBValue(color) * 3 / 5);
+    };
+    const auto white = shade(RGB(247, 248, 250));
+    if (flag == Flag::france) {
+        fill(dc, {rect.left, rect.top, x(16), rect.bottom}, shade(RGB(0, 35, 149)));
+        fill(dc, {x(16), rect.top, x(32), rect.bottom}, white);
+        fill(dc, {x(32), rect.top, rect.right, rect.bottom}, shade(RGB(237, 41, 57)));
+        return;
+    }
+
+    const auto redStripe = shade(RGB(200, 16, 46));
+    fill(dc, rect, shade(RGB(1, 33, 105)));
+    const auto oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    const auto stripe = [&]<std::size_t count>(COLORREF color, const POINT (&corners)[count]) {
+        POINT points[count];
+        for (std::size_t i = 0; i < count; ++i)
+            points[i] = {x(corners[i].x), y(corners[i].y)};
+        const auto brush = CreateSolidBrush(color);
+        const auto oldBrush = SelectObject(dc, brush);
+        Polygon(dc, points, static_cast<int>(count));
+        SelectObject(dc, oldBrush);
+        DeleteObject(brush);
+    };
+    stripe(white, {{0, 0}, {7, 0}, {48, 27}, {48, 32}, {41, 32}, {0, 5}});
+    stripe(white, {{41, 0}, {48, 0}, {48, 5}, {7, 32}, {0, 32}, {0, 27}});
+    stripe(redStripe, {{0, 2}, {24, 18}, {24, 21}, {0, 5}});
+    stripe(redStripe, {{48, 30}, {24, 14}, {24, 11}, {48, 27}});
+    stripe(redStripe, {{48, 0}, {48, 3}, {24, 19}, {24, 16}});
+    stripe(redStripe, {{0, 32}, {0, 29}, {24, 13}, {24, 16}});
+    SelectObject(dc, oldPen);
+    fill(dc, {x(17), rect.top, x(31), rect.bottom}, white);
+    fill(dc, {rect.left, y(10), rect.right, y(22)}, white);
+    fill(dc, {x(20), rect.top, x(28), rect.bottom}, redStripe);
+    fill(dc, {rect.left, y(13), rect.right, y(19)}, redStripe);
+}
+
 } // namespace
 
 void fill(HDC dc, RECT rect, COLORREF color)
@@ -129,6 +188,35 @@ void paintHeader(HDC dc, UINT dpi, LONG width, int textLeft, LONG plateEdge, HIC
     RECT tagline{scale(textLeft + 1), scale(54), plateEdge - scale(34), scale(77)};
     DrawTextW(dc, subtitle, -1, &tagline, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(dc, old);
+}
+
+bool shapeLanguageButton(HWND button, int size, Flag flag)
+{
+    const auto region = flagRegion({0, 0, size, size}, flag);
+    if (!region)
+        return false;
+    if (SetWindowRgn(button, region, FALSE))
+        return true; // Windows now owns the region.
+    DeleteObject(region);
+    return false;
+}
+
+void paintLanguageButton(const DRAWITEMSTRUCT& item, UINT dpi, Flag flag, bool active)
+{
+    const auto saved = SaveDC(item.hDC);
+    if (!saved)
+        return;
+    const bool highContrast = isHighContrast();
+    const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+    const bool focused = (item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT);
+    const auto border = highContrast ? GetSysColor(active || focused ? COLOR_HIGHLIGHT : COLOR_BTNTEXT)
+        : active ? yellow : focused || pressed ? cyan : edge;
+    if (clipFlag(item.hDC, item.rcItem, flag, 0)) {
+        fill(item.hDC, item.rcItem, border);
+        if (clipFlag(item.hDC, item.rcItem, flag, px(focused ? 2 : 1, dpi)))
+            paintFlag(item.hDC, item.rcItem, flag, active || pressed || highContrast);
+    }
+    RestoreDC(item.hDC, saved);
 }
 
 void paintAction(const DRAWITEMSTRUCT& item, HFONT font, UINT dpi, COLORREF base, bool primary, bool stop)

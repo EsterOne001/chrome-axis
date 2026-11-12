@@ -7,6 +7,7 @@
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/profiles_dialog.hpp"
 #include "chrome_axis/simulation.hpp"
+#include "app_text.hpp"
 #include "ui_theme.hpp"
 
 #include <commctrl.h>
@@ -28,6 +29,9 @@
 
 namespace {
 
+using chrome_axis::Language;
+using chrome_axis::Text;
+using chrome_axis::tr;
 using namespace chrome_axis::ui;
 
 constexpr wchar_t windowClass[] = L"ChromeAxisCalibration";
@@ -35,17 +39,33 @@ constexpr wchar_t title[] = L"Chrome Axis";
 constexpr UINT_PTR inputTimer = 1;
 constexpr UINT_PTR deviceTimer = 2;
 constexpr int contentWidthLimit = 1120;
-constexpr std::array commands{L"Direction", L"Accélérateur", L"Frein"};
-constexpr std::array deviceLabels{L"Volant", L"Accélérateur", L"Frein"};
-constexpr std::array sharedDeviceLabels{L"", L"Même que le volant", L"Même que l’accélérateur"};
-constexpr std::array keyLabels{L"Pavé 4 / 6  ·  F6 / F7", L"Pavé 8  ·  F8", L"Pavé 2  ·  F10"};
+constexpr int languageButtonSize = 36;
+constexpr int languageButtonSpace = languageButtonSize + 12;
+constexpr std::array commands{Text::mainSteering, Text::mainThrottle, Text::mainBrake};
+constexpr std::array deviceLabels{Text::mainWheel, Text::mainThrottle, Text::mainBrake};
+constexpr std::array sharedDeviceLabels{Text::mainSameWheel, Text::mainSameThrottle};
+constexpr std::array keyLabels{Text::mainSteeringKeys, Text::mainThrottleKeys, Text::mainBrakeKeys};
 constexpr std::string_view sameAsPrevious = "*";
 
 enum Command {
     deviceComboFirst = 100, throttleCombo, brakeCombo, refreshDevices, configureAccessories,
     startCalibration, measure, cancelCalibration, chooseAxis,
     saveProfile, reloadProfile, openProfileFolder, closeApp, aboutApp, hardwareTab, simulationTab, toggleSimulation,
-    toggleUsb, selectProfile, configureFeedback, deadzoneFirst = 200, meterFirst = 210
+    toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
+    frenchFlag, englishFlag,
+    deadzoneFirst = 200, meterFirst = 210
+};
+
+struct LanguageOption {
+    Command command;
+    Language language;
+    Text label;
+};
+
+constexpr std::array languageOptions{
+    LanguageOption{automaticLanguage, Language::automatic, Text::mainMenuAutomatic},
+    LanguageOption{frenchLanguage, Language::french, Text::mainMenuFrench},
+    LanguageOption{englishLanguage, Language::english, Text::mainMenuEnglish}
 };
 
 enum class Position { Neutral, Negative, Positive };
@@ -53,17 +73,17 @@ enum class Position { Neutral, Negative, Positive };
 struct Step {
     std::size_t channel;
     Position position;
-    const wchar_t* instruction;
+    Text instruction;
 };
 
 constexpr std::array steps{
-    Step{0, Position::Neutral, L"Placez le volant au centre et gardez-le immobile."},
-    Step{0, Position::Negative, L"Braquez complètement à gauche et maintenez le volant."},
-    Step{0, Position::Positive, L"Braquez complètement à droite et maintenez le volant."},
-    Step{1, Position::Neutral, L"Relâchez les pédales et ramenez le volant au centre."},
-    Step{1, Position::Positive, L"Enfoncez uniquement l’accélérateur à fond et maintenez-le."},
-    Step{2, Position::Neutral, L"Relâchez les pédales."},
-    Step{2, Position::Positive, L"Enfoncez uniquement le frein à fond et maintenez-le."}
+    Step{0, Position::Neutral, Text::mainCenterWheel},
+    Step{0, Position::Negative, Text::mainTurnLeft},
+    Step{0, Position::Positive, Text::mainTurnRight},
+    Step{1, Position::Neutral, Text::mainReleasePedalsCenterWheel},
+    Step{1, Position::Positive, Text::mainPressThrottle},
+    Step{2, Position::Neutral, Text::mainReleasePedals},
+    Step{2, Position::Positive, Text::mainPressBrake}
 };
 
 std::wstring wide(std::string_view text)
@@ -73,7 +93,7 @@ std::wstring wide(std::string_view text)
     const auto length = static_cast<int>(text.size());
     const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), length, nullptr, 0);
     if (size == 0)
-        return L"Texte indisponible";
+        return tr(Text::mainTextUnavailable);
     std::wstring result(static_cast<std::size_t>(size), L'\0');
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), length, result.data(), size);
     return result;
@@ -89,7 +109,7 @@ std::wstring formatDeadzone(float value)
     const auto tenths = std::lround(1000 * value);
     auto result = std::to_wstring(tenths / 10);
     if (tenths % 10)
-        result += L"," + std::to_wstring(tenths % 10);
+        result += tr(Text::mainDecimalSeparator) + std::to_wstring(tenths % 10);
     return result;
 }
 
@@ -242,7 +262,7 @@ public:
             break;
         }
         case WM_CLOSE:
-            if (!dirty_ || MessageBoxW(window, L"Fermer sans enregistrer les modifications du profil ?",
+            if (!dirty_ || MessageBoxW(window, tr(Text::mainDiscardOnClose),
                                        title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
                 DestroyWindow(window);
             return 0;
@@ -290,68 +310,77 @@ private:
         fieldBrush_ = CreateSolidBrush(field);
         const HMENU menu = CreateMenu();
         profileMenu_ = CreatePopupMenu();
-        AppendMenuW(profileMenu_, MF_STRING, saveProfile, L"&Enregistrer\tCtrl+S");
-        AppendMenuW(profileMenu_, MF_STRING, reloadProfile, L"&Recharger");
-        AppendMenuW(profileMenu_, MF_STRING, selectProfile, L"&Sélectionner un profil…");
-        AppendMenuW(profileMenu_, MF_STRING, openProfileFolder, L"Ouvrir le &dossier des profils");
+        AppendMenuW(profileMenu_, MF_STRING, saveProfile, tr(Text::mainMenuSave));
+        AppendMenuW(profileMenu_, MF_STRING, reloadProfile, tr(Text::mainMenuReload));
+        AppendMenuW(profileMenu_, MF_STRING, selectProfile, tr(Text::mainMenuSelectProfile));
+        AppendMenuW(profileMenu_, MF_STRING, openProfileFolder, tr(Text::mainMenuOpenProfiles));
         AppendMenuW(profileMenu_, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(profileMenu_, MF_STRING, closeApp, L"&Quitter");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(profileMenu_), L"&Profil");
+        AppendMenuW(profileMenu_, MF_STRING, closeApp, tr(Text::mainMenuQuit));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(profileMenu_), tr(Text::mainMenuProfile));
 
         deviceMenu_ = CreatePopupMenu();
-        AppendMenuW(deviceMenu_, MF_STRING, refreshDevices, L"&Actualiser\tF5");
-        AppendMenuW(deviceMenu_, MF_STRING, startCalibration, L"&Calibrer les axes");
-        AppendMenuW(deviceMenu_, MF_STRING, configureAccessories, L"Accessoi&res…");
-        AppendMenuW(deviceMenu_, MF_STRING, configureFeedback, L"Retour de &force…");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(deviceMenu_), L"&Périphériques");
+        AppendMenuW(deviceMenu_, MF_STRING, refreshDevices, tr(Text::mainMenuRefresh));
+        AppendMenuW(deviceMenu_, MF_STRING, startCalibration, tr(Text::mainMenuCalibrate));
+        AppendMenuW(deviceMenu_, MF_STRING, configureAccessories, tr(Text::mainMenuAccessories));
+        AppendMenuW(deviceMenu_, MF_STRING, configureFeedback, tr(Text::mainMenuFeedback));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(deviceMenu_), tr(Text::mainMenuDevices));
         const HMENU help = CreatePopupMenu();
-        AppendMenuW(help, MF_STRING, aboutApp, L"&À propos");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(help), L"&Aide");
+        languageMenu_ = CreatePopupMenu();
+        for (const auto& option : languageOptions)
+            AppendMenuW(languageMenu_, MF_STRING, option.command, tr(option.label));
+        const auto selectedLanguage = std::ranges::find(languageOptions, chrome_axis::languageChoice(),
+            &LanguageOption::language);
+        CheckMenuRadioItem(languageMenu_, automaticLanguage, englishLanguage, selectedLanguage->command, MF_BYCOMMAND);
+        AppendMenuW(help, MF_POPUP, reinterpret_cast<UINT_PTR>(languageMenu_), tr(Text::mainMenuLanguage));
+        AppendMenuW(help, MF_STRING, aboutApp, tr(Text::mainMenuAbout));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(help), tr(Text::mainMenuHelp));
         SetMenu(window_, menu);
 
-        hardwareTab_ = button(L"MATÉRIEL USB", hardwareTab);
-        simulationTab_ = button(L"SIMULATION", simulationTab);
-        devicesTitle_ = label(L"Périphériques");
+        hardwareTab_ = button(tr(Text::mainUsbHardware), hardwareTab);
+        simulationTab_ = button(tr(Text::mainSimulation), simulationTab);
+        frenchFlag_ = button(L"Français", frenchFlag);
+        englishFlag_ = button(L"English", englishFlag);
+        devicesTitle_ = label(tr(Text::mainDevices));
         usbToggle_ = button(usbActionLabel(), toggleUsb);
-        refresh_ = button(L"Actualiser", refreshDevices);
-        accessories_ = button(L"Accessoires…", configureAccessories);
+        refresh_ = button(tr(Text::mainRefresh), refreshDevices);
+        accessories_ = button(tr(Text::mainAccessories), configureAccessories);
         for (std::size_t i = 0; i < deviceLabels.size(); ++i) {
-            deviceLabels_[i] = label(deviceLabels[i]);
+            deviceLabels_[i] = label(tr(deviceLabels[i]));
             deviceCombos_[i] = combo(deviceComboFirst + static_cast<int>(i));
         }
-        hardware_ = label(L"Recherche de périphériques…");
-        simToggle_ = button(L"Activer dans le jeu", toggleSimulation);
+        hardware_ = label(tr(Text::mainScanning));
+        simToggle_ = button(tr(Text::mainEnableInGame), toggleSimulation);
         simState_ = label(L"");
-        simHint_ = label(L"Les jauges réagissent quand cette fenêtre a le focus.");
+        simHint_ = label(tr(Text::mainSimHint));
 
-        axesTitle_ = label(L"Axes du véhicule");
-        headings_ = {label(L"Commande"), label(L"Axe détecté"), label(L"Zone morte (%)"), label(L"Aperçu local")};
+        axesTitle_ = label(tr(Text::mainVehicleAxes));
+        headings_ = {label(tr(Text::mainControl)), label(tr(Text::mainDetectedAxis)), label(tr(Text::mainDeadzone)), label(tr(Text::mainLocalPreview))};
         for (std::size_t i = 0; i < commands.size(); ++i) {
-            names_[i] = label(commands[i]);
-            bindings_[i] = label(L"À calibrer");
+            names_[i] = label(tr(commands[i]));
+            bindings_[i] = label(tr(Text::mainNeedsCalibration));
             zones_[i] = child(L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL,
                               deadzoneFirst + static_cast<int>(i), WS_EX_CLIENTEDGE);
             SendMessageW(zones_[i], EM_SETLIMITTEXT, 5, 0);
             meters_[i] = child(L"STATIC", L"", SS_OWNERDRAW, meterFirst + static_cast<int>(i));
             values_[i] = label(L"—");
-            simKeys_[i] = label(keyLabels[i]);
+            simKeys_[i] = label(tr(keyLabels[i]));
         }
 
-        calibrationTitle_ = label(L"Calibration");
-        feedback_ = button(L"Retour de force…", configureFeedback);
-        instruction_ = label(L"Connectez votre matériel pour commencer.");
-        start_ = button(L"Calibrer les axes", startCalibration);
+        calibrationTitle_ = label(tr(Text::mainCalibration));
+        feedback_ = button(tr(Text::mainForceFeedback), configureFeedback);
+        instruction_ = label(tr(Text::mainConnectToBegin));
+        start_ = button(tr(Text::mainCalibrateAxes), startCalibration);
         axisChoice_ = combo(chooseAxis);
-        measure_ = button(L"Mesurer", measure);
-        cancel_ = button(L"Annuler", cancelCalibration);
-        simDirections_ = label(L"Gardez cette fenêtre ouverte, retournez dans le jeu et installez V au volant.");
-        simArming_ = label(L"Relâchez les touches de simulation, puis maintenez une commande pour faire monter l’axe.");
+        measure_ = button(tr(Text::mainMeasure), measure);
+        cancel_ = button(tr(Text::mainCancel), cancelCalibration);
+        simDirections_ = label(tr(Text::mainSimDirections));
+        simArming_ = label(tr(Text::mainSimArming));
         profileName_ = child(L"STATIC", L"", SS_NOPREFIX | SS_ENDELLIPSIS, 0);
-        status_ = label(L"Aucun profil enregistré");
-        folder_ = button(L"Dossier des profils", openProfileFolder);
-        select_ = button(L"Sélectionner un profil…", selectProfile);
-        reload_ = button(L"Recharger", reloadProfile);
-        save_ = button(L"Enregistrer le profil", saveProfile);
+        status_ = label(tr(Text::mainNoProfile));
+        folder_ = button(tr(Text::mainProfilesFolder), openProfileFolder);
+        select_ = button(tr(Text::mainSelectProfile), selectProfile);
+        reload_ = button(tr(Text::mainReload), reloadProfile);
+        save_ = button(tr(Text::mainSaveProfile), saveProfile);
 
         input_ = std::make_unique<chrome_axis::DirectInput>(window_);
         updateDpiResources();
@@ -361,7 +390,7 @@ private:
         updateCalibrationView();
         layout();
         if (!SetTimer(window_, inputTimer, 30, nullptr)) {
-            MessageBoxW(window_, L"Impossible de démarrer la lecture des commandes. Relancez Chrome Axis.",
+            MessageBoxW(window_, tr(Text::mainInputStartFailed),
                 title, MB_OK | MB_ICONERROR);
             return false;
         }
@@ -383,6 +412,11 @@ private:
         for (const auto control : deviceCombos_)
             SendMessageW(control, CB_SETITEMHEIGHT, 0, px(24));
         SendMessageW(axisChoice_, CB_SETITEMHEIGHT, 0, px(24));
+        // The two native buttons share one square but keep independent focus and hit regions.
+        const bool shaped = shapeLanguageButton(frenchFlag_, px(languageButtonSize), Flag::france)
+            && shapeLanguageButton(englishFlag_, px(languageButtonSize), Flag::unitedKingdom);
+        ShowWindow(frenchFlag_, shaped ? SW_SHOWNA : SW_HIDE);
+        ShowWindow(englishFlag_, shaped ? SW_SHOWNA : SW_HIDE);
     }
 
     void layout()
@@ -395,14 +429,16 @@ private:
             int x, y, width, height;
         };
         std::vector<Placement> placements;
-        placements.reserve(53);
+        placements.reserve(55);
         const auto place = [&](HWND control, int x, int y, int w, int h) {
             if (control)
                 placements.push_back({control, px(left + x), px(y), px(w), px(h)});
         };
 
-        place(hardwareTab_, width - 314, 26, 148, 36);
-        place(simulationTab_, width - 156, 26, 132, 36);
+        place(hardwareTab_, width - 314 - languageButtonSpace, 26, 148, 36);
+        place(simulationTab_, width - 156 - languageButtonSpace, 26, 132, 36);
+        for (const auto button : {frenchFlag_, englishFlag_})
+            place(button, width - 24 - languageButtonSize, 26, languageButtonSize, languageButtonSize);
         const int comboWidth = (width - 112) / 3;
         place(devicesTitle_, 42, 110, width - 542, 24);
         place(usbToggle_, width - 492, 106, 200, 29);
@@ -512,8 +548,8 @@ private:
         const auto [left, width] = contentBounds(client.right);
         const bool highContrast = isHighContrast();
         fill(dc, client, highContrast ? GetSysColor(COLOR_WINDOW) : background);
-        paintHeader(dc, dpi_, client.right, left + 24, px(left + width - 312), headerLogo_.get(),
-                    fonts_[0], fonts_[2], L"Calibration · Cyberpunk 2077 2.5");
+        paintHeader(dc, dpi_, client.right, left + 24, px(left + width - 312 - languageButtonSpace), headerLogo_.get(),
+                    fonts_[0], fonts_[2], tr(Text::mainBannerSubtitle));
 
         for (const auto& [top, bottom] : {std::pair{98, 222}, {235, 405}, {418, 535}}) {
             const RECT card{px(left + 22), px(top), px(left + width - 22), px(bottom)};
@@ -546,6 +582,13 @@ private:
     void paintButton(const DRAWITEMSTRUCT& item)
     {
         const auto id = item.CtlID;
+        if (id == frenchFlag || id == englishFlag) {
+            const bool french = id == frenchFlag;
+            const auto language = french ? Language::french : Language::english;
+            paintLanguageButton(item, dpi_, french ? Flag::france : Flag::unitedKingdom,
+                                selectedLanguage_ == language);
+            return;
+        }
         if (id != hardwareTab && id != simulationTab) {
             const bool primary = id == toggleSimulation || id == toggleUsb || id == saveProfile ||
                                  id == startCalibration || id == measure;
@@ -666,8 +709,8 @@ private:
     const wchar_t* usbActionLabel() const
     {
         if (!usbEnabled_)
-            return L"Activer l’USB en jeu";
-        return installed_ ? L"Désactiver l’USB en jeu" : L"Retirer l’activation locale";
+            return tr(Text::mainEnableUsb);
+        return installed_ ? tr(Text::mainDisableUsb) : tr(Text::mainClearLocalUsb);
     }
     const std::filesystem::path& activeDirectory() const { return preset_.directory; }
 
@@ -679,11 +722,13 @@ private:
     std::array<HFONT, 3> fonts_{};
     Icon headerLogo_;
     HBRUSH backgroundBrush_{}, panelBrush_{}, fieldBrush_{};
-    HMENU profileMenu_{}, deviceMenu_{};
+    HMENU profileMenu_{}, deviceMenu_{}, languageMenu_{};
     HWND devicesTitle_{}, axesTitle_{}, calibrationTitle_{};
     HWND accessories_{}, feedback_{}, refresh_{}, hardware_{}, instruction_{}, start_{}, axisChoice_{}, measure_{}, cancel_{};
     HWND profileName_{}, status_{}, folder_{}, select_{}, reload_{}, save_{};
     HWND hardwareTab_{}, simulationTab_{}, usbToggle_{}, simToggle_{}, simState_{}, simHint_{}, simDirections_{}, simArming_{};
+    HWND frenchFlag_{}, englishFlag_{};
+    Language selectedLanguage_{chrome_axis::interfaceLanguage()};
     std::array<HWND, 4> headings_{};
     std::array<HWND, 3> deviceLabels_{}, deviceCombos_{};
     std::array<HWND, 3> names_{}, bindings_{}, zones_{}, meters_{}, values_{};
@@ -802,7 +847,7 @@ void App::action(int command, int notification)
         break;
     case reloadProfile:
         if (!simulation_ && !calibrating_ && (!dirty_ || MessageBoxW(window_,
-                L"Recharger le profil actif et abandonner les modifications non enregistrées ?",
+                tr(Text::mainDiscardOnReload),
                 title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)) {
             readProfile();
             scanDevices();
@@ -814,18 +859,34 @@ void App::action(int command, int notification)
     case openProfileFolder:
         if (ensureProfileDirectory(directory_) && reinterpret_cast<INT_PTR>(
                 ShellExecuteW(window_, L"open", directory_.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
-            MessageBoxW(window_, L"Impossible d’ouvrir le dossier des profils.", title, MB_OK | MB_ICONERROR);
+            MessageBoxW(window_, tr(Text::mainOpenFolderFailed), title, MB_OK | MB_ICONERROR);
         }
         break;
     case closeApp:
         SendMessageW(window_, WM_CLOSE, 0, 0);
         break;
+    case automaticLanguage:
+    case frenchLanguage:
+    case englishLanguage:
+    case frenchFlag:
+    case englishFlag: {
+        const int languageCommand = command == frenchFlag ? frenchLanguage : command == englishFlag ? englishLanguage : command;
+        const auto option = std::ranges::find(languageOptions, languageCommand, &LanguageOption::command);
+        if (!chrome_axis::saveLanguageChoice(option->language)) {
+            MessageBoxW(window_, tr(Text::mainLanguageSaveFailed), title, MB_OK | MB_ICONERROR);
+            break;
+        }
+        CheckMenuRadioItem(languageMenu_, automaticLanguage, englishLanguage, languageCommand, MF_BYCOMMAND);
+        selectedLanguage_ = chrome_axis::resolveLanguage(option->language);
+        InvalidateRect(frenchFlag_, nullptr, FALSE);
+        InvalidateRect(englishFlag_, nullptr, FALSE);
+        if (selectedLanguage_ != chrome_axis::interfaceLanguage())
+            MessageBoxW(window_, tr(Text::mainLanguageSaved), title, MB_OK | MB_ICONINFORMATION);
+        break;
+    }
     case aboutApp: {
         const auto description = std::wstring(title) + L" · " CHROME_AXIS_VERSION_WIDE L"\n"
-            L"Calibration DirectInput 8 et simulation clavier pour Chrome Axis, "
-            L"mod communautaire indépendant pour Cyberpunk 2077 2.5.\n\n"
-            L"Les profils sont enregistrés dans le dossier Profil, à côté du mod. "
-            L"L’onglet Matériel USB permet de calibrer les axes et d’affecter des touches aux accessoires.";
+            + tr(Text::mainAboutBody);
         MSGBOXPARAMSW about{sizeof(about)};
         about.hwndOwner = window_;
         about.hInstance = GetModuleHandleW(nullptr);
@@ -857,23 +918,23 @@ void App::scanDevices()
     std::wstring hardwareStatus;
     std::wstring_view advice;
     if (!input_->ready()) {
-        hardwareStatus = L"DirectInput est indisponible";
-        advice = L"Réessayez avec Actualiser.";
+        hardwareStatus = tr(Text::mainDirectInputUnavailable);
+        advice = tr(Text::mainTryRefresh);
     } else if (devices_.empty()) {
-        hardwareStatus = L"Aucun périphérique détecté";
-        advice = L"Branchez le matériel USB, puis cliquez sur Actualiser.";
+        hardwareStatus = tr(Text::mainNoDevices);
+        advice = tr(Text::mainConnectAndRefresh);
     } else if (disconnected) {
-        hardwareStatus = L"Périphérique sélectionné déconnecté";
-        advice = L"Ses réglages sont conservés.";
+        hardwareStatus = tr(Text::mainSelectedDisconnected);
+        advice = tr(Text::mainSettingsKept);
     } else {
         hardwareStatus = std::to_wstring(devices_.size()) +
-            (devices_.size() == 1 ? L" périphérique DirectInput détecté" : L" périphériques DirectInput détectés");
+            (devices_.size() == 1 ? tr(Text::mainDeviceDetected) : tr(Text::mainDevicesDetected));
     }
     if (temporaryDirectory_) {
-        hardwareStatus = L"Copie temporaire · Extrayez le ZIP ou ouvrez l’application depuis le jeu.";
+        hardwareStatus = tr(Text::mainTemporaryCopy);
         advice = {};
     } else if (!installed_)
-        advice = L"Ouvrez l’application depuis le dossier du jeu pour l’USB.";
+        advice = tr(Text::mainOpenFromGameForUsb);
     if (!advice.empty()) {
         hardwareStatus += L". ";
         hardwareStatus += advice;
@@ -883,7 +944,7 @@ void App::scanDevices()
         calibrating_ = false;
         capture_.reset();
         candidates_.clear();
-        calibrationMessage_ = L"Périphérique déconnecté. Rebranchez-le avant de relancer la calibration.";
+        calibrationMessage_ = tr(Text::mainReconnectBeforeCalibration);
     }
     updateCalibrationView();
 }
@@ -897,10 +958,10 @@ void App::fillDeviceCombo(std::size_t channel)
         SendMessageW(control, CB_SHOWDROPDOWN, FALSE, 0);
     SendMessageW(control, CB_RESETCONTENT, 0, 0);
     choices = {{}};
-    addChoice(control, L"Commandes du jeu");
+    addChoice(control, tr(Text::mainGameControls));
     if (channel > 0) {
         choices.emplace_back(sameAsPrevious);
-        addChoice(control, sharedDeviceLabels[channel]);
+        addChoice(control, tr(sharedDeviceLabels[channel - 1]));
     }
     for (const auto& item : devices_) {
         if (!hasAxes(item))
@@ -917,7 +978,7 @@ void App::fillDeviceCombo(std::size_t channel)
     auto found = std::find(choices.begin(), choices.end(), selection);
     if (found == choices.end()) {
         choices.push_back(selection);
-        addChoice(control, L"Périphérique du profil (déconnecté)");
+        addChoice(control, tr(Text::mainProfileDeviceDisconnected));
         found = std::prev(choices.end());
     }
     SendMessageW(control, CB_SETCURSEL, static_cast<WPARAM>(found - choices.begin()), 0);
@@ -978,13 +1039,13 @@ void App::readProfile()
         deviceSelections_[2] = sameAsPrevious;
         std::error_code ec;
         if (path_.empty()) {
-            profileMessage_ = L"Profil actif introuvable. Sélectionnez un profil.";
+            profileMessage_ = tr(Text::mainActiveProfileMissing);
         } else if (std::filesystem::exists(path_, ec) || ec) {
-            profileMessage_ = L"Fichier de calibration illisible ou invalide.";
+            profileMessage_ = tr(Text::mainInvalidCalibrationFile);
         }
     }
-    setText(profileName_, activeDirectory().empty() ? L"Profil indisponible"
-        : preset_.name.empty() ? L"Profil par défaut" : L"Profil · " + preset_.name);
+    setText(profileName_, activeDirectory().empty() ? tr(Text::mainProfileUnavailable)
+        : preset_.name.empty() ? tr(Text::mainDefaultProfile) : tr(Text::mainProfilePrefix) + preset_.name);
     readAccessories();
     updateProfileView();
 }
@@ -993,7 +1054,7 @@ void App::updateProfileView()
 {
     loadingControls_ = true;
     for (std::size_t i = 0; i < draft_.size(); ++i) {
-        setText(bindings_[i], draft_[i] ? wide(chrome_axis::axisName(draft_[i]->axis)) : L"À calibrer");
+        setText(bindings_[i], draft_[i] ? wide(chrome_axis::axisName(draft_[i]->axis)) : tr(Text::mainNeedsCalibration));
         setText(zones_[i], draft_[i] ? formatDeadzone(draft_[i]->deadzone) : L"");
         EnableWindow(zones_[i], draft_[i].has_value() && !calibrating_);
     }
@@ -1028,13 +1089,13 @@ void App::rebuildPreview()
     EnableWindow(save_, canSave);
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | (canSave ? MF_ENABLED : MF_GRAYED));
     setText(status_, !profileMessage_.empty() ? profileMessage_
-        : !zonesValid ? L"Zone morte : saisissez de 0,5 à 25 %."
-        : !pedalsCompatible ? L"Zones mortes incompatibles avec l’axe combiné."
-        : dirty_ && clearAnalogProfile() ? L"Enregistrez pour retirer la calibration."
-        : dirty_ ? (canSave ? L"Enregistrez le profil pour appliquer vos réglages" : L"Calibration incomplète")
-        : saved_ ? L"Calibration enregistrée"
-        : accessoriesSaved_ ? L"Affectations d’accessoires enregistrées"
-        : L"Aucun profil enregistré");
+        : !zonesValid ? tr(Text::mainDeadzoneRange)
+        : !pedalsCompatible ? tr(Text::mainIncompatibleDeadzones)
+        : dirty_ && clearAnalogProfile() ? tr(Text::mainSaveToClearCalibration)
+        : dirty_ ? (canSave ? tr(Text::mainSaveToApplySettings) : tr(Text::mainIncompleteCalibration))
+        : saved_ ? tr(Text::mainCalibrationSaved)
+        : accessoriesSaved_ ? tr(Text::mainAccessoriesSaved)
+        : tr(Text::mainNoProfile));
 }
 
 bool App::ensureProfileDirectory(const std::filesystem::path& directory)
@@ -1043,7 +1104,7 @@ bool App::ensureProfileDirectory(const std::filesystem::path& directory)
     std::filesystem::create_directories(directory, error);
     if (!error)
         return true;
-    MessageBoxW(window_, L"Impossible de créer le dossier Profil de Chrome Axis.",
+    MessageBoxW(window_, tr(Text::mainCreateProfileFolderFailed),
         title, MB_OK | MB_ICONERROR);
     return false;
 }
@@ -1052,8 +1113,7 @@ bool App::confirmPersistentDirectory() const
 {
     if (!temporaryDirectory_)
         return true;
-    MessageBoxW(window_, L"Cette copie se trouve dans un dossier temporaire. Extrayez le ZIP dans un dossier "
-        L"durable ou ouvrez Chrome Axis depuis le dossier du jeu avant d’enregistrer.",
+    MessageBoxW(window_, tr(Text::mainExtractBeforeSaving),
         title, MB_OK | MB_ICONWARNING);
     return false;
 }
@@ -1064,8 +1124,8 @@ bool App::confirmCurrentPreset()
     if (!current.directory.empty() && current.directory == activeDirectory())
         return true;
 
-    MessageBoxW(window_, current.directory.empty() ? L"Sélectionnez d’abord un profil disponible."
-        : L"Le profil actif a changé. Cliquez sur Recharger pour le charger.", title, MB_OK | MB_ICONWARNING);
+    MessageBoxW(window_, current.directory.empty() ? tr(Text::mainSelectAvailableProfile)
+        : tr(Text::mainActiveProfileChanged), title, MB_OK | MB_ICONWARNING);
     return false;
 }
 
@@ -1084,11 +1144,11 @@ void App::chooseStoredProfile()
 
     if (dirty_) {
         const auto response = MessageBoxW(window_,
-            L"Enregistrer les modifications de la calibration avant de changer de profil ?",
+            tr(Text::mainSaveBeforeSwitch),
             title, MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3);
         if (response == IDYES) {
             if (!canSaveProfile()) {
-                MessageBoxW(window_, L"Terminez la calibration ou choisissez de continuer sans l’enregistrer.",
+                MessageBoxW(window_, tr(Text::mainFinishOrDiscard),
                             title, MB_OK | MB_ICONWARNING);
                 return;
             }
@@ -1107,7 +1167,7 @@ void App::chooseStoredProfile()
     const bool selected = choice->copy ? chrome_axis::createPreset(directory_, choice->name, error)
         : chrome_axis::selectPreset(directory_, choice->name, error);
     if (!selected) {
-        MessageBoxW(window_, wide(error).c_str(), title, MB_OK | MB_ICONWARNING);
+        MessageBoxW(window_, chrome_axis::localizedError(error).c_str(), title, MB_OK | MB_ICONWARNING);
         return;
     }
     readProfile();
@@ -1132,8 +1192,7 @@ void App::persist()
         if (settings && settings->enabled) {
             settings->enabled = false;
             if (!chrome_axis::saveFeedbackSettings(settingsPath, *settings, error)) {
-                MessageBoxW(window_, L"Impossible de désactiver le retour de force de l’ancien axe. "
-                    L"Vérifiez les droits d’écriture avant de changer le volant ou l’axe.",
+                MessageBoxW(window_, tr(Text::mainDisableOldFeedbackFailed),
                     title, MB_OK | MB_ICONERROR);
                 return;
             }
@@ -1156,8 +1215,8 @@ void App::persist()
     }
     if (!success) {
         MessageBoxW(window_, resetFeedback
-            ? L"Le profil n’a pas pu être enregistré. Le retour de force a été désactivé pour ce profil."
-            : L"Le profil n’a pas pu être enregistré. Vérifiez que le dossier Profil est accessible en écriture.",
+            ? tr(Text::mainSaveFailedFeedbackDisabled)
+            : tr(Text::mainSaveFailedCheckFolder),
             title, MB_OK | MB_ICONERROR);
         return;
     }
@@ -1165,11 +1224,11 @@ void App::persist()
     saved_ = previewProfile_.has_value();
     savedSteering_ = nextSteering;
     refreshUsbToggle();
-    profileMessage_ = !saved_ ? L"Les axes utilisent les commandes du jeu."
-        : resetFeedback ? L"Profil enregistré · vérifiez le retour de force pour le nouvel axe."
-        : !installed_ ? L"Profil enregistré localement"
-        : usbEnabled_ ? L"Profil enregistré · activation USB demandée"
-        : L"Profil enregistré · activez l’USB en jeu";
+    profileMessage_ = !saved_ ? tr(Text::mainAxesUseGameControls)
+        : resetFeedback ? tr(Text::mainSavedCheckFeedback)
+        : !installed_ ? tr(Text::mainSavedLocally)
+        : usbEnabled_ ? tr(Text::mainSavedUsbRequested)
+        : tr(Text::mainSavedEnableUsb);
     rebuildPreview();
 }
 
@@ -1196,33 +1255,32 @@ void App::changeUsbMode()
         if (!confirmPersistentDirectory() || !confirmCurrentPreset())
             return;
         if (!chrome_axis::isInstalledPluginDirectory(directory_.parent_path())) {
-            const auto message = L"L’application utilise actuellement ce dossier de profil.\n\n" + directory_.wstring()
-                + L"\n\nDéployez le mod dans Vortex, puis ouvrez ChromeAxis.exe depuis red4ext\\plugins\\chrome_axis "
-                L"dans le dossier de Cyberpunk 2077.";
+            const auto message = std::wstring(tr(Text::mainCurrentProfileFolder)) + L"\n\n" + directory_.wstring()
+                + L"\n\n" + tr(Text::mainDeployAndOpen);
             MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONWARNING);
             return;
         }
         if (dirty_ || (saved_ && !previewProfile_)) {
             const auto message = canSaveProfile()
-                ? L"Enregistrez vos réglages ou rechargez le profil enregistré, puis activez l’USB en jeu."
-                : L"Terminez la calibration ou rechargez le profil enregistré, puis activez l’USB en jeu.";
+                ? tr(Text::mainSaveOrReloadBeforeUsb)
+                : tr(Text::mainCalibrateOrReloadBeforeUsb);
             MessageBoxW(window_, message, title, MB_OK | MB_ICONWARNING);
             return;
         }
         if (!accessoriesSaved_ && !chrome_axis::loadProfile(path_, error)) {
-            MessageBoxW(window_, L"Enregistrez une calibration valide ou une affectation d’accessoire.",
+            MessageBoxW(window_, tr(Text::mainSaveCalibrationOrMapping),
                 title, MB_OK | MB_ICONWARNING);
             return;
         }
     }
     if (!chrome_axis::setUsbEnabled(directory_, enable, error)) {
-        MessageBoxW(window_, L"Impossible de modifier l’état de l’USB en jeu.",
+        MessageBoxW(window_, tr(Text::mainUsbStateFailed),
             title, MB_OK | MB_ICONERROR);
         return;
     }
     refreshUsbToggle();
-    profileMessage_ = enable ? L"USB demandé · fermez Chrome Axis et retournez en jeu"
-        : installed_ ? L"USB désactivé en jeu" : L"Activation USB locale retirée";
+    profileMessage_ = enable ? tr(Text::mainUsbRequested)
+        : installed_ ? tr(Text::mainUsbDisabled) : tr(Text::mainLocalUsbCleared);
     setText(status_, profileMessage_);
 }
 
@@ -1261,20 +1319,20 @@ void App::updateCalibrationView()
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | (canSave ? MF_ENABLED : MF_GRAYED));
 
     if (!calibrating_) {
-        setText(calibrationTitle_, L"Calibration");
+        setText(calibrationTitle_, tr(Text::mainCalibration));
         setText(instruction_, !calibrationMessage_.empty() ? calibrationMessage_
-            : canStart ? L"Mesurez la course de chaque axe attribué."
-            : !axisDeviceAvailable ? L"Connectez un volant ou des pédales pour calibrer les axes."
-            : L"Sélectionnez un périphérique pour les axes à calibrer.");
+            : canStart ? tr(Text::mainMeasureAllAxes)
+            : !axisDeviceAvailable ? tr(Text::mainConnectForCalibration)
+            : tr(Text::mainSelectAxisDevice));
         return;
     }
 
-    setText(calibrationTitle_, std::wstring(commands[steps[step_].channel]) + L"   ·   " +
+    setText(calibrationTitle_, std::wstring(tr(commands[steps[step_].channel])) + L"   ·   " +
         std::to_wstring(step_ + 1) + L" / " + std::to_wstring(steps.size()));
     setText(instruction_, !calibrationMessage_.empty() ? calibrationMessage_
-        : choosing ? L"Plusieurs axes ont bougé. Sélectionnez l’axe correspondant à cette commande."
-        : steps[step_].instruction);
-    setText(measure_, capture_ ? L"Mesure en cours…" : choosing ? L"Choisir cet axe" : L"Mesurer");
+        : choosing ? tr(Text::mainChooseMatchingAxis)
+        : tr(steps[step_].instruction));
+    setText(measure_, capture_ ? tr(Text::mainMeasuring) : choosing ? tr(Text::mainChooseAxis) : tr(Text::mainMeasure));
     EnableWindow(measure_, !capture_);
 }
 
@@ -1317,24 +1375,24 @@ void App::applyMode()
         setVisible(zones_[i], !simulation_);
         setVisible(simKeys_[i], simulation_);
     }
-    setText(devicesTitle_, simulation_ ? L"SIMULATION CLAVIER" : L"PÉRIPHÉRIQUES");
-    setText(axesTitle_, simulation_ ? L"SIGNAUX SIMULÉS" : L"AXES DU VÉHICULE");
-    setText(headings_[1], simulation_ ? L"Touches" : L"Axe détecté");
-    setText(headings_[3], simulation_ ? L"Aperçu en direct" : L"Aperçu local");
+    setText(devicesTitle_, simulation_ ? tr(Text::mainKeyboardSimulation) : tr(Text::mainDevicesHeading));
+    setText(axesTitle_, simulation_ ? tr(Text::mainSimulatedSignals) : tr(Text::mainVehicleAxesHeading));
+    setText(headings_[1], simulation_ ? tr(Text::mainKeys) : tr(Text::mainDetectedAxis));
+    setText(headings_[3], simulation_ ? tr(Text::mainLivePreview) : tr(Text::mainLocalPreview));
     redrawControls();
 }
 
 void App::updateSimulationView()
 {
     const bool active = publisher_.enabled();
-    setText(simToggle_, active ? L"Arrêter la simulation" : L"Activer dans le jeu");
+    setText(simToggle_, active ? tr(Text::mainStopSimulation) : tr(Text::mainEnableInGame));
     InvalidateRect(simToggle_, nullptr, FALSE);
-    setText(simState_, active ? L"Simulation activée pour Cyberpunk."
-        : publisherFailed_ ? L"Activation impossible. Fermez les autres instances."
-        : L"Aperçu disponible sans périphérique.");
-    setText(calibrationTitle_, L"ESSAI DANS CYBERPUNK");
-    setText(status_, active ? L"Mode jeu actif · laissez l’application ouverte"
-        : L"Mode aperçu · aucun signal envoyé au jeu");
+    setText(simState_, active ? tr(Text::mainSimulationActive)
+        : publisherFailed_ ? tr(Text::mainSimulationFailed)
+        : tr(Text::mainSimulationPreview));
+    setText(calibrationTitle_, tr(Text::mainTestInCyberpunk));
+    setText(status_, active ? tr(Text::mainGameModeActive)
+        : tr(Text::mainPreviewMode));
     EnableMenuItem(deviceMenu_, startCalibration, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | MF_GRAYED);
@@ -1390,7 +1448,7 @@ void App::measureStep()
         }
         return;
     }
-    calibrationMessage_ = L"Gardez la commande immobile pendant la mesure.";
+    calibrationMessage_ = tr(Text::mainHoldSteady);
     capture_.emplace();
     captureTicks_ = 0;
     updateCalibrationView();
@@ -1409,7 +1467,7 @@ void App::finishCapture(const chrome_axis::AxisCapture& sample)
         candidates_ = chrome_axis::axisCandidates(neutral_, negative_, positive_, step.channel == 0);
         if (candidates_.empty()) {
             step_ -= step.channel == 0 ? 2 : 1;
-            calibrationMessage_ = L"Aucun mouvement stable. Remettez la commande au repos et recommencez cette mesure.";
+            calibrationMessage_ = tr(Text::mainNoStableMovement);
             updateCalibrationView();
             SetFocus(measure_);
             return;
@@ -1422,7 +1480,7 @@ void App::finishCapture(const chrome_axis::AxisCapture& sample)
         SendMessageW(axisChoice_, CB_RESETCONTENT, 0, 0);
         for (const auto& candidate : candidates_)
             addChoice(axisChoice_, wide(chrome_axis::axisName(candidate.axis)) +
-                L"  ·  course " + std::to_wstring(static_cast<long long>(candidate.travel)));
+                tr(Text::mainTravelPrefix) + std::to_wstring(static_cast<long long>(candidate.travel)));
         SendMessageW(axisChoice_, CB_SETCURSEL, 0, 0);
         updateCalibrationView();
         SetFocus(axisChoice_);
@@ -1445,7 +1503,7 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
             : axes[i]->deviceId != axis.deviceId || axes[i]->axis != axis.axis;
         if (!compatible) {
             --step_;
-            calibrationMessage_ = L"Axe déjà attribué. Sur un axe combiné, les pédales doivent partir du même repos en sens opposés.";
+            calibrationMessage_ = tr(Text::mainAxisAlreadyAssigned);
             updateCalibrationView();
             SetFocus(measure_);
             return;
@@ -1463,7 +1521,7 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
         }
         dirty_ = true;
         profileMessage_.clear();
-        calibrationMessage_ = L"Calibration terminée. Relâchez les commandes, vérifiez les valeurs et enregistrez le profil.";
+        calibrationMessage_ = tr(Text::mainCalibrationComplete);
         updateProfileView();
         updateCalibrationView();
         SetFocus(save_);
@@ -1491,7 +1549,7 @@ void App::tick()
         ++captureTicks_;
         if ((sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
             capture_.reset();
-            calibrationMessage_ = L"Lecture interrompue. Reconnectez le périphérique, puis réessayez.";
+            calibrationMessage_ = tr(Text::mainReadInterrupted);
             updateCalibrationView();
         } else if (!sample) {
             capture_.emplace();
@@ -1518,7 +1576,7 @@ void App::tick()
         live_[i] = current[i];
         liveReady_[i] = ready[i];
         if (changedReady || (ready[i] && changedPercent))
-            setText(values_[i], ready[i] ? std::to_wstring(percent) + L" %" : L"—");
+            setText(values_[i], ready[i] ? std::to_wstring(percent) + tr(Text::mainPercentSuffix) : L"—");
         if (changedReady || (ready[i] && changedPixels))
             InvalidateRect(meters_[i], nullptr, FALSE);
     }
@@ -1532,7 +1590,7 @@ void App::suspendHardware()
         preview_->reset();
     if (capture_) {
         capture_.reset();
-        calibrationMessage_ = L"Mesure interrompue. Replacez la commande, puis cliquez sur Mesurer.";
+        calibrationMessage_ = tr(Text::mainMeasureInterrupted);
         updateCalibrationView();
     }
 }
@@ -1542,21 +1600,21 @@ void App::contextMenu(int x, int y)
     const HMENU menu = CreatePopupMenu();
     if (simulation_) {
         AppendMenuW(menu, MF_STRING, toggleSimulation,
-                    publisher_.enabled() ? L"Arrêter la simulation" : L"Activer dans le jeu");
-        AppendMenuW(menu, MF_STRING, hardwareTab, L"Afficher le matériel USB");
+                    publisher_.enabled() ? tr(Text::mainStopSimulation) : tr(Text::mainEnableInGame));
+        AppendMenuW(menu, MF_STRING, hardwareTab, tr(Text::mainShowUsbHardware));
     } else {
         refreshUsbToggle();
         AppendMenuW(menu, MF_STRING | (canToggleUsb() ? MF_ENABLED : MF_GRAYED), toggleUsb, usbActionLabel());
-        AppendMenuW(menu, MF_STRING, refreshDevices, L"Actualiser les périphériques");
+        AppendMenuW(menu, MF_STRING, refreshDevices, tr(Text::mainRefreshDevices));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
-                    configureAccessories, L"Accessoires…");
+                    configureAccessories, tr(Text::mainAccessories));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
-                    configureFeedback, L"Retour de force…");
+                    configureFeedback, tr(Text::mainForceFeedback));
         AppendMenuW(menu, MF_STRING | (!calibrating_ && canCalibrate() ? MF_ENABLED : MF_GRAYED),
-                    startCalibration, L"Calibrer les axes");
-        AppendMenuW(menu, MF_STRING | (IsWindowEnabled(save_) ? MF_ENABLED : MF_GRAYED), saveProfile, L"Enregistrer le profil");
-        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), selectProfile, L"Sélectionner un profil…");
-        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), simulationTab, L"Afficher la simulation");
+                    startCalibration, tr(Text::mainCalibrateAxes));
+        AppendMenuW(menu, MF_STRING | (IsWindowEnabled(save_) ? MF_ENABLED : MF_GRAYED), saveProfile, tr(Text::mainSaveProfile));
+        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), selectProfile, tr(Text::mainSelectProfile));
+        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), simulationTab, tr(Text::mainShowSimulation));
     }
     if (x == -1 && y == -1) {
         POINT origin{px(24), px(100)};
@@ -1583,12 +1641,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 
 } // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
 {
+    chrome_axis::initializeLanguage(commandLine ? std::wstring_view(commandLine) : std::wstring_view{});
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const auto directory = chrome_axis::calibrationProfileDirectory(chrome_axis::modulePath(instance));
     if (directory.empty()) {
-        MessageBoxW(nullptr, L"Impossible de localiser le dossier Profil de Chrome Axis.", title, MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, tr(Text::mainProfileFolderUnavailable), title, MB_OK | MB_ICONERROR);
         return 1;
     }
 

@@ -1,3 +1,5 @@
+Français
+
 Chrome Axis utilise ce dossier pour enregistrer chrome_axis.ini.
 Le fichier accessories.ini contient les affectations de touches des accessoires.
 Le fichier usb.enabled demande au plugin de lire les entrées USB dans le jeu.
@@ -5,4 +7,17 @@ Le dossier Profils contient les profils nommés. active_profile.txt indique le p
 Chaque profil peut enregistrer ses propres réglages de retour de force dans force_feedback.ini.
 
 Ouvrez Chrome Axis (ChromeAxis.exe) depuis red4ext/plugins/chrome_axis dans le dossier du jeu.
-Conservez chrome_axis.ini et accessories.ini pour réutiliser vos réglages.
+Sauvegardez le dossier Profil complet pour réutiliser vos réglages.
+Dans le carré à droite de Simulation, cliquez sur le drapeau français en haut à gauche ou sur le drapeau britannique en bas à droite. La moitié choisie s’illumine aussitôt. Relancez Chrome Axis pour appliquer la langue. Le mode automatique se trouve dans Aide > Langue.
+
+English
+
+Chrome Axis stores chrome_axis.ini in this folder.
+The accessories.ini file contains accessory key bindings.
+The usb.enabled file enables USB input for the plugin in game.
+The Profils folder contains named profiles. active_profile.txt identifies the selected profile.
+Each profile can store its own force feedback settings in force_feedback.ini.
+
+Open Chrome Axis (ChromeAxis.exe) from red4ext/plugins/chrome_axis inside the game folder.
+Back up the entire Profil folder to reuse your settings.
+In the square to the right of Simulation, click the French flag in the upper left or the British flag in the lower right. The selected half lights up immediately. Restart Chrome Axis to apply the language. Automatic mode is available under Help > Language.

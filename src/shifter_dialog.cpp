@@ -1,4 +1,5 @@
 #include "chrome_axis/accessories_dialog.hpp"
+#include "app_text.hpp"
 #include "dialog_theme.hpp"
 
 #include "chrome_axis/calibration.hpp"
@@ -11,7 +12,6 @@
 namespace chrome_axis {
 namespace {
 
-constexpr wchar_t title[] = L"Boîte et palettes · Chrome Axis";
 constexpr UINT_PTR captureTimer = 1;
 constexpr UINT captureInterval = 20;
 constexpr ULONGLONG captureTimeout = 30000;
@@ -86,16 +86,16 @@ void ShifterDialog::initialise(HWND window)
         if (row >= 0 && device.id == preferredDevice_)
             selection = static_cast<WPARAM>(row);
     }
-    constexpr std::array modes{L"Séquentiel / palettes", L"Boîte en H · 6 + R", L"Boîte en H · 7 + R", L"Boîte en H · 8 + R"};
-    for (const auto* mode : modes)
-        send(IDC_SHIFTER_MODE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(mode));
-    for (const auto* signal : {L"Bouton ou croix", L"Axe analogique"})
+    constexpr std::array modes{Text::DlgShifterSequential, Text::DlgShifterH6, Text::DlgShifterH7, Text::DlgShifterH8};
+    for (const auto mode : modes)
+        send(IDC_SHIFTER_MODE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(mode)));
+    for (const auto* signal : {tr(Text::DlgDigital), tr(Text::DlgAnalog)})
         send(IDC_SHIFTER_SIGNAL, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(signal));
     send(IDC_SHIFTER_DEVICE, CB_SETCURSEL, selection);
     send(IDC_SHIFTER_MODE, CB_SETCURSEL, 0);
     send(IDC_SHIFTER_SIGNAL, CB_SETCURSEL, 0);
-    status(devices_.empty() ? L"Aucun périphérique DirectInput détecté. Branchez le matériel et rouvrez l’assistant."
-        : L"Placez le levier au point mort ou relâchez les palettes, puis cliquez sur Démarrer.");
+    status(devices_.empty() ? tr(Text::DlgShifterNoDevices)
+        : tr(Text::DlgShifterNeutralThenStart));
     updateControls();
 }
 
@@ -121,9 +121,9 @@ void ShifterDialog::updateControls()
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_SKIP), forward_ != 0 &&
         (stage_ == Stage::Position || stage_ == Stage::Paused || stage_ == Stage::Captured));
     EnableWindow(GetDlgItem(window_, IDOK), stage_ == Stage::Done && !draft_.empty());
-    SetDlgItemTextW(window_, IDC_SHIFTER_START, setup ? L"&Démarrer" : L"&Recommencer");
-    SetDlgItemTextW(window_, IDC_SHIFTER_ADVANCE, stage_ == Stage::AnalogReady ? L"&Mesurer"
-        : stage_ == Stage::Paused ? L"&Reprendre" : L"Sui&vant");
+    SetDlgItemTextW(window_, IDC_SHIFTER_START, setup ? tr(Text::DlgShifterStart) : tr(Text::DlgShifterRestart));
+    SetDlgItemTextW(window_, IDC_SHIFTER_ADVANCE, stage_ == Stage::AnalogReady ? tr(Text::DlgShifterMeasure)
+        : stage_ == Stage::Paused ? tr(Text::DlgShifterResume) : tr(Text::DlgShifterNext));
 }
 
 bool ShifterDialog::runTimer()
@@ -132,7 +132,7 @@ bool ShifterDialog::runTimer()
     if (SetTimer(window_, captureTimer, captureInterval, nullptr))
         return true;
     stage_ = Stage::Setup;
-    status(L"Impossible de démarrer la mesure.");
+    status(tr(Text::DlgShifterMeasurementFailed));
     updateControls();
     return false;
 }
@@ -151,8 +151,8 @@ void ShifterDialog::start()
     if (stage_ != Stage::Setup) {
         stage_ = Stage::Setup;
         setKey(0);
-        SetDlgItemTextW(window_, IDC_SHIFTER_STEP, L"Capture");
-        status(L"Placez le levier au point mort ou relâchez les palettes, puis cliquez sur Démarrer.");
+        SetDlgItemTextW(window_, IDC_SHIFTER_STEP, tr(Text::DlgShifterCapture));
+        status(tr(Text::DlgShifterNeutralThenStart));
         updateControls();
         return;
     }
@@ -162,7 +162,7 @@ void ShifterDialog::start()
     const auto& device = devices_[static_cast<std::size_t>(selected)];
     analog_ = sequential() && send(IDC_SHIFTER_SIGNAL, CB_GETCURSEL) == 1;
     if (analog_ && std::ranges::none_of(device.axes, [](bool present) { return present; })) {
-        status(L"Ce périphérique ne signale aucun axe analogique.");
+        status(tr(Text::DlgShifterNoAnalogAxis));
         return;
     }
     deviceId_ = device.id;
@@ -171,7 +171,7 @@ void ShifterDialog::start()
     if (!analog_)
         digital_.emplace(deviceId_);
     stage_ = Stage::Neutral;
-    status(L"Gardez le levier au point mort ou les palettes relâchées.");
+    status(tr(Text::DlgShifterHoldNeutral));
     updateControls();
     runTimer();
 }
@@ -179,8 +179,8 @@ void ShifterDialog::start()
 std::wstring ShifterDialog::role() const
 {
     if (!forward_)
-        return step_ == 0 ? L"Rapport supérieur" : L"Rapport inférieur";
-    return step_ == forward_ ? L"Marche arrière" : L"Rapport " + std::to_wstring(step_ + 1);
+        return step_ == 0 ? tr(Text::DlgShifterUpshift) : tr(Text::DlgShifterDownshift);
+    return step_ == forward_ ? tr(Text::DlgShifterReverse) : tr(Text::DlgShifterGear) + std::to_wstring(step_ + 1);
 }
 
 unsigned int ShifterDialog::suggestedKey() const
@@ -193,7 +193,7 @@ unsigned int ShifterDialog::suggestedKey() const
 void ShifterDialog::setKey(unsigned int key)
 {
     key_ = key;
-    const auto label = key_ ? accessoryKeyLabel(key_) + L"…" : std::wstring(L"Choisir…");
+    const auto label = key_ ? accessoryKeyLabel(key_) + L"…" : std::wstring(tr(Text::DlgChooseKey));
     SetDlgItemTextW(window_, IDC_SHIFTER_KEY, label.c_str());
 }
 
@@ -212,18 +212,18 @@ void ShifterDialog::position()
     if (step_ >= (forward_ ? forward_ + 1 : 2)) {
         stage_ = Stage::Done;
         setKey(0);
-        SetDlgItemTextW(window_, IDC_SHIFTER_STEP, L"Capture terminée");
-        status(draft_.empty() ? L"Aucune position capturée. Cliquez sur Recommencer."
-            : L"Appliquez les affectations puis enregistrez-les dans Accessoires. Configurez les mêmes touches dans le mod de transmission.");
+        SetDlgItemTextW(window_, IDC_SHIFTER_STEP, tr(Text::DlgShifterComplete));
+        status(draft_.empty() ? tr(Text::DlgShifterNoPosition)
+            : tr(Text::DlgShifterSaveAndConfigure));
     } else {
         SetDlgItemTextW(window_, IDC_SHIFTER_STEP, role().c_str());
         setKey(suggestedKey());
         if (analog_) {
             stage_ = Stage::AnalogReady;
-            status(L"Relâchez le levier, puis maintenez-le dans le sens indiqué et cliquez sur Mesurer.");
+            status(tr(Text::DlgShifterHoldAndMeasure));
         } else {
             stage_ = Stage::Position;
-            status(L"Revenez au point mort ou relâchez les palettes, puis maintenez la commande demandée un instant.");
+            status(tr(Text::DlgShifterNeutralThenHold));
             runTimer();
         }
     }
@@ -235,7 +235,7 @@ void ShifterDialog::captured(AccessoryBinding binding)
     pending_ = std::move(binding);
     stage_ = Stage::Captured;
     KillTimer(window_, captureTimer);
-    status(L"Commande détectée. Vérifiez la touche et cliquez sur Suivant.");
+    status(tr(Text::DlgShifterInputDetected));
     updateControls();
 }
 
@@ -247,13 +247,13 @@ void ShifterDialog::poll()
         KillTimer(window_, captureTimer);
         if (stage_ == Stage::AnalogMeasure) {
             stage_ = Stage::AnalogReady;
-            status(L"Mesure interrompue. Maintenez la commande et cliquez sur Mesurer.");
+            status(tr(Text::DlgShifterMeasureInterrupted));
         } else if (stage_ == Stage::Position) {
             stage_ = Stage::Paused;
-            status(L"Capture interrompue. Relâchez la commande et cliquez sur Reprendre.");
+            status(tr(Text::DlgShifterCaptureInterrupted));
         } else {
             stage_ = Stage::Setup;
-            status(L"Capture interrompue. Relâchez les commandes et cliquez sur Démarrer.");
+            status(tr(Text::DlgShifterInitialCaptureInterrupted));
         }
         updateControls();
         return;
@@ -262,13 +262,13 @@ void ShifterDialog::poll()
         KillTimer(window_, captureTimer);
         if (stage_ == Stage::AnalogMeasure) {
             stage_ = Stage::AnalogReady;
-            status(L"Mesure expirée. Maintenez la commande et cliquez de nouveau sur Mesurer.");
+            status(tr(Text::DlgShifterMeasureExpired));
         } else if (stage_ == Stage::Position) {
             stage_ = Stage::Paused;
-            status(L"Capture en pause. Relâchez la commande puis cliquez sur Reprendre.");
+            status(tr(Text::DlgShifterCapturePaused));
         } else {
             stage_ = Stage::Setup;
-            status(L"Capture expirée. Relâchez le levier et cliquez sur Démarrer pour reprendre.");
+            status(tr(Text::DlgShifterCaptureExpired));
         }
         updateControls();
         return;
@@ -280,7 +280,7 @@ void ShifterDialog::poll()
         else if (digital_)
             digital_->resetPosition();
         measurements_ = {};
-        status(L"Lecture interrompue. Vérifiez le branchement et relâchez la commande avant de reprendre.");
+        status(tr(Text::DlgShifterDeviceReadInterrupted));
         return;
     }
     if (digital_) {
@@ -295,16 +295,16 @@ void ShifterDialog::poll()
             captured(*result.binding);
             break;
         case ShifterCaptureStatus::Ambiguous:
-            status(L"Plusieurs commandes ont réagi. Relâchez-les et actionnez uniquement la position demandée.");
+            status(tr(Text::DlgShifterMultipleInputs));
             break;
         case ShifterCaptureStatus::Duplicate:
-            status(L"Cette commande est déjà utilisée dans l’assistant. Revenez au repos et choisissez une autre position.");
+            status(tr(Text::DlgShifterInputAlreadyUsed));
             break;
         case ShifterCaptureStatus::AwaitingNeutral:
-            status(L"Revenez au point mort ou relâchez les palettes avant la prochaine mesure.");
+            status(tr(Text::DlgShifterNeutralBeforeMeasure));
             break;
         case ShifterCaptureStatus::AwaitingInput:
-            status(L"Maintenez la commande demandée jusqu’à sa détection.");
+            status(tr(Text::DlgShifterHoldUntilDetected));
             break;
         }
         return;
@@ -333,7 +333,7 @@ void ShifterDialog::poll()
     }
     KillTimer(window_, captureTimer);
     stage_ = Stage::AnalogReady;
-    status(L"Mesurez un seul axe dans le sens demandé. Les deux commandes doivent être distinctes.");
+    status(tr(Text::DlgShifterSingleAxis));
     updateControls();
 }
 
@@ -342,7 +342,7 @@ void ShifterDialog::advance()
     if (stage_ == Stage::Paused) {
         digital_->resetPosition();
         stage_ = Stage::Position;
-        status(L"Revenez au point mort ou relâchez les palettes avant la prochaine mesure.");
+        status(tr(Text::DlgShifterNeutralBeforeMeasure));
         updateControls();
         runTimer();
         return;
@@ -350,7 +350,7 @@ void ShifterDialog::advance()
     if (stage_ == Stage::AnalogReady) {
         measurements_ = {};
         stage_ = Stage::AnalogMeasure;
-        status(L"Gardez le levier en butée pendant la mesure.");
+        status(tr(Text::DlgShifterHoldAtLimit));
         updateControls();
         runTimer();
         return;
@@ -361,14 +361,14 @@ void ShifterDialog::advance()
     if (!isAccessoryKey(key))
         return;
     if (std::ranges::find(draft_, key, &AccessoryBinding::key) != draft_.end()) {
-        status(L"Cette touche est déjà utilisée dans l’assistant. Choisissez une autre touche.");
+        status(tr(Text::DlgShifterKeyAlreadyUsed));
         return;
     }
     if (std::ranges::any_of(bindings_, [&](const auto& other) {
             const bool sameInput = sameShifterInput(*pending_, other);
             return sameInput != (other.key == key);
         })) {
-        status(L"Conflit avec une affectation existante. Changez la touche ou retirez l’affectation dans Accessoires.");
+        status(tr(Text::DlgShifterBindingConflict));
         return;
     }
     pending_->key = key;
@@ -401,7 +401,7 @@ void ShifterDialog::apply()
             *existing = binding;
     }
     if (updated.size() > maxAccessoryBindings) {
-        status(L"Limite atteinte. Retirez des affectations dans Accessoires avant de recommencer.");
+        status(tr(Text::DlgShifterBindingLimit));
         return;
     }
     bindings_ = std::move(updated);
@@ -410,8 +410,8 @@ void ShifterDialog::apply()
 
 bool ShifterDialog::confirmDiscard() const
 {
-    return (draft_.empty() && !pending_) || MessageBoxW(window_, L"Abandonner les commandes capturées dans cet assistant ?",
-        title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+    return (draft_.empty() && !pending_) || MessageBoxW(window_, tr(Text::DlgShifterDiscard),
+        tr(Text::DlgShifterTitle), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
 }
 
 void ShifterDialog::cancel()
@@ -425,7 +425,19 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
     if (message == WM_INITDIALOG) {
         auto& dialog = *reinterpret_cast<ShifterDialog*>(lp);
         SetWindowLongPtrW(window, DWLP_USER, lp);
-        DialogTheme::attach(window, L"Boîte et palettes", IDC_SHIFTER_STATUS, IDC_SHIFTER_LIST,
+        SetWindowTextW(window, tr(Text::DlgShifterTitle));
+        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgShifterIntro));
+        SetDlgItemTextW(window, IDC_MODAL_DEVICE_LABEL, tr(Text::DlgDevice));
+        SetDlgItemTextW(window, IDC_SHIFTER_MODE_LABEL, tr(Text::DlgShifterMode));
+        SetDlgItemTextW(window, IDC_SHIFTER_SIGNAL_LABEL, tr(Text::DlgShifterSignal));
+        SetDlgItemTextW(window, IDC_SHIFTER_STEP, tr(Text::DlgShifterCapture));
+        SetDlgItemTextW(window, IDC_MODAL_KEY_LABEL, tr(Text::DlgKey));
+        SetDlgItemTextW(window, IDC_SHIFTER_KEY, tr(Text::DlgChooseKey));
+        SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterCapturedList));
+        SetDlgItemTextW(window, IDC_SHIFTER_SKIP, tr(Text::DlgShifterSkip));
+        SetDlgItemTextW(window, IDOK, tr(Text::DlgShifterApply));
+        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
+        DialogTheme::attach(window, tr(Text::DlgShifterHeading), IDC_SHIFTER_STATUS, IDC_SHIFTER_LIST,
                             {IDC_SHIFTER_START, IDC_SHIFTER_ADVANCE, IDOK});
         dialog.initialise(window);
         return TRUE;
@@ -479,7 +491,7 @@ bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings, std
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SHIFTER), owner,
         shifterProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)
-        MessageBoxW(owner, L"Impossible d’ouvrir l’assistant de boîte et palettes.", title, MB_OK | MB_ICONERROR);
+        MessageBoxW(owner, tr(Text::DlgShifterOpenError), tr(Text::DlgShifterTitle), MB_OK | MB_ICONERROR);
     return result == IDOK;
 }
 

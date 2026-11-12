@@ -1,6 +1,8 @@
 #pragma once
 
 #define IDD_ACCESSORY_KEYBOARD 208
+#define IDC_KEYBOARD_NAVIGATION_LABEL 2801
+#define IDC_KEYBOARD_NUMPAD_LABEL 2802
 
 #ifndef RC_INVOKED
 #include <windows.h>

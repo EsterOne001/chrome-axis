@@ -1,4 +1,5 @@
 #include "chrome_axis/accessories_dialog.hpp"
+#include "app_text.hpp"
 #include "dialog_theme.hpp"
 
 #include "chrome_axis/accessories.hpp"
@@ -15,24 +16,23 @@ namespace chrome_axis {
 std::wstring accessoryKeyLabel(unsigned int key)
 {
     if (key >= VK_NUMPAD0 && key <= VK_NUMPAD9)
-        return L"Pavé " + std::to_wstring(key - VK_NUMPAD0);
+        return tr(Text::DlgKeyNumpad) + std::to_wstring(key - VK_NUMPAD0);
     if (key >= VK_F1 && key <= VK_F12)
         return L"F" + std::to_wstring(key - VK_F1 + 1);
     switch (key) {
-    case VK_SPACE: return L"Espace";
-    case VK_UP: return L"Flèche haut";
-    case VK_DOWN: return L"Flèche bas";
-    case VK_LEFT: return L"Flèche gauche";
-    case VK_RIGHT: return L"Flèche droite";
-    case VK_ADD: return L"Pavé +";
-    case VK_SUBTRACT: return L"Pavé −";
+    case VK_SPACE: return tr(Text::DlgKeySpace);
+    case VK_UP: return tr(Text::DlgKeyArrowUp);
+    case VK_DOWN: return tr(Text::DlgKeyArrowDown);
+    case VK_LEFT: return tr(Text::DlgKeyArrowLeft);
+    case VK_RIGHT: return tr(Text::DlgKeyArrowRight);
+    case VK_ADD: return tr(Text::DlgKeyNumpadAdd);
+    case VK_SUBTRACT: return tr(Text::DlgKeyNumpadSubtract);
     default: return std::wstring(1, static_cast<wchar_t>(key));
     }
 }
 
 namespace {
 
-constexpr wchar_t title[] = L"Accessoires · Chrome Axis";
 constexpr UINT_PTR captureTimer = 1;
 constexpr UINT captureIntervalMs = 30;
 constexpr ULONGLONG captureTimeoutMs = 12000;
@@ -53,14 +53,15 @@ std::wstring wide(std::string_view text)
 
 std::wstring inputLabel(const AccessoryBinding& binding)
 {
-    constexpr std::array directions{L"Nord", L"Nord-est", L"Est", L"Sud-est", L"Sud", L"Sud-ouest", L"Ouest", L"Nord-ouest"};
+    constexpr std::array directions{Text::DlgPovNorth, Text::DlgPovNorthEast, Text::DlgPovEast,
+        Text::DlgPovSouthEast, Text::DlgPovSouth, Text::DlgPovSouthWest, Text::DlgPovWest, Text::DlgPovNorthWest};
     switch (binding.kind) {
     case AccessoryKind::Button:
-        return L"Bouton " + std::to_wstring(binding.index + 1);
+        return tr(Text::DlgInputButton) + std::to_wstring(binding.index + 1);
     case AccessoryKind::Pov:
-        return L"Croix " + std::to_wstring(binding.index + 1) + L" · " + directions[binding.engaged / 4500];
+        return tr(Text::DlgInputDpad) + std::to_wstring(binding.index + 1) + L" · " + tr(directions[binding.engaged / 4500]);
     case AccessoryKind::Axis:
-        return L"Axe " + wide(axisName(binding.index));
+        return tr(Text::DlgInputAxis) + wide(axisName(binding.index));
     }
     return {};
 }
@@ -123,16 +124,15 @@ bool AccessoryDialog::initialise(HWND window)
         std::string error;
         const auto saved = loadAccessoryProfile(path_, error);
         if (!saved) {
-            const auto message = L"Impossible de lire les associations enregistrées. Corrigez ou déplacez "
-                L"le fichier accessories.ini du dossier Profil, puis rouvrez ce panneau.\n" + wide(error);
-            MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONERROR);
+            const auto message = tr(Text::DlgAccessoriesReadError) + localizedError(error);
+            MessageBoxW(window_, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
             EndDialog(window_, IDCANCEL);
             return false;
         }
         bindings_ = *saved;
     }
-    send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Bouton ou croix"));
-    send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Axe analogique"));
+    send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgDigital)));
+    send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgAnalog)));
     send(IDC_ACCESSORY_TYPE, CB_SETCURSEL, 0);
     refreshDevices();
     SetFocus(GetDlgItem(window_, selectedDevice() ? IDC_ACCESSORY_DEVICE : IDC_ACCESSORY_REFRESH));
@@ -180,15 +180,15 @@ void AccessoryDialog::clearCapture()
     previous_.reset();
     rest_.reset();
     send(IDC_ACCESSORY_INPUT, CB_RESETCONTENT);
-    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, L"&Capturer");
+    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCapture));
     if (const auto* device = selectedDevice()) {
-        const auto status = std::to_wstring(std::ranges::count(device->axes, true)) + L" axes · "
-            + std::to_wstring(device->buttons.count()) + L" boutons · "
-            + std::to_wstring(std::ranges::count(device->povs, true)) + L" croix.\r\n"
-            + L"Pour mesurer un axe, placez-le d’abord au repos.";
+        const auto status = tr(Text::DlgAccessoriesAxesCount) + std::to_wstring(std::ranges::count(device->axes, true))
+            + L" · " + tr(Text::DlgAccessoriesButtonsCount) + std::to_wstring(device->buttons.count())
+            + L" · " + tr(Text::DlgAccessoriesDpadsCount) + std::to_wstring(std::ranges::count(device->povs, true))
+            + L"\r\n" + tr(Text::DlgAccessoriesAxisHint);
         setStatus(status.c_str());
     } else {
-        setStatus(L"Branchez un périphérique DirectInput, puis cliquez sur Actualiser.");
+        setStatus(tr(Text::DlgAccessoriesConnectDevice));
     }
     refreshActions();
 }
@@ -223,7 +223,7 @@ void AccessoryDialog::shifter()
     if (editShifter(window_, input_, bindings_, device ? std::string_view(device->id) : std::string_view{})) {
         modified_ = true;
         refreshBindings();
-        setStatus(L"Boîte ou palettes configurées. Cliquez sur Enregistrer pour appliquer les affectations.");
+        setStatus(tr(Text::DlgAccessoriesShifterConfigured));
     }
 }
 
@@ -231,13 +231,13 @@ void AccessoryDialog::startSampling(CaptureStage stage, const wchar_t* text)
 {
     if (!SetTimer(window_, captureTimer, captureIntervalMs, nullptr)) {
         clearCapture();
-        setStatus(L"Impossible de démarrer la capture.");
+        setStatus(tr(Text::DlgAccessoriesCaptureFailed));
         return;
     }
     measurements_ = {};
     stage_ = stage;
     deadline_ = GetTickCount64() + captureTimeoutMs;
-    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, L"Annuler la &capture");
+    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCancelCapture));
     setStatus(text);
     refreshActions();
 }
@@ -248,7 +248,7 @@ void AccessoryDialog::capture()
     if (!device)
         return;
     if (stage_ == CaptureStage::AwaitingTravel) {
-        startSampling(CaptureStage::AxisTravel, L"Maintenez l’axe en butée pendant la mesure.");
+        startSampling(CaptureStage::AxisTravel, tr(Text::DlgAccessoriesHoldAtLimit));
         return;
     }
     const auto wasIdle = stage_ == CaptureStage::Idle;
@@ -257,17 +257,17 @@ void AccessoryDialog::capture()
         return;
     if (send(IDC_ACCESSORY_TYPE, CB_GETCURSEL) == 1) {
         if (std::ranges::none_of(device->axes, [](bool present) { return present; })) {
-            setStatus(L"Ce périphérique ne signale aucun axe analogique absolu.");
+            setStatus(tr(Text::DlgAccessoriesNoAbsoluteAxes));
             return;
         }
-        startSampling(CaptureStage::AxisRest, L"Laissez l’axe au repos pendant la mesure.");
+        startSampling(CaptureStage::AxisRest, tr(Text::DlgAccessoriesHoldAtRest));
     } else {
         previous_ = input_.sample(device->id);
         if (!previous_) {
-            setStatus(L"Entrées indisponibles. Vérifiez le branchement, puis réessayez.");
+            setStatus(tr(Text::DlgAccessoriesInputUnavailable));
             return;
         }
-        startSampling(CaptureStage::Digital, L"Appuyez sur un bouton ou actionnez la croix du périphérique.");
+        startSampling(CaptureStage::Digital, tr(Text::DlgAccessoriesPressInput));
     }
 }
 
@@ -277,15 +277,15 @@ void AccessoryDialog::sample()
         return;
     if (GetForegroundWindow() != window_) {
         clearCapture();
-        setStatus(L"Capture interrompue. Revenez dans cette fenêtre et relancez la mesure.");
+        setStatus(tr(Text::DlgAccessoriesCaptureInterrupted));
         return;
     }
     const auto* device = selectedDevice();
     const auto state = device ? input_.sample(device->id) : std::nullopt;
     if (!state || GetTickCount64() >= deadline_) {
         clearCapture();
-        setStatus(state ? L"Capture expirée. Relancez la mesure pour réessayer."
-                        : L"Entrées indisponibles. Vérifiez le branchement, puis réessayez.");
+        setStatus(state ? tr(Text::DlgAccessoriesCaptureExpired)
+                        : tr(Text::DlgAccessoriesInputUnavailable));
         return;
     }
     if (stage_ == CaptureStage::Digital) {
@@ -312,8 +312,8 @@ void AccessoryDialog::sample()
         KillTimer(window_, captureTimer);
         rest_ = measured;
         stage_ = CaptureStage::AwaitingTravel;
-        SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, L"Mesurer la &butée");
-        setStatus(L"Actionnez l’axe à fond et maintenez-le, puis cliquez sur Mesurer la butée.");
+        SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesMeasureLimit));
+        setStatus(tr(Text::DlgAccessoriesMeasureLimitHint));
         return;
     }
     for (const auto& candidate : axisCandidates(*rest_, *rest_, *measured, false)) {
@@ -327,15 +327,15 @@ void AccessoryDialog::finishCapture()
 {
     KillTimer(window_, captureTimer);
     stage_ = CaptureStage::Idle;
-    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, L"&Capturer");
+    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCapture));
     for (const auto& binding : captured_) {
         const auto label = inputLabel(binding);
         send(IDC_ACCESSORY_INPUT, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
     }
     send(IDC_ACCESSORY_INPUT, CB_SETCURSEL, 0);
-    setStatus(captured_.empty() ? L"Aucun axe suffisamment déplacé. Recommencez en atteignant la butée."
-        : captured_.size() == 1 ? L"Choisissez une touche et ajoutez l’association."
-        : L"Plusieurs entrées ont réagi. Choisissez l’entrée à associer et sa touche.");
+    setStatus(captured_.empty() ? tr(Text::DlgAccessoriesAxisDidNotMove)
+        : captured_.size() == 1 ? tr(Text::DlgAccessoriesChooseKeyAndAdd)
+        : tr(Text::DlgAccessoriesMultipleInputs));
     refreshActions();
 }
 
@@ -357,11 +357,11 @@ void AccessoryDialog::add()
     if (input < 0 || static_cast<std::size_t>(input) >= captured_.size() || !isAccessoryKey(key_))
         return;
     if (std::ranges::find(bindings_, key_, &AccessoryBinding::key) != bindings_.end()) {
-        setStatus(L"Cette touche est déjà associée. Retirez l’association existante pour la réutiliser.");
+        setStatus(tr(Text::DlgAccessoriesKeyAlreadyAssigned));
         return;
     }
     if (bindings_.size() >= maxAccessoryBindings) {
-        setStatus(L"Limite d’associations atteinte. Retirez une association pour libérer une place.");
+        setStatus(tr(Text::DlgAccessoriesBindingLimit));
         return;
     }
     auto binding = captured_[static_cast<std::size_t>(input)];
@@ -370,7 +370,7 @@ void AccessoryDialog::add()
     modified_ = true;
     clearCapture();
     refreshBindings();
-    setStatus(L"Association ajoutée. Enregistrez pour l’appliquer dans le jeu.");
+    setStatus(tr(Text::DlgAccessoriesBindingAdded));
 }
 
 void AccessoryDialog::remove()
@@ -381,7 +381,7 @@ void AccessoryDialog::remove()
     bindings_.erase(bindings_.begin() + index);
     modified_ = true;
     refreshBindings();
-    setStatus(L"Association retirée. Enregistrez pour l’appliquer dans le jeu.");
+    setStatus(tr(Text::DlgAccessoriesBindingRemoved));
 }
 
 void AccessoryDialog::save()
@@ -389,21 +389,19 @@ void AccessoryDialog::save()
     if (!modified_)
         return;
     if (isTemporaryProfileDirectory(path_.parent_path())) {
-        MessageBoxW(window_, L"Extrayez le ZIP ou ouvrez Chrome Axis depuis le dossier du jeu avant "
-            L"d’enregistrer les associations.", title, MB_OK | MB_ICONWARNING);
+        MessageBoxW(window_, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
         return;
     }
     std::error_code directoryError;
     std::filesystem::create_directories(path_.parent_path(), directoryError);
     if (directoryError) {
-        MessageBoxW(window_, L"Impossible de créer le dossier Profil. Vérifiez les droits d’écriture "
-            L"dans le dossier de Chrome Axis.", title, MB_OK | MB_ICONERROR);
+        MessageBoxW(window_, tr(Text::DlgAccessoriesCreateProfileFailed), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
         return;
     }
     std::string error;
     if (!saveAccessoryProfile(path_, bindings_, error)) {
-        const auto message = L"Impossible d’enregistrer les associations.\n" + wide(error);
-        MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONERROR);
+        const auto message = tr(Text::DlgAccessoriesSaveError) + localizedError(error);
+        MessageBoxW(window_, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
         return;
     }
     EndDialog(window_, IDOK);
@@ -411,8 +409,8 @@ void AccessoryDialog::save()
 
 void AccessoryDialog::cancel()
 {
-    if (!modified_ || MessageBoxW(window_, L"Fermer sans enregistrer les associations modifiées ?",
-        title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
+    if (!modified_ || MessageBoxW(window_, tr(Text::DlgAccessoriesDiscard),
+        tr(Text::DlgAccessoriesTitle), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
         EndDialog(window_, IDCANCEL);
 }
 
@@ -421,7 +419,21 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     if (message == WM_INITDIALOG) {
         auto& dialog = *reinterpret_cast<AccessoryDialog*>(lParam);
         SetWindowLongPtrW(window, DWLP_USER, lParam);
-        DialogTheme::attach(window, L"Accessoires", IDC_ACCESSORY_STATUS, IDC_ACCESSORY_LIST,
+        SetWindowTextW(window, tr(Text::DlgAccessoriesTitle));
+        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgAccessoriesIntro));
+        SetDlgItemTextW(window, IDC_ACCESSORY_SHIFTER, tr(Text::DlgAccessoriesShifter));
+        SetDlgItemTextW(window, IDC_MODAL_DEVICE_LABEL, tr(Text::DlgDevice));
+        SetDlgItemTextW(window, IDC_ACCESSORY_REFRESH, tr(Text::DlgRefresh));
+        SetDlgItemTextW(window, IDC_ACCESSORY_TYPE_LABEL, tr(Text::DlgAccessoriesInputType));
+        SetDlgItemTextW(window, IDC_ACCESSORY_INPUT_LABEL, tr(Text::DlgAccessoriesCapturedInput));
+        SetDlgItemTextW(window, IDC_MODAL_KEY_LABEL, tr(Text::DlgKey));
+        SetDlgItemTextW(window, IDC_ACCESSORY_KEY, tr(Text::DlgChooseKey));
+        SetDlgItemTextW(window, IDC_ACCESSORY_ADD, tr(Text::DlgAccessoriesAdd));
+        SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgAccessoriesSavedList));
+        SetDlgItemTextW(window, IDC_ACCESSORY_REMOVE, tr(Text::DlgAccessoriesRemove));
+        SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
+        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
+        DialogTheme::attach(window, tr(Text::DlgAccessoriesHeading), IDC_ACCESSORY_STATUS, IDC_ACCESSORY_LIST,
                             {IDC_ACCESSORY_CAPTURE, IDC_ACCESSORY_ADD, IDOK});
         return dialog.initialise(window);
     }
@@ -485,7 +497,7 @@ bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORIES), owner,
         dialogProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)
-        MessageBoxW(owner, L"Impossible d’ouvrir le panneau des accessoires.", title, MB_OK | MB_ICONERROR);
+        MessageBoxW(owner, tr(Text::DlgAccessoriesOpenError), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
     return result == IDOK;
 }
 

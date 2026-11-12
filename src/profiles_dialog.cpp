@@ -1,5 +1,6 @@
 #include "chrome_axis/profiles_dialog.hpp"
 
+#include "app_text.hpp"
 #include "dialog_theme.hpp"
 
 #include <iterator>
@@ -18,10 +19,16 @@ INT_PTR CALLBACK profileDialogProc(HWND window, UINT message, WPARAM wp, LPARAM 
     if (message == WM_INITDIALOG) {
         const auto picker = reinterpret_cast<Picker*>(lp);
         SetWindowLongPtrW(window, DWLP_USER, lp);
-        DialogTheme::attach(window, L"Profils", 0, 0, {IDOK});
+        SetWindowTextW(window, tr(Text::DlgProfilesTitle));
+        SetDlgItemTextW(window, IDC_PROFILE_LIST_LABEL, tr(Text::DlgProfilesToLoad));
+        SetDlgItemTextW(window, IDC_PROFILE_NAME_LABEL, tr(Text::DlgProfilesCopyName));
+        SetDlgItemTextW(window, IDC_PROFILE_COPY, tr(Text::DlgProfilesCopy));
+        SetDlgItemTextW(window, IDOK, tr(Text::DlgProfilesLoad));
+        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
+        DialogTheme::attach(window, tr(Text::DlgProfilesHeading), 0, 0, {IDOK});
 
         const auto combo = GetDlgItem(window, IDC_PROFILE_LIST);
-        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Profil par défaut"));
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgProfilesDefault)));
         LRESULT selected = 0;
         for (std::size_t i = 0; i < picker->names.size(); ++i) {
             const auto& name = picker->names[i];

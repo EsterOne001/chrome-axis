@@ -2,13 +2,13 @@
 
 Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à **Cyberpunk 2077 sur Windows**. Calibrez chaque axe sur un périphérique DirectInput, enregistrez plusieurs profils et affectez des touches aux palettes, leviers et autres accessoires. Le mod propose un retour de force sur les volants compatibles et un mode Simulation pour essayer la conduite au clavier sans matériel.
 
-**English overview.** Chrome Axis is a Windows mod for analog steering, throttle and brake in Cyberpunk 2077. It supports separate DirectInput devices, calibration profiles, compatible force-feedback wheels, and keyboard mapping for shifters and accessories. The keyboard simulation mode lets you test driving without a wheel. Install the mod ZIP through Vortex, then run `ChromeAxis.exe` from `red4ext/plugins/chrome_axis` in the game directory to configure it.
+[English documentation](README.en.md)
 
-Le prototype **0.4.12** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.15** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
-[Installation](#installation-via-vortex) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
+[Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
-![Fenêtre de calibration Chrome Axis, avec les réglages du volant, de l’accélérateur et du frein](NexusMods/images/04-calibration.png)
+![Fenêtre de calibration Chrome Axis, avec les réglages du volant, de l’accélérateur et du frein](https://raw.githubusercontent.com/EsterOne001/chrome-axis/main/NexusMods/images/04-calibration.png)
 
 Chrome Axis est un mod non officiel créé par des fans, sans affiliation avec CD PROJEKT RED. Le projet est maintenu par EsterOne001. [Profil GitHub](https://github.com/EsterOne001) · [Règles de CD PROJEKT RED sur les contenus de fans](https://www.cdprojektred.com/en/fan-content)
 
@@ -29,6 +29,12 @@ Si Windows signale `MSVCP140.dll` ou `VCRUNTIME140.dll` manquant, installez le r
 1. Fermez le jeu. Avant de désactiver l’ancienne version, sauvegardez le dossier `Profil` complet. Le menu **Profil** de l’ancienne application permet d’ouvrir le dossier où ces réglages ont été enregistrés, y compris si Vortex l’avait lancée depuis son dossier de préparation.
 2. Fermez l’ancienne application, désactivez l’ancien mod dans Vortex et déployez le changement. Pour une installation manuelle, retirez le dossier de l’ancien plugin de `red4ext/plugins` après avoir sauvegardé les réglages.
 3. Installez Chrome Axis et restaurez la sauvegarde dans `red4ext/plugins/chrome_axis/Profil`. Ouvrez Chrome Axis et cliquez sur **Recharger**.
+
+## Langue
+
+Dans le carré à droite de **Simulation**, cliquez sur le drapeau français en haut à gauche ou sur le drapeau britannique en bas à droite. La moitié choisie s’illumine aussitôt. Relancez Chrome Axis pour appliquer la langue. Vous pouvez aussi choisir **Français**, **English** ou **Automatique (Windows)** dans **Aide → Langue**. Le réglage automatique utilise le français si l’interface de Windows est en français et l’anglais pour les autres langues. Le choix est enregistré pour votre compte Windows et s’applique à tous vos profils.
+
+Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche en français si le jeu est en français et en anglais dans les autres langues. Les journaux techniques du plugin utilisent l’anglais.
 
 ## Simulation sans volant ni pédalier
 
@@ -135,7 +141,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.12-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.15-Cyberpunk-2.5.zip'
 ```
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier et le calcul du retour de force.
