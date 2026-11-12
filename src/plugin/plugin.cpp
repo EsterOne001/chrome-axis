@@ -32,8 +32,6 @@
 #include <utility>
 #include <vector>
 
-#pragma comment(lib, "version.lib")
-
 namespace {
 
 using Clock = std::chrono::steady_clock;

@@ -6,7 +6,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 Le prototype **0.4.15** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
-[Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
+[Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
 ![Fenêtre de calibration Chrome Axis, avec les réglages du volant, de l’accélérateur et du frein](https://raw.githubusercontent.com/EsterOne001/chrome-axis/main/NexusMods/images/04-calibration.png)
 
@@ -125,11 +125,14 @@ Pour retirer Chrome Axis, fermez le jeu et Chrome Axis, puis désactivez ou reti
 
 ## Dossiers du projet
 
-- [`src/`](src) et [`include/`](include) contiennent les sources C++ de l’utilitaire de configuration, du plugin RED4ext et de la lecture DirectInput.
-- [`scripts/`](scripts) contient le script redscript utilisé en jeu.
-- [`assets/`](assets) contient les ressources Windows, l’icône, les polices Barlow et les éléments du HUD.
-- [`tests/`](tests) contient les tests automatisés exécutés avec CTest.
-- `build/` et `out/` servent aux sorties locales de compilation et de publication.
+- `src/core/` contient la lecture DirectInput, la calibration, les profils et la logique partagée par l’application et le plugin.
+- `src/app/` contient l’application de configuration Windows, ses dialogues et ses traductions. `main_window.cpp` est le point d’entrée de l’application.
+- `src/plugin/` contient le plugin RED4ext qui transmet les commandes au jeu. `scripts/` contient le script REDscript pour le contexte de conduite et le HUD.
+- `include/chrome_axis/` contient les en-têtes des modules partagés et des interfaces Windows.
+- `assets/` contient les ressources Windows, l’icône, les polices Barlow, les ressources du HUD et la notice du dossier de profils.
+- `tests/` contient les tests automatisés exécutés avec CTest. `docs/` rassemble la vérification manuelle et les audits archivés.
+- `NexusMods/` rassemble la fiche, l’aperçu, les textes BBCode et les médias de publication. [Guide de publication Nexus Mods](https://github.com/EsterOne001/chrome-axis/blob/main/NexusMods/guide-publication.md)
+- `build/` contient les sorties locales de compilation. `out/` contient les ZIP de distribution.
 
 ## Compilation
 
@@ -146,7 +149,7 @@ Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/Chrom
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier et le calcul du retour de force.
 
-Réalisez les essais avec un volant physique et dans le jeu après avoir déployé le ZIP via Vortex.
+Après avoir déployé le ZIP via Vortex, suivez la liste de vérification pour tester le matériel et le comportement en jeu. [Essais manuels](https://github.com/EsterOne001/chrome-axis/blob/main/docs/manual-validation.md#français)
 
 ## Signaler un problème
 

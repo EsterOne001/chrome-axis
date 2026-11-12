@@ -13,8 +13,15 @@ enable_language(RC)
 option(CHROME_AXIS_BUILD_PLUGIN "Build the Cyberpunk 2077 RED4ext plugin" ON)
 
 add_library(chrome_axis_input STATIC
-  src/input.cpp src/controls.cpp src/accessories.cpp src/shifter.cpp src/simulation.cpp src/configuration.cpp
-  src/presets.cpp src/feedback.cpp
+  src/core/accessories.cpp
+  src/core/calibration.cpp
+  src/core/configuration.cpp
+  src/core/controls.cpp
+  src/core/feedback.cpp
+  src/core/input.cpp
+  src/core/presets.cpp
+  src/core/shifter.cpp
+  src/core/simulation.cpp
 )
 target_include_directories(chrome_axis_input PUBLIC include)
 target_compile_definitions(chrome_axis_input PUBLIC
@@ -29,10 +36,21 @@ target_link_libraries(chrome_axis_input PUBLIC dinput8 dxguid ole32 user32)
 
 set(CHROME_AXIS_INSTALL_DIR red4ext/plugins/chrome_axis)
 add_executable(chrome_axis_app WIN32
-  src/calibrate.cpp src/calibration.cpp src/accessories_dialog.cpp src/shifter_dialog.cpp
-  src/ui_theme.cpp src/dialog_theme.cpp src/profiles_dialog.cpp src/feedback_dialog.cpp src/keyboard_dialog.cpp src/app_text.cpp
-  assets/windows/theme.rc assets/windows/product_version.rc assets/windows/accessories_dialog.rc
-  assets/windows/profiles_dialog.rc assets/windows/feedback_dialog.rc assets/windows/keyboard_dialog.rc
+  src/app/main_window.cpp
+  src/app/accessories_dialog.cpp
+  src/app/app_text.cpp
+  src/app/dialog_theme.cpp
+  src/app/feedback_dialog.cpp
+  src/app/keyboard_dialog.cpp
+  src/app/profiles_dialog.cpp
+  src/app/shifter_dialog.cpp
+  src/app/ui_theme.cpp
+  assets/windows/accessories_dialog.rc
+  assets/windows/feedback_dialog.rc
+  assets/windows/keyboard_dialog.rc
+  assets/windows/product_version.rc
+  assets/windows/profiles_dialog.rc
+  assets/windows/theme.rc
 )
 set_target_properties(chrome_axis_app PROPERTIES OUTPUT_NAME ChromeAxis PDB_NAME ChromeAxis-app)
 target_include_directories(chrome_axis_app PRIVATE assets)
@@ -52,7 +70,10 @@ if(CHROME_AXIS_BUILD_PLUGIN)
   )
   FetchContent_MakeAvailable(red4ext_sdk)
 
-  add_library(ChromeAxis SHARED src/plugin.cpp assets/windows/product_version.rc)
+  add_library(ChromeAxis SHARED
+    src/plugin/plugin.cpp
+    assets/windows/product_version.rc
+  )
   target_compile_options(ChromeAxis PRIVATE /W4 /utf-8)
   target_link_libraries(ChromeAxis PRIVATE chrome_axis_input RED4ext::SDK version)
   install(TARGETS ChromeAxis RUNTIME DESTINATION "${CHROME_AXIS_INSTALL_DIR}")
@@ -66,36 +87,5 @@ install(FILES assets/Profil/Lisez-moi.txt DESTINATION "${CHROME_AXIS_INSTALL_DIR
 
 include(CTest)
 if(BUILD_TESTING)
-  add_executable(chrome_axis_controls_test tests/controls_test.cpp)
-  target_compile_options(chrome_axis_controls_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_controls_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_controls COMMAND chrome_axis_controls_test)
-  add_executable(chrome_axis_calibration_test tests/calibration_test.cpp src/calibration.cpp)
-  target_compile_options(chrome_axis_calibration_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_calibration_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_calibration COMMAND chrome_axis_calibration_test)
-  add_executable(chrome_axis_simulation_test tests/simulation_test.cpp)
-  target_compile_options(chrome_axis_simulation_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_simulation_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_simulation COMMAND chrome_axis_simulation_test)
-  add_executable(chrome_axis_configuration_test tests/configuration_test.cpp)
-  target_compile_options(chrome_axis_configuration_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_configuration_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_configuration COMMAND chrome_axis_configuration_test)
-  add_executable(chrome_axis_accessories_test tests/accessories_test.cpp)
-  target_compile_options(chrome_axis_accessories_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_accessories_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_accessories COMMAND chrome_axis_accessories_test)
-  add_executable(chrome_axis_shifter_test tests/shifter_test.cpp)
-  target_compile_options(chrome_axis_shifter_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_shifter_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_shifter COMMAND chrome_axis_shifter_test)
-  add_executable(chrome_axis_presets_test tests/presets_test.cpp)
-  target_compile_options(chrome_axis_presets_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_presets_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_presets COMMAND chrome_axis_presets_test)
-  add_executable(chrome_axis_feedback_test tests/feedback_test.cpp)
-  target_compile_options(chrome_axis_feedback_test PRIVATE /W4 /utf-8)
-  target_link_libraries(chrome_axis_feedback_test PRIVATE chrome_axis_input)
-  add_test(NAME chrome_axis_feedback COMMAND chrome_axis_feedback_test)
+  add_subdirectory(tests)
 endif()

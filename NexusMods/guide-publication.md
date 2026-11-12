@@ -11,6 +11,7 @@
 - Dans **Description**, collez la [description bilingue illustrée](description-bilingue.bbcode.txt) en mode source BBCode. Les couvertures, cartes de démarrage et captures 0.4.15 sont déjà intégrées dans les deux langues. Les exports [français](description-fr.bbcode.txt) et [anglais](description-en.bbcode.txt) incluent les visuels correspondants.
 - Dans **Media → Header**, ajoutez la [bannière bilingue](images/00-header-nexus-fr-en.jpg) de 1300 × 372 px.
 - Téléversez les visuels de la galerie depuis [images/fr](images/fr/) ou [images/en](images/en/) dans **Media**. Utilisez `01-cover.jpg` comme couverture paysage et `02-square.jpg` pour les emplacements au format carré.
+- Pour accompagner les instructions d’installation, utilisez la vidéo ou le GIF dans la langue de la description. [Vidéos et animations](#vidéos-et-animations)
 
 ### Fichier principal et prérequis
 
@@ -24,6 +25,28 @@
 | Requirements | [RED4ext 1.31.1](https://www.nexusmods.com/cyberpunk2077/mods/2380?tab=files) et [redscript 0.5.32](https://www.nexusmods.com/cyberpunk2077/mods/1511?tab=files) |
 
 Le ZIP inclut le plugin, l’application `ChromeAxis.exe`, le HUD et les deux guides d’utilisation. Dans Chrome Axis, choisissez le drapeau à droite de **Simulation** ou passez par **Aide → Langue**, puis relancez l’application. Le HUD s’affiche en français si le jeu est en français, et en anglais dans les autres cas. [Guide d’utilisation français](../README.md)
+
+### Publier une mise à jour via l’API
+
+Créez le ZIP de la nouvelle version avec la [procédure de compilation](../README.md#compilation). Depuis la racine du dépôt, lancez la [commande de publication](Publish-ChromeAxis.ps1) dans PowerShell 7.2 ou plus récent. Elle lit la version dans le nom `ChromeAxis-X.Y.Z-Cyberpunk-A.B.zip` et accepte les ZIP jusqu’à 100 Mio.
+
+```powershell
+.\NexusMods\Publish-ChromeAxis.ps1 -Archive .\out\ChromeAxis-0.4.15-Cyberpunk-2.5.zip -WhatIf
+```
+
+`-WhatIf` vérifie le ZIP et affiche la cible localement. Pour envoyer une nouvelle version, utilisez la [clé API personnelle Nexus Mods](https://www.nexusmods.com/settings/api-keys) d’un compte autorisé à gérer Chrome Axis.
+
+```powershell
+$archive = Read-Host 'Chemin du ZIP de la nouvelle version'
+$env:NEXUSMODS_API_KEY = Read-Host 'Clé API Nexus Mods' -MaskInput
+try {
+    .\NexusMods\Publish-ChromeAxis.ps1 -Archive $archive
+} finally {
+    Remove-Item Env:\NEXUSMODS_API_KEY
+}
+```
+
+La commande ajoute une version au fichier principal `9ka2kySGT`, met à jour la version affichée du mod et sélectionne le nouveau fichier comme téléchargement par défaut pour les gestionnaires de mods. Elle renvoie l’identifiant de version Nexus et l’état de l’analyse de sécurité. `pending` signifie que l’analyse est en cours. [Fichiers Chrome Axis](https://www.nexusmods.com/cyberpunk2077/mods/38104?tab=files) · [Documentation de l’API v3](https://api-docs.nexusmods.com/)
 
 ### Intégrer les images dans la description
 
@@ -53,6 +76,12 @@ Pour ajouter un autre visuel, téléversez-le dans **Media**, ouvrez-le en grand
 
 Les captures montrent l’application 0.4.15 avec un profil vierge et sans périphérique connecté. Pour ajouter une vraie capture du HUD, lancez le jeu avec Chrome Axis déployé, choisissez la langue d’affichage du jeu et activez **Simulation → Activer dans le jeu** dans l’application. Laissez-la ouverte. Installez V au siège conducteur, relâchez les touches et capturez l’écran quand le HUD affiche **SIMULATION**. Reprenez la même scène dans l’autre langue pour obtenir la paire.
 
+### Vidéos et animations
+
+- La vidéo montre l’installation et le premier lancement. [Vidéo française](videos/chrome-axis-installation-fr.mp4) · [Vidéo anglaise](videos/chrome-axis-installation-en.mp4)
+- Le GIF montre où ouvrir `ChromeAxis.exe` après le déploiement. [GIF français](videos/chrome-axis-where-to-open-fr.gif) · [GIF anglais](videos/chrome-axis-where-to-open-en.gif)
+- Pour modifier les vidéos, exécutez `npm ci`, puis `npm run studio` dans le dossier du projet Remotion. [Sources des vidéos](video-source/)
+
 ### Logos et crédits
 
 - Le [logo transparent du HUD](logos/chrome-axis-hud-transparent.png) est commun aux deux langues. Le [visuel carré français en PNG](logos/fr/chrome-axis-square.png) et son [équivalent anglais](logos/en/chrome-axis-square.png) reprennent le même design.
@@ -68,6 +97,7 @@ Les captures montrent l’application 0.4.15 avec un profil vierge et sans péri
 - In **Description**, paste the [illustrated bilingual description](description-bilingue.bbcode.txt) in BBCode source mode. It embeds the 0.4.15 covers, quick-start cards and screenshots in both languages. The [English](description-en.bbcode.txt) and [French](description-fr.bbcode.txt) exports include the matching visuals.
 - In **Media → Header**, add the [bilingual banner](images/00-header-nexus-fr-en.jpg) at 1300 × 372 px.
 - Upload the gallery images from [images/en](images/en/) or [images/fr](images/fr/) in **Media**. Use `01-cover.jpg` for the landscape cover and `02-square.jpg` for square placements.
+- Pair the installation instructions with the video or GIF in the listing’s language. [Videos and animations](#videos-and-animations)
 
 ### Main file and requirements
 
@@ -81,6 +111,28 @@ Les captures montrent l’application 0.4.15 avec un profil vierge et sans péri
 | Requirements | [RED4ext 1.31.1](https://www.nexusmods.com/cyberpunk2077/mods/2380?tab=files) and [redscript 0.5.32](https://www.nexusmods.com/cyberpunk2077/mods/1511?tab=files) |
 
 The ZIP includes the plugin, the `ChromeAxis.exe` app, the HUD and both user guides. In Chrome Axis, select a flag to the right of **Simulation** or use **Help → Language**, then restart the app. The HUD follows the Cyberpunk 2077 display language and falls back to English for game languages other than French. [English user guide](../README.en.md)
+
+### Publish an update through the API
+
+Create the new release ZIP with the [build procedure](../README.en.md#build). From the repository root, run the [publishing command](Publish-ChromeAxis.ps1) in PowerShell 7.2 or later. It reads the version from `ChromeAxis-X.Y.Z-Cyberpunk-A.B.zip` and accepts ZIP files up to 100 MiB.
+
+```powershell
+.\NexusMods\Publish-ChromeAxis.ps1 -Archive .\out\ChromeAxis-0.4.15-Cyberpunk-2.5.zip -WhatIf
+```
+
+`-WhatIf` validates the ZIP and shows the target locally. To upload a new release, use a [personal Nexus Mods API key](https://www.nexusmods.com/settings/api-keys) from an account with permission to manage Chrome Axis.
+
+```powershell
+$archive = Read-Host 'Path to the new release ZIP'
+$env:NEXUSMODS_API_KEY = Read-Host 'Nexus Mods API key' -MaskInput
+try {
+    .\NexusMods\Publish-ChromeAxis.ps1 -Archive $archive
+} finally {
+    Remove-Item Env:\NEXUSMODS_API_KEY
+}
+```
+
+The command adds a version to main file `9ka2kySGT`, updates the displayed mod version and makes the new file the default for mod managers. It returns the Nexus version ID and the security scan status. A `pending` scan is still in progress. [Chrome Axis files](https://www.nexusmods.com/cyberpunk2077/mods/38104?tab=files) · [API v3 documentation](https://api-docs.nexusmods.com/)
 
 ### Add images to the description
 
@@ -109,6 +161,12 @@ To add another image, upload it in **Media**, open it at full size and copy its 
 | [10-force-feedback.png](images/en/10-force-feedback.png) | Force feedback settings. The effect requires a calibrated steering axis and a compatible DirectInput actuator. |
 
 The screenshots show the 0.4.15 app with a blank profile and no devices connected. For a genuine HUD screenshot, launch the game with Chrome Axis deployed, choose the game display language, and select **Simulation → Enable in game** in the app. Leave it open. Put V in the driver’s seat, release the keys and take the screenshot when the HUD reads **SIMULATION**. Repeat the scene in the other language for a matching pair.
+
+### Videos and animations
+
+- The video shows installation and first launch. [English video](videos/chrome-axis-installation-en.mp4) · [French video](videos/chrome-axis-installation-fr.mp4)
+- The GIF shows where to open `ChromeAxis.exe` after deployment. [English GIF](videos/chrome-axis-where-to-open-en.gif) · [French GIF](videos/chrome-axis-where-to-open-fr.gif)
+- To edit the videos, run `npm ci`, then `npm run studio` in the Remotion project folder. [Video source project](video-source/)
 
 ### Logos and credits
 

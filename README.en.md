@@ -6,7 +6,7 @@ Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Wind
 
 Version **0.4.15** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
-[Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Build](#build) · [Report an issue](#report-an-issue)
+[Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
 Chrome Axis is an unofficial fan mod maintained by EsterOne001. [GitHub profile](https://github.com/EsterOne001) · [CD PROJEKT RED fan content guidelines](https://www.cdprojektred.com/en/fan-content)
 
@@ -111,6 +111,17 @@ To stop USB input during a session, use **Disable USB in game**. The game resume
 
 To uninstall, close the game and app, then disable or remove the mod in Vortex and deploy the changes. Back up `Profil` first if you want to reuse your settings.
 
+## Project folders
+
+- `src/core/` contains DirectInput handling, calibration, profiles, and logic shared by the app and plugin.
+- `src/app/` contains the Windows configuration app, its dialogs, and its translations. `main_window.cpp` is the app entry point.
+- `src/plugin/` contains the RED4ext plugin that sends inputs to the game. `scripts/` contains the REDscript code for the driving context and HUD.
+- `include/chrome_axis/` contains headers for shared modules and Windows interfaces.
+- `assets/` contains Windows resources, the app icon, Barlow fonts, HUD resources, and the profiles folder notice.
+- `tests/` contains the automated CTest suite. `docs/` contains the manual checklist and archived audits.
+- `NexusMods/` contains the listing sheet, preview, BBCode exports, and publication media. [Nexus Mods publishing guide](https://github.com/EsterOne001/chrome-axis/blob/main/NexusMods/guide-publication.md)
+- `build/` contains local build outputs. `out/` contains distribution ZIPs.
+
 ## Build
 
 Use PowerShell with Visual Studio Build Tools, the Windows SDK, and CMake. The commands below use Visual Studio 2026 in x64 mode. CMake fetches the compatible RED4ext SDK commit pinned in `CMakeLists.txt`. Pass `-DCHROME_AXIS_BUILD_PLUGIN=OFF` to build only the app.
@@ -125,6 +136,8 @@ Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/Chrom
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation and force feedback calculations.
+
+After deploying the ZIP through Vortex, follow the checklist to test hardware and in-game behavior. [Manual validation](https://github.com/EsterOne001/chrome-axis/blob/main/docs/manual-validation.md#english)
 
 ## Report an issue
 

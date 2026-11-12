@@ -1,0 +1,8 @@
+foreach(component IN ITEMS controls calibration simulation configuration accessories shifter presets feedback)
+  set(test_name chrome_axis_${component})
+  set(test_target ${test_name}_test)
+  add_executable(${test_target} ${component}_test.cpp)
+  target_compile_options(${test_target} PRIVATE /W4 /utf-8)
+  target_link_libraries(${test_target} PRIVATE chrome_axis_input)
+  add_test(NAME ${test_name} COMMAND ${test_target})
+endforeach()
