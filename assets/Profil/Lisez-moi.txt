@@ -7,7 +7,8 @@ Le dossier Profils contient les profils nommés. active_profile.txt indique le p
 Chaque profil peut enregistrer ses propres réglages de retour de force dans force_feedback.ini.
 
 Ouvrez Chrome Axis (ChromeAxis.exe) depuis red4ext/plugins/chrome_axis dans le dossier du jeu.
-Sauvegardez le dossier Profil complet pour réutiliser vos réglages.
+Utilisez Profil > Sauvegarder les profils ou Restaurer les profils. Une restauration recharge les réglages de ce dossier et conserve une copie précédente dans Sauvegardes.
+Le fichier language.txt enregistre la langue de l’application déployée.
 Dans le carré à droite de Simulation, cliquez sur le drapeau français en haut à gauche ou sur le drapeau britannique en bas à droite. La moitié choisie s’illumine aussitôt. Relancez Chrome Axis pour appliquer la langue. Le mode automatique se trouve dans Aide > Langue.
 
 English
@@ -19,5 +20,6 @@ The Profils folder contains named profiles. active_profile.txt identifies the se
 Each profile can store its own force feedback settings in force_feedback.ini.
 
 Open Chrome Axis (ChromeAxis.exe) from red4ext/plugins/chrome_axis inside the game folder.
-Back up the entire Profil folder to reuse your settings.
+Use Profile > Back up profiles or Restore profiles. A restore reloads the settings from this folder and keeps a copy of the previous settings in Sauvegardes.
+The language.txt file stores the deployed app’s language choice.
 In the square to the right of Simulation, click the French flag in the upper left or the British flag in the lower right. The selected half lights up immediately. Restart Chrome Axis to apply the language. Automatic mode is available under Help > Language.

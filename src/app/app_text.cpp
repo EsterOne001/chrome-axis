@@ -1,5 +1,7 @@
 #include "app_text.hpp"
 
+#include "chrome_axis/presets.hpp"
+
 #include <windows.h>
 
 #include <iterator>
@@ -73,9 +75,9 @@ Language storedLanguage() noexcept
 
 } // namespace
 
-void initializeLanguage(std::wstring_view commandLine) noexcept
+void initializeLanguage(std::wstring_view commandLine, const std::filesystem::path& profileRoot)
 {
-    choice = storedLanguage();
+    choice = profileLanguageChoice(profileRoot);
     if (commandLine == L"--language=fr")
         choice = Language::french;
     else if (commandLine == L"--language=en")
@@ -90,6 +92,29 @@ void initializeLanguage(std::wstring_view commandLine) noexcept
 
 Language languageChoice() noexcept { return choice; }
 Language interfaceLanguage() noexcept { return resolved; }
+
+Language profileLanguageChoice(const std::filesystem::path& profileRoot)
+{
+    if (!profileRoot.empty()) {
+        const auto code = readProfileLanguage(profileRoot);
+        if (code == "fr")
+            return Language::french;
+        if (code == "en")
+            return Language::english;
+        if (code == "auto")
+            return Language::automatic;
+    }
+    return storedLanguage();
+}
+
+std::string_view languageCode(Language language) noexcept
+{
+    if (language == Language::french)
+        return "fr";
+    if (language == Language::english)
+        return "en";
+    return "auto";
+}
 
 Language resolveLanguage(Language preference) noexcept
 {

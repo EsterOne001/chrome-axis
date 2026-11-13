@@ -7,6 +7,8 @@
 
 namespace chrome_axis {
 
+inline constexpr wchar_t usbMarkerFilename[] = L"usb.enabled";
+
 // These lookups do not create directories or write files.
 std::filesystem::path modulePath(HMODULE module);
 std::filesystem::path profileDirectory(const std::filesystem::path& moduleFile);

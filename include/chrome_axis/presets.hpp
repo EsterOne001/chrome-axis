@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,5 +20,21 @@ bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std
 
 // Copy the active profile's saved files, then select the new profile.
 bool createPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error);
+
+inline constexpr wchar_t profileLanguageFilename[] = L"language.txt";
+inline constexpr wchar_t profileBackupsFolder[] = L"Sauvegardes";
+
+std::optional<std::string> readProfileLanguage(const std::filesystem::path& root);
+bool writeProfileLanguage(const std::filesystem::path& root, std::string_view language);
+
+enum class ProfileBackupError { none, invalidLocation, invalidBackup, destinationExists, ioError, recoveryRequired };
+
+// The destination must be a new directory. A legacy language preference can be included in the export.
+bool createProfileBackup(const std::filesystem::path& root, const std::filesystem::path& destination,
+                         ProfileBackupError& error, std::string_view fallbackLanguage = {});
+// Restore saved settings and keep the previous ones under root/Sauvegardes.
+bool restoreProfileBackup(const std::filesystem::path& root, const std::filesystem::path& source,
+                          ProfileBackupError& error, std::string_view fallbackLanguage = {},
+                          std::filesystem::path* recoveryDirectory = nullptr);
 
 } // namespace chrome_axis

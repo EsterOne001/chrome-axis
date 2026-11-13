@@ -22,8 +22,10 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -56,7 +58,8 @@ enum Command {
     saveProfile, reloadProfile, openProfileFolder, closeApp, aboutApp, hardwareTab, simulationTab, toggleSimulation,
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
-    deadzoneFirst = 200, meterFirst = 210
+    backupProfiles, restoreProfiles,
+    deadzoneFirst = 200, meterFirst = 210, retryAxisFirst = 220
 };
 
 using CalibrationScope = std::array<bool, commands.size()>;
@@ -94,6 +97,14 @@ constexpr std::array calibrationSteps{
     Step{2, Position::Positive, Text::mainPressBrake, Text::guidePressBrake, CalibrationPose::brakePressed}
 };
 
+constexpr std::array retryAxisLabels{Text::guideRetrySteering, Text::guideRetryThrottle, Text::guideRetryBrake};
+
+struct AxisRetry {
+    std::size_t first;
+    std::size_t end;
+    std::array<chrome_axis::AxisCapture, calibrationSteps.size()> positions;
+};
+
 std::wstring wide(std::string_view text)
 {
     if (text.empty())
@@ -110,6 +121,20 @@ std::wstring wide(std::string_view text)
 bool hasAxes(const chrome_axis::DeviceInfo& device)
 {
     return std::ranges::any_of(device.axes, [](bool present) { return present; });
+}
+
+bool deployedProfileDirectory(const std::filesystem::path& directory)
+{
+    return chrome_axis::isInstalledPluginDirectory(directory.parent_path())
+        && !chrome_axis::isTemporaryProfileDirectory(directory);
+}
+
+std::wstring backupFolderName()
+{
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    return std::format(L"Chrome Axis - {:04}-{:02}-{:02}_{:02}-{:02}-{:02}", now.wYear, now.wMonth,
+                       now.wDay, now.wHour, now.wMinute, now.wSecond);
 }
 
 std::wstring formatDeadzone(float value)
@@ -328,6 +353,9 @@ private:
         AppendMenuW(profileMenu_, MF_STRING, selectProfile, tr(Text::mainMenuSelectProfile));
         AppendMenuW(profileMenu_, MF_STRING, openProfileFolder, tr(Text::mainMenuOpenProfiles));
         AppendMenuW(profileMenu_, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(profileMenu_, MF_STRING, backupProfiles, tr(Text::mainMenuBackupProfiles));
+        AppendMenuW(profileMenu_, MF_STRING, restoreProfiles, tr(Text::mainMenuRestoreProfiles));
+        AppendMenuW(profileMenu_, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(profileMenu_, MF_STRING, closeApp, tr(Text::mainMenuQuit));
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(profileMenu_), tr(Text::mainMenuProfile));
 
@@ -379,6 +407,8 @@ private:
             meters_[i] = child(L"STATIC", L"", SS_OWNERDRAW, meterFirst + static_cast<int>(i));
             values_[i] = label(L"—");
             simKeys_[i] = label(tr(keyLabels[i]));
+            retryAxes_[i] = button(tr(retryAxisLabels[i]), retryAxisFirst + static_cast<int>(i));
+            ShowWindow(retryAxes_[i], SW_HIDE);
         }
 
         calibrationTitle_ = label(tr(Text::mainCalibration));
@@ -452,7 +482,7 @@ private:
             int x, y, width, height;
         };
         std::vector<Placement> placements;
-        placements.reserve(62);
+        placements.reserve(65);
         const auto place = [&](HWND control, int x, int y, int w, int h) {
             if (control)
                 placements.push_back({control, px(left + x), px(y), px(w), px(h)});
@@ -480,19 +510,25 @@ private:
         place(axesTitle_, 42, 247, 300, 24);
         constexpr std::array column{42, 184, 298, 434};
         constexpr std::array headingWidths{130, 110, 132, 130};
-        const int meterWidth = width - column[3] - 112;
+        const bool reviewing = reviewingCalibration();
+        const int meterLeft = reviewing ? 220 : column[3];
+        const int meterWidth = width - meterLeft - (reviewing ? 314 : 112);
         const int pixelWidth = px(meterWidth);
         meterSpans_ = {pixelWidth - pixelWidth / 2, pixelWidth, pixelWidth};
         for (std::size_t i = 0; i < column.size(); ++i)
             place(headings_[i], column[i], 278, headingWidths[i], 20);
+        int reviewRow = 0;
         for (std::size_t i = 0; i < commands.size(); ++i) {
-            const int y = 303 + static_cast<int>(i) * 32;
-            place(names_[i], column[0], y + 3, 135, 22);
+            const int y = reviewing ? 300 + reviewRow * 44 : 303 + static_cast<int>(i) * 32;
+            if (reviewing && calibrationScope_[i])
+                ++reviewRow;
+            place(names_[i], reviewing ? 46 : column[0], y + 3, 150, 22);
             place(bindings_[i], column[1], y + 3, 105, 22);
             place(simKeys_[i], column[1], y + 3, 226, 22);
             place(zones_[i], column[2], y, 62, 24);
-            place(meters_[i], column[3], y + 8, meterWidth, 11);
-            place(values_[i], width - 102, y + 3, 60, 22);
+            place(meters_[i], meterLeft, y + 8, meterWidth, 11);
+            place(values_[i], width - (reviewing ? 302 : 102), y + 3, 64, 22);
+            place(retryAxes_[i], width - 226, y - 2, 180, 32);
         }
 
         place(diagnostics_, width - 339, 428, 133, 29);
@@ -502,11 +538,11 @@ private:
         if (calibrating_) {
             place(calibrationTitle_, 46, 119, width - 270, 29);
             place(guideStep_, width - 194, 124, 148, 24);
-            const int guideLeft = step_ == stepCount_ ? 46 : 280;
+            const int guideLeft = reviewing ? 46 : 280;
             const int guideWidth = width - guideLeft - 52;
             place(guideAction_, guideLeft, 196, guideWidth, 32);
             place(guideDevice_, guideLeft, 233, guideWidth, 25);
-            place(instruction_, guideLeft, 270, guideWidth, 57);
+            place(instruction_, guideLeft, reviewing ? 238 : 270, guideWidth, 57);
             place(guideNotice_, guideLeft, 338, guideWidth, 68);
             place(axisChoice_, 280, 412, width - 332, 180);
             place(cancel_, 46, 468, 144, 38);
@@ -606,7 +642,10 @@ private:
         };
         if (calibrating_) {
             drawCard(98, 535);
-            paintCalibrationProgress(dc, {px(left + 46), px(158), px(left + width - 46), px(169)}, dpi_, step_, stepCount_);
+            const auto first = retry_ ? retry_->first : 0;
+            const auto end = retry_ ? retry_->end : stepCount_;
+            paintCalibrationProgress(dc, {px(left + 46), px(158), px(left + width - 46), px(169)}, dpi_,
+                                     step_ - first, end - first);
             if (step_ < stepCount_)
                 paintGuideIllustration(dc, left);
         } else {
@@ -732,6 +771,8 @@ private:
     bool confirmPersistentDirectory() const;
     bool confirmCurrentPreset();
     void chooseStoredProfile();
+    void transferProfiles(bool restoring);
+    void updateLanguageIndicator(Language preference);
     void persist();
     void updateCalibrationView();
     void updateGuideVisibility();
@@ -750,12 +791,16 @@ private:
     void beginCalibration(const CalibrationScope& scope);
     void measureStep();
     void previousStep();
+    void retryAxis(std::size_t channel);
+    void cancelCurrentCalibration();
+    void enterCalibrationReview();
     void rewindCalibration(std::size_t target);
     void finishCalibration();
     void finishCapture(const chrome_axis::AxisCapture& capture);
     void acceptAxis(const chrome_axis::AxisCandidate& candidate);
     void suspendHardware();
     void tick();
+    void updateLiveControls(const chrome_axis::ControlState& state);
     void contextMenu(int x, int y);
 
     const chrome_axis::DeviceInfo* device(std::string_view id) const
@@ -780,6 +825,7 @@ private:
         }
         return std::ranges::any_of(scope, std::identity{});
     }
+    bool reviewingCalibration() const { return calibrating_ && step_ == stepCount_; }
     bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || accessoriesSaved_)); }
     bool clearAnalogProfile() const
     {
@@ -818,6 +864,7 @@ private:
     std::array<HWND, 3> deviceLabels_{}, deviceCombos_{};
     std::array<HWND, 3> names_{}, bindings_{}, zones_{}, meters_{}, values_{};
     std::array<HWND, 3> simKeys_{};
+    std::array<HWND, 3> retryAxes_{};
     std::unique_ptr<chrome_axis::DirectInput> input_;
     std::vector<chrome_axis::DeviceInfo> devices_;
     std::array<std::vector<std::string>, 3> deviceChoices_;
@@ -837,7 +884,7 @@ private:
     bool installed_{};
     std::wstring profileMessage_;
 
-    bool calibrating_{}, guideVisible_{};
+    bool calibrating_{}, guideVisible_{}, reviewVisible_{};
     bool guideMotionEnabled_{true};
     float guideMotion_{1.0f};
     std::chrono::steady_clock::time_point guideMotionStart_{};
@@ -849,6 +896,8 @@ private:
     std::array<chrome_axis::AxisCapture, calibrationSteps.size()> positions_{};
     std::vector<chrome_axis::AxisCandidate> candidates_;
     chrome_axis::Profile measured_{};
+    std::optional<AxisRetry> retry_;
+    std::optional<chrome_axis::ControlReader> reviewPreview_;
     std::wstring calibrationMessage_;
     bool simulation_{};
     bool publisherFailed_{};
@@ -874,6 +923,11 @@ void App::action(int command, int notification)
             profileMessage_.clear();
             rebuildPreview();
         }
+        return;
+    }
+    if (command >= retryAxisFirst && command < retryAxisFirst + static_cast<int>(commands.size())) {
+        if (notification == BN_CLICKED)
+            retryAxis(static_cast<std::size_t>(command - retryAxisFirst));
         return;
     }
     switch (command) {
@@ -940,14 +994,7 @@ void App::action(int command, int notification)
         previousStep();
         break;
     case cancelCalibration:
-        if (!calibrating_)
-            break;
-        calibrating_ = false;
-        capture_.reset();
-        candidates_.clear();
-        calibrationMessage_ = tr(Text::guideCancelled);
-        updateCalibrationView();
-        SetFocus(calibrationScopeButton_);
+        cancelCurrentCalibration();
         break;
     case saveProfile:
         persist();
@@ -962,6 +1009,10 @@ void App::action(int command, int notification)
         break;
     case selectProfile:
         chooseStoredProfile();
+        break;
+    case backupProfiles:
+    case restoreProfiles:
+        transferProfiles(command == restoreProfiles);
         break;
     case openProfileFolder:
         if (ensureProfileDirectory(directory_) && reinterpret_cast<INT_PTR>(
@@ -979,14 +1030,15 @@ void App::action(int command, int notification)
     case englishFlag: {
         const int languageCommand = command == frenchFlag ? frenchLanguage : command == englishFlag ? englishLanguage : command;
         const auto option = std::ranges::find(languageOptions, languageCommand, &LanguageOption::command);
-        if (!chrome_axis::saveLanguageChoice(option->language)) {
+        const bool saved = deployedProfileDirectory(directory_)
+            ? ensureProfileDirectory(directory_) &&
+                chrome_axis::writeProfileLanguage(directory_, chrome_axis::languageCode(option->language))
+            : chrome_axis::saveLanguageChoice(option->language);
+        if (!saved) {
             MessageBoxW(window_, tr(Text::mainLanguageSaveFailed), title, MB_OK | MB_ICONERROR);
             break;
         }
-        CheckMenuRadioItem(languageMenu_, automaticLanguage, englishLanguage, languageCommand, MF_BYCOMMAND);
-        selectedLanguage_ = chrome_axis::resolveLanguage(option->language);
-        InvalidateRect(frenchFlag_, nullptr, FALSE);
-        InvalidateRect(englishFlag_, nullptr, FALSE);
+        updateLanguageIndicator(option->language);
         if (selectedLanguage_ != chrome_axis::interfaceLanguage())
             MessageBoxW(window_, tr(Text::mainLanguageSaved), title, MB_OK | MB_ICONINFORMATION);
         break;
@@ -1047,7 +1099,7 @@ void App::scanDevices()
         hardwareStatus += advice;
     }
     setText(hardware_, hardwareStatus);
-    if (calibrating_ && !canCalibrate(calibrationScope_)) {
+    if (calibrating_ && !reviewingCalibration() && !retry_ && !canCalibrate(calibrationScope_)) {
         calibrating_ = false;
         capture_.reset();
         candidates_.clear();
@@ -1288,6 +1340,107 @@ void App::chooseStoredProfile()
     scanDevices();
 }
 
+void App::updateLanguageIndicator(Language preference)
+{
+    const auto option = std::ranges::find(languageOptions, preference, &LanguageOption::language);
+    CheckMenuRadioItem(languageMenu_, automaticLanguage, englishLanguage, option->command, MF_BYCOMMAND);
+    selectedLanguage_ = chrome_axis::resolveLanguage(preference);
+    InvalidateRect(frenchFlag_, nullptr, FALSE);
+    InvalidateRect(englishFlag_, nullptr, FALSE);
+}
+
+void App::transferProfiles(bool restoring)
+{
+    if (calibrating_ || simulation_)
+        return;
+
+    const auto confirmDeployment = [&] {
+        if (deployedProfileDirectory(directory_))
+            return true;
+        MessageBoxW(window_, tr(Text::mainDeployAndOpen), title, MB_OK | MB_ICONWARNING);
+        return false;
+    };
+    if (!confirmDeployment())
+        return;
+
+    const auto backups = directory_ / chrome_axis::profileBackupsFolder;
+    std::error_code directoryError;
+    const auto initial = std::filesystem::is_directory(backups, directoryError) ? backups : directory_;
+    std::filesystem::path chosen;
+    const auto result = chrome_axis::chooseProfileFolder(window_,
+        tr(restoring ? Text::mainRestorePickFolder : Text::mainBackupPickFolder), initial, chosen);
+    if (result == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        return;
+    if (FAILED(result)) {
+        MessageBoxW(window_, tr(Text::mainPickFolderFailed), title, MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (!confirmDeployment())
+        return;
+
+    if (restoring) {
+        auto confirmation = std::wstring(tr(Text::mainRestoreConfirm)) + L"\n\n" + directory_.wstring();
+        if (dirty_)
+            confirmation += L"\n\n" + std::wstring(tr(Text::mainRestoreDiscardDraft));
+        if (MessageBoxW(window_, confirmation.c_str(), title,
+                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+            return;
+    } else if (dirty_) {
+        const auto answer = MessageBoxW(window_, tr(Text::mainSaveBeforeBackup), title,
+                                       MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3);
+        if (answer == IDYES) {
+            if (!canSaveProfile()) {
+                MessageBoxW(window_, tr(Text::mainFinishOrDiscard), title, MB_OK | MB_ICONWARNING);
+                return;
+            }
+            persist();
+            if (dirty_)
+                return;
+        } else if (answer != IDNO) {
+            return;
+        }
+    }
+    if (!confirmDeployment())
+        return;
+
+    using Error = chrome_axis::ProfileBackupError;
+    Error error{};
+    const auto fallback = chrome_axis::languageCode(chrome_axis::profileLanguageChoice(directory_));
+    std::error_code sameDirectoryError;
+    const bool choseActiveFolder = !restoring && std::filesystem::equivalent(chosen, directory_, sameDirectoryError);
+    const auto path = restoring ? chosen : (choseActiveFolder ? backups : chosen) / backupFolderName();
+    std::filesystem::path recovery;
+    const bool complete = restoring ? chrome_axis::restoreProfileBackup(directory_, path, error, fallback, &recovery)
+                                    : chrome_axis::createProfileBackup(directory_, path, error, fallback);
+    if (!complete) {
+        auto reason = Text::mainProfileBackupIO;
+        switch (error) {
+        case Error::invalidLocation: reason = Text::mainProfileBackupInvalidLocation; break;
+        case Error::invalidBackup: reason = Text::mainProfileBackupInvalid; break;
+        case Error::destinationExists: reason = Text::mainProfileBackupExists; break;
+        case Error::recoveryRequired: reason = Text::mainProfileBackupRecoveryRequired; break;
+        default: break;
+        }
+        auto message = std::wstring(tr(reason));
+        if (error == Error::recoveryRequired)
+            message += L"\n\n" + recovery.wstring();
+        MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONERROR);
+        return;
+    }
+    auto message = std::wstring(tr(restoring ? Text::mainRestoreComplete : Text::mainBackupComplete));
+    if (restoring) {
+        readProfile();
+        scanDevices();
+        updateLanguageIndicator(chrome_axis::profileLanguageChoice(directory_));
+        message += L"\n\n" + std::wstring(tr(Text::mainRestoreRecovery)) + L"\n" + recovery.wstring();
+        if (selectedLanguage_ != chrome_axis::interfaceLanguage())
+            message += L"\n\n" + std::wstring(tr(Text::mainLanguageSaved));
+    } else {
+        message += L"\n\n" + path.wstring();
+    }
+    MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONINFORMATION);
+}
+
 void App::persist()
 {
     if (!canSaveProfile() || !confirmPersistentDirectory() || !confirmCurrentPreset())
@@ -1434,6 +1587,8 @@ void App::updateCalibrationView()
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, reloadProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, selectProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
+    EnableMenuItem(profileMenu_, backupProfiles, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
+    EnableMenuItem(profileMenu_, restoreProfiles, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     const bool canSave = canSaveProfile();
     EnableWindow(save_, canSave);
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | (canSave ? MF_ENABLED : MF_GRAYED));
@@ -1448,13 +1603,21 @@ void App::updateCalibrationView()
     }
 
     setText(calibrationTitle_, tr(Text::guideTitle));
-    EnableWindow(previous_, step_ > 0 && !capture_);
-    if (step_ == stepCount_) {
+    const auto first = retry_ ? retry_->first : 0;
+    const auto end = retry_ ? retry_->end : stepCount_;
+    EnableWindow(previous_, step_ > first && !capture_);
+    setText(cancel_, tr(retry_ ? Text::guideCancelRetry : Text::mainCancel));
+    if (reviewingCalibration()) {
         setText(guideStep_, tr(Text::guideReview));
         setText(guideAction_, tr(Text::guideReviewTitle));
         setText(guideDevice_, L"");
-        setText(instruction_, tr(Text::guideReviewInstruction));
-        setText(guideNotice_, tr(Text::guideReviewHint));
+        bool disconnected = false;
+        for (std::size_t i = 0; i < retryAxes_.size(); ++i) {
+            EnableWindow(retryAxes_[i], available[i]);
+            disconnected = disconnected || (calibrationScope_[i] && !available[i]);
+        }
+        EnableWindow(previous_, !disconnected);
+        setText(instruction_, tr(disconnected ? Text::guideReviewReconnect : Text::guideReviewInstruction));
         setText(measure_, tr(Text::guideFinish));
         EnableWindow(measure_, TRUE);
         InvalidateRect(window_, nullptr, FALSE);
@@ -1462,18 +1625,20 @@ void App::updateCalibrationView()
     }
 
     const auto& step = steps_[step_];
-    setText(guideStep_, tr(Text::guideStepPrefix) + std::to_wstring(step_ + 1) + tr(Text::guideStepSeparator)
-        + std::to_wstring(stepCount_));
+    setText(guideStep_, tr(Text::guideStepPrefix) + std::to_wstring(step_ - first + 1) + tr(Text::guideStepSeparator)
+        + std::to_wstring(end - first));
     setText(guideAction_, tr(choosing ? Text::guideSelectAxis : step.heading));
     std::wstring deviceLine = tr(deviceLabels[step.channel]);
     if (const auto* selected = device(deviceId(step.channel)))
         deviceLine += L"  ·  " + deviceName(*selected);
     setText(guideDevice_, deviceLine);
     setText(instruction_, tr(choosing ? Text::mainChooseMatchingAxis : step.instruction));
+    const bool disconnected = !available[step.channel];
     setText(guideNotice_, !calibrationMessage_.empty() ? calibrationMessage_
-        : choosing ? L"" : tr(step_ == 0 ? Text::guideCaptureHint : Text::guideNextCaptureHint));
+        : disconnected ? tr(Text::guideRetryReconnect)
+        : choosing ? L"" : tr(step_ == first ? Text::guideCaptureHint : Text::guideNextCaptureHint));
     setText(measure_, capture_ ? tr(Text::mainMeasuring) : choosing ? tr(Text::mainChooseAxis) : tr(Text::guideCapture));
-    EnableWindow(measure_, !capture_);
+    EnableWindow(measure_, !capture_ && !disconnected);
     InvalidateRect(window_, nullptr, FALSE);
 }
 
@@ -1521,19 +1686,27 @@ void App::updateGuideVisibility()
     const auto show = [](HWND control, bool visible) {
         ShowWindow(control, visible ? SW_SHOWNA : SW_HIDE);
     };
-    for (const auto control : {measure_, cancel_, previous_, guideStep_, guideAction_, guideDevice_, guideNotice_})
+    for (const auto control : {measure_, cancel_, previous_, guideStep_, guideAction_})
         show(control, calibrating_);
-    if (guideVisible_ == calibrating_)
+    const bool reviewing = reviewingCalibration();
+    for (const auto control : {guideDevice_, guideNotice_})
+        show(control, calibrating_ && !reviewing);
+    if (guideVisible_ == calibrating_ && reviewVisible_ == reviewing)
         return;
     guideVisible_ = calibrating_;
+    reviewVisible_ = reviewing;
     for (const auto control : {devicesTitle_, hardware_, usbToggle_, refresh_, accessories_, axesTitle_,
                               start_, calibrationScopeButton_, diagnostics_, feedback_})
         show(control, !calibrating_);
     for (const auto control : headings_)
         show(control, !calibrating_);
     for (std::size_t i = 0; i < commands.size(); ++i) {
-        for (const auto control : {deviceLabels_[i], deviceCombos_[i], names_[i], bindings_[i], zones_[i], meters_[i], values_[i]})
+        for (const auto control : {deviceLabels_[i], deviceCombos_[i], bindings_[i], zones_[i]})
             show(control, !calibrating_);
+        const bool reviewAxis = reviewing && calibrationScope_[i];
+        for (const auto control : {names_[i], meters_[i], values_[i]})
+            show(control, !calibrating_ || reviewAxis);
+        show(retryAxes_[i], reviewAxis);
     }
     layout();
 }
@@ -1603,6 +1776,8 @@ void App::updateSimulationView()
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, reloadProfile, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, selectProfile, MF_BYCOMMAND | MF_GRAYED);
+    EnableMenuItem(profileMenu_, backupProfiles, MF_BYCOMMAND | MF_GRAYED);
+    EnableMenuItem(profileMenu_, restoreProfiles, MF_BYCOMMAND | MF_GRAYED);
 }
 
 chrome_axis::ControlState App::previewSimulation()
@@ -1696,6 +1871,8 @@ void App::beginCalibration(const CalibrationScope& scope)
     stepCount_ = static_cast<std::size_t>(planned.out - steps_.begin());
     measured_ = {};
     positions_ = {};
+    retry_.reset();
+    reviewPreview_.reset();
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
     for (std::size_t i = 0; i < axes.size(); ++i) {
         if (!scope[i] && draft_[i])
@@ -1717,6 +1894,8 @@ void App::measureStep()
         finishCalibration();
         return;
     }
+    if (!availableCalibrationScope()[steps_[step_].channel])
+        return;
     if (!candidates_.empty()) {
         const auto selected = SendMessageW(axisChoice_, CB_GETCURSEL, 0, 0);
         if (selected != CB_ERR && static_cast<std::size_t>(selected) < candidates_.size()) {
@@ -1733,25 +1912,71 @@ void App::measureStep()
 
 void App::previousStep()
 {
-    if (!calibrating_ || capture_ || step_ == 0)
+    const auto first = retry_ ? retry_->first : 0;
+    if (!calibrating_ || capture_ || step_ == first || (reviewingCalibration() && !canCalibrate(calibrationScope_)))
         return;
 
-    const bool reviewing = step_ == stepCount_;
+    reviewPreview_.reset();
     // From axis selection, return to the position just captured.
     rewindCalibration(candidates_.empty() ? step_ - 1 : step_);
     calibrationMessage_ = tr(Text::guideRetryPosition);
-    if (reviewing)
-        layout();
     updateCalibrationView();
-    SetFocus(step_ > 0 ? previous_ : measure_);
+    SetFocus(step_ > first ? previous_ : measure_);
+}
+
+void App::retryAxis(std::size_t channel)
+{
+    if (!reviewingCalibration() || !calibrationScope_[channel] || !availableCalibrationScope()[channel])
+        return;
+
+    const auto planned = std::span(steps_).first(stepCount_);
+    const auto axisSteps = std::ranges::equal_range(planned, channel, {}, &Step::channel);
+    const auto first = static_cast<std::size_t>(axisSteps.begin() - planned.begin());
+    const auto end = static_cast<std::size_t>(axisSteps.end() - planned.begin());
+    retry_.emplace(AxisRetry{first, end, positions_});
+    reviewPreview_.reset();
+    rewindCalibration(first);
+    calibrationMessage_.clear();
+    updateCalibrationView();
+    SetFocus(measure_);
+}
+
+void App::cancelCurrentCalibration()
+{
+    if (!calibrating_)
+        return;
+
+    capture_.reset();
+    candidates_.clear();
+    if (retry_) {
+        positions_ = std::move(retry_->positions);
+        enterCalibrationReview();
+        return;
+    }
+    calibrating_ = false;
+    reviewPreview_.reset();
+    calibrationMessage_ = tr(Text::guideCancelled);
+    updateCalibrationView();
+    SetFocus(calibrationScopeButton_);
+}
+
+void App::enterCalibrationReview()
+{
+    retry_.reset();
+    step_ = stepCount_;
+    reviewPreview_.emplace(measured_);
+    updateLiveControls({});
+    updateCalibrationView();
+    SetFocus(measure_);
 }
 
 void App::rewindCalibration(std::size_t target)
 {
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
-    for (std::size_t i = target; i < stepCount_; ++i) {
+    const auto end = retry_ ? retry_->end : stepCount_;
+    for (std::size_t i = target; i < end; ++i) {
         positions_[i] = {};
-        if (steps_[i].position == Position::Positive)
+        if (!retry_ && steps_[i].position == Position::Positive)
             *axes[steps_[i].channel] = {};
     }
     candidates_.clear();
@@ -1817,8 +2042,10 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
     }
     *axes[channel] = std::move(axis);
     ++step_;
-    if (step_ == stepCount_)
-        layout();
+    if (step_ == (retry_ ? retry_->end : stepCount_)) {
+        enterCalibrationReview();
+        return;
+    }
     updateCalibrationView();
     SetFocus(measure_);
 }
@@ -1826,6 +2053,7 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
 void App::finishCalibration()
 {
     calibrating_ = false;
+    reviewPreview_.reset();
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
     for (std::size_t i = 0; i < axes.size(); ++i) {
         if (calibrationScope_[i])
@@ -1877,8 +2105,13 @@ void App::tick()
         }
         return;
     }
-    const auto state = simulation_ ? previewSimulation()
-        : preview_ && !calibrating_ && foreground ? preview_->poll(*input_) : chrome_axis::ControlState{};
+    auto* reader = reviewPreview_ ? &*reviewPreview_ : !calibrating_ && preview_ ? &*preview_ : nullptr;
+    updateLiveControls(simulation_ ? previewSimulation()
+        : reader && foreground ? reader->poll(*input_) : chrome_axis::ControlState{});
+}
+
+void App::updateLiveControls(const chrome_axis::ControlState& state)
+{
     const std::array current{state.values.steering, state.values.throttle, state.values.brake};
     const std::array ready{state.steeringReady, state.throttleReady, state.brakeReady};
     for (std::size_t i = 0; i < live_.size(); ++i) {
@@ -1904,6 +2137,8 @@ void App::suspendHardware()
         input_->close();
     if (preview_)
         preview_->reset();
+    if (reviewPreview_)
+        reviewPreview_->reset();
     if (capture_) {
         capture_.reset();
         calibrationMessage_ = tr(Text::mainMeasureInterrupted);
@@ -1962,9 +2197,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
 {
-    chrome_axis::initializeLanguage(commandLine ? std::wstring_view(commandLine) : std::wstring_view{});
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const auto directory = chrome_axis::calibrationProfileDirectory(chrome_axis::modulePath(instance));
+    chrome_axis::initializeLanguage(commandLine ? std::wstring_view(commandLine) : std::wstring_view{},
+        deployedProfileDirectory(directory) ? directory : std::filesystem::path{});
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (directory.empty()) {
         MessageBoxW(nullptr, tr(Text::mainProfileFolderUnavailable), title, MB_OK | MB_ICONERROR);
         return 1;

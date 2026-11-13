@@ -10,6 +10,7 @@
 #ifndef RC_INVOKED
 #include <windows.h>
 
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,6 +25,8 @@ struct ProfileChoice {
 
 std::optional<ProfileChoice> chooseProfile(HWND owner, const std::vector<std::wstring>& names,
                                            std::wstring_view active);
+HRESULT chooseProfileFolder(HWND owner, const wchar_t* title, const std::filesystem::path& initial,
+                            std::filesystem::path& result);
 
 } // namespace chrome_axis
 #endif

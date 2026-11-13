@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.19** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.20** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -26,13 +26,13 @@ Si Windows signale `MSVCP140.dll` ou `VCRUNTIME140.dll` manquant, installez le r
 
 ### Mise à jour depuis une version précédente
 
-1. Fermez le jeu. Avant de désactiver l’ancienne version, sauvegardez le dossier `Profil` complet. Le menu **Profil** de l’ancienne application permet d’ouvrir le dossier où ces réglages ont été enregistrés, y compris si Vortex l’avait lancée depuis son dossier de préparation.
+1. Fermez le jeu. Dans l’ancienne application, utilisez **Profil → Sauvegarder les profils…** et choisissez un emplacement en dehors du dossier du jeu pour garder la sauvegarde pendant la mise à jour. Si la commande est absente, ouvrez le dossier des profils depuis le même menu et faites-en une copie complète.
 2. Fermez l’ancienne application, désactivez l’ancien mod dans Vortex et déployez le changement. Pour une installation manuelle, retirez le dossier de l’ancien plugin de `red4ext/plugins` après avoir sauvegardé les réglages.
-3. Installez Chrome Axis et restaurez la sauvegarde dans `red4ext/plugins/chrome_axis/Profil`. Ouvrez Chrome Axis et cliquez sur **Recharger**.
+3. Installez et déployez la nouvelle version. Ouvrez son `ChromeAxis.exe` et choisissez **Profil → Restaurer les profils…**. Sélectionnez le dossier de sauvegarde ou la copie de l’ancien dossier `Profil`. L’application applique les réglages au dossier `red4ext/plugins/chrome_axis/Profil` du jeu et recharge le profil actif.
 
 ## Langue
 
-Dans le carré à droite de **Simulation**, cliquez sur le drapeau français en haut à gauche ou sur le drapeau britannique en bas à droite. La moitié choisie s’illumine aussitôt. Relancez Chrome Axis pour appliquer la langue. Vous pouvez aussi choisir **Français**, **English** ou **Automatique (Windows)** dans **Aide → Langue**. Le réglage automatique utilise le français si l’interface de Windows est en français et l’anglais pour les autres langues. Le choix est enregistré pour votre compte Windows et s’applique à tous vos profils.
+Dans le carré à droite de **Simulation**, cliquez sur le drapeau français en haut à gauche ou sur le drapeau britannique en bas à droite. La moitié choisie s’illumine aussitôt. Relancez Chrome Axis pour appliquer la langue. Vous pouvez aussi choisir **Français**, **English** ou **Automatique (Windows)** dans **Aide → Langue**. Le réglage automatique utilise le français si l’interface de Windows est en français et l’anglais pour les autres langues. La langue de l’application déployée s’enregistre dans le dossier `Profil` du mod et s’applique à tous les profils.
 
 Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche en français si le jeu est en français et en anglais dans les autres langues. Les journaux techniques du plugin utilisent l’anglais.
 
@@ -54,8 +54,8 @@ Le journal du plugin dans `red4ext/logs` indique `Keyboard simulation active` lo
 ## Calibration et profil
 
 1. Dans l’onglet **Matériel USB**, actualisez la liste et choisissez un périphérique pour le **Volant**, l’**Accélérateur** et le **Frein**. Si les pédales sont raccordées à la base, choisissez **Même que le volant** pour l’accélérateur et **Même que l’accélérateur** pour le frein. Choisissez **Commandes du jeu** pour conserver le clavier ou la manette sur un axe.
-2. Cliquez sur **Calibrer les axes**. À chaque étape, l’animation et la consigne indiquent la position à prendre sur le périphérique affiché. Une fois en position, cliquez sur **Capturer la position** et gardez la commande immobile jusqu’à la fin de la capture. Si plusieurs axes réagissent, sélectionnez celui qui correspond à la commande demandée. **Précédent** permet de refaire une position tout en gardant les captures antérieures. À l’écran de vérification, utilisez encore **Précédent** pour reprendre la dernière position ou cliquez sur **Terminer**.
-3. Contrôlez les valeurs en direct. La direction doit aller de −100 % à +100 % et chaque pédale de 0 % à 100 %. Les commandes calibrées doivent revenir à zéro au repos. Si une commande bouge légèrement au repos, ajustez sa zone morte en pourcentage.
+2. Cliquez sur **Calibrer les axes**. À chaque étape, l’animation et la consigne indiquent la position à prendre sur le périphérique affiché. Une fois en position, cliquez sur **Capturer la position** et gardez la commande immobile jusqu’à la fin de la capture. Si plusieurs axes réagissent, sélectionnez celui qui correspond à la commande demandée. **Précédent** permet de refaire une position tout en gardant les captures antérieures.
+3. Dans **Vérification**, actionnez chaque commande et contrôlez la jauge correspondante. La direction doit aller de −100 % à +100 % et chaque pédale de 0 % à 100 %, avec un retour à zéro au repos. Utilisez le bouton de la commande à reprendre, par exemple **Refaire le frein**, pour conserver les autres mesures. Cliquez sur **Terminer** pour revenir à la fenêtre principale et ajuster les zones mortes si nécessaire.
 4. Cliquez sur **Enregistrer le profil** pour écrire `chrome_axis.ini` dans le dossier du profil actif. Cliquez sur **Recharger** pour relire les réglages enregistrés.
 
 Si le pilote expose les deux pédales sur un même axe, la calibration accepte un point de repos commun avec des courses opposées. Choisissez des axes séparés dans le pilote pour mesurer les deux pressions simultanément.
@@ -65,6 +65,8 @@ Pour reprendre une mesure, ouvrez **Calibrer séparément…**, puis choisissez 
 ### Plusieurs profils
 
 **Dossier des profils** ouvre le dossier qui contient les réglages. Dans **Sélectionner un profil…**, choisissez **Profil par défaut** pour retrouver votre calibration existante ou créez une copie nommée à partir des réglages enregistrés. Chaque profil garde ses axes, ses accessoires et son retour de force. **Enregistrer le profil** et **Recharger** agissent sur la sélection actuelle. Le jeu prend la même sélection au prochain contrôle des réglages. L’activation USB reste commune à tous les profils.
+
+Les commandes **Sauvegarder les profils…** et **Restaurer les profils…** du menu **Profil** incluent le profil par défaut, tous les profils nommés, la calibration et les zones mortes, les affectations, le retour de force, le profil actif, l’activation USB et la langue. Fermez le jeu avant de restaurer. Une copie des réglages précédents reste disponible dans `Profil/Sauvegardes`. Relancez Chrome Axis si la langue a changé.
 
 ### Retour de force
 
@@ -156,7 +158,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.19-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.20-Cyberpunk-2.5.zip'
 ```
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.

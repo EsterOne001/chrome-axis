@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -19,10 +20,12 @@ enum class Text {
 };
 
 // Resolve the UI language once, before creating any window or dialog.
-void initializeLanguage(std::wstring_view commandLine = {}) noexcept;
+void initializeLanguage(std::wstring_view commandLine = {}, const std::filesystem::path& profileRoot = {});
 Language languageChoice() noexcept;
 Language interfaceLanguage() noexcept;
 Language resolveLanguage(Language preference) noexcept;
+Language profileLanguageChoice(const std::filesystem::path& profileRoot);
+std::string_view languageCode(Language language) noexcept;
 bool saveLanguageChoice(Language language) noexcept;
 
 const wchar_t* tr(Text id) noexcept;

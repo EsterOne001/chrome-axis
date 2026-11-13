@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.19** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.20** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -20,13 +20,13 @@ If Windows reports a missing `MSVCP140.dll` or `VCRUNTIME140.dll`, install the M
 
 ### Update an existing installation
 
-1. Close the game. Open the profiles folder from the previous app and back up the entire `Profil` folder. This also locates the settings if Vortex launched the app from its staging folder.
+1. Close the game. In the previous app, choose **Profile → Back up profiles…** and select a location outside the game folder to keep the backup during the update. If the command is unavailable, open the profiles folder from the same menu and copy the entire folder.
 2. Close the previous app, disable its mod in Vortex and deploy the changes. For a manual installation, remove the previous plugin folder from `red4ext/plugins` after backing up the profiles.
-3. Install the new ZIP, restore the backup to `red4ext/plugins/chrome_axis/Profil`, open Chrome Axis and click **Reload**.
+3. Install and deploy the new version. Open its `ChromeAxis.exe` and choose **Profile → Restore profiles…**. Select the backup folder or the copy of your old `Profil` folder. The app restores the settings to the game's `red4ext/plugins/chrome_axis/Profil` folder and reloads the active profile.
 
 ## Language
 
-In the square to the right of **Simulation**, click the French flag in the upper left or the British flag in the lower right. The selected half lights up immediately. Restart Chrome Axis to apply the language. You can also choose **Français**, **English** or **Automatic (Windows)** under **Help → Language**. Automatic mode uses French when the Windows display language is French and English for other display languages. Your choice is saved for your Windows account and applies to all profiles.
+In the square to the right of **Simulation**, click the French flag in the upper left or the British flag in the lower right. The selected half lights up immediately. Restart Chrome Axis to apply the language. You can also choose **Français**, **English** or **Automatic (Windows)** under **Help → Language**. Automatic mode uses French when the Windows display language is French and English for other display languages. The deployed app saves the language in the mod's `Profil` folder, and the choice applies to all profiles.
 
 The HUD follows Cyberpunk 2077’s on-screen language. It uses French when the game is set to French and English for other game languages. The plugin logs use English.
 
@@ -48,8 +48,8 @@ The plugin log reports `Keyboard simulation active` when the game accepts simula
 ## Calibration and profiles
 
 1. In **USB Hardware**, click **Refresh**. Select devices for **Wheel**, **Throttle** and **Brake**. For pedals attached to the wheelbase, select **Same as wheel** for the throttle and **Same as throttle** for the brake. Select **Game controls** to keep the game’s usual controls for an axis.
-2. Click **Calibrate axes**. At each step, the animation and instructions show the position to use on the displayed device. Once in position, click **Capture position** and hold the control still until the capture finishes. If several axes move, select the one that matches the requested control. Use **Previous** to retake a position while keeping earlier captures. On the review screen, use **Previous** to retake the final position or click **Finish**.
-3. Check the live readings. Steering should range from −100% to +100% and each pedal from 0% to 100%. The controls should return to zero at rest. Increase the deadzone if a control drifts slightly at rest.
+2. Click **Calibrate axes**. At each step, the animation and instructions show the position to use on the displayed device. Once in position, click **Capture position** and hold the control still until the capture finishes. If several axes move, select the one that matches the requested control. Use **Previous** to retake a position while keeping earlier captures.
+3. On the **Review** screen, move each control and check its live gauge. Steering should range from −100% to +100% and each pedal from 0% to 100%, returning to zero at rest. Use the button for the control you want to repeat, such as **Redo brake**, to keep the other measurements. Click **Finish** to return to the main screen, where you can adjust deadzones if needed.
 4. Click **Save profile** to write the calibration to `chrome_axis.ini` in the active profile. Click **Reload** to read the saved settings.
 
 If your driver puts both pedals on one axis, Chrome Axis accepts a shared rest position with travel in opposite directions. Use separate axes in the driver settings to measure both pedals at once.
@@ -57,6 +57,8 @@ If your driver puts both pedals on one axis, Chrome Axis accepts a shared rest p
 To take a measurement again, open **Calibrate separately…**, then choose an axis or device. Choosing a device recalibrates all driving axes assigned to it. Other measurements and accessory bindings are kept. Save the profile to apply the result.
 
 **Select profile…** lets you switch to **Default profile** or create a named copy from the current saved settings. Each profile stores its own calibration, accessory bindings and force feedback settings. **Save profile** and **Reload** act on the active profile. The plugin picks up the same selection on its next settings check. USB activation is shared across profiles.
+
+**Back up profiles…** and **Restore profiles…** in the **Profile** menu include the default and named profiles, calibration and deadzones, bindings, force feedback, active profile, USB activation, and language. Close the game before restoring. A copy of the previous settings is available in `Profil/Sauvegardes`. Restart Chrome Axis if the language has changed.
 
 ### Force feedback
 
@@ -144,7 +146,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.19-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.20-Cyberpunk-2.5.zip'
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.

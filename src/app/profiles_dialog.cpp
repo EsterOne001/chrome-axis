@@ -3,10 +3,52 @@
 #include "app_text.hpp"
 #include "dialog_theme.hpp"
 
+#include <shobjidl.h>
+
 #include <iterator>
+#include <memory>
 
 namespace chrome_axis {
 namespace {
+
+constexpr auto releaseCom = [](auto* object) { object->Release(); };
+
+HRESULT pickFolder(HWND owner, const wchar_t* title, const std::filesystem::path& initial,
+                   std::filesystem::path& result)
+{
+    IFileOpenDialog* dialogPointer{};
+    auto status = CoCreateInstance(__uuidof(FileOpenDialog), nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dialogPointer));
+    if (FAILED(status))
+        return status;
+    const std::unique_ptr<IFileOpenDialog, decltype(releaseCom)> dialog(dialogPointer);
+
+    DWORD options{};
+    if (FAILED(status = dialog->GetOptions(&options)) ||
+        FAILED(status = dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)) ||
+        FAILED(status = dialog->SetTitle(title)))
+        return status;
+
+    IShellItem* initialItem{};
+    if (!initial.empty() && SUCCEEDED(SHCreateItemFromParsingName(initial.c_str(), nullptr,
+                                                                  IID_PPV_ARGS(&initialItem)))) {
+        const std::unique_ptr<IShellItem, decltype(releaseCom)> folder(initialItem);
+        dialog->SetFolder(folder.get());
+    }
+    if (FAILED(status = dialog->Show(owner)))
+        return status;
+
+    IShellItem* selectedItem{};
+    if (FAILED(status = dialog->GetResult(&selectedItem)))
+        return status;
+    const std::unique_ptr<IShellItem, decltype(releaseCom)> item(selectedItem);
+    PWSTR path{};
+    if (FAILED(status = item->GetDisplayName(SIGDN_FILESYSPATH, &path)))
+        return status;
+    const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> ownedPath(path, CoTaskMemFree);
+    result = ownedPath.get();
+    return S_OK;
+}
 
 struct Picker {
     const std::vector<std::wstring>& names;
@@ -92,6 +134,17 @@ std::optional<ProfileChoice> chooseProfile(HWND owner, const std::vector<std::ws
     DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PROFILES), owner, profileDialogProc,
                     reinterpret_cast<LPARAM>(&picker));
     return picker.choice;
+}
+
+HRESULT chooseProfileFolder(HWND owner, const wchar_t* title, const std::filesystem::path& initial,
+                            std::filesystem::path& result)
+{
+    const auto status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(status))
+        return status;
+    const auto picked = pickFolder(owner, title, initial, result);
+    CoUninitialize();
+    return picked;
 }
 
 } // namespace chrome_axis

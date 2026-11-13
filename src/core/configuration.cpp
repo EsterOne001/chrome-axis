@@ -6,8 +6,6 @@
 namespace chrome_axis {
 namespace {
 
-constexpr wchar_t usbMarker[] = L"usb.enabled";
-
 bool validMarker(DWORD attributes) noexcept
 {
     return attributes != INVALID_FILE_ATTRIBUTES &&
@@ -120,7 +118,7 @@ bool isTemporaryProfileDirectory(const std::filesystem::path& directory)
 bool usbEnabled(const std::filesystem::path& directory) noexcept
 {
     try {
-        return directory.is_absolute() && validMarker(GetFileAttributesW((directory / usbMarker).c_str()));
+        return directory.is_absolute() && validMarker(GetFileAttributesW((directory / usbMarkerFilename).c_str()));
     } catch (...) {
         return false;
     }
@@ -134,7 +132,7 @@ bool setUsbEnabled(const std::filesystem::path& directory, bool enabled, std::st
         return false;
     }
 
-    const auto marker = directory / usbMarker;
+    const auto marker = directory / usbMarkerFilename;
     if (!enabled) {
         if (DeleteFileW(marker.c_str()) || missing(GetLastError()))
             return true;
