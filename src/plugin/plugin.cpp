@@ -39,6 +39,7 @@ using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 using chrome_axis::DiagnosticAccessoryState;
 using chrome_axis::DiagnosticAxisState;
+using chrome_axis::DiagnosticDelivery;
 using chrome_axis::DiagnosticFeedbackState;
 using chrome_axis::DiagnosticMode;
 using Vehicle = RED4ext::vehicle::BaseObject;
@@ -101,9 +102,20 @@ struct AppliedAxis {
     std::uint64_t tick{};
 };
 
+struct AxisDelivery {
+    float requested{};
+    DiagnosticDelivery outcome{DiagnosticDelivery::unavailable};
+};
+
+struct VehicleDelivery {
+    std::array<AxisDelivery, 3> axes{};
+    Clock::time_point sampled{};
+};
+
 std::mutex stateMutex;
 DrivingContext context;
 std::array<AppliedAxis, 3> appliedAxes;
+VehicleDelivery vehicleDelivery;
 VehicleMotion vehicleMotion;
 InputFrame inputFrame;
 HudFrame hudFrame;
@@ -410,6 +422,7 @@ void resetSimulator() noexcept {
 
 void invalidateFrames() noexcept {
     inputFrame = {};
+    vehicleDelivery = {};
     hudFrame = {};
     lastUsbSignal = {};
     vehicleMotion = {};
@@ -627,33 +640,57 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         if (!diagnostics || !active.load(std::memory_order_acquire))
             return;
         const bool gameForeground = foregroundGameWindow() != nullptr;
+        auto snapshot = diagnostic;
+        std::uint64_t drivingSession{};
         {
             std::scoped_lock lock(stateMutex);
             // A vehicle transition can invalidate the worker's sample before publishing.
             if (gameForeground && foreground && context.generation != polled.generation)
                 return;
             if (!gameForeground) {
-                diagnostic.mode = DiagnosticMode::gameNotForeground;
-                if (diagnostic.feedback != DiagnosticFeedbackState::disabled)
-                    diagnostic.feedback = DiagnosticFeedbackState::inactive;
+                snapshot.mode = DiagnosticMode::gameNotForeground;
             } else if (!foreground) {
-                diagnostic.mode = DiagnosticMode::waitingForDriver;
-            } else if ((diagnostic.mode == DiagnosticMode::usb || diagnostic.mode == DiagnosticMode::simulation) &&
-                       (context.vehicleUpdated == Clock::time_point{} || now - context.vehicleUpdated > inputLifetime)) {
-                diagnostic.mode = DiagnosticMode::waitingForVehicleInput;
+                snapshot.mode = DiagnosticMode::waitingForDriver;
+            } else {
+                drivingSession = context.diagnosticSession;
+                if ((snapshot.mode == DiagnosticMode::usb || snapshot.mode == DiagnosticMode::simulation) &&
+                    (context.vehicleUpdated == Clock::time_point{} || now - context.vehicleUpdated > inputLifetime)) {
+                    snapshot.mode = DiagnosticMode::waitingForVehicleInput;
+                }
             }
             if (context.diagnosticSession != diagnosticSession) {
                 diagnosticSession = context.diagnosticSession;
                 diagnostic.lastAccessoryKey = 0;
                 diagnostic.accessorySentAt = 0;
+                snapshot.lastAccessoryKey = 0;
+                snapshot.accessorySentAt = 0;
             }
-            // The input thread owns the mapping. Copy only the actual writes from the game hook.
+            const bool hasDelivery = drivingSession && vehicleDelivery.sampled != Clock::time_point{} &&
+                now - vehicleDelivery.sampled <= inputLifetime;
             for (std::size_t i = 0; i < appliedAxes.size(); ++i) {
-                diagnostic.axes[i].value = appliedAxes[i].value;
-                diagnostic.axes[i].appliedAt = appliedAxes[i].tick;
+                auto& axis = snapshot.axes[i];
+                axis.value = appliedAxes[i].value;
+                axis.appliedAt = appliedAxes[i].tick;
+                if (!drivingSession) {
+                    axis.state = DiagnosticAxisState::inactive;
+                    axis.inputAvailable = 0;
+                }
+                if (hasDelivery && (axis.state == DiagnosticAxisState::armed ||
+                                    axis.state == DiagnosticAxisState::simulated)) {
+                    const auto& delivered = vehicleDelivery.axes[i];
+                    axis.requestedValue = delivered.requested;
+                    axis.requestedAvailable = delivered.outcome != DiagnosticDelivery::unavailable;
+                    axis.delivery = delivered.outcome;
+                }
             }
         }
-        diagnostics->publish(diagnostic);
+        if (!drivingSession) {
+            snapshot.accessories = DiagnosticAccessoryState::inactive;
+            snapshot.accessoryArmed = 0;
+            if (snapshot.feedback != DiagnosticFeedbackState::disabled)
+                snapshot.feedback = DiagnosticFeedbackState::inactive;
+        }
+        diagnostics->publish(snapshot, drivingSession);
     };
     std::filesystem::path activeDirectory;
     std::optional<chrome_axis::Profile> profile;
@@ -896,6 +933,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         wasSimulated = simulated;
 
         chrome_axis::ControlState controls{};
+        chrome_axis::ControlReader::Readings readings;
+        const bool sampleDiagnostics = diagnostics && start >= nextDiagnostic;
         std::bitset<256> requestedKeys;
         bool accessoriesReady = false;
         const bool physical = !simulated && (reader || accessories);
@@ -922,7 +961,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (input && input->ready()) {
                 input->beginPoll();
                 if (reader) {
-                    controls = reader->poll(*input);
+                    controls = reader->poll(*input, sampleDiagnostics ? &readings : nullptr);
                 }
                 if (accessories && current.vehicleUpdated != Clock::time_point{} &&
                     start - current.vehicleUpdated <= inputLifetime) {
@@ -1053,16 +1092,19 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (physical && now - start > inputLifetime)
                 sampleExpiredUntil = now + diagnosticIssueDuration;
         }
-        if (start >= nextDiagnostic && diagnostics) {
+        if (sampleDiagnostics) {
             const bool sampleExpired = start < sampleExpiredUntil;
             diagnostic.mode = simulated ? DiagnosticMode::simulation : !wasUsbEnabled ? DiagnosticMode::usbDisabled
                 : !physical ? DiagnosticMode::profileUnavailable : DiagnosticMode::usb;
             diagnostic.profileLoaded = physical && !activeDirectory.empty();
             for (std::size_t i = 0; i < diagnostic.axes.size(); ++i) {
-                diagnostic.axes[i].state = simulated ? DiagnosticAxisState::simulated
+                auto& axis = diagnostic.axes[i];
+                axis.state = simulated ? DiagnosticAxisState::simulated
                     : !wasUsbEnabled ? DiagnosticAxisState::inactive
                     : !reader ? DiagnosticAxisState::awaitingProfile
                     : diagnosticAxisState(reader->axisStatuses()[i], sampleExpired);
+                axis.inputValue = readings[i].value_or(0.0f);
+                axis.inputAvailable = readings[i].has_value() && !sampleExpired;
             }
             diagnostic.accessoryCount = physical && accessoryProfile
                 ? static_cast<std::uint32_t>(accessoryProfile->size()) : 0;
@@ -1108,12 +1150,14 @@ void updateVehicle(Vehicle* vehicle) {
     const auto now = Clock::now();
     if (vehicle != context.vehicle || now - context.refreshed > contextLifetime) {
         resetSimulator();
+        vehicleDelivery = {};
         return;
     }
     // Accessories can run without an analog profile, but only while the game is updating the vehicle.
     context.vehicleUpdated = now;
     if (inputFrame.generation != context.generation || now - inputFrame.sampled > inputLifetime) {
         resetSimulator();
+        vehicleDelivery = {};
         return;
     }
     if (!foregroundGameWindow()) {
@@ -1139,12 +1183,14 @@ void updateVehicle(Vehicle* vehicle) {
         controls = {values, values.steering != 0.0f, values.throttle > 0.0f, values.brake > 0.0f};
     }
     if (!controls.steeringReady && !controls.throttleReady && !controls.brakeReady) {
+        vehicleDelivery = {};
         return;
     }
     const float gameSteering = readField(*vehicle, steeringOffset);
     const float gameThrottle = vehicle->acceleration;
     const float gameBrake = vehicle->deceleration;
     if (!std::isfinite(gameSteering) || !std::isfinite(gameThrottle) || !std::isfinite(gameBrake)) {
+        vehicleDelivery = {};
         return;
     }
 
@@ -1155,6 +1201,13 @@ void updateVehicle(Vehicle* vehicle) {
     const float throttle = controls.throttleReady ? std::max(gameThrottle, controls.values.throttle) : gameThrottle;
     const float brake = controls.brakeReady ? std::max(gameBrake, controls.values.brake) : gameBrake;
     const bool pedals = throttle != gameThrottle || brake != gameBrake;
+    const auto delivery = [](float value, bool ready, bool applied) {
+        return AxisDelivery{value, !ready ? DiagnosticDelivery::unavailable
+            : applied ? DiagnosticDelivery::applied : DiagnosticDelivery::gameKept};
+    };
+    vehicleDelivery = {{delivery(compensated, controls.steeringReady, steer),
+                        delivery(controls.values.throttle, controls.throttleReady, throttle != gameThrottle),
+                        delivery(controls.values.brake, controls.brakeReady, brake != gameBrake)}, now};
     if (steer) {
         writeField(*vehicle, steeringOffset, compensated);
     }

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ChromeAxis VERSION 0.4.20 LANGUAGES CXX)
+project(ChromeAxis VERSION 0.4.21 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Chrome Axis requires a Windows x64 MSVC build.")
@@ -60,7 +60,7 @@ set_target_properties(chrome_axis_app PROPERTIES OUTPUT_NAME ChromeAxis PDB_NAME
 target_include_directories(chrome_axis_app PRIVATE assets)
 target_compile_definitions(chrome_axis_app PRIVATE UNICODE _UNICODE CHROME_AXIS_CALIBRATION_APP)
 target_compile_options(chrome_axis_app PRIVATE /W4 /utf-8)
-target_link_libraries(chrome_axis_app PRIVATE chrome_axis_input advapi32 comctl32 gdi32 gdiplus shell32 shlwapi)
+target_link_libraries(chrome_axis_app PRIVATE chrome_axis_input advapi32 comctl32 gdi32 gdiplus shell32 shlwapi version)
 install(TARGETS chrome_axis_app RUNTIME DESTINATION "${CHROME_AXIS_INSTALL_DIR}")
 
 if(CHROME_AXIS_BUILD_PLUGIN)

@@ -145,7 +145,8 @@ BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
         enumeration.devices.push_back({
             deviceId(instance->guidInstance),
             utf8(instance->tszInstanceName[0] ? instance->tszInstanceName : instance->tszProductName),
-            availableAxes(*device), availableButtons(*device), availablePovs(*device), availableForceAxes(*device)
+            availableAxes(*device), availableButtons(*device), availablePovs(*device), availableForceAxes(*device),
+            utf8(instance->tszProductName)
         });
     }
     return DIENUM_CONTINUE;

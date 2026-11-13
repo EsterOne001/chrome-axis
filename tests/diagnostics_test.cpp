@@ -43,6 +43,11 @@ int run()
     snapshot.mode = DiagnosticMode::usb;
     snapshot.profile[0] = 'A';
     snapshot.axes[0] = {DiagnosticAxisState::armed, -0.75f, GetTickCount64()};
+    snapshot.axes[0].inputAvailable = 1;
+    snapshot.axes[0].inputValue = 0.0f;
+    snapshot.axes[0].requestedAvailable = 1;
+    snapshot.axes[0].requestedValue = 0.0f;
+    snapshot.axes[0].delivery = DiagnosticDelivery::gameKept;
     snapshot.axes[1].state = DiagnosticAxisState::waitingForNeutral;
     snapshot.profileLoaded = 1;
     snapshot.accessoryCount = 2;
@@ -53,7 +58,7 @@ int run()
     snapshot.feedback = DiagnosticFeedbackState::active;
     {
         DiagnosticPublisher publisher(root);
-        publisher.publish(snapshot);
+        publisher.publish(snapshot, 1);
         const auto received = reader.read();
         if (received.connection != DiagnosticConnection::connected || !received.sampledAt ||
             received.snapshot.mode != snapshot.mode || std::string_view(received.snapshot.profile.data()) != "A" ||
@@ -68,6 +73,11 @@ int run()
             received.snapshot.lastAccessoryKey != snapshot.lastAccessoryKey ||
             received.snapshot.accessorySentAt != snapshot.accessorySentAt ||
             received.snapshot.feedback != snapshot.feedback ||
+            !received.lastDriveAt || received.lastDrive.axes[0].inputAvailable != 1 ||
+            received.lastDrive.axes[0].inputValue != 0.0f || received.lastDrive.axes[1].inputAvailable ||
+            received.lastDrive.axes[0].requestedAvailable != 1 || received.lastDrive.axes[0].requestedValue != 0.0f ||
+            received.lastDrive.axes[0].delivery != DiagnosticDelivery::gameKept ||
+            received.eventCount != 1 || received.events[0].mode != DiagnosticMode::usb ||
             other.read().connection != DiagnosticConnection::disconnected)
             return 2;
 
@@ -78,10 +88,44 @@ int run()
         if (reader.read().snapshot.mode != DiagnosticMode::usb)
             return 3;
 
+        auto focused = snapshot;
+        focused.axes[0].inputValue = 0.5f;
+        publisher.publish(focused, 1);
+        if (reader.read().eventCount != 1)
+            return 8;
+
+        auto idle = snapshot;
+        idle.mode = DiagnosticMode::gameNotForeground;
+        idle.axes = {};
+        publisher.publish(idle);
+        DiagnosticReader openedAfterAltTab(root);
+        const auto retained = openedAfterAltTab.read();
+        if (retained.connection != DiagnosticConnection::connected ||
+            retained.snapshot.mode != DiagnosticMode::gameNotForeground ||
+            retained.lastDrive.mode != DiagnosticMode::usb ||
+            retained.lastDrive.axes[0].inputValue != 0.5f || retained.eventCount != 2 ||
+            retained.events[1].mode != DiagnosticMode::gameNotForeground)
+            return 9;
+
+        for (std::size_t i = 0; i < retained.events.size() + 1; ++i) {
+            focused.axes[1].state = i % 2 == 0 ? DiagnosticAxisState::deviceUnavailable : DiagnosticAxisState::armed;
+            publisher.publish(focused, 1);
+        }
+        const auto bounded = reader.read();
+        if (bounded.eventCount != bounded.events.size() ||
+            bounded.events.front().axes[1] != DiagnosticAxisState::armed ||
+            bounded.events.back().axes[1] != DiagnosticAxisState::deviceUnavailable)
+            return 10;
+        publisher.publish(snapshot, 2);
+        const auto nextDrive = reader.read();
+        if (nextDrive.eventCount != 1 || nextDrive.lastDrive.axes[1].state != DiagnosticAxisState::waitingForNeutral)
+            return 11;
+
         std::this_thread::sleep_for(1700ms);
-        if (reader.read().connection != DiagnosticConnection::stale)
+        const auto stale = reader.read();
+        if (stale.connection != DiagnosticConnection::stale || !stale.lastDriveAt || stale.eventCount != 1)
             return 4;
-        publisher.publish(snapshot);
+        publisher.publish(snapshot, 2);
         if (reader.read().connection != DiagnosticConnection::connected)
             return 5;
     }
@@ -91,8 +135,10 @@ int run()
     DiagnosticPublisher restarted(root);
     snapshot.mode = DiagnosticMode::waitingForDriver;
     restarted.publish(snapshot);
-    if (reader.read().connection != DiagnosticConnection::connected ||
-        reader.read().snapshot.mode != DiagnosticMode::waitingForDriver)
+    const auto restart = reader.read();
+    if (restart.connection != DiagnosticConnection::connected ||
+        restart.snapshot.mode != DiagnosticMode::waitingForDriver || restart.lastDriveAt ||
+        restart.eventCount != 1 || restart.events[0].mode != DiagnosticMode::waitingForDriver)
         return 7;
     return 0;
 }

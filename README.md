@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.20** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.21** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -137,6 +137,8 @@ Ouvrez **Diagnostic…** dans **Matériel USB** ou dans le menu **Aide**. Le pan
 
 Le panneau indique quand Cyberpunk n’est plus au premier plan ou quand les données du plugin ne sont plus récentes. La dernière valeur appliquée aide à diagnostiquer un essai après Alt-Tab. Pour l’USB, l’application peut rester ouverte pendant cet essai.
 
+Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rapport dans le presse-papiers inclut le profil actif, les modèles détectés par l’application, les versions installées et jusqu’à huit changements d’état récents. Il distingue l’état actuel du dernier état en conduite. Pour chaque axe, il indique la valeur calibrée lue, la commande demandée au jeu et la dernière valeur effectivement écrite par le mod. Le rapport se copie localement et omet les chemins d’installation et les identifiants de périphériques. Déployez ensemble l’application et le plugin du même ZIP pour que le panneau puisse lire les données du jeu.
+
 ## Dossiers du projet
 
 - `src/core/` contient la lecture DirectInput, la calibration, les profils et la logique partagée par l’application et le plugin.
@@ -158,7 +160,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.20-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.21-Cyberpunk-2.5.zip'
 ```
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.

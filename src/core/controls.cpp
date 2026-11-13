@@ -237,7 +237,7 @@ void ControlReader::reset() noexcept
     }
 }
 
-ControlState ControlReader::poll(DirectInput& input)
+ControlState ControlReader::poll(DirectInput& input, Readings* readings)
 {
     const auto axes = channels(profile_);
     std::array<std::optional<DeviceSample>, 3> storage;
@@ -251,11 +251,13 @@ ControlState ControlReader::poll(DirectInput& input)
         if (storage[owner])
             samples[i] = &*storage[owner];
     }
-    return update(samples);
+    return update(samples, readings);
 }
 
-ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& samples)
+ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& samples, Readings* readings)
 {
+    if (readings)
+        *readings = {};
     const auto axes = channels(profile_);
     ControlState state;
     const std::array outputs{&state.values.steering, &state.values.throttle, &state.values.brake};
@@ -272,6 +274,8 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
             continue;
         }
         const long raw = sample->axes[calibration.axis];
+        if (readings)
+            (*readings)[i] = normalize(calibration, raw, i == 0);
         if (neutralPolls_[i] < requiredNeutralPolls) {
             axisStatuses_[i] = AxisStatus::waitingForNeutral;
             if (!isNeutral(calibration, raw, i == 0, combinedPedals_)) {
@@ -282,7 +286,7 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
                 continue;
         }
         *readiness[i] = true;
-        *outputs[i] = normalize(calibration, raw, i == 0);
+        *outputs[i] = readings ? *(*readings)[i] : normalize(calibration, raw, i == 0);
         axisStatuses_[i] = AxisStatus::armed;
     }
     return state;

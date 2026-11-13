@@ -85,10 +85,11 @@ int run()
     reader.reset();
     pedals.axes[1] = 0;
     pedals.axesPresent[2] = false;
-    state = reader.update(connected);
+    chrome_axis::ControlReader::Readings readings;
+    state = reader.update(connected, &readings);
     if (state.throttleReady || state.values.throttle != 0.0f || state.steeringReady
         || reader.axisStatuses()[1] != AxisStatus::waitingForNeutral
-        || reader.axisStatuses()[2] != AxisStatus::axisUnavailable)
+        || reader.axisStatuses()[2] != AxisStatus::axisUnavailable || readings[1] != 1.0f || readings[2])
         return 8;
     pedals.axesPresent[2] = true;
 

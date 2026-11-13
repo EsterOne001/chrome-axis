@@ -26,6 +26,7 @@ struct DeviceInfo {
     std::bitset<buttonCount> buttons{};
     std::array<bool, povCount> povs{};
     std::array<bool, axisCount> forceFeedbackAxes{};
+    std::string productName;
 };
 
 struct DeviceSample {

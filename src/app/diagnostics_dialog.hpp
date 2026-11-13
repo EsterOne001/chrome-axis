@@ -23,15 +23,20 @@
 #define IDC_DIAGNOSTICS_ACCESSORY 3020
 #define IDC_DIAGNOSTICS_FEEDBACK_LABEL 3021
 #define IDC_DIAGNOSTICS_FEEDBACK 3022
+#define IDC_DIAGNOSTICS_COPY 3023
 
 #ifndef RC_INVOKED
 #include <windows.h>
 
 #include <filesystem>
+#include <span>
 
 namespace chrome_axis {
 
-void showDiagnostics(HWND owner, const std::filesystem::path& gameRoot);
+struct DeviceInfo;
+
+void showDiagnostics(HWND owner, const std::filesystem::path& gameRoot, const std::filesystem::path& profileRoot,
+                     std::span<const DeviceInfo> devices);
 
 } // namespace chrome_axis
 #endif

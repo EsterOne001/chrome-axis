@@ -23,10 +23,17 @@ enum class DiagnosticAccessoryState : std::uint32_t {
 
 enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive };
 
+enum class DiagnosticDelivery : std::uint32_t { unavailable, applied, gameKept };
+
 struct DiagnosticAxis {
     DiagnosticAxisState state{DiagnosticAxisState::inactive};
     float value{};
     std::uint64_t appliedAt{}; // GetTickCount64() when an input was last written to the vehicle.
+    float inputValue{}; // Calibrated physical reading, before neutral gating.
+    float requestedValue{}; // Value the game hook considered, including steering compensation.
+    std::uint32_t inputAvailable{};
+    std::uint32_t requestedAvailable{};
+    DiagnosticDelivery delivery{DiagnosticDelivery::unavailable};
 };
 
 struct DiagnosticSnapshot {
@@ -44,10 +51,22 @@ struct DiagnosticSnapshot {
 
 enum class DiagnosticConnection { unavailable, disconnected, stale, connected };
 
+struct DiagnosticEvent {
+    std::uint64_t sampledAt{};
+    DiagnosticMode mode{DiagnosticMode::waitingForDriver};
+    std::array<DiagnosticAxisState, 3> axes{};
+    DiagnosticAccessoryState accessories{DiagnosticAccessoryState::inactive};
+    DiagnosticFeedbackState feedback{DiagnosticFeedbackState::disabled};
+};
+
 struct DiagnosticRead {
     DiagnosticConnection connection{DiagnosticConnection::unavailable};
     DiagnosticSnapshot snapshot{};
     std::uint64_t sampledAt{};
+    DiagnosticSnapshot lastDrive{};
+    std::uint64_t lastDriveAt{};
+    std::array<DiagnosticEvent, 8> events{}; // Oldest first. Only status transitions are kept.
+    std::uint32_t eventCount{};
 };
 
 struct DiagnosticFrame;
@@ -60,13 +79,16 @@ public:
     DiagnosticPublisher(const DiagnosticPublisher&) = delete;
     DiagnosticPublisher& operator=(const DiagnosticPublisher&) = delete;
 
-    void publish(const DiagnosticSnapshot& snapshot) noexcept;
+    // A nonzero driving session identifies a snapshot taken in the driver's seat with game focus.
+    void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0) noexcept;
 
 private:
     HANDLE owner_{};
     HANDLE mutex_{};
     HANDLE mapping_{};
     DiagnosticFrame* frame_{};
+    DiagnosticRead report_{};
+    std::uint64_t drivingSession_{};
 };
 
 class DiagnosticReader {

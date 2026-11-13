@@ -978,7 +978,7 @@ void App::action(int command, int notification)
             const auto pluginDirectory = directory_.parent_path();
             const auto gameRoot = chrome_axis::isInstalledPluginDirectory(pluginDirectory)
                 ? pluginDirectory.parent_path().parent_path().parent_path() : std::filesystem::path{};
-            chrome_axis::showDiagnostics(window_, gameRoot);
+            chrome_axis::showDiagnostics(window_, gameRoot, directory_, devices_);
         }
         break;
     case startCalibration:
