@@ -55,7 +55,7 @@ enum Command {
     startCalibration, measure, cancelCalibration, chooseAxis,
     saveProfile, reloadProfile, openProfileFolder, closeApp, aboutApp, hardwareTab, simulationTab, toggleSimulation,
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
-    frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics,
+    frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
     deadzoneFirst = 200, meterFirst = 210
 };
 
@@ -388,8 +388,9 @@ private:
         start_ = button(tr(Text::mainCalibrateAxes), startCalibration);
         calibrationScopeButton_ = button(tr(Text::mainCalibrationScope), chooseCalibrationScope);
         axisChoice_ = combo(chooseAxis);
-        measure_ = button(tr(Text::guideCapture), measure);
         cancel_ = button(tr(Text::mainCancel), cancelCalibration);
+        previous_ = button(tr(Text::guidePrevious), previousCalibration);
+        measure_ = button(tr(Text::guideCapture), measure);
         simDirections_ = label(tr(Text::mainSimDirections));
         simArming_ = label(tr(Text::mainSimArming));
         profileName_ = child(L"STATIC", L"", SS_NOPREFIX | SS_ENDELLIPSIS, 0);
@@ -446,7 +447,7 @@ private:
             int x, y, width, height;
         };
         std::vector<Placement> placements;
-        placements.reserve(61);
+        placements.reserve(62);
         const auto place = [&](HWND control, int x, int y, int w, int h) {
             if (control)
                 placements.push_back({control, px(left + x), px(y), px(w), px(h)});
@@ -496,12 +497,15 @@ private:
         if (calibrating_) {
             place(calibrationTitle_, 46, 119, width - 270, 29);
             place(guideStep_, width - 194, 124, 148, 24);
-            place(guideAction_, 280, 196, width - 332, 32);
-            place(guideDevice_, 280, 233, width - 332, 25);
-            place(instruction_, 280, 270, width - 332, 57);
-            place(guideNotice_, 280, 338, width - 332, 68);
+            const int guideLeft = step_ == stepCount_ ? 46 : 280;
+            const int guideWidth = width - guideLeft - 52;
+            place(guideAction_, guideLeft, 196, guideWidth, 32);
+            place(guideDevice_, guideLeft, 233, guideWidth, 25);
+            place(instruction_, guideLeft, 270, guideWidth, 57);
+            place(guideNotice_, guideLeft, 338, guideWidth, 68);
             place(axisChoice_, 280, 412, width - 332, 180);
             place(cancel_, 46, 468, 144, 38);
+            place(previous_, width - 406, 468, 144, 38);
             place(measure_, width - 252, 468, 206, 38);
         } else {
             place(calibrationTitle_, 42, 430, 340, 24);
@@ -589,7 +593,8 @@ private:
         if (calibrating_) {
             drawCard(98, 535);
             paintCalibrationProgress(dc, {px(left + 46), px(158), px(left + width - 46), px(169)}, dpi_, step_, stepCount_);
-            paintCalibrationPose(dc, {px(left + 46), px(198), px(left + 254), px(400)}, dpi_, steps_[step_].pose);
+            if (step_ < stepCount_)
+                paintCalibrationPose(dc, {px(left + 46), px(198), px(left + 254), px(400)}, dpi_, steps_[step_].pose);
             if (capture_) {
                 const auto track = captureProgressBounds(left);
                 fill(dc, track, highContrast ? GetSysColor(COLOR_WINDOWTEXT) : edge);
@@ -717,6 +722,9 @@ private:
     void selectCalibrationScope();
     void beginCalibration(const CalibrationScope& scope);
     void measureStep();
+    void previousStep();
+    void rewindCalibration(std::size_t target);
+    void finishCalibration();
     void finishCapture(const chrome_axis::AxisCapture& capture);
     void acceptAxis(const chrome_axis::AxisCandidate& candidate);
     void suspendHardware();
@@ -773,7 +781,7 @@ private:
     HMENU profileMenu_{}, deviceMenu_{}, languageMenu_{}, helpMenu_{};
     HWND devicesTitle_{}, axesTitle_{}, calibrationTitle_{};
     HWND accessories_{}, diagnostics_{}, feedback_{}, refresh_{}, hardware_{}, instruction_{}, start_{};
-    HWND calibrationScopeButton_{}, axisChoice_{}, measure_{}, cancel_{};
+    HWND calibrationScopeButton_{}, axisChoice_{}, measure_{}, cancel_{}, previous_{};
     HWND guideStep_{}, guideAction_{}, guideDevice_{}, guideNotice_{};
     HWND profileName_{}, status_{}, folder_{}, select_{}, reload_{}, save_{};
     HWND hardwareTab_{}, simulationTab_{}, usbToggle_{}, simToggle_{}, simState_{}, simHint_{}, simDirections_{}, simArming_{};
@@ -808,7 +816,7 @@ private:
     std::size_t step_{}, stepCount_{};
     std::optional<chrome_axis::CalibrationCapture> capture_;
     unsigned int captureTicks_{};
-    chrome_axis::AxisCapture neutral_{}, negative_{}, positive_{};
+    std::array<chrome_axis::AxisCapture, calibrationSteps.size()> positions_{};
     std::vector<chrome_axis::AxisCandidate> candidates_;
     chrome_axis::Profile measured_{};
     std::wstring calibrationMessage_;
@@ -897,6 +905,9 @@ void App::action(int command, int notification)
         break;
     case measure:
         measureStep();
+        break;
+    case previousCalibration:
+        previousStep();
         break;
     case cancelCalibration:
         if (!calibrating_)
@@ -1404,8 +1415,21 @@ void App::updateCalibrationView()
         return;
     }
 
-    const auto& step = steps_[step_];
     setText(calibrationTitle_, tr(Text::guideTitle));
+    EnableWindow(previous_, step_ > 0 && !capture_);
+    if (step_ == stepCount_) {
+        setText(guideStep_, tr(Text::guideReview));
+        setText(guideAction_, tr(Text::guideReviewTitle));
+        setText(guideDevice_, L"");
+        setText(instruction_, tr(Text::guideReviewInstruction));
+        setText(guideNotice_, tr(Text::guideReviewHint));
+        setText(measure_, tr(Text::guideFinish));
+        EnableWindow(measure_, TRUE);
+        InvalidateRect(window_, nullptr, FALSE);
+        return;
+    }
+
+    const auto& step = steps_[step_];
     setText(guideStep_, tr(Text::guideStepPrefix) + std::to_wstring(step_ + 1) + tr(Text::guideStepSeparator)
         + std::to_wstring(stepCount_));
     setText(guideAction_, tr(choosing ? Text::guideSelectAxis : step.heading));
@@ -1426,7 +1450,7 @@ void App::updateGuideVisibility()
     const auto show = [](HWND control, bool visible) {
         ShowWindow(control, visible ? SW_SHOWNA : SW_HIDE);
     };
-    for (const auto control : {measure_, cancel_, guideStep_, guideAction_, guideDevice_, guideNotice_})
+    for (const auto control : {measure_, cancel_, previous_, guideStep_, guideAction_, guideDevice_, guideNotice_})
         show(control, calibrating_);
     if (guideVisible_ == calibrating_)
         return;
@@ -1600,6 +1624,7 @@ void App::beginCalibration(const CalibrationScope& scope)
         [&scope](const Step& step) { return scope[step.channel]; });
     stepCount_ = static_cast<std::size_t>(planned.out - steps_.begin());
     measured_ = {};
+    positions_ = {};
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
     for (std::size_t i = 0; i < axes.size(); ++i) {
         if (!scope[i] && draft_[i])
@@ -1617,6 +1642,10 @@ void App::measureStep()
 {
     if (!calibrating_ || capture_)
         return;
+    if (step_ == stepCount_) {
+        finishCalibration();
+        return;
+    }
     if (!candidates_.empty()) {
         const auto selected = SendMessageW(axisChoice_, CB_GETCURSEL, 0, 0);
         if (selected != CB_ERR && static_cast<std::size_t>(selected) < candidates_.size()) {
@@ -1631,19 +1660,44 @@ void App::measureStep()
     updateCalibrationView();
 }
 
+void App::previousStep()
+{
+    if (!calibrating_ || capture_ || step_ == 0)
+        return;
+
+    const bool reviewing = step_ == stepCount_;
+    // From axis selection, return to the position just captured.
+    rewindCalibration(candidates_.empty() ? step_ - 1 : step_);
+    calibrationMessage_ = tr(Text::guideRetryPosition);
+    if (reviewing)
+        layout();
+    updateCalibrationView();
+    SetFocus(step_ > 0 ? previous_ : measure_);
+}
+
+void App::rewindCalibration(std::size_t target)
+{
+    const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
+    for (std::size_t i = target; i < stepCount_; ++i) {
+        positions_[i] = {};
+        if (steps_[i].position == Position::Positive)
+            *axes[steps_[i].channel] = {};
+    }
+    candidates_.clear();
+    step_ = target;
+}
+
 void App::finishCapture(const chrome_axis::AxisCapture& sample)
 {
     const auto step = steps_[step_];
     calibrationMessage_.clear();
-    if (step.position == Position::Neutral) {
-        neutral_ = negative_ = sample;
-    } else if (step.position == Position::Negative) {
-        negative_ = sample;
-    } else {
-        positive_ = sample;
-        candidates_ = chrome_axis::axisCandidates(neutral_, negative_, positive_, step.channel == 0);
+    positions_[step_] = sample;
+    if (step.position == Position::Positive) {
+        const bool steering = step.channel == 0;
+        const std::size_t first = step_ - (steering ? 2 : 1);
+        candidates_ = chrome_axis::axisCandidates(positions_[first], positions_[step_ - 1], sample, steering);
         if (candidates_.empty()) {
-            step_ -= step.channel == 0 ? 2 : 1;
+            rewindCalibration(first);
             calibrationMessage_ = tr(Text::mainNoStableMovement);
             updateCalibrationView();
             SetFocus(measure_);
@@ -1671,7 +1725,9 @@ void App::finishCapture(const chrome_axis::AxisCapture& sample)
 void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
 {
     const auto channel = steps_[step_].channel;
-    auto axis = chrome_axis::makeCalibration(deviceId(channel), neutral_, negative_, positive_, candidate);
+    const std::size_t first = step_ - (channel == 0 ? 2 : 1);
+    auto axis = chrome_axis::makeCalibration(deviceId(channel), positions_[first], positions_[step_ - 1],
+                                             positions_[step_], candidate);
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
     candidates_.clear();
     for (std::size_t i = 0; i < axes.size(); ++i) {
@@ -1681,7 +1737,7 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
             ? chrome_axis::compatibleAxisPair(*axes[i], axis)
             : axes[i]->deviceId != axis.deviceId || axes[i]->axis != axis.axis;
         if (!compatible) {
-            step_ -= channel == 0 ? 2 : 1;
+            rewindCalibration(first);
             calibrationMessage_ = tr(Text::mainAxisAlreadyAssigned);
             updateCalibrationView();
             SetFocus(measure_);
@@ -1690,22 +1746,26 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
     }
     *axes[channel] = std::move(axis);
     ++step_;
-    if (step_ == stepCount_) {
-        calibrating_ = false;
-        for (std::size_t i = 0; i < axes.size(); ++i) {
-            if (calibrationScope_[i])
-                draft_[i] = std::move(*axes[i]);
-        }
-        dirty_ = true;
-        profileMessage_.clear();
-        calibrationMessage_ = tr(Text::mainCalibrationComplete);
-        updateProfileView(calibrationScope_);
-        updateCalibrationView();
-        SetFocus(IsWindowEnabled(save_) ? save_ : calibrationScopeButton_);
-    } else {
-        updateCalibrationView();
-        SetFocus(measure_);
+    if (step_ == stepCount_)
+        layout();
+    updateCalibrationView();
+    SetFocus(measure_);
+}
+
+void App::finishCalibration()
+{
+    calibrating_ = false;
+    const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
+    for (std::size_t i = 0; i < axes.size(); ++i) {
+        if (calibrationScope_[i])
+            draft_[i] = std::move(*axes[i]);
     }
+    dirty_ = true;
+    profileMessage_.clear();
+    calibrationMessage_ = tr(Text::mainCalibrationComplete);
+    updateProfileView(calibrationScope_);
+    updateCalibrationView();
+    SetFocus(IsWindowEnabled(save_) ? save_ : calibrationScopeButton_);
 }
 
 void App::tick()

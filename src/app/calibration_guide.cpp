@@ -2,7 +2,12 @@
 
 #include "ui_theme.hpp"
 
+#include <objidl.h>
+#include <gdiplus.h>
+#include <shlwapi.h>
+
 #include <algorithm>
+#include <memory>
 
 namespace chrome_axis::ui {
 namespace {
@@ -34,6 +39,108 @@ struct Diagram {
         Ellipse(dc, from.x, from.y, to.x, to.y);
     }
 };
+
+class CalibrationArtwork {
+    struct Image {
+        std::unique_ptr<IStream, decltype([](IStream* stream) { stream->Release(); })> stream;
+        std::unique_ptr<Gdiplus::Bitmap> bitmap;
+
+        void load(WORD id)
+        {
+            const auto module = GetModuleHandleW(nullptr);
+            const auto resource = FindResourceW(module, MAKEINTRESOURCEW(id), RT_RCDATA);
+            if (!resource)
+                return;
+            const auto data = LoadResource(module, resource);
+            const auto bytes = data ? static_cast<const BYTE*>(LockResource(data)) : nullptr;
+            if (!bytes)
+                return;
+            stream.reset(SHCreateMemStream(bytes, SizeofResource(module, resource)));
+            if (stream) {
+                auto decoded = std::make_unique<Gdiplus::Bitmap>(stream.get());
+                if (decoded->GetLastStatus() == Gdiplus::Ok)
+                    bitmap = std::move(decoded);
+            }
+        }
+    };
+
+public:
+    CalibrationArtwork()
+    {
+        const Gdiplus::GdiplusStartupInput options;
+        if (Gdiplus::GdiplusStartup(&token_, &options, nullptr) == Gdiplus::Ok) {
+            wheel_.load(104);
+            pedal_.load(105);
+        }
+    }
+
+    ~CalibrationArtwork()
+    {
+        pedal_.bitmap.reset();
+        wheel_.bitmap.reset();
+        if (token_)
+            Gdiplus::GdiplusShutdown(token_);
+    }
+
+    Gdiplus::Bitmap* image(bool pedal) const { return (pedal ? pedal_ : wheel_).bitmap.get(); }
+
+private:
+    ULONG_PTR token_{};
+    Image wheel_;
+    Image pedal_;
+};
+
+bool paintProduct(HDC dc, const Diagram& diagram, CalibrationPose pose)
+{
+    const bool pedal = pose == CalibrationPose::pedalRest || pose == CalibrationPose::pedalPressed;
+    static const CalibrationArtwork artwork;
+    auto image = artwork.image(pedal);
+    if (!image)
+        return false;
+
+    const int turn = pose == CalibrationPose::wheelLeft ? -1 : pose == CalibrationPose::wheelRight ? 1 : 0;
+    const bool pressed = pose == CalibrationPose::pedalPressed;
+    const auto pivot = pedal ? diagram.point(132, 111) : diagram.point(100, 76);
+    {
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        // GDI+ uses pixel coordinates. Match the viewport origin of the Win32 paint buffer.
+        POINT origin{};
+        GetViewportOrgEx(dc, &origin);
+        graphics.TranslateTransform(static_cast<float>(pivot.x + origin.x), static_cast<float>(pivot.y + origin.y));
+        // Use the same artwork in each pose, rotating about its hub or hinge.
+        graphics.RotateTransform(pedal ? (pressed ? -22.0f : 0.0f) : static_cast<float>(turn * 42));
+        const int width = diagram.scale(pedal ? 112 : 118);
+        const int height = MulDiv(width, static_cast<int>(image->GetHeight()), static_cast<int>(image->GetWidth()));
+        const int left = pedal ? -MulDiv(width, 91, 100) : -width / 2;
+        const int top = pedal ? -MulDiv(height, 88, 100) : -height / 2;
+        if (graphics.DrawImage(image, left, top, width, height) != Gdiplus::Ok)
+            return false;
+    }
+
+    const auto motion = CreatePen(PS_SOLID, std::max(1L, diagram.scale(3)), cyan);
+    if (!motion)
+        return true;
+    const auto previous = SelectObject(dc, motion);
+    if (pedal) {
+        diagram.line(dc, {{33, 124}, {147, 124}});
+        const LONG from = pressed ? 43 : 87;
+        const LONG to = pressed ? 87 : 43;
+        const LONG tip = to + (pressed ? -8 : 8);
+        diagram.line(dc, {{165, from}, {165, to}});
+        diagram.line(dc, {{156, tip}, {165, to}, {174, tip}});
+    } else if (turn) {
+        const auto side = [turn](LONG offset) { return 100 + turn * offset; };
+        diagram.line(dc, {{side(14), 10}, {side(39), 19}, {side(56), 35}, {side(63), 57}});
+        diagram.line(dc, {{side(52), 51}, {side(63), 57}, {side(68), 46}});
+    } else {
+        diagram.line(dc, {{94, 8}, {100, 14}, {106, 8}});
+    }
+    SelectObject(dc, previous);
+    DeleteObject(motion);
+    return true;
+}
 
 void paintWheel(HDC dc, const Diagram& diagram, CalibrationPose pose, HPEN outline, HPEN mark, HPEN motion)
 {
@@ -112,6 +219,9 @@ void paintCalibrationPose(HDC dc, const RECT& rect, UINT dpi, CalibrationPose po
     cutPanel(dc, {diagram.left, diagram.top, diagram.left + scaleWidth, diagram.top + scaleHeight},
              diagram.scale(12), highContrast ? GetSysColor(COLOR_WINDOW) : field,
              highContrast ? textColor : edge);
+
+    if (!highContrast && paintProduct(dc, diagram, pose))
+        return;
 
     const auto saved = SaveDC(dc);
     if (!saved)
