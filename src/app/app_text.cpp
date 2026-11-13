@@ -22,6 +22,7 @@ constexpr Translation catalog[]{
 #include "locale_main.inc"
 #include "locale_dialogs.inc"
 #include "locale_calibration_scope.inc"
+#include "locale_calibration_guide.inc"
 #include "locale_diagnostics.inc"
 #undef CHROME_AXIS_TEXT
 };

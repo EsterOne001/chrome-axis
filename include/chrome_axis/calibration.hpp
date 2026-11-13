@@ -22,6 +22,7 @@ public:
 
     bool add(const DeviceSample& sample);
     bool complete() const noexcept;
+    std::size_t samplesCollected() const noexcept { return count_; }
     std::optional<AxisCapture> result() const;
 
 private:

@@ -8,6 +8,7 @@
 #include "chrome_axis/profiles_dialog.hpp"
 #include "chrome_axis/simulation.hpp"
 #include "app_text.hpp"
+#include "calibration_guide.hpp"
 #include "diagnostics_dialog.hpp"
 #include "ui_theme.hpp"
 
@@ -79,16 +80,18 @@ struct Step {
     std::size_t channel;
     Position position;
     Text instruction;
+    Text heading;
+    CalibrationPose pose;
 };
 
 constexpr std::array calibrationSteps{
-    Step{0, Position::Neutral, Text::mainCenterWheel},
-    Step{0, Position::Negative, Text::mainTurnLeft},
-    Step{0, Position::Positive, Text::mainTurnRight},
-    Step{1, Position::Neutral, Text::mainReleasePedalsCenterWheel},
-    Step{1, Position::Positive, Text::mainPressThrottle},
-    Step{2, Position::Neutral, Text::mainReleasePedals},
-    Step{2, Position::Positive, Text::mainPressBrake}
+    Step{0, Position::Neutral, Text::mainCenterWheel, Text::guideCenter, CalibrationPose::wheelCenter},
+    Step{0, Position::Negative, Text::mainTurnLeft, Text::guideLeft, CalibrationPose::wheelLeft},
+    Step{0, Position::Positive, Text::mainTurnRight, Text::guideRight, CalibrationPose::wheelRight},
+    Step{1, Position::Neutral, Text::mainReleasePedalsCenterWheel, Text::guideReleaseThrottle, CalibrationPose::pedalRest},
+    Step{1, Position::Positive, Text::mainPressThrottle, Text::guidePressThrottle, CalibrationPose::pedalPressed},
+    Step{2, Position::Neutral, Text::mainReleasePedals, Text::guideReleaseBrake, CalibrationPose::pedalRest},
+    Step{2, Position::Positive, Text::mainPressBrake, Text::guidePressBrake, CalibrationPose::pedalPressed}
 };
 
 std::wstring wide(std::string_view text)
@@ -238,7 +241,8 @@ public:
             const bool heading = control == devicesTitle_ || control == axesTitle_ || control == calibrationTitle_;
             const bool muted = footer || control == hardware_ || control == instruction_ || !IsWindowEnabled(control);
             const bool value = std::find(values_.begin(), values_.end(), control) != values_.end();
-            SetTextColor(dc, heading ? yellow : value ? cyan : muted ? secondary : ink);
+            const bool guideNotice = control == guideNotice_ && (capture_ || !calibrationMessage_.empty());
+            SetTextColor(dc, heading ? yellow : guideNotice || value ? cyan : muted ? secondary : ink);
             SetBkColor(dc, footer ? background : isField ? field : panel);
             return reinterpret_cast<LRESULT>(footer ? backgroundBrush_ : isField ? fieldBrush_ : panelBrush_);
         }
@@ -377,10 +381,14 @@ private:
         diagnostics_ = button(tr(Text::DlgDiagnosticsButton), showDiagnostics);
         feedback_ = button(tr(Text::mainForceFeedback), configureFeedback);
         instruction_ = label(tr(Text::mainConnectToBegin));
+        guideStep_ = label(L"");
+        guideAction_ = label(L"");
+        guideDevice_ = child(L"STATIC", L"", SS_NOPREFIX | SS_ENDELLIPSIS);
+        guideNotice_ = label(L"");
         start_ = button(tr(Text::mainCalibrateAxes), startCalibration);
         calibrationScopeButton_ = button(tr(Text::mainCalibrationScope), chooseCalibrationScope);
         axisChoice_ = combo(chooseAxis);
-        measure_ = button(tr(Text::mainMeasure), measure);
+        measure_ = button(tr(Text::guideCapture), measure);
         cancel_ = button(tr(Text::mainCancel), cancelCalibration);
         simDirections_ = label(tr(Text::mainSimDirections));
         simArming_ = label(tr(Text::mainSimArming));
@@ -416,7 +424,7 @@ private:
             SendMessageW(control, WM_SETFONT, static_cast<WPARAM>(font), FALSE);
             return TRUE;
         }, reinterpret_cast<LPARAM>(fonts_[0]));
-        for (const auto control : {devicesTitle_, axesTitle_, calibrationTitle_, hardwareTab_, simulationTab_})
+        for (const auto control : {devicesTitle_, axesTitle_, calibrationTitle_, hardwareTab_, simulationTab_, guideAction_})
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(fonts_[1]), FALSE);
         for (const auto control : deviceCombos_)
             SendMessageW(control, CB_SETITEMHEIGHT, 0, px(24));
@@ -438,7 +446,7 @@ private:
             int x, y, width, height;
         };
         std::vector<Placement> placements;
-        placements.reserve(57);
+        placements.reserve(61);
         const auto place = [&](HWND control, int x, int y, int w, int h) {
             if (control)
                 placements.push_back({control, px(left + x), px(y), px(w), px(h)});
@@ -481,15 +489,24 @@ private:
             place(values_[i], width - 102, y + 3, 60, 22);
         }
 
-        place(calibrationTitle_, 42, 430, 340, 24);
         place(diagnostics_, width - 339, 428, 133, 29);
         place(feedback_, width - 196, 428, 154, 29);
-        place(instruction_, 42, 459, width - 84, 24);
         place(start_, 42, 491, 158, 29);
         place(calibrationScopeButton_, 210, 491, 180, 29);
-        place(axisChoice_, 42, 492, 198, 180);
-        place(measure_, 250, 491, 135, 29);
-        place(cancel_, 395, 491, 100, 29);
+        if (calibrating_) {
+            place(calibrationTitle_, 46, 119, width - 270, 29);
+            place(guideStep_, width - 194, 124, 148, 24);
+            place(guideAction_, 280, 196, width - 332, 32);
+            place(guideDevice_, 280, 233, width - 332, 25);
+            place(instruction_, 280, 270, width - 332, 57);
+            place(guideNotice_, 280, 338, width - 332, 68);
+            place(axisChoice_, 280, 412, width - 332, 180);
+            place(cancel_, 46, 468, 144, 38);
+            place(measure_, width - 252, 468, 206, 38);
+        } else {
+            place(calibrationTitle_, 42, 430, 340, 24);
+            place(instruction_, 42, 459, width - 84, 24);
+        }
         place(simDirections_, 42, 460, width - 84, 22);
         place(simArming_, 42, 493, width - 84, 22);
 
@@ -562,16 +579,37 @@ private:
         paintHeader(dc, dpi_, client.right, left + 24, px(left + width - 312 - languageButtonSpace), headerLogo_.get(),
                     fonts_[0], fonts_[2], tr(Text::mainBannerSubtitle));
 
-        for (const auto& [top, bottom] : {std::pair{98, 222}, {235, 405}, {418, 535}}) {
+        const auto drawCard = [&](int top, int bottom) {
             const RECT card{px(left + 22), px(top), px(left + width - 22), px(bottom)};
             cutPanel(dc, card, px(13), highContrast ? GetSysColor(COLOR_WINDOW) : panel,
                      highContrast ? GetSysColor(COLOR_WINDOWTEXT) : edge);
             fill(dc, {card.left, card.top + px(12), card.left + px(2), card.top + px(33)},
                  highContrast ? GetSysColor(COLOR_HIGHLIGHT) : cyan);
+        };
+        if (calibrating_) {
+            drawCard(98, 535);
+            paintCalibrationProgress(dc, {px(left + 46), px(158), px(left + width - 46), px(169)}, dpi_, step_, stepCount_);
+            paintCalibrationPose(dc, {px(left + 46), px(198), px(left + 254), px(400)}, dpi_, steps_[step_].pose);
+            if (capture_) {
+                const auto track = captureProgressBounds(left);
+                fill(dc, track, highContrast ? GetSysColor(COLOR_WINDOWTEXT) : edge);
+                RECT progress = track;
+                progress.right = progress.left + MulDiv(track.right - track.left,
+                    static_cast<int>(capture_->samplesCollected()), static_cast<int>(chrome_axis::CalibrationCapture::sampleCount));
+                fill(dc, progress, highContrast ? GetSysColor(COLOR_HIGHLIGHT) : cyan);
+            }
+        } else {
+            for (const auto& [top, bottom] : {std::pair{98, 222}, {235, 405}, {418, 535}})
+                drawCard(top, bottom);
         }
         const LONG footerRule = px(542);
         fill(dc, {px(left + 22), footerRule, px(left + width - 22), footerRule + 1},
              highContrast ? GetSysColor(COLOR_WINDOWTEXT) : edge);
+    }
+
+    RECT captureProgressBounds(int left) const
+    {
+        return {px(left + 50), px(381), px(left + 250), px(387)};
     }
 
     void paintMeter(const DRAWITEMSTRUCT& item, std::size_t index)
@@ -666,6 +704,7 @@ private:
     void chooseStoredProfile();
     void persist();
     void updateCalibrationView();
+    void updateGuideVisibility();
     void refreshUsbToggle();
     void changeUsbMode();
     void setMode(bool simulation);
@@ -735,6 +774,7 @@ private:
     HWND devicesTitle_{}, axesTitle_{}, calibrationTitle_{};
     HWND accessories_{}, diagnostics_{}, feedback_{}, refresh_{}, hardware_{}, instruction_{}, start_{};
     HWND calibrationScopeButton_{}, axisChoice_{}, measure_{}, cancel_{};
+    HWND guideStep_{}, guideAction_{}, guideDevice_{}, guideNotice_{};
     HWND profileName_{}, status_{}, folder_{}, select_{}, reload_{}, save_{};
     HWND hardwareTab_{}, simulationTab_{}, usbToggle_{}, simToggle_{}, simState_{}, simHint_{}, simDirections_{}, simArming_{};
     HWND frenchFlag_{}, englishFlag_{};
@@ -762,7 +802,7 @@ private:
     bool installed_{};
     std::wstring profileMessage_;
 
-    bool calibrating_{};
+    bool calibrating_{}, guideVisible_{};
     CalibrationScope calibrationScope_{};
     std::array<Step, calibrationSteps.size()> steps_{};
     std::size_t step_{}, stepCount_{};
@@ -859,11 +899,14 @@ void App::action(int command, int notification)
         measureStep();
         break;
     case cancelCalibration:
+        if (!calibrating_)
+            break;
         calibrating_ = false;
         capture_.reset();
         candidates_.clear();
-        calibrationMessage_.clear();
+        calibrationMessage_ = tr(Text::guideCancelled);
         updateCalibrationView();
+        SetFocus(calibrationScopeButton_);
         break;
     case saveProfile:
         persist();
@@ -1325,10 +1368,7 @@ void App::updateCalibrationView()
     const bool canStart = !calibrating_ && canCalibrate(assignedCalibrationScope());
     const bool canChooseScope = !calibrating_ && std::ranges::any_of(available, std::identity{});
     const bool choosing = !candidates_.empty();
-    ShowWindow(start_, calibrating_ ? SW_HIDE : SW_SHOW);
-    ShowWindow(calibrationScopeButton_, calibrating_ ? SW_HIDE : SW_SHOW);
-    ShowWindow(measure_, calibrating_ ? SW_SHOW : SW_HIDE);
-    ShowWindow(cancel_, calibrating_ ? SW_SHOW : SW_HIDE);
+    updateGuideVisibility();
     ShowWindow(axisChoice_, calibrating_ && choosing ? SW_SHOW : SW_HIDE);
     EnableWindow(start_, canStart);
     EnableWindow(calibrationScopeButton_, canChooseScope);
@@ -1364,13 +1404,43 @@ void App::updateCalibrationView()
         return;
     }
 
-    setText(calibrationTitle_, std::wstring(tr(commands[steps_[step_].channel])) + L"   ·   " +
-        std::to_wstring(step_ + 1) + L" / " + std::to_wstring(stepCount_));
-    setText(instruction_, !calibrationMessage_.empty() ? calibrationMessage_
-        : choosing ? tr(Text::mainChooseMatchingAxis)
-        : tr(steps_[step_].instruction));
-    setText(measure_, capture_ ? tr(Text::mainMeasuring) : choosing ? tr(Text::mainChooseAxis) : tr(Text::mainMeasure));
+    const auto& step = steps_[step_];
+    setText(calibrationTitle_, tr(Text::guideTitle));
+    setText(guideStep_, tr(Text::guideStepPrefix) + std::to_wstring(step_ + 1) + tr(Text::guideStepSeparator)
+        + std::to_wstring(stepCount_));
+    setText(guideAction_, tr(choosing ? Text::guideSelectAxis : step.heading));
+    std::wstring deviceLine = tr(deviceLabels[step.channel]);
+    if (const auto* selected = device(deviceId(step.channel)))
+        deviceLine += L"  ·  " + deviceName(*selected);
+    setText(guideDevice_, deviceLine);
+    setText(instruction_, tr(choosing ? Text::mainChooseMatchingAxis : step.instruction));
+    setText(guideNotice_, !calibrationMessage_.empty() ? calibrationMessage_
+        : choosing ? L"" : tr(step_ == 0 ? Text::guideCaptureHint : Text::guideNextCaptureHint));
+    setText(measure_, capture_ ? tr(Text::mainMeasuring) : choosing ? tr(Text::mainChooseAxis) : tr(Text::guideCapture));
     EnableWindow(measure_, !capture_);
+    InvalidateRect(window_, nullptr, FALSE);
+}
+
+void App::updateGuideVisibility()
+{
+    const auto show = [](HWND control, bool visible) {
+        ShowWindow(control, visible ? SW_SHOWNA : SW_HIDE);
+    };
+    for (const auto control : {measure_, cancel_, guideStep_, guideAction_, guideDevice_, guideNotice_})
+        show(control, calibrating_);
+    if (guideVisible_ == calibrating_)
+        return;
+    guideVisible_ = calibrating_;
+    for (const auto control : {devicesTitle_, hardware_, usbToggle_, refresh_, accessories_, axesTitle_,
+                              start_, calibrationScopeButton_, diagnostics_, feedback_})
+        show(control, !calibrating_);
+    for (const auto control : headings_)
+        show(control, !calibrating_);
+    for (std::size_t i = 0; i < commands.size(); ++i) {
+        for (const auto control : {deviceLabels_[i], deviceCombos_[i], names_[i], bindings_[i], zones_[i], meters_[i], values_[i]})
+            show(control, !calibrating_);
+    }
+    layout();
 }
 
 void App::setMode(bool simulation)
@@ -1611,7 +1681,7 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
             ? chrome_axis::compatibleAxisPair(*axes[i], axis)
             : axes[i]->deviceId != axis.deviceId || axes[i]->axis != axis.axis;
         if (!compatible) {
-            --step_;
+            step_ -= channel == 0 ? 2 : 1;
             calibrationMessage_ = tr(Text::mainAxisAlreadyAssigned);
             updateCalibrationView();
             SetFocus(measure_);
@@ -1658,6 +1728,7 @@ void App::tick()
             capture_.reset();
             calibrationMessage_ = tr(Text::mainReadInterrupted);
             updateCalibrationView();
+            SetFocus(measure_);
         } else if (!sample) {
             capture_.emplace();
         } else if (capture_->complete()) {
@@ -1665,6 +1736,12 @@ void App::tick()
             capture_.reset();
             if (result)
                 finishCapture(*result);
+        }
+        if (capture_) {
+            RECT client{};
+            GetClientRect(window_, &client);
+            const auto track = captureProgressBounds(contentBounds(client.right).first);
+            InvalidateRect(window_, &track, FALSE);
         }
         return;
     }
