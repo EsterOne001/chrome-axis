@@ -47,6 +47,28 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                   "Could not seed all profile settings"))
         return false;
     std::ofstream(root / L"Lisez-moi.txt") << "deployed";
+    const auto wrongFolder = fixture / L"Sans sauvegarde" / L"Profil";
+    std::filesystem::create_directories(wrongFolder);
+    std::filesystem::path recovery;
+    const auto rejectWrongFolder = [&] {
+        const bool rejected = !restoreProfileBackup(root, wrongFolder, backupError, {}, &recovery);
+        const auto active = loadProfile(named / profileFilename, error);
+        return rejected && backupError == ProfileBackupError::invalidBackup && recovery.empty()
+            && !std::filesystem::exists(root / profileBackupsFolder)
+            && activePreset(root).name == name && usbEnabled(root)
+            && active && active->steering.deadzone == calibration.steering.deadzone
+            && loadAccessoryProfile(named / accessoryFilename, error) == bindings
+            && loadFeedbackSettings(named / feedbackFilename, error) == feedback;
+    };
+    if (!check(rejectWrongFolder(),
+               "An empty folder called Profil must be rejected"))
+        return false;
+    std::filesystem::create_directories(wrongFolder / L"Profils" / L"Sans réglages");
+    std::ofstream(wrongFolder / L"Lisez-moi.txt") << "unrelated";
+    if (!check(rejectWrongFolder(),
+               "An unrelated folder with an empty named subfolder must leave live settings intact"))
+        return false;
+
     std::filesystem::create_directories(root / profileBackupsFolder / L"Older");
     if (!check(createProfileBackup(root, backup, backupError, "fr")
                && readProfileLanguage(backup) == "fr" && !readProfileLanguage(root),
@@ -91,7 +113,6 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                "A blocked file must roll back all settings moved before the failure"))
         return false;
 
-    std::filesystem::path recovery;
     if (!check(restoreProfileBackup(root, backup, backupError, {}, &recovery)
                && backupError == ProfileBackupError::none && recovery.parent_path() == root / profileBackupsFolder,
                "Restore must report its local recovery folder")) {
@@ -121,6 +142,24 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                && !std::filesystem::exists(root / accessoryFilename)
                && !std::filesystem::exists(root / feedbackFilename) && readProfileLanguage(root) == "fr",
                "Manual legacy backups must restore absent settings while preserving language"))
+        return false;
+
+    const auto selectedEmpty = fixture / L"Profil sélectionné";
+    constexpr wchar_t selectedEmptyName[] = L"Sans réglages";
+    std::filesystem::create_directories(selectedEmpty / L"Profils" / selectedEmptyName);
+    if (!check(selectPreset(selectedEmpty, selectedEmptyName, error)
+               && restoreProfileBackup(root, selectedEmpty, backupError)
+               && activePreset(root).name == selectedEmptyName,
+               "A manually copied empty named profile with an explicit selection must still restore"))
+        return false;
+
+    const auto namedOnly = fixture / L"Profils copiés";
+    const auto namedOnlySettings = namedOnly / L"Profils" / name;
+    std::filesystem::create_directories(namedOnlySettings);
+    if (!check(saveProfile(namedOnlySettings / profileFilename, calibration, error)
+               && restoreProfileBackup(root, namedOnly, backupError)
+               && activePreset(root).name.empty() && listPresets(root) == std::vector{name},
+               "Recognized settings in a named profile must support importing a manual backup"))
         return false;
 
     // Keep the live profile below MAX_PATH while the automatic recovery file exceeds it.

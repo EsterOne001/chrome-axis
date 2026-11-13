@@ -54,8 +54,36 @@ bool testDeploymentProfiles(const std::filesystem::path& fixture)
     const auto stagedApp = staging / L"ChromeAxis.exe";
     createFile(stagedApp);
     const auto localProfile = chrome_axis::profileDirectory(stagedApp);
-    if (!check(chrome_axis::calibrationProfileDirectory(stagedApp) == localProfile,
+    if (!check(chrome_axis::installedGameRoot(staging).empty() &&
+                   chrome_axis::calibrationProfileDirectory(stagedApp) == localProfile,
                "An app outside the game must retain its local profile"))
+        return false;
+
+    const auto incompleteGame = fixture / L"incomplete";
+    const auto incomplete = createPluginLayout(incompleteGame);
+    createGameExecutable(incompleteGame);
+    const auto incompleteApp = incomplete / L"ChromeAxis.exe";
+    const auto incompleteProfile = chrome_axis::profileDirectory(incompleteApp);
+    const auto missingScript = chrome_axis::pluginFiles(incomplete);
+    if (!check(chrome_axis::installedGameRoot(incomplete) == incompleteGame &&
+                   chrome_axis::calibrationProfileDirectory(incompleteApp) == incompleteProfile &&
+                   missingScript.library && !missingScript.script &&
+                   !chrome_axis::isInstalledPluginDirectory(incomplete),
+               "A missing script must keep the game identity and block activation"))
+        return false;
+
+    std::filesystem::remove(incomplete / L"ChromeAxis.dll");
+    const auto missingBoth = chrome_axis::pluginFiles(incomplete);
+    if (!check(!missingBoth.library && !missingBoth.script && !chrome_axis::isInstalledPluginDirectory(incomplete),
+               "Diagnostics must detect both missing companion files"))
+        return false;
+
+    createFile(incomplete / L"scripts" / L"driving_context.reds");
+    const auto missingLibrary = chrome_axis::pluginFiles(incomplete);
+    if (!check(chrome_axis::installedGameRoot(incomplete) == incompleteGame &&
+                   !missingLibrary.library && missingLibrary.script &&
+                   !chrome_axis::isInstalledPluginDirectory(incomplete),
+               "A missing DLL must keep the game identity and block activation"))
         return false;
 
     wchar_t volume[MAX_PATH]{};
@@ -69,12 +97,12 @@ bool testDeploymentProfiles(const std::filesystem::path& fixture)
         return true;
     }
 
-    const auto incomplete = createPluginLayout(fixture / L"incomplete");
-    createGameExecutable(fixture / L"incomplete");
-    std::filesystem::create_hard_link(stagedApp, incomplete / L"ChromeAxis.exe");
-    if (!check(chrome_axis::calibrationProfileDirectory(stagedApp) == localProfile,
-               "A deployment alias without the driving context script must be ignored"))
+    std::filesystem::create_hard_link(stagedApp, incompleteApp);
+    const auto resolvedIncomplete = chrome_axis::calibrationProfileDirectory(stagedApp);
+    if (!check(CompareStringOrdinal(resolvedIncomplete.c_str(), -1, incompleteProfile.c_str(), -1, TRUE) == CSTR_EQUAL,
+               "A single incomplete deployment must resolve to the game for diagnostics"))
         return false;
+    std::filesystem::remove(incompleteApp);
 
     const auto deployed = createPluginLayout(fixture / L"game one");
     createGameExecutable(fixture / L"game one");
@@ -83,17 +111,15 @@ bool testDeploymentProfiles(const std::filesystem::path& fixture)
     std::filesystem::create_hard_link(stagedApp, deployedApp);
     const auto deployedProfile = chrome_axis::profileDirectory(deployedApp);
     const auto resolvedProfile = chrome_axis::calibrationProfileDirectory(stagedApp);
-    if (!check(CompareStringOrdinal(resolvedProfile.c_str(), -1, deployedProfile.c_str(), -1, TRUE) == CSTR_EQUAL,
+    if (!check(chrome_axis::isInstalledPluginDirectory(deployed) &&
+                   CompareStringOrdinal(resolvedProfile.c_str(), -1, deployedProfile.c_str(), -1, TRUE) == CSTR_EQUAL,
                "A single valid hard link must resolve to the deployed profile") ||
         !check(!std::filesystem::exists(deployedProfile), "Resolving a profile must not create directories"))
         return false;
 
-    const auto other = createPluginLayout(fixture / L"game two");
-    createGameExecutable(fixture / L"game two");
-    createFile(other / L"scripts" / L"driving_context.reds");
-    std::filesystem::create_hard_link(stagedApp, other / L"ChromeAxis.exe");
+    std::filesystem::create_hard_link(stagedApp, incompleteApp);
     return check(chrome_axis::calibrationProfileDirectory(stagedApp) == localProfile,
-                 "Multiple valid deployments must retain the local profile") &&
+                 "Multiple game deployments must retain the local profile even if one is incomplete") &&
         check(chrome_axis::calibrationProfileDirectory(deployedApp) == deployedProfile,
               "An app opened directly in the game must use that installation's profile");
 }

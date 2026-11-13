@@ -1,5 +1,7 @@
 #include "chrome_axis/simulation.hpp"
 
+#include "chrome_axis/diagnostics.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -15,6 +17,7 @@ constexpr auto timestampMask = (std::uint64_t{1} << timestampBits) - 1;
 constexpr auto maxGeneration = (std::uint64_t{1} << (64 - timestampBits)) - 1;
 constexpr std::uint64_t heartbeatLifetime = 350;
 constexpr std::uint64_t openRetry = 100;
+constexpr wchar_t simulationChannelPrefix[] = L"Local\\ChromeAxis.Simulation.v2.";
 
 std::uint64_t readFrame(const LONG64* frame) noexcept
 {
@@ -38,8 +41,8 @@ float approach(float value, float target, float maxChange) noexcept
 
 } // namespace
 
-SimulationPublisher::SimulationPublisher(std::wstring channel)
-    : channel_(std::move(channel)), ownerName_(channel_ + L".publisher")
+SimulationPublisher::SimulationPublisher(const std::filesystem::path& gameRoot)
+    : channel_(installationChannelName(gameRoot, simulationChannelPrefix)), ownerName_(channel_ + L".publisher")
 {
 }
 
@@ -50,6 +53,8 @@ SimulationPublisher::~SimulationPublisher()
 
 bool SimulationPublisher::enable() noexcept
 {
+    if (channel_.empty())
+        return false;
     if (enabled())
         return true;
 
@@ -98,7 +103,8 @@ bool SimulationPublisher::enabled() const noexcept
     return frame_ != nullptr;
 }
 
-SimulationReceiver::SimulationReceiver(std::wstring channel) : channel_(std::move(channel))
+SimulationReceiver::SimulationReceiver(const std::filesystem::path& gameRoot)
+    : channel_(installationChannelName(gameRoot, simulationChannelPrefix))
 {
 }
 
@@ -112,6 +118,8 @@ SimulationReceiver::~SimulationReceiver()
 
 SimulationSession SimulationReceiver::session() noexcept
 {
+    if (channel_.empty())
+        return SimulationSession::inactive;
     const auto now = GetTickCount64();
     if (!frame_) {
         if (now < retryAt_)

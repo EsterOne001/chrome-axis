@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.22** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.23** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -39,7 +39,7 @@ Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche e
 ## Simulation sans volant ni pédalier
 
 1. Dans l’application, ouvrez l’onglet **Simulation**. Avec cette fenêtre au premier plan, maintenez une touche de commande pour voir l’axe monter progressivement dans l’aperçu.
-2. Cliquez sur **Activer dans le jeu**. Laissez l’application ouverte. Vous pouvez la réduire.
+2. Depuis l’application déployée, cliquez sur **Activer dans le jeu**. La demande est réservée à cette installation de Cyberpunk. Laissez l’application ouverte. Vous pouvez la réduire.
 3. Lancez Cyberpunk 2077 avec Chrome Axis déployé par Vortex, ou revenez au jeu s’il utilise déjà `ChromeAxis.dll`. Installez V au siège conducteur, relâchez les touches de simulation pour armer les axes, puis testez les commandes avec le jeu au premier plan.
 
 | Commande | Pavé numérique avec Verr. num. activé | Autre touche |
@@ -50,6 +50,8 @@ Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche e
 | Freiner | 2 | F10 |
 
 Le journal du plugin dans `red4ext/logs` indique `Keyboard simulation active` lorsque le jeu prend en compte ce mode et `First simulated analog input applied` au premier mouvement transmis au véhicule. Pour terminer l’essai, cliquez sur **Arrêter la simulation**, repassez dans l’onglet **Matériel USB** ou fermez l’application.
+
+L’application affiche **Simulation demandée** jusqu’à ce que le plugin confirme le mode en conduite. Une copie autonome permet de tester les jauges dans l’aperçu. Pour activer la simulation en jeu, déployez ensemble l’application et le plugin du même ZIP et ouvrez l’EXE du mod dans le dossier de Cyberpunk.
 
 ## Calibration et profil
 
@@ -67,6 +69,8 @@ Pour reprendre une mesure, ouvrez **Calibrer séparément…**, puis choisissez 
 **Dossier des profils** ouvre le dossier qui contient les réglages. Dans **Sélectionner un profil…**, choisissez **Profil par défaut** pour retrouver votre calibration existante ou créez une copie nommée à partir des réglages enregistrés. Chaque profil garde ses axes, ses accessoires et son retour de force. **Enregistrer le profil** et **Recharger** agissent sur la sélection actuelle. Le jeu prend la même sélection au prochain contrôle des réglages. L’activation USB reste commune à tous les profils.
 
 Les commandes **Sauvegarder les profils…** et **Restaurer les profils…** du menu **Profil** incluent le profil par défaut, tous les profils nommés, la calibration et les zones mortes, les affectations, le retour de force, le profil actif, l’activation USB et la langue. Fermez le jeu avant de restaurer. Une copie des réglages précédents reste disponible dans `Profil/Sauvegardes`. Relancez Chrome Axis si la langue a changé.
+
+Les anciens dossiers `Profil` copiés à la main restent importables s’ils contiennent des fichiers de réglages Chrome Axis ou la sélection valide d’un profil nommé. Un dossier vide ordinaire est refusé. Une sauvegarde créée par Chrome Axis peut représenter une configuration volontairement vierge.
 
 ### Retour de force
 
@@ -137,6 +141,8 @@ Ouvrez **Diagnostic…** dans **Matériel USB** ou dans le menu **Aide**. Le pan
 
 Le panneau indique quand Cyberpunk n’est plus au premier plan ou quand les données du plugin ne sont plus récentes. La dernière valeur appliquée aide à diagnostiquer un essai après Alt-Tab. Pour l’USB, l’application peut rester ouverte pendant cet essai.
 
+Si le dossier du jeu est reconnu et qu’un composant manque, le panneau indique le nom de la DLL ou du script absent. Le diagnostic copié inclut cette information et la version du jeu quand elle est disponible.
+
 Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rapport dans le presse-papiers inclut le profil actif, les modèles détectés par l’application, les versions installées et jusqu’à huit changements d’état récents. Il distingue l’état actuel du dernier état en conduite. Pour chaque axe, il indique la valeur calibrée lue, la commande demandée au jeu et la dernière valeur effectivement écrite par le mod. Le rapport se copie localement et omet les chemins d’installation et les identifiants de périphériques. Déployez ensemble l’application et le plugin du même ZIP pour que le panneau puisse lire les données du jeu.
 
 ## Dossiers du projet
@@ -160,7 +166,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.22-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.23-Cyberpunk-2.5.zip'
 ```
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.

@@ -38,27 +38,43 @@ std::filesystem::path profileDirectory(const std::filesystem::path& moduleFile)
     return moduleFile.parent_path() / L"Profil";
 }
 
-bool isInstalledPluginDirectory(const std::filesystem::path& directory)
+std::filesystem::path installedGameRoot(const std::filesystem::path& pluginDirectory)
 {
-    const auto plugins = directory.parent_path();
+    const auto plugins = pluginDirectory.parent_path();
     const auto red4ext = plugins.parent_path();
     const auto matches = [](const std::filesystem::path& path, const wchar_t* name) {
         return CompareStringOrdinal(path.filename().c_str(), -1, name, -1, TRUE) == CSTR_EQUAL;
     };
-    if (!directory.is_absolute() || !matches(directory, L"chrome_axis")
+    if (!pluginDirectory.is_absolute() || !matches(pluginDirectory, L"chrome_axis")
         || !matches(plugins, L"plugins") || !matches(red4ext, L"red4ext"))
-        return false;
+        return {};
 
+    const auto gameRoot = red4ext.parent_path();
     std::error_code error;
-    return std::filesystem::is_regular_file(directory / L"ChromeAxis.dll", error)
-        && std::filesystem::is_regular_file(directory / L"scripts" / L"driving_context.reds", error)
-        && std::filesystem::is_regular_file(red4ext.parent_path() / L"bin" / L"x64" / L"Cyberpunk2077.exe", error);
+    return std::filesystem::is_regular_file(gameRoot / L"bin" / L"x64" / L"Cyberpunk2077.exe", error)
+        ? gameRoot : std::filesystem::path{};
+}
+
+PluginFiles pluginFiles(const std::filesystem::path& directory)
+{
+    if (!directory.is_absolute())
+        return {};
+    std::error_code error;
+    return {
+        std::filesystem::is_regular_file(directory / L"ChromeAxis.dll", error),
+        std::filesystem::is_regular_file(directory / L"scripts" / L"driving_context.reds", error)
+    };
+}
+
+bool isInstalledPluginDirectory(const std::filesystem::path& directory)
+{
+    return !installedGameRoot(directory).empty() && pluginFiles(directory).complete();
 }
 
 std::filesystem::path calibrationProfileDirectory(const std::filesystem::path& appFile)
 {
     const auto local = profileDirectory(appFile);
-    if (local.empty() || isInstalledPluginDirectory(appFile.parent_path()))
+    if (local.empty() || !installedGameRoot(appFile.parent_path()).empty())
         return local;
 
     std::wstring buffer(32768, L'\0');
@@ -78,7 +94,7 @@ std::filesystem::path calibrationProfileDirectory(const std::filesystem::path& a
         const auto directory = link.parent_path();
         std::error_code error;
         if (CompareStringOrdinal(link.filename().c_str(), -1, L"ChromeAxis.exe", -1, TRUE) == CSTR_EQUAL
-            && isInstalledPluginDirectory(directory) && std::filesystem::equivalent(appFile, link, error)) {
+            && !installedGameRoot(directory).empty() && std::filesystem::equivalent(appFile, link, error)) {
             // A staging file can be linked to more than one installation.
             if (!deployed.empty())
                 return local;

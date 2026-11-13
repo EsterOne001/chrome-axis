@@ -620,10 +620,10 @@ DiagnosticFeedbackState diagnosticFeedbackState(const chrome_axis::DirectInput* 
 }
 
 void pollInput(std::stop_token stop, const std::filesystem::path& configurationDirectory) {
+    const auto executable = chrome_axis::modulePath(nullptr);
+    const auto gameRoot = executable.parent_path().parent_path().parent_path();
     std::optional<chrome_axis::DiagnosticPublisher> diagnostics;
     try {
-        const auto executable = chrome_axis::modulePath(nullptr);
-        const auto gameRoot = executable.parent_path().parent_path().parent_path();
         if (!gameRoot.empty())
             diagnostics.emplace(gameRoot);
     } catch (const std::exception&) {
@@ -705,7 +705,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     Clock::time_point lastFeedbackUpdate{};
     std::string lastFeedbackWarning;
     std::string profileError, accessoryError, lastProfileWarning, lastAccessoryWarning;
-    chrome_axis::SimulationReceiver simulation;
+    chrome_axis::SimulationReceiver simulation(gameRoot);
     std::unique_ptr<chrome_axis::DirectInput> input;
     HWND window{};
     Clock::time_point retryInitialization{};

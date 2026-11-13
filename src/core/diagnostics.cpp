@@ -22,7 +22,9 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-std::wstring channelName(const std::filesystem::path& gameRoot)
+} // namespace
+
+std::wstring installationChannelName(const std::filesystem::path& gameRoot, std::wstring_view prefix)
 {
     if (gameRoot.empty())
         return {};
@@ -39,7 +41,7 @@ std::wstring channelName(const std::filesystem::path& gameRoot)
         return {};
 
     // Use file identity so different spelling, drive mappings or directory aliases agree.
-    std::wstring name = L"Local\\ChromeAxis.Diagnostics.v2.";
+    std::wstring name(prefix);
     if (identified) {
         name += std::to_wstring(id.VolumeSerialNumber) + L".";
         constexpr wchar_t hex[] = L"0123456789abcdef";
@@ -53,6 +55,10 @@ std::wstring channelName(const std::filesystem::path& gameRoot)
     }
     return name;
 }
+
+namespace {
+
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v2.";
 
 void recordTransition(DiagnosticRead& report) noexcept
 {
@@ -77,7 +83,7 @@ void recordTransition(DiagnosticRead& report) noexcept
 
 DiagnosticPublisher::DiagnosticPublisher(const std::filesystem::path& gameRoot)
 {
-    const auto name = channelName(gameRoot);
+    const auto name = installationChannelName(gameRoot, diagnosticChannelPrefix);
     if (name.empty())
         return;
     const auto ownerName = name + L".publisher";
@@ -138,7 +144,7 @@ void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint6
 }
 
 DiagnosticReader::DiagnosticReader(const std::filesystem::path& gameRoot)
-    : channel_(channelName(gameRoot)), mutexName_(channel_ + L".frame")
+    : channel_(installationChannelName(gameRoot, diagnosticChannelPrefix)), mutexName_(channel_ + L".frame")
 {
 }
 

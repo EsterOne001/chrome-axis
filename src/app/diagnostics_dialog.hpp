@@ -34,9 +34,10 @@
 namespace chrome_axis {
 
 struct DeviceInfo;
+struct PluginFiles;
 
-void showDiagnostics(HWND owner, const std::filesystem::path& gameRoot, const std::filesystem::path& profileRoot,
-                     std::span<const DeviceInfo> devices);
+const wchar_t* missingPluginFilesText(PluginFiles files) noexcept;
+void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::span<const DeviceInfo> devices);
 
 } // namespace chrome_axis
 #endif

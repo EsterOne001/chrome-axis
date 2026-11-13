@@ -2,6 +2,7 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "chrome_axis/calibration.hpp"
 #include "chrome_axis/configuration.hpp"
+#include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/feedback_dialog.hpp"
 #include "chrome_axis/presets.hpp"
@@ -130,6 +131,15 @@ bool deployedProfileDirectory(const std::filesystem::path& directory)
         && !chrome_axis::isTemporaryProfileDirectory(directory);
 }
 
+const wchar_t* pluginInstallAdvice(const std::filesystem::path& pluginDirectory, Text unknownGameText)
+{
+    if (!chrome_axis::installedGameRoot(pluginDirectory).empty()) {
+        if (const auto* missing = chrome_axis::missingPluginFilesText(chrome_axis::pluginFiles(pluginDirectory)))
+            return missing;
+    }
+    return tr(unknownGameText);
+}
+
 std::wstring backupFolderName()
 {
     SYSTEMTIME now{};
@@ -182,7 +192,8 @@ void addChoice(HWND combo, const std::wstring& text)
 class App {
 public:
     explicit App(std::filesystem::path directory)
-        : directory_(std::move(directory)) {}
+        : directory_(std::move(directory)), gameRoot_(chrome_axis::installedGameRoot(directory_.parent_path())),
+          publisher_(gameRoot_), simulationDiagnostics_(gameRoot_) {}
     ~App()
     {
         for (const auto font : fonts_)
@@ -785,6 +796,7 @@ private:
     void setMode(bool simulation);
     void applyMode();
     void updateSimulationView();
+    void updateSimulationStatus();
     chrome_axis::ControlState previewSimulation();
     CalibrationScope assignedCalibrationScope() const;
     CalibrationScope availableCalibrationScope() const;
@@ -846,6 +858,7 @@ private:
     const std::filesystem::path& activeDirectory() const { return preset_.directory; }
 
     std::filesystem::path directory_;
+    std::filesystem::path gameRoot_;
     std::filesystem::path path_;
     chrome_axis::ProfilePreset preset_;
     HWND window_{};
@@ -904,6 +917,9 @@ private:
     bool simulation_{};
     bool publisherFailed_{};
     chrome_axis::SimulationPublisher publisher_;
+    chrome_axis::DiagnosticReader simulationDiagnostics_;
+    std::uint64_t simulationRequestedAt_{};
+    std::uint64_t nextSimulationStatus_{};
     chrome_axis::Simulator simulator_;
     std::chrono::steady_clock::time_point previewTime_{};
     std::chrono::steady_clock::time_point nextUsbRefresh_{};
@@ -942,10 +958,16 @@ void App::action(int command, int notification)
     case toggleSimulation:
         if (simulation_) {
             publisherFailed_ = false;
-            if (publisher_.enabled())
+            if (publisher_.enabled()) {
                 publisher_.disable();
-            else
+            } else if (!deployedProfileDirectory(directory_)) {
+                MessageBoxW(window_, pluginInstallAdvice(directory_.parent_path(), Text::mainDeployAndOpen),
+                            title, MB_OK | MB_ICONWARNING);
+            } else {
                 publisherFailed_ = !publisher_.enable();
+                if (!publisherFailed_)
+                    simulationRequestedAt_ = GetTickCount64();
+            }
             updateSimulationView();
         }
         break;
@@ -976,12 +998,8 @@ void App::action(int command, int notification)
         }
         break;
     case showDiagnostics:
-        if (!calibrating_) {
-            const auto pluginDirectory = directory_.parent_path();
-            const auto gameRoot = chrome_axis::isInstalledPluginDirectory(pluginDirectory)
-                ? pluginDirectory.parent_path().parent_path().parent_path() : std::filesystem::path{};
-            chrome_axis::showDiagnostics(window_, gameRoot, directory_, devices_);
-        }
+        if (!calibrating_)
+            chrome_axis::showDiagnostics(window_, directory_, devices_);
         break;
     case startCalibration:
         beginCalibration(assignedCalibrationScope());
@@ -1101,7 +1119,7 @@ void App::scanDevices()
         hardwareStatus = tr(Text::mainTemporaryCopy);
         advice = {};
     } else if (!installed_)
-        advice = tr(Text::mainOpenFromGameForUsb);
+        advice = pluginInstallAdvice(directory_.parent_path(), Text::mainOpenFromGameForUsb);
     if (!advice.empty()) {
         hardwareStatus += L". ";
         hardwareStatus += advice;
@@ -1529,9 +1547,10 @@ void App::changeUsbMode()
     if (enable) {
         if (!confirmPersistentDirectory() || !confirmCurrentPreset())
             return;
-        if (!chrome_axis::isInstalledPluginDirectory(directory_.parent_path())) {
+        const auto pluginDirectory = directory_.parent_path();
+        if (!chrome_axis::isInstalledPluginDirectory(pluginDirectory)) {
             const auto message = std::wstring(tr(Text::mainCurrentProfileFolder)) + L"\n\n" + directory_.wstring()
-                + L"\n\n" + tr(Text::mainDeployAndOpen);
+                + L"\n\n" + pluginInstallAdvice(pluginDirectory, Text::mainDeployAndOpen);
             MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONWARNING);
             return;
         }
@@ -1770,12 +1789,8 @@ void App::updateSimulationView()
     const bool active = publisher_.enabled();
     setText(simToggle_, active ? tr(Text::mainStopSimulation) : tr(Text::mainEnableInGame));
     InvalidateRect(simToggle_, nullptr, FALSE);
-    setText(simState_, active ? tr(Text::mainSimulationActive)
-        : publisherFailed_ ? tr(Text::mainSimulationFailed)
-        : tr(Text::mainSimulationPreview));
     setText(calibrationTitle_, tr(Text::mainTestInCyberpunk));
-    setText(status_, active ? tr(Text::mainGameModeActive)
-        : tr(Text::mainPreviewMode));
+    updateSimulationStatus();
     EnableMenuItem(deviceMenu_, startCalibration, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_GRAYED);
@@ -1786,6 +1801,25 @@ void App::updateSimulationView()
     EnableMenuItem(profileMenu_, selectProfile, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, backupProfiles, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, restoreProfiles, MF_BYCOMMAND | MF_GRAYED);
+}
+
+void App::updateSimulationStatus()
+{
+    nextSimulationStatus_ = GetTickCount64() + 250;
+    if (!publisher_.enabled()) {
+        setText(simState_, publisherFailed_ ? tr(Text::mainSimulationFailed) : tr(Text::mainSimulationPreview));
+        setText(status_, tr(Text::mainPreviewMode));
+        return;
+    }
+
+    const auto report = simulationDiagnostics_.read();
+    // The last driving snapshot survives Alt-Tab. A snapshot predating the
+    // current activation cannot acknowledge this request.
+    const bool confirmed = report.connection == chrome_axis::DiagnosticConnection::connected
+        && report.lastDriveAt > simulationRequestedAt_
+        && report.lastDrive.mode == chrome_axis::DiagnosticMode::simulation;
+    setText(simState_, confirmed ? tr(Text::mainSimulationActive) : tr(Text::mainSimulationPending));
+    setText(status_, tr(Text::mainKeepSimulationOpen));
 }
 
 chrome_axis::ControlState App::previewSimulation()
@@ -2080,6 +2114,8 @@ void App::tick()
     publisher_.heartbeat();
     if (!IsWindowEnabled(window_))
         return;
+    if (simulation_ && publisher_.enabled() && GetTickCount64() >= nextSimulationStatus_)
+        updateSimulationStatus();
     const bool foreground = GetForegroundWindow() == window_ && !IsIconic(window_);
     if (!simulation_ && foreground) {
         if (deviceRefreshPending_)

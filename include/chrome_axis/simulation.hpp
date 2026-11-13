@@ -3,15 +3,14 @@
 #include "chrome_axis/controls.hpp"
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 namespace chrome_axis {
 
-inline constexpr wchar_t simulationChannel[] = L"Local\\ChromeAxis.Simulation.v1";
-
 class SimulationPublisher {
 public:
-    explicit SimulationPublisher(std::wstring channel = simulationChannel);
+    explicit SimulationPublisher(const std::filesystem::path& gameRoot);
     ~SimulationPublisher();
     SimulationPublisher(const SimulationPublisher&) = delete;
     SimulationPublisher& operator=(const SimulationPublisher&) = delete;
@@ -34,7 +33,7 @@ enum class SimulationSession { inactive, active, restarted };
 
 class SimulationReceiver {
 public:
-    explicit SimulationReceiver(std::wstring channel = simulationChannel);
+    explicit SimulationReceiver(const std::filesystem::path& gameRoot);
     ~SimulationReceiver();
     SimulationReceiver(const SimulationReceiver&) = delete;
     SimulationReceiver& operator=(const SimulationReceiver&) = delete;

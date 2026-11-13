@@ -3,6 +3,7 @@
 #include "app_text.hpp"
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/accessories_dialog.hpp"
+#include "chrome_axis/configuration.hpp"
 #include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/input.hpp"
 #include "chrome_axis/presets.hpp"
@@ -20,6 +21,16 @@
 #include <vector>
 
 namespace chrome_axis {
+
+const wchar_t* missingPluginFilesText(PluginFiles files) noexcept
+{
+    if (!files.library)
+        return tr(files.script ? Text::DlgDiagnosticsMissingLibrary : Text::DlgDiagnosticsMissingBoth);
+    if (!files.script)
+        return tr(Text::DlgDiagnosticsMissingScript);
+    return nullptr;
+}
+
 namespace {
 
 constexpr UINT_PTR refreshTimer = 1;
@@ -33,6 +44,7 @@ struct DialogState {
     const std::filesystem::path& gameRoot;
     const std::filesystem::path& profileRoot;
     std::wstring models;
+    const wchar_t* missingFiles{};
 };
 
 struct AxisControls {
@@ -269,6 +281,10 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         line(Text::DlgDiagnosticsReportGame, fileVersion(state.gameRoot / L"bin" / L"x64" / L"Cyberpunk2077.exe"));
         line(Text::DlgDiagnosticsReportPlugin, fileVersion(state.profileRoot.parent_path() / L"ChromeAxis.dll"));
     }
+    if (state.missingFiles) {
+        report += state.missingFiles;
+        report += L"\r\n";
+    }
     report += connectionText(read.connection);
     report += L"\r\n";
     const auto localProfile = activePreset(state.profileRoot);
@@ -367,10 +383,11 @@ void setChangedText(HWND window, int id, std::wstring_view text)
         SetDlgItemTextW(window, id, text.data());
 }
 
-void refresh(HWND window, DiagnosticReader& reader)
+void refresh(HWND window, DialogState& state)
 {
-    const auto read = reader.read();
-    setChangedText(window, IDC_DIAGNOSTICS_CONNECTION, connectionText(read.connection));
+    const auto read = state.reader.read();
+    setChangedText(window, IDC_DIAGNOSTICS_CONNECTION,
+                   state.missingFiles ? state.missingFiles : connectionText(read.connection));
     const bool connected = read.connection == DiagnosticConnection::connected;
     const auto& snapshot = read.snapshot;
     const auto now = GetTickCount64();
@@ -392,10 +409,12 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 {
     const auto state = reinterpret_cast<DialogState*>(GetWindowLongPtrW(window, DWLP_USER));
     switch (message) {
-    case WM_INITDIALOG:
+    case WM_INITDIALOG: {
         SetWindowLongPtrW(window, DWLP_USER, lParam);
+        auto& initial = *reinterpret_cast<DialogState*>(lParam);
         SetWindowTextW(window, tr(Text::DlgDiagnosticsTitle));
-        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgDiagnosticsIntro));
+        SetDlgItemTextW(window, IDC_MODAL_INTRO,
+                       tr(initial.missingFiles ? Text::DlgDiagnosticsRedeploy : Text::DlgDiagnosticsIntro));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_MODE_LABEL, tr(Text::DlgDiagnosticsMode));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_PROFILE_LABEL, tr(Text::DlgDiagnosticsProfile));
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgDiagnosticsAxes));
@@ -409,13 +428,14 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_COPY, tr(Text::DlgDiagnosticsCopy));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgDiagnosticsClose));
         DialogTheme::attach(window, tr(Text::DlgDiagnosticsHeading), IDC_DIAGNOSTICS_CONNECTION, 0, {IDCANCEL});
-        refresh(window, reinterpret_cast<DialogState*>(lParam)->reader);
+        refresh(window, initial);
         SetTimer(window, refreshTimer, refreshIntervalMs, nullptr);
         SetFocus(GetDlgItem(window, IDCANCEL));
         return FALSE;
+    }
     case WM_TIMER:
         if (wParam == refreshTimer && state) {
-            refresh(window, state->reader);
+            refresh(window, *state);
             return TRUE;
         }
         if (wParam == copyTimer) {
@@ -449,10 +469,12 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 } // namespace
 
-void showDiagnostics(HWND owner, const std::filesystem::path& gameRoot, const std::filesystem::path& profileRoot,
-                     std::span<const DeviceInfo> devices)
+void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::span<const DeviceInfo> devices)
 {
-    DialogState state{DiagnosticReader(gameRoot), gameRoot, profileRoot, detectedModels(devices)};
+    const auto pluginDirectory = profileRoot.parent_path();
+    const auto gameRoot = installedGameRoot(pluginDirectory);
+    DialogState state{DiagnosticReader(gameRoot), gameRoot, profileRoot, detectedModels(devices),
+                      gameRoot.empty() ? nullptr : missingPluginFilesText(pluginFiles(pluginDirectory))};
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIAGNOSTICS), owner,
                                        dialogProc, reinterpret_cast<LPARAM>(&state));
     if (result == -1)

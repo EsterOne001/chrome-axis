@@ -1,6 +1,7 @@
 #include "chrome_axis/simulation.hpp"
 
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 
 namespace {
@@ -47,17 +48,53 @@ int testControls()
 
 int testSession()
 {
+    namespace fs = std::filesystem;
+    using chrome_axis::SimulationPublisher;
+    using chrome_axis::SimulationReceiver;
     using chrome_axis::SimulationSession;
-    const auto channel = std::wstring(chrome_axis::simulationChannel) + L".test." + std::to_wstring(GetCurrentProcessId());
-    chrome_axis::SimulationReceiver empty(channel);
-    if (empty.session() != SimulationSession::inactive)
-        return 8;
+    const auto temp = fs::temp_directory_path() /
+        (L"chrome-axis-simulation-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+    const auto gameA = temp / L"GameA";
+    const auto gameB = temp / L"GameB";
+    const struct TestDirectories {
+        fs::path path;
+        ~TestDirectories()
+        {
+            std::error_code error;
+            fs::remove(path / L"GameA", error);
+            fs::remove(path / L"GameB", error);
+            fs::remove(path, error);
+        }
+    } cleanup{temp};
+    fs::create_directories(gameA);
+    fs::create_directories(gameB);
 
-    chrome_axis::SimulationPublisher first(channel), second(channel);
-    chrome_axis::SimulationReceiver receiver(channel);
+    SimulationPublisher portable(fs::path{});
+    SimulationReceiver empty(fs::path{});
+    if (portable.enable() || empty.session() != SimulationSession::inactive)
+        return 8;
+    SimulationPublisher missing(temp / L"missing");
+    if (missing.enable())
+        return 14;
+
+    const auto aliasA = gameB / L".." / L"GameA";
+    SimulationReceiver beforePublish(gameA);
+    if (beforePublish.session() != SimulationSession::inactive)
+        return 15;
+
+    SimulationPublisher first(gameA), second(aliasA), other(gameB);
+    SimulationReceiver receiver(aliasA), otherReceiver(gameB);
     if (!first.enable() || !first.enabled() || second.enable() || second.enabled() ||
         receiver.session() != SimulationSession::active)
         return 9;
+    // The same Windows session can host separate publisher and receiver pairs.
+    SimulationReceiver unmatched(gameB);
+    if (unmatched.session() != SimulationSession::inactive || !other.enable() ||
+        otherReceiver.session() != SimulationSession::active)
+        return 16;
+    other.disable();
+    if (otherReceiver.session() != SimulationSession::inactive || receiver.session() != SimulationSession::active)
+        return 17;
     first.disable();
     // A new publisher requires neutral arming without a physical USB handover.
     if (!second.enable() || receiver.session() != SimulationSession::restarted ||

@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.22** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.23** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -33,7 +33,7 @@ The HUD follows Cyberpunk 2077’s on-screen language. It uses French when the g
 ## Keyboard simulation
 
 1. Open the **Simulation** tab. Hold a simulation key with the app in the foreground to see its axis build up in the preview.
-2. Click **Enable in game** and leave the app open. You can minimize it.
+2. In the deployed app, click **Enable in game**. The request applies only to that Cyberpunk installation. Leave the app open. You can minimize it.
 3. Launch or return to Cyberpunk 2077 with the mod deployed, put V in the driver’s seat, release the simulation keys to arm the axes, and use the keys with the game in the foreground.
 
 | Action | Numpad with Num Lock on | Alternative |
@@ -44,6 +44,8 @@ The HUD follows Cyberpunk 2077’s on-screen language. It uses French when the g
 | Brake | 2 | F10 |
 
 The plugin log reports `Keyboard simulation active` when the game accepts simulation and `First simulated analog input applied` when the first input reaches the vehicle. To stop, click **Stop simulation**, switch to **USB Hardware**, or close the app.
+
+The app displays **Simulation requested** until the plugin confirms simulation while driving. A standalone copy can display the local input gauges. To enable simulation in the game, deploy the app and plugin from the same ZIP and open the mod's EXE in the Cyberpunk installation.
 
 ## Calibration and profiles
 
@@ -59,6 +61,8 @@ To take a measurement again, open **Calibrate separately…**, then choose an ax
 **Select profile…** lets you switch to **Default profile** or create a named copy from the current saved settings. Each profile stores its own calibration, accessory bindings and force feedback settings. **Save profile** and **Reload** act on the active profile. The plugin picks up the same selection on its next settings check. USB activation is shared across profiles.
 
 **Back up profiles…** and **Restore profiles…** in the **Profile** menu include the default and named profiles, calibration and deadzones, bindings, force feedback, active profile, USB activation, and language. Close the game before restoring. A copy of the previous settings is available in `Profil/Sauvegardes`. Restart Chrome Axis if the language has changed.
+
+Manually copied legacy `Profil` folders remain importable if they contain Chrome Axis settings files or a valid named-profile selection. An ordinary empty folder is rejected. A backup created by Chrome Axis can represent an intentionally blank configuration.
 
 ### Force feedback
 
@@ -125,6 +129,8 @@ Open **Diagnostics…** in **USB Hardware** or the **Help** menu. This panel sho
 
 The panel indicates when Cyberpunk is out of focus or its plugin data is stale. The last applied value helps diagnose an input after Alt-Tab. You can keep the app open during this USB test.
 
+When the game directory is recognized and a component is missing, the panel names the missing DLL or script. The copied report includes that information and the game version when available.
+
 After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it shows the calibrated reading, the requested command and the last value the mod actually wrote. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
 
 ## Project folders
@@ -148,7 +154,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.22-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.23-Cyberpunk-2.5.zip'
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.

@@ -18,6 +18,10 @@ CHROME_AXIS_TEXT(DlgDiagnosticsCopyError, L"Échec · Réessayer", L"Copy failed
 CHROME_AXIS_TEXT(DlgDiagnosticsOpenError, L"Impossible d’ouvrir la fenêtre de diagnostic.", L"Could not open the diagnostics window.")
 
 CHROME_AXIS_TEXT(DlgDiagnosticsUnavailable, L"Ouvrez ChromeAxis.exe depuis le dossier du mod dans Cyberpunk 2077.", L"Open ChromeAxis.exe from the mod folder in your Cyberpunk 2077 installation.")
+CHROME_AXIS_TEXT(DlgDiagnosticsMissingLibrary, L"Fichier absent · ChromeAxis.dll", L"Missing file · ChromeAxis.dll")
+CHROME_AXIS_TEXT(DlgDiagnosticsMissingScript, L"Fichier absent · scripts/driving_context.reds", L"Missing file · scripts/driving_context.reds")
+CHROME_AXIS_TEXT(DlgDiagnosticsMissingBoth, L"Fichiers absents · ChromeAxis.dll et scripts/driving_context.reds", L"Missing files · ChromeAxis.dll and scripts/driving_context.reds")
+CHROME_AXIS_TEXT(DlgDiagnosticsRedeploy, L"Redéployez le ZIP complet du mod, puis relancez le jeu.", L"Redeploy the complete mod ZIP, then restart the game.")
 CHROME_AXIS_TEXT(DlgDiagnosticsDisconnected, L"Aucun signal du plugin. Lancez le jeu avec la version correspondante du mod.", L"No signal from the plugin. Start the game with the matching version of the mod.")
 CHROME_AXIS_TEXT(DlgDiagnosticsStale, L"Le signal du plugin a expiré. Vérifiez que le jeu est toujours lancé.", L"The plugin signal timed out. Check whether the game is still running.")
 CHROME_AXIS_TEXT(DlgDiagnosticsConnected, L"Plugin Chrome Axis connecté", L"Chrome Axis plugin connected")

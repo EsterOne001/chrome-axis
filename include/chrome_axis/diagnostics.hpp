@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace chrome_axis {
 
@@ -70,6 +71,9 @@ struct DiagnosticRead {
 };
 
 struct DiagnosticFrame;
+
+// Identify the same installation through directory aliases and links.
+std::wstring installationChannelName(const std::filesystem::path& gameRoot, std::wstring_view prefix);
 
 // One publisher per installation. Reads and writes never wait on the other process.
 class DiagnosticPublisher {

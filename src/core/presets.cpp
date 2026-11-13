@@ -358,9 +358,12 @@ ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::
                 continue;
             if (!plainDirectory(attributes) || !validName(name.native()))
                 return ProfileBackupError::invalidBackup;
-            if (!CreateDirectoryW((target / name).c_str(), nullptr) || !copySettings(it->path(), target / name))
+            const auto copied = target / name;
+            if (!CreateDirectoryW(copied.c_str(), nullptr) || !copySettings(it->path(), copied))
                 return ProfileBackupError::ioError;
-            foundProfile = true;
+            foundProfile = foundProfile || std::ranges::any_of(settingsFiles, [&](const auto filename) {
+                return plainFile(GetFileAttributesW((copied / filename).c_str()));
+            });
         }
         if (error)
             return ProfileBackupError::ioError;
@@ -370,11 +373,12 @@ ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::
     if (!optionalEntry(source / backupMarker, false, marked)
         || (marked && readSmallTextFile(source / backupMarker) != backupVersion))
         return ProfileBackupError::invalidBackup;
-    auto path = source.lexically_normal();
-    if (!path.has_filename())
-        path = path.parent_path();
-    const bool legacy = samePathPart(path.filename(), L"Profil");
-    return foundProfile || marked || allowEmpty || legacy ? ProfileBackupError::none : ProfileBackupError::invalidBackup;
+    if (foundProfile || marked || allowEmpty)
+        return ProfileBackupError::none;
+    // A manually copied, explicitly selected named profile can have no settings yet.
+    const auto selected = readSelection(destination / selectionFile);
+    return selected && !selected->empty() && !presetDirectory(destination, *selected).empty()
+        ? ProfileBackupError::none : ProfileBackupError::invalidBackup;
 }
 
 bool validSavedSettings(const std::filesystem::path& path)
