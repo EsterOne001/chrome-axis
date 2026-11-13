@@ -41,6 +41,7 @@ using namespace chrome_axis::ui;
 
 constexpr wchar_t windowClass[] = L"ChromeAxisCalibration";
 constexpr wchar_t title[] = L"Chrome Axis";
+constexpr wchar_t nexusModUrl[] = L"https://www.nexusmods.com/cyberpunk2077/mods/38104";
 constexpr UINT_PTR inputTimer = 1;
 constexpr UINT_PTR deviceTimer = 2;
 constexpr int contentWidthLimit = 1120;
@@ -58,7 +59,7 @@ enum Command {
     saveProfile, reloadProfile, openProfileFolder, closeApp, aboutApp, hardwareTab, simulationTab, toggleSimulation,
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
-    backupProfiles, restoreProfiles,
+    backupProfiles, restoreProfiles, openModInfo,
     deadzoneFirst = 200, meterFirst = 210, retryAxisFirst = 220
 };
 
@@ -375,6 +376,7 @@ private:
         CheckMenuRadioItem(languageMenu_, automaticLanguage, englishLanguage, selectedLanguage->command, MF_BYCOMMAND);
         AppendMenuW(helpMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(languageMenu_), tr(Text::mainMenuLanguage));
         AppendMenuW(helpMenu_, MF_STRING, showDiagnostics, tr(Text::DlgDiagnosticsMenu));
+        AppendMenuW(helpMenu_, MF_STRING, openModInfo, tr(Text::mainMenuModInfo));
         AppendMenuW(helpMenu_, MF_STRING, aboutApp, tr(Text::mainMenuAbout));
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(helpMenu_), tr(Text::mainMenuHelp));
         SetMenu(window_, menu);
@@ -1043,6 +1045,12 @@ void App::action(int command, int notification)
             MessageBoxW(window_, tr(Text::mainLanguageSaved), title, MB_OK | MB_ICONINFORMATION);
         break;
     }
+    case openModInfo:
+        if (reinterpret_cast<INT_PTR>(
+                ShellExecuteW(window_, L"open", nexusModUrl, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+            MessageBoxW(window_, tr(Text::mainOpenModInfoFailed), title, MB_OK | MB_ICONERROR);
+        }
+        break;
     case aboutApp: {
         const auto description = std::wstring(title) + L" · " CHROME_AXIS_VERSION_WIDE L"\n"
             + tr(Text::mainAboutBody);
