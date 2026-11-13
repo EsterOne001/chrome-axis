@@ -9,6 +9,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let hudRoot: wref<inkCompoundWidget>;
   private let hudBadge: wref<inkCanvas>;
   private let hudLogo: wref<inkImage>;
+  private let hudLogoReady: Bool;
+  private let hudLogoRetry: Int32;
   private let hudLabel: wref<inkText>;
   private let hudLabelShadow: wref<inkText>;
   private let hudStatus: Int32;
@@ -40,6 +42,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudRoot = null;
     this.hudBadge = null;
     this.hudLogo = null;
+    this.hudLogoReady = false;
+    this.hudLogoRetry = 0;
     this.hudLabel = null;
     this.hudLabelShadow = null;
     this.hudStatus = 0;
@@ -62,8 +66,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     badge.Reparent(root);
 
     let logo = new inkImage();
+    logo.SetVisible(false);
     logo.SetAtlasResource(r"chrome_axis\\hud\\logo.inkatlas");
-    logo.SetTexturePart(n"logo");
     logo.SetSize(Vector2(34.0, 34.0));
     logo.Reparent(badge);
 
@@ -74,9 +78,23 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudRoot = root;
     this.hudBadge = badge;
     this.hudLogo = logo;
+    this.hudLogoRetry = 30;
     this.hudLabel = label;
     this.hudLabelShadow = shadow;
     this.ApplyHudStatus();
+    this.TryShowHudLogo();
+  }
+
+  private func TryShowHudLogo() -> Void {
+    if this.hudLogoReady || this.hudLogoRetry <= 0 || !IsDefined(this.hudLogo) {
+      return;
+    }
+    this.hudLogoRetry -= 1;
+    // Ink can show a solid placeholder until the atlas part is available.
+    if this.hudLogo.IsTexturePartExist(n"logo") && this.hudLogo.SetTexturePart(n"logo") {
+      this.hudLogoReady = true;
+      this.hudLogo.SetVisible(true);
+    }
   }
 
   private func CreateHudLabel(badge: ref<inkCanvas>, offset: Float) -> ref<inkText> {
@@ -108,7 +126,11 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     if IsDefined(this.hudBadge) {
       if changed {
         this.ApplyHudStatus();
+        if !this.hudLogoReady {
+          this.hudLogoRetry = 30;
+        }
       }
+      this.TryShowHudLogo();
       return;
     }
     if this.hudRetry > 0 {
