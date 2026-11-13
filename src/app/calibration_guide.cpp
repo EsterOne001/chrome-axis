@@ -1,12 +1,14 @@
 #include "calibration_guide.hpp"
 
 #include "ui_theme.hpp"
+#include "app_text.hpp"
 
 #include <objidl.h>
 #include <gdiplus.h>
 #include <shlwapi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 
 namespace chrome_axis::ui {
@@ -90,156 +92,196 @@ private:
     Image pedal_;
 };
 
-bool paintProduct(HDC dc, const Diagram& diagram, CalibrationPose pose)
-{
-    const bool pedal = pose == CalibrationPose::pedalRest || pose == CalibrationPose::pedalPressed;
-    static const CalibrationArtwork artwork;
-    auto image = artwork.image(pedal);
-    if (!image)
-        return false;
+constexpr float radians = 0.01745329252f;
 
-    const int turn = pose == CalibrationPose::wheelLeft ? -1 : pose == CalibrationPose::wheelRight ? 1 : 0;
-    const bool pressed = pose == CalibrationPose::pedalPressed;
-    const auto pivot = pedal ? diagram.point(132, 111) : diagram.point(100, 76);
-    {
+POINT rotateWheelPoint(const Diagram& diagram, LONG x, LONG y, float angle)
+{
+    const auto cosine = std::cos(angle * radians);
+    const auto sine = std::sin(angle * radians);
+    return diagram.point(100 + std::lround(x * cosine - y * sine),
+                         76 + std::lround(x * sine + y * cosine));
+}
+
+bool drawWheelArtwork(HDC dc, const Diagram& diagram, Gdiplus::Bitmap& image, float angle)
+{
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    POINT origin{};
+    GetViewportOrgEx(dc, &origin);
+    const auto hub = diagram.point(100, 76);
+    graphics.TranslateTransform(static_cast<float>(hub.x + origin.x), static_cast<float>(hub.y + origin.y));
+    graphics.RotateTransform(angle);
+    const int size = diagram.scale(118);
+    return graphics.DrawImage(&image, -size / 2, -size / 2, size, size) == Gdiplus::Ok;
+}
+
+void paintWheelOutline(HDC dc, const Diagram& diagram, float angle, COLORREF fg, COLORREF accent)
+{
+    const auto state = SaveDC(dc);
+    if (!state)
+        return;
+    const auto outline = CreatePen(PS_SOLID, std::max(1L, diagram.scale(3)), fg);
+    const auto mark = CreatePen(PS_SOLID, std::max(1L, diagram.scale(4)), accent);
+    if (outline && mark) {
+        SelectObject(dc, GetStockObject(NULL_BRUSH));
+        SelectObject(dc, outline);
+        diagram.ellipse(dc, 100, 76, 42, 42);
+        diagram.ellipse(dc, 100, 76, 8, 8);
+        const POINT spokes[][2]{
+            {rotateWheelPoint(diagram, -37, -14, angle), rotateWheelPoint(diagram, -8, -2, angle)},
+            {rotateWheelPoint(diagram, 37, -14, angle), rotateWheelPoint(diagram, 8, -2, angle)},
+            {rotateWheelPoint(diagram, 0, 9, angle), rotateWheelPoint(diagram, 0, 40, angle)}
+        };
+        for (const auto& spoke : spokes)
+            Polyline(dc, spoke, 2);
+        SelectObject(dc, mark);
+        const POINT stripe[]{rotateWheelPoint(diagram, 0, -37, angle), rotateWheelPoint(diagram, 0, -46, angle)};
+        Polyline(dc, stripe, 2);
+    }
+    RestoreDC(dc, state);
+    DeleteObject(mark);
+    DeleteObject(outline);
+}
+
+void paintWheelCue(HDC dc, const Diagram& diagram, int turn, COLORREF accent, COLORREF border)
+{
+    if (turn == 0) {
+        const POINT mark[]{
+            diagram.point(90, 10), diagram.point(110, 10), diagram.point(100, 22)
+        };
+        drawPolygon(dc, mark, accent, border);
+        return;
+    }
+
+    // A tapered arc outside the rim leads into a solid arrowhead.
+    constexpr int segments = 12;
+    const auto point = [&](float angle, float radius) {
+        const float a = angle * radians;
+        return diagram.point(100 + turn * std::lround(std::sin(a) * radius),
+            76 - std::lround(std::cos(a) * radius));
+    };
+    POINT arrow[2 * (segments + 1) + 3]{};
+    for (int i = 0; i <= segments; ++i) {
+        const float t = static_cast<float>(i) / segments;
+        const float angle = 18.0f + 42.0f * t;
+        const float halfWidth = 1.0f + 3.0f * t;
+        arrow[i] = point(angle, 61.0f + halfWidth);
+        arrow[2 * segments + 4 - i] = point(angle, 61.0f - halfWidth);
+    }
+    arrow[segments + 1] = point(60, 72);
+    arrow[segments + 2] = point(79, 61);
+    arrow[segments + 3] = point(60, 50);
+    drawPolygon(dc, arrow, accent, border);
+}
+
+void paintPedalCue(HDC dc, const Diagram& diagram, LONG x, bool pressing, COLORREF accent, COLORREF border)
+{
+    const auto y = [pressing](LONG offset) { return pressing ? 39 + offset : 85 - offset; };
+    const POINT arrow[]{
+        diagram.point(x - 3, y(0)), diagram.point(x + 3, y(0)), diagram.point(x + 3, y(30)),
+        diagram.point(x + 9, y(30)), diagram.point(x, y(46)),
+        diagram.point(x - 9, y(30)), diagram.point(x - 3, y(30))
+    };
+    drawPolygon(dc, arrow, accent, border);
+}
+
+void paintPedal(HDC dc, const Diagram& diagram, LONG x, Gdiplus::Bitmap* image, float pressure,
+    bool active, const wchar_t* label, HFONT font, bool highContrast)
+{
+    const auto frame = [&](LONG top, LONG bottom) {
+        const auto start = diagram.point(x - 42, top);
+        const auto end = diagram.point(x + 42, bottom);
+        return RECT{start.x, start.y, end.x, end.y};
+    };
+    const COLORREF fg = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : active ? yellow : secondary;
+    const COLORREF line = highContrast ? fg : active ? yellow : edge;
+    cutPanel(dc, frame(10, 132), diagram.scale(8), highContrast ? GetSysColor(COLOR_WINDOW) : panel, line);
+    const auto top = 22L + std::lround(pressure * 31.0f);
+    const auto height = 65L - std::lround(pressure * 18.0f);
+    const auto plateStart = diagram.point(x - (x < 100 ? 26 : 22), top);
+    const auto plateEnd = diagram.point(x + (x < 100 ? 14 : 10), top + height);
+    const RECT plate{plateStart.x, plateStart.y, plateEnd.x, plateEnd.y};
+    const auto mountStart = diagram.point(x - 22, 100);
+    const auto mountEnd = diagram.point(x + 10, 104);
+    fill(dc, {mountStart.x, mountStart.y, mountEnd.x, mountEnd.y}, line);
+
+    bool drawn = false;
+    if (image) {
         Gdiplus::Graphics graphics(dc);
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-        // GDI+ uses pixel coordinates. Match the viewport origin of the Win32 paint buffer.
         POINT origin{};
         GetViewportOrgEx(dc, &origin);
-        graphics.TranslateTransform(static_cast<float>(pivot.x + origin.x), static_cast<float>(pivot.y + origin.y));
-        // Use the same artwork in each pose, rotating about its hub or hinge.
-        graphics.RotateTransform(pedal ? (pressed ? -22.0f : 0.0f) : static_cast<float>(turn * 42));
-        const int width = diagram.scale(pedal ? 112 : 118);
-        const int height = MulDiv(width, static_cast<int>(image->GetHeight()), static_cast<int>(image->GetWidth()));
-        const int left = pedal ? -MulDiv(width, 91, 100) : -width / 2;
-        const int top = pedal ? -MulDiv(height, 88, 100) : -height / 2;
-        if (graphics.DrawImage(image, left, top, width, height) != Gdiplus::Ok)
-            return false;
+        const Gdiplus::Rect bounds(plate.left + origin.x, plate.top + origin.y,
+            plate.right - plate.left, plate.bottom - plate.top);
+        const float opacity = active ? 1.0f : 0.48f;
+        const Gdiplus::ColorMatrix tone = {{{1, 0, 0, 0, 0}, {0, 1, 0, 0, 0}, {0, 0, 1, 0, 0},
+            {0, 0, 0, opacity, 0}, {0, 0, 0, 0, 1}}};
+        Gdiplus::ImageAttributes attributes;
+        attributes.SetColorMatrix(&tone);
+        drawn = graphics.DrawImage(image, bounds, 0, 0, static_cast<int>(image->GetWidth()),
+            static_cast<int>(image->GetHeight()), Gdiplus::UnitPixel, &attributes) == Gdiplus::Ok;
+    }
+    if (!drawn) {
+        cutPanel(dc, plate, diagram.scale(5), highContrast ? GetSysColor(COLOR_WINDOW) : field, fg);
+        for (LONG i = 1; i < 5; ++i) {
+            const LONG y = plate.top + (plate.bottom - plate.top) * i / 5;
+            fill(dc, {plate.left + diagram.scale(6), y, plate.right - diagram.scale(6), y + 1}, fg);
+        }
     }
 
-    const auto motion = CreatePen(PS_SOLID, std::max(1L, diagram.scale(3)), cyan);
-    if (!motion)
-        return true;
-    const auto previous = SelectObject(dc, motion);
-    if (pedal) {
-        diagram.line(dc, {{33, 124}, {147, 124}});
-        const LONG from = pressed ? 43 : 87;
-        const LONG to = pressed ? 87 : 43;
-        const LONG tip = to + (pressed ? -8 : 8);
-        diagram.line(dc, {{165, from}, {165, to}});
-        diagram.line(dc, {{156, tip}, {165, to}, {174, tip}});
-    } else if (turn) {
-        const auto side = [turn](LONG offset) { return 100 + turn * offset; };
-        diagram.line(dc, {{side(14), 10}, {side(39), 19}, {side(56), 35}, {side(63), 57}});
-        diagram.line(dc, {{side(52), 51}, {side(63), 57}, {side(68), 46}});
-    } else {
-        diagram.line(dc, {{94, 8}, {100, 14}, {106, 8}});
-    }
-    SelectObject(dc, previous);
-    DeleteObject(motion);
-    return true;
-}
-
-void paintWheel(HDC dc, const Diagram& diagram, CalibrationPose pose, HPEN outline, HPEN mark, HPEN motion)
-{
-    const int turn = pose == CalibrationPose::wheelLeft ? -1 : pose == CalibrationPose::wheelRight ? 1 : 0;
-    const auto wheelPoint = [&](LONG x, LONG y) {
-        if (turn != 0)
-            return diagram.point(100 + MulDiv(x - turn * y, 707, 1000), 75 + MulDiv(turn * x + y, 707, 1000));
-        return diagram.point(100 + x, 75 + y);
-    };
-    SelectObject(dc, outline);
-    diagram.ellipse(dc, 100, 75, 36, 36);
-    diagram.ellipse(dc, 100, 75, 6, 6);
-    const POINT leftSpoke[]{wheelPoint(-31, -12), wheelPoint(-6, -2)};
-    const POINT rightSpoke[]{wheelPoint(31, -12), wheelPoint(6, -2)};
-    const POINT lowerSpoke[]{wheelPoint(0, 7), wheelPoint(0, 34)};
-    Polyline(dc, leftSpoke, 2);
-    Polyline(dc, rightSpoke, 2);
-    Polyline(dc, lowerSpoke, 2);
-
-    SelectObject(dc, mark);
-    const POINT stripe[]{wheelPoint(0, -34), wheelPoint(0, -43)};
-    Polyline(dc, stripe, 2);
-
-    SelectObject(dc, motion);
-    if (turn == 0) {
-        diagram.line(dc, {{94, 21}, {100, 27}, {106, 21}});
-        return;
-    }
-    const auto side = [turn](LONG offset) { return 100 + turn * offset; };
-    diagram.line(dc, {{side(4), 23}, {side(21), 27}, {side(37), 38}, {side(47), 53}});
-    diagram.line(dc, {{side(37), 50}, {side(47), 53}, {side(49), 43}});
-}
-
-void paintPedal(HDC dc, const Diagram& diagram, bool pressed, HPEN outline, HPEN mark, HPEN motion)
-{
-    SelectObject(dc, outline);
-    diagram.line(dc, {{42, 115}, {160, 115}});
-    diagram.line(dc, {{100, 115}, {113, 102}, {126, 115}});
-    diagram.ellipse(dc, 113, 105, 3, 3);
-    if (pressed)
-        diagram.line(dc, {{112, 102}, {81, 84}});
-    else
-        diagram.line(dc, {{112, 102}, {81, 64}});
-
-    SelectObject(dc, mark);
-    if (pressed)
-        diagram.line(dc, {{53, 79}, {58, 69}, {100, 80}, {96, 90}, {53, 79}});
-    else
-        diagram.line(dc, {{54, 47}, {65, 39}, {96, 66}, {86, 74}, {54, 47}});
-
-    SelectObject(dc, motion);
-    if (pressed) {
-        diagram.line(dc, {{135, 42}, {135, 83}});
-        diagram.line(dc, {{126, 74}, {135, 83}, {144, 74}});
-    } else {
-        diagram.line(dc, {{135, 83}, {135, 42}});
-        diagram.line(dc, {{126, 51}, {135, 42}, {144, 51}});
+    const auto state = SaveDC(dc);
+    if (state) {
+        SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, fg);
+        auto text = frame(108, 130);
+        DrawTextW(dc, label, -1, &text, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        RestoreDC(dc, state);
     }
 }
 
 } // namespace
 
-void paintCalibrationPose(HDC dc, const RECT& rect, UINT dpi, CalibrationPose pose)
+void paintCalibrationPose(HDC dc, const RECT& rect, UINT dpi, CalibrationPose pose, float motion, HFONT font)
 {
-    const auto highContrast = isHighContrast();
+    const bool highContrast = isHighContrast();
     const int width = rect.right - rect.left;
-    const auto height = rect.bottom - rect.top;
+    const int height = rect.bottom - rect.top;
     const auto scaleWidth = std::min({width, MulDiv(height, diagramWidth, diagramHeight), px(diagramWidth, dpi)});
     if (scaleWidth < 24)
         return;
 
     const auto scaleHeight = MulDiv(scaleWidth, diagramHeight, diagramWidth);
     const Diagram diagram{rect.left + (width - scaleWidth) / 2, rect.top + (height - scaleHeight) / 2, scaleWidth};
-    const auto textColor = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : secondary;
+    const auto foreground = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : secondary;
+    const auto accent = highContrast ? foreground : cyan;
+    const auto arrowEdge = highContrast ? foreground : RGB(10, 104, 110);
     fill(dc, rect, highContrast ? GetSysColor(COLOR_WINDOW) : panel);
     cutPanel(dc, {diagram.left, diagram.top, diagram.left + scaleWidth, diagram.top + scaleHeight},
-             diagram.scale(12), highContrast ? GetSysColor(COLOR_WINDOW) : field,
-             highContrast ? textColor : edge);
+             diagram.scale(12), highContrast ? GetSysColor(COLOR_WINDOW) : field, highContrast ? foreground : edge);
 
-    if (!highContrast && paintProduct(dc, diagram, pose))
+    static const CalibrationArtwork artwork;
+    const float phase = std::clamp(motion, 0.0f, 1.0f);
+    const bool throttle = pose == CalibrationPose::throttleRest || pose == CalibrationPose::throttlePressed;
+    const bool brake = pose == CalibrationPose::brakeRest || pose == CalibrationPose::brakePressed;
+    if (throttle || brake) {
+        const bool pressing = pose == CalibrationPose::throttlePressed || pose == CalibrationPose::brakePressed;
+        const float pressure = pressing ? phase : 1.0f - phase;
+        auto image = highContrast ? nullptr : artwork.image(true);
+        paintPedal(dc, diagram, 52, image, brake ? pressure : 0.0f, brake, tr(Text::mainBrake), font, highContrast);
+        paintPedal(dc, diagram, 148, image, throttle ? pressure : 0.0f, throttle, tr(Text::mainThrottle), font, highContrast);
+        paintPedalCue(dc, diagram, brake ? 79 : 175, pressing, accent, arrowEdge);
         return;
-
-    const auto saved = SaveDC(dc);
-    if (!saved)
-        return;
-    const auto outline = CreatePen(PS_SOLID, std::max(1L, diagram.scale(3)), textColor);
-    const auto mark = CreatePen(PS_SOLID, std::max(1L, diagram.scale(4)), highContrast ? textColor : yellow);
-    const auto motion = CreatePen(PS_SOLID, std::max(1L, diagram.scale(3)), highContrast ? textColor : cyan);
-    if (outline && mark && motion) {
-        SelectObject(dc, GetStockObject(NULL_BRUSH));
-        if (pose == CalibrationPose::pedalRest || pose == CalibrationPose::pedalPressed)
-            paintPedal(dc, diagram, pose == CalibrationPose::pedalPressed, outline, mark, motion);
-        else
-            paintWheel(dc, diagram, pose, outline, mark, motion);
     }
-    RestoreDC(dc, saved);
-    DeleteObject(motion);
-    DeleteObject(mark);
-    DeleteObject(outline);
+
+    const int turn = pose == CalibrationPose::wheelLeft ? -1 : pose == CalibrationPose::wheelRight ? 1 : 0;
+    const float angle = turn * 58.0f * phase;
+    auto image = highContrast ? nullptr : artwork.image(false);
+    if (!image || !drawWheelArtwork(dc, diagram, *image, angle))
+        paintWheelOutline(dc, diagram, angle, foreground, highContrast ? foreground : yellow);
+    paintWheelCue(dc, diagram, turn, accent, arrowEdge);
 }
 
 void paintCalibrationProgress(HDC dc, const RECT& rect, UINT dpi, std::size_t completed, std::size_t total)

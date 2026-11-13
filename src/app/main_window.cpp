@@ -88,10 +88,10 @@ constexpr std::array calibrationSteps{
     Step{0, Position::Neutral, Text::mainCenterWheel, Text::guideCenter, CalibrationPose::wheelCenter},
     Step{0, Position::Negative, Text::mainTurnLeft, Text::guideLeft, CalibrationPose::wheelLeft},
     Step{0, Position::Positive, Text::mainTurnRight, Text::guideRight, CalibrationPose::wheelRight},
-    Step{1, Position::Neutral, Text::mainReleasePedalsCenterWheel, Text::guideReleaseThrottle, CalibrationPose::pedalRest},
-    Step{1, Position::Positive, Text::mainPressThrottle, Text::guidePressThrottle, CalibrationPose::pedalPressed},
-    Step{2, Position::Neutral, Text::mainReleasePedals, Text::guideReleaseBrake, CalibrationPose::pedalRest},
-    Step{2, Position::Positive, Text::mainPressBrake, Text::guidePressBrake, CalibrationPose::pedalPressed}
+    Step{1, Position::Neutral, Text::mainReleasePedalsCenterWheel, Text::guideReleaseThrottle, CalibrationPose::throttleRest},
+    Step{1, Position::Positive, Text::mainPressThrottle, Text::guidePressThrottle, CalibrationPose::throttlePressed},
+    Step{2, Position::Neutral, Text::mainReleasePedals, Text::guideReleaseBrake, CalibrationPose::brakeRest},
+    Step{2, Position::Positive, Text::mainPressBrake, Text::guidePressBrake, CalibrationPose::brakePressed}
 };
 
 std::wstring wide(std::string_view text)
@@ -181,6 +181,10 @@ public:
         case WM_ACTIVATEAPP:
             if (!wp)
                 suspendHardware();
+            return 0;
+        case WM_SETTINGCHANGE:
+            updateAnimationPreference();
+            updateCalibrationMotion(GetForegroundWindow() == window_ && !IsIconic(window_));
             return 0;
         case WM_GETMINMAXINFO: {
             auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
@@ -401,6 +405,7 @@ private:
         save_ = button(tr(Text::mainSaveProfile), saveProfile);
 
         input_ = std::make_unique<chrome_axis::DirectInput>(window_);
+        updateAnimationPreference();
         updateDpiResources();
         readProfile();
         scanDevices();
@@ -556,18 +561,27 @@ private:
         const int width = region.right - region.left;
         const int height = region.bottom - region.top;
         if (width > 0 && height > 0) {
+            const auto left = contentBounds(client.right).first;
+            const auto illustration = guideIllustrationBounds(left);
+            const bool illustrationOnly = calibrating_ && step_ < stepCount_ && EqualRect(&region, &illustration);
+            const auto paintRegion = [&](HDC target) {
+                if (illustrationOnly)
+                    paintGuideIllustration(target, left);
+                else
+                    paintScene(target, client);
+            };
             const auto buffer = CreateCompatibleDC(dc);
             const auto bitmap = buffer ? CreateCompatibleBitmap(dc, width, height) : nullptr;
             if (bitmap) {
                 const auto previous = SelectObject(buffer, bitmap);
                 SetViewportOrgEx(buffer, -region.left, -region.top, nullptr);
-                paintScene(buffer, client);
+                paintRegion(buffer);
                 SetViewportOrgEx(buffer, 0, 0, nullptr);
                 BitBlt(dc, region.left, region.top, width, height, buffer, 0, 0, SRCCOPY);
                 SelectObject(buffer, previous);
                 DeleteObject(bitmap);
             } else {
-                paintScene(dc, client);
+                paintRegion(dc);
             }
             if (buffer)
                 DeleteDC(buffer);
@@ -594,15 +608,7 @@ private:
             drawCard(98, 535);
             paintCalibrationProgress(dc, {px(left + 46), px(158), px(left + width - 46), px(169)}, dpi_, step_, stepCount_);
             if (step_ < stepCount_)
-                paintCalibrationPose(dc, {px(left + 46), px(198), px(left + 254), px(400)}, dpi_, steps_[step_].pose);
-            if (capture_) {
-                const auto track = captureProgressBounds(left);
-                fill(dc, track, highContrast ? GetSysColor(COLOR_WINDOWTEXT) : edge);
-                RECT progress = track;
-                progress.right = progress.left + MulDiv(track.right - track.left,
-                    static_cast<int>(capture_->samplesCollected()), static_cast<int>(chrome_axis::CalibrationCapture::sampleCount));
-                fill(dc, progress, highContrast ? GetSysColor(COLOR_HIGHLIGHT) : cyan);
-            }
+                paintGuideIllustration(dc, left);
         } else {
             for (const auto& [top, bottom] : {std::pair{98, 222}, {235, 405}, {418, 535}})
                 drawCard(top, bottom);
@@ -610,6 +616,25 @@ private:
         const LONG footerRule = px(542);
         fill(dc, {px(left + 22), footerRule, px(left + width - 22), footerRule + 1},
              highContrast ? GetSysColor(COLOR_WINDOWTEXT) : edge);
+    }
+
+    RECT guideIllustrationBounds(int left) const
+    {
+        return {px(left + 46), px(198), px(left + 254), px(400)};
+    }
+
+    void paintGuideIllustration(HDC dc, int left)
+    {
+        paintCalibrationPose(dc, guideIllustrationBounds(left), dpi_, steps_[step_].pose, guideMotion_, fonts_[0]);
+        if (capture_) {
+            const bool highContrast = isHighContrast();
+            const auto track = captureProgressBounds(left);
+            fill(dc, track, highContrast ? GetSysColor(COLOR_WINDOWTEXT) : edge);
+            RECT progress = track;
+            progress.right = progress.left + MulDiv(track.right - track.left,
+                static_cast<int>(capture_->samplesCollected()), static_cast<int>(chrome_axis::CalibrationCapture::sampleCount));
+            fill(dc, progress, highContrast ? GetSysColor(COLOR_HIGHLIGHT) : cyan);
+        }
     }
 
     RECT captureProgressBounds(int left) const
@@ -710,6 +735,8 @@ private:
     void persist();
     void updateCalibrationView();
     void updateGuideVisibility();
+    void updateAnimationPreference();
+    void updateCalibrationMotion(bool foreground);
     void refreshUsbToggle();
     void changeUsbMode();
     void setMode(bool simulation);
@@ -811,6 +838,9 @@ private:
     std::wstring profileMessage_;
 
     bool calibrating_{}, guideVisible_{};
+    bool guideMotionEnabled_{true};
+    float guideMotion_{1.0f};
+    std::chrono::steady_clock::time_point guideMotionStart_{};
     CalibrationScope calibrationScope_{};
     std::array<Step, calibrationSteps.size()> steps_{};
     std::size_t step_{}, stepCount_{};
@@ -1379,6 +1409,8 @@ void App::updateCalibrationView()
     const bool canStart = !calibrating_ && canCalibrate(assignedCalibrationScope());
     const bool canChooseScope = !calibrating_ && std::ranges::any_of(available, std::identity{});
     const bool choosing = !candidates_.empty();
+    guideMotionStart_ = {};
+    updateCalibrationMotion(GetForegroundWindow() == window_ && !IsIconic(window_));
     updateGuideVisibility();
     ShowWindow(axisChoice_, calibrating_ && choosing ? SW_SHOW : SW_HIDE);
     EnableWindow(start_, canStart);
@@ -1443,6 +1475,45 @@ void App::updateCalibrationView()
     setText(measure_, capture_ ? tr(Text::mainMeasuring) : choosing ? tr(Text::mainChooseAxis) : tr(Text::guideCapture));
     EnableWindow(measure_, !capture_);
     InvalidateRect(window_, nullptr, FALSE);
+}
+
+void App::updateAnimationPreference()
+{
+    BOOL enabled = TRUE;
+    if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &enabled, 0))
+        guideMotionEnabled_ = enabled != FALSE;
+}
+
+void App::updateCalibrationMotion(bool foreground)
+{
+    if (!calibrating_ || step_ >= stepCount_)
+        return;
+
+    float motion = 1.0f;
+    if (foreground && guideMotionEnabled_ && !capture_ && candidates_.empty() &&
+        steps_[step_].pose != CalibrationPose::wheelCenter) {
+        using namespace std::chrono;
+        const auto now = steady_clock::now();
+        if (guideMotionStart_ == steady_clock::time_point{})
+            guideMotionStart_ = now;
+        constexpr milliseconds cycle{1800};
+        constexpr milliseconds initialHold{180};
+        constexpr milliseconds movement{670};
+        const auto elapsed = duration_cast<milliseconds>(now - guideMotionStart_) % cycle;
+        const float progress = std::clamp(static_cast<float>((elapsed - initialHold).count()) /
+            static_cast<float>(movement.count()), 0.0f, 1.0f);
+        motion = progress * progress * (3.0f - 2.0f * progress);
+    } else {
+        guideMotionStart_ = {};
+    }
+
+    if (motion != guideMotion_) {
+        guideMotion_ = motion;
+        RECT client{};
+        GetClientRect(window_, &client);
+        const auto illustration = guideIllustrationBounds(contentBounds(client.right).first);
+        InvalidateRect(window_, &illustration, FALSE);
+    }
 }
 
 void App::updateGuideVisibility()
@@ -1780,6 +1851,7 @@ void App::tick()
         else if (std::chrono::steady_clock::now() >= nextUsbRefresh_)
             refreshUsbToggle();
     }
+    updateCalibrationMotion(foreground);
     if (capture_ && foreground) {
         const auto channel = steps_[step_].channel;
         const auto sample = input_->sample(deviceId(channel));
@@ -1837,6 +1909,7 @@ void App::suspendHardware()
         calibrationMessage_ = tr(Text::mainMeasureInterrupted);
         updateCalibrationView();
     }
+    updateCalibrationMotion(false);
 }
 
 void App::contextMenu(int x, int y)

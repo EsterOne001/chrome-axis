@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.18** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.19** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -48,7 +48,7 @@ The plugin log reports `Keyboard simulation active` when the game accepts simula
 ## Calibration and profiles
 
 1. In **USB Hardware**, click **Refresh**. Select devices for **Wheel**, **Throttle** and **Brake**. For pedals attached to the wheelbase, select **Same as wheel** for the throttle and **Same as throttle** for the brake. Select **Game controls** to keep the game’s usual controls for an axis.
-2. Click **Calibrate axes**. At each step, the diagram and instructions show the position to use on the displayed device. Once in position, click **Capture position** and hold the control still until the capture finishes. If several axes move, select the one that matches the requested control. Use **Previous** to retake a position while keeping earlier captures. On the review screen, use **Previous** to retake the final position or click **Finish**.
+2. Click **Calibrate axes**. At each step, the animation and instructions show the position to use on the displayed device. Once in position, click **Capture position** and hold the control still until the capture finishes. If several axes move, select the one that matches the requested control. Use **Previous** to retake a position while keeping earlier captures. On the review screen, use **Previous** to retake the final position or click **Finish**.
 3. Check the live readings. Steering should range from −100% to +100% and each pedal from 0% to 100%. The controls should return to zero at rest. Increase the deadzone if a control drifts slightly at rest.
 4. Click **Save profile** to write the calibration to `chrome_axis.ini` in the active profile. Click **Reload** to read the saved settings.
 
@@ -144,7 +144,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.18-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.19-Cyberpunk-2.5.zip'
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.
