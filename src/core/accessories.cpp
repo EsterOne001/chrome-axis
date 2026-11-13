@@ -241,10 +241,21 @@ void AccessoryReader::reset() noexcept
 bool AccessoryReader::ready() const noexcept
 {
     for (const auto& state : std::span(states_).first(profile_.size())) {
-        if (state.neutralPolls < requiredNeutralPolls)
+        if (state.status != AccessoryStatus::armed)
             return false;
     }
     return !profile_.empty();
+}
+
+AccessoryReadiness AccessoryReader::readiness() const noexcept
+{
+    AccessoryReadiness result;
+    for (const auto& state : std::span(states_).first(profile_.size())) {
+        result.armed += state.status == AccessoryStatus::armed;
+        result.deviceUnavailable |= state.status == AccessoryStatus::deviceUnavailable;
+        result.inputUnavailable |= state.status == AccessoryStatus::inputUnavailable;
+    }
+    return result;
 }
 
 std::bitset<256> AccessoryReader::poll(DirectInput& input)
@@ -271,12 +282,16 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         const auto level = sample ? readLevel(binding, *sample, state.active) : std::nullopt;
         if (!level) {
             state = {};
+            state.status = sample ? AccessoryStatus::inputUnavailable : AccessoryStatus::deviceUnavailable;
             continue;
         }
         if (state.neutralPolls < requiredNeutralPolls) {
             state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
+            state.status = state.neutralPolls == requiredNeutralPolls
+                ? AccessoryStatus::armed : AccessoryStatus::waitingForNeutral;
             continue;
         }
+        state.status = AccessoryStatus::armed;
         state.active = level->engaged;
         if (state.active)
             keys.set(binding.key);

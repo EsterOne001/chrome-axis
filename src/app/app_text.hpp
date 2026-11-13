@@ -11,6 +11,8 @@ enum class Text {
 #define CHROME_AXIS_TEXT(id, french, english) id,
 #include "locale_main.inc"
 #include "locale_dialogs.inc"
+#include "locale_calibration_scope.inc"
+#include "locale_diagnostics.inc"
 #undef CHROME_AXIS_TEXT
     count
 };

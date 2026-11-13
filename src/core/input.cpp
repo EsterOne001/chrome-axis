@@ -549,6 +549,18 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
     wheel.report(impl_->diagnostic, "force feedback active", DI_OK, true);
 }
 
+WheelForceState DirectInput::wheelForceState() const noexcept {
+    if (!ready())
+        return WheelForceState::unavailable;
+    const auto& wheel = impl_->wheel;
+    const auto now = Clock::now();
+    if (wheel.playing && now - wheel.submitted < forceDuration)
+        return WheelForceState::active;
+    if (wheel.retryAfter > now)
+        return WheelForceState::unavailable;
+    return WheelForceState::waiting;
+}
+
 void DirectInput::stopWheelForce() noexcept {
     impl_->wheel.close();
 }

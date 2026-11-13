@@ -8,6 +8,7 @@
 #include "chrome_axis/profiles_dialog.hpp"
 #include "chrome_axis/simulation.hpp"
 #include "app_text.hpp"
+#include "diagnostics_dialog.hpp"
 #include "ui_theme.hpp"
 
 #include <commctrl.h>
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -52,9 +54,12 @@ enum Command {
     startCalibration, measure, cancelCalibration, chooseAxis,
     saveProfile, reloadProfile, openProfileFolder, closeApp, aboutApp, hardwareTab, simulationTab, toggleSimulation,
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
-    frenchFlag, englishFlag,
+    frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics,
     deadzoneFirst = 200, meterFirst = 210
 };
+
+using CalibrationScope = std::array<bool, commands.size()>;
+constexpr CalibrationScope allChannels{true, true, true};
 
 struct LanguageOption {
     Command command;
@@ -76,7 +81,7 @@ struct Step {
     Text instruction;
 };
 
-constexpr std::array steps{
+constexpr std::array calibrationSteps{
     Step{0, Position::Neutral, Text::mainCenterWheel},
     Step{0, Position::Negative, Text::mainTurnLeft},
     Step{0, Position::Positive, Text::mainTurnRight},
@@ -321,19 +326,21 @@ private:
         deviceMenu_ = CreatePopupMenu();
         AppendMenuW(deviceMenu_, MF_STRING, refreshDevices, tr(Text::mainMenuRefresh));
         AppendMenuW(deviceMenu_, MF_STRING, startCalibration, tr(Text::mainMenuCalibrate));
+        AppendMenuW(deviceMenu_, MF_STRING, chooseCalibrationScope, tr(Text::mainMenuCalibrationScope));
         AppendMenuW(deviceMenu_, MF_STRING, configureAccessories, tr(Text::mainMenuAccessories));
         AppendMenuW(deviceMenu_, MF_STRING, configureFeedback, tr(Text::mainMenuFeedback));
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(deviceMenu_), tr(Text::mainMenuDevices));
-        const HMENU help = CreatePopupMenu();
+        helpMenu_ = CreatePopupMenu();
         languageMenu_ = CreatePopupMenu();
         for (const auto& option : languageOptions)
             AppendMenuW(languageMenu_, MF_STRING, option.command, tr(option.label));
         const auto selectedLanguage = std::ranges::find(languageOptions, chrome_axis::languageChoice(),
             &LanguageOption::language);
         CheckMenuRadioItem(languageMenu_, automaticLanguage, englishLanguage, selectedLanguage->command, MF_BYCOMMAND);
-        AppendMenuW(help, MF_POPUP, reinterpret_cast<UINT_PTR>(languageMenu_), tr(Text::mainMenuLanguage));
-        AppendMenuW(help, MF_STRING, aboutApp, tr(Text::mainMenuAbout));
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(help), tr(Text::mainMenuHelp));
+        AppendMenuW(helpMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(languageMenu_), tr(Text::mainMenuLanguage));
+        AppendMenuW(helpMenu_, MF_STRING, showDiagnostics, tr(Text::DlgDiagnosticsMenu));
+        AppendMenuW(helpMenu_, MF_STRING, aboutApp, tr(Text::mainMenuAbout));
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(helpMenu_), tr(Text::mainMenuHelp));
         SetMenu(window_, menu);
 
         hardwareTab_ = button(tr(Text::mainUsbHardware), hardwareTab);
@@ -367,9 +374,11 @@ private:
         }
 
         calibrationTitle_ = label(tr(Text::mainCalibration));
+        diagnostics_ = button(tr(Text::DlgDiagnosticsButton), showDiagnostics);
         feedback_ = button(tr(Text::mainForceFeedback), configureFeedback);
         instruction_ = label(tr(Text::mainConnectToBegin));
         start_ = button(tr(Text::mainCalibrateAxes), startCalibration);
+        calibrationScopeButton_ = button(tr(Text::mainCalibrationScope), chooseCalibrationScope);
         axisChoice_ = combo(chooseAxis);
         measure_ = button(tr(Text::mainMeasure), measure);
         cancel_ = button(tr(Text::mainCancel), cancelCalibration);
@@ -429,7 +438,7 @@ private:
             int x, y, width, height;
         };
         std::vector<Placement> placements;
-        placements.reserve(55);
+        placements.reserve(57);
         const auto place = [&](HWND control, int x, int y, int w, int h) {
             if (control)
                 placements.push_back({control, px(left + x), px(y), px(w), px(h)});
@@ -473,9 +482,11 @@ private:
         }
 
         place(calibrationTitle_, 42, 430, 340, 24);
+        place(diagnostics_, width - 339, 428, 133, 29);
         place(feedback_, width - 196, 428, 154, 29);
         place(instruction_, 42, 459, width - 84, 24);
         place(start_, 42, 491, 158, 29);
+        place(calibrationScopeButton_, 210, 491, 180, 29);
         place(axisChoice_, 42, 492, 198, 180);
         place(measure_, 250, 491, 135, 29);
         place(cancel_, 395, 491, 100, 29);
@@ -647,7 +658,7 @@ private:
     void selectDevice(std::size_t channel);
     void readProfile();
     void readAccessories();
-    void updateProfileView();
+    void updateProfileView(const CalibrationScope& changed = allChannels);
     void rebuildPreview();
     bool ensureProfileDirectory(const std::filesystem::path& directory);
     bool confirmPersistentDirectory() const;
@@ -661,8 +672,11 @@ private:
     void applyMode();
     void updateSimulationView();
     chrome_axis::ControlState previewSimulation();
-    void beginCalibration();
-    void skipUnassignedSteps();
+    CalibrationScope assignedCalibrationScope() const;
+    CalibrationScope availableCalibrationScope() const;
+    std::wstring deviceName(const chrome_axis::DeviceInfo& selected) const;
+    void selectCalibrationScope();
+    void beginCalibration(const CalibrationScope& scope);
     void measureStep();
     void finishCapture(const chrome_axis::AxisCapture& capture);
     void acceptAxis(const chrome_axis::AxisCandidate& candidate);
@@ -683,19 +697,14 @@ private:
             --channel;
         return deviceSelections_[channel];
     }
-    bool canCalibrate() const
+    bool canCalibrate(const CalibrationScope& scope) const
     {
-        bool assigned = false;
-        for (std::size_t i = 0; i < deviceSelections_.size(); ++i) {
-            const auto& id = deviceId(i);
-            if (id.empty())
-                continue;
-            assigned = true;
-            const auto* selected = device(id);
-            if (!selected || !hasAxes(*selected))
+        const auto available = availableCalibrationScope();
+        for (std::size_t i = 0; i < scope.size(); ++i) {
+            if (scope[i] && !available[i])
                 return false;
         }
-        return assigned;
+        return std::ranges::any_of(scope, std::identity{});
     }
     bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || accessoriesSaved_)); }
     bool clearAnalogProfile() const
@@ -722,9 +731,10 @@ private:
     std::array<HFONT, 3> fonts_{};
     Icon headerLogo_;
     HBRUSH backgroundBrush_{}, panelBrush_{}, fieldBrush_{};
-    HMENU profileMenu_{}, deviceMenu_{}, languageMenu_{};
+    HMENU profileMenu_{}, deviceMenu_{}, languageMenu_{}, helpMenu_{};
     HWND devicesTitle_{}, axesTitle_{}, calibrationTitle_{};
-    HWND accessories_{}, feedback_{}, refresh_{}, hardware_{}, instruction_{}, start_{}, axisChoice_{}, measure_{}, cancel_{};
+    HWND accessories_{}, diagnostics_{}, feedback_{}, refresh_{}, hardware_{}, instruction_{}, start_{};
+    HWND calibrationScopeButton_{}, axisChoice_{}, measure_{}, cancel_{};
     HWND profileName_{}, status_{}, folder_{}, select_{}, reload_{}, save_{};
     HWND hardwareTab_{}, simulationTab_{}, usbToggle_{}, simToggle_{}, simState_{}, simHint_{}, simDirections_{}, simArming_{};
     HWND frenchFlag_{}, englishFlag_{};
@@ -753,7 +763,9 @@ private:
     std::wstring profileMessage_;
 
     bool calibrating_{};
-    std::size_t step_{};
+    CalibrationScope calibrationScope_{};
+    std::array<Step, calibrationSteps.size()> steps_{};
+    std::size_t step_{}, stepCount_{};
     std::optional<chrome_axis::CalibrationCapture> capture_;
     unsigned int captureTicks_{};
     chrome_axis::AxisCapture neutral_{}, negative_{}, positive_{};
@@ -829,8 +841,19 @@ void App::action(int command, int notification)
             scanDevices();
         }
         break;
+    case showDiagnostics:
+        if (!calibrating_) {
+            const auto pluginDirectory = directory_.parent_path();
+            const auto gameRoot = chrome_axis::isInstalledPluginDirectory(pluginDirectory)
+                ? pluginDirectory.parent_path().parent_path().parent_path() : std::filesystem::path{};
+            chrome_axis::showDiagnostics(window_, gameRoot);
+        }
+        break;
     case startCalibration:
-        beginCalibration();
+        beginCalibration(assignedCalibrationScope());
+        break;
+    case chooseCalibrationScope:
+        selectCalibrationScope();
         break;
     case measure:
         measureStep();
@@ -940,7 +963,7 @@ void App::scanDevices()
         hardwareStatus += advice;
     }
     setText(hardware_, hardwareStatus);
-    if (calibrating_ && disconnected) {
+    if (calibrating_ && !canCalibrate(calibrationScope_)) {
         calibrating_ = false;
         capture_.reset();
         candidates_.clear();
@@ -966,14 +989,8 @@ void App::fillDeviceCombo(std::size_t channel)
     for (const auto& item : devices_) {
         if (!hasAxes(item))
             continue;
-        const auto duplicates = std::count_if(devices_.begin(), devices_.end(), [&](const auto& other) {
-            return hasAxes(other) && item.name == other.name;
-        });
-        auto name = wide(item.name);
-        if (duplicates > 1)
-            name += L" [" + wide(item.id.substr(29, 8)) + L"]";
         choices.push_back(item.id);
-        addChoice(control, name);
+        addChoice(control, deviceName(item));
     }
     auto found = std::find(choices.begin(), choices.end(), selection);
     if (found == choices.end()) {
@@ -982,6 +999,17 @@ void App::fillDeviceCombo(std::size_t channel)
         found = std::prev(choices.end());
     }
     SendMessageW(control, CB_SETCURSEL, static_cast<WPARAM>(found - choices.begin()), 0);
+}
+
+std::wstring App::deviceName(const chrome_axis::DeviceInfo& selected) const
+{
+    const auto duplicates = std::count_if(devices_.begin(), devices_.end(), [&](const auto& other) {
+        return hasAxes(other) && selected.name == other.name;
+    });
+    auto name = wide(selected.name);
+    if (duplicates > 1)
+        name += L" [" + wide(selected.id.substr(29, 8)) + L"]";
+    return name;
 }
 
 void App::selectDevice(std::size_t channel)
@@ -1050,10 +1078,12 @@ void App::readProfile()
     updateProfileView();
 }
 
-void App::updateProfileView()
+void App::updateProfileView(const CalibrationScope& changed)
 {
     loadingControls_ = true;
     for (std::size_t i = 0; i < draft_.size(); ++i) {
+        if (!changed[i])
+            continue;
         setText(bindings_[i], draft_[i] ? wide(chrome_axis::axisName(draft_[i]->axis)) : tr(Text::mainNeedsCalibration));
         setText(zones_[i], draft_[i] ? formatDeadzone(draft_[i]->deadzone) : L"");
         EnableWindow(zones_[i], draft_[i].has_value() && !calibrating_);
@@ -1291,24 +1321,31 @@ void App::updateCalibrationView()
         return;
     }
     refreshUsbToggle();
-    const bool canStart = !calibrating_ && canCalibrate();
+    const auto available = availableCalibrationScope();
+    const bool canStart = !calibrating_ && canCalibrate(assignedCalibrationScope());
+    const bool canChooseScope = !calibrating_ && std::ranges::any_of(available, std::identity{});
     const bool choosing = !candidates_.empty();
     ShowWindow(start_, calibrating_ ? SW_HIDE : SW_SHOW);
+    ShowWindow(calibrationScopeButton_, calibrating_ ? SW_HIDE : SW_SHOW);
     ShowWindow(measure_, calibrating_ ? SW_SHOW : SW_HIDE);
     ShowWindow(cancel_, calibrating_ ? SW_SHOW : SW_HIDE);
     ShowWindow(axisChoice_, calibrating_ && choosing ? SW_SHOW : SW_HIDE);
     EnableWindow(start_, canStart);
+    EnableWindow(calibrationScopeButton_, canChooseScope);
     const bool axisDeviceAvailable = std::ranges::any_of(devices_, hasAxes);
     for (std::size_t i = 0; i < deviceCombos_.size(); ++i)
         EnableWindow(deviceCombos_[i], !calibrating_ && (axisDeviceAvailable || !deviceSelections_[i].empty()));
     EnableWindow(accessories_, !calibrating_);
     EnableWindow(feedback_, !calibrating_);
+    EnableWindow(diagnostics_, !calibrating_);
+    EnableMenuItem(helpMenu_, showDiagnostics, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableWindow(reload_, !calibrating_);
     EnableWindow(select_, !calibrating_);
     EnableWindow(simulationTab_, !calibrating_);
     for (std::size_t i = 0; i < zones_.size(); ++i)
         EnableWindow(zones_[i], !calibrating_ && draft_[i].has_value());
     EnableMenuItem(deviceMenu_, startCalibration, MF_BYCOMMAND | (canStart ? MF_ENABLED : MF_GRAYED));
+    EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | (canChooseScope ? MF_ENABLED : MF_GRAYED));
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_ENABLED);
     EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
@@ -1321,17 +1358,17 @@ void App::updateCalibrationView()
     if (!calibrating_) {
         setText(calibrationTitle_, tr(Text::mainCalibration));
         setText(instruction_, !calibrationMessage_.empty() ? calibrationMessage_
-            : canStart ? tr(Text::mainMeasureAllAxes)
+            : canChooseScope ? tr(Text::mainChooseCalibrationScope)
             : !axisDeviceAvailable ? tr(Text::mainConnectForCalibration)
             : tr(Text::mainSelectAxisDevice));
         return;
     }
 
-    setText(calibrationTitle_, std::wstring(tr(commands[steps[step_].channel])) + L"   ·   " +
-        std::to_wstring(step_ + 1) + L" / " + std::to_wstring(steps.size()));
+    setText(calibrationTitle_, std::wstring(tr(commands[steps_[step_].channel])) + L"   ·   " +
+        std::to_wstring(step_ + 1) + L" / " + std::to_wstring(stepCount_));
     setText(instruction_, !calibrationMessage_.empty() ? calibrationMessage_
         : choosing ? tr(Text::mainChooseMatchingAxis)
-        : tr(steps[step_].instruction));
+        : tr(steps_[step_].instruction));
     setText(measure_, capture_ ? tr(Text::mainMeasuring) : choosing ? tr(Text::mainChooseAxis) : tr(Text::mainMeasure));
     EnableWindow(measure_, !capture_);
 }
@@ -1363,8 +1400,8 @@ void App::applyMode()
         constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
         SetWindowPos(control, nullptr, 0, 0, 0, 0, flags | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     };
-    for (const auto control : {usbToggle_, refresh_, accessories_, feedback_, hardware_, headings_[2],
-                              instruction_, start_, profileName_, folder_, select_, reload_, save_})
+    for (const auto control : {usbToggle_, refresh_, accessories_, diagnostics_, feedback_, hardware_, headings_[2],
+                              instruction_, start_, calibrationScopeButton_, profileName_, folder_, select_, reload_, save_})
         setVisible(control, !simulation_);
     for (const auto control : {simToggle_, simState_, simHint_, simDirections_, simArming_})
         setVisible(control, simulation_);
@@ -1394,6 +1431,7 @@ void App::updateSimulationView()
     setText(status_, active ? tr(Text::mainGameModeActive)
         : tr(Text::mainPreviewMode));
     EnableMenuItem(deviceMenu_, startCalibration, MF_BYCOMMAND | MF_GRAYED);
+    EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | MF_GRAYED);
@@ -1416,24 +1454,93 @@ chrome_axis::ControlState App::previewSimulation()
     return {simulator_.update(chrome_axis::simulationKeys(), seconds), true, true, true};
 }
 
-void App::beginCalibration()
+CalibrationScope App::assignedCalibrationScope() const
 {
-    if (simulation_ || calibrating_ || !canCalibrate())
+    CalibrationScope scope{};
+    for (std::size_t i = 0; i < scope.size(); ++i)
+        scope[i] = !deviceId(i).empty();
+    return scope;
+}
+
+CalibrationScope App::availableCalibrationScope() const
+{
+    CalibrationScope scope{};
+    for (std::size_t i = 0; i < scope.size(); ++i) {
+        const auto* selected = device(deviceId(i));
+        scope[i] = selected && hasAxes(*selected);
+    }
+    return scope;
+}
+
+void App::selectCalibrationScope()
+{
+    if (simulation_ || calibrating_)
         return;
+    const auto available = availableCalibrationScope();
+    if (!std::ranges::any_of(available, std::identity{}))
+        return;
+
+    const HMENU menu = CreatePopupMenu();
+    if (!menu)
+        return;
+    std::array<CalibrationScope, commands.size() * 2> options{};
+    std::size_t optionCount{};
+    const auto addOption = [&](const wchar_t* label, const CalibrationScope& scope) {
+        if (AppendMenuW(menu, MF_STRING, optionCount + 1, label))
+            options[optionCount++] = scope;
+    };
+    for (std::size_t i = 0; i < available.size(); ++i) {
+        if (available[i]) {
+            CalibrationScope scope{};
+            scope[i] = true;
+            addOption(tr(commands[i]), scope);
+        }
+    }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    for (const auto& item : devices_) {
+        CalibrationScope scope{};
+        for (std::size_t i = 0; i < scope.size(); ++i)
+            scope[i] = available[i] && deviceId(i) == item.id;
+        if (std::ranges::any_of(scope, std::identity{})) {
+            std::wstring label = tr(Text::mainCalibrationDevice);
+            for (const auto ch : deviceName(item)) {
+                if (ch == L'&')
+                    label += ch;
+                label += ch;
+            }
+            addOption(label.c_str(), scope);
+        }
+    }
+
+    RECT bounds{};
+    GetWindowRect(calibrationScopeButton_, &bounds);
+    const auto selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+                                         bounds.left, bounds.bottom, 0, window_, nullptr);
+    DestroyMenu(menu);
+    if (selected > 0 && static_cast<std::size_t>(selected) <= optionCount)
+        beginCalibration(options[static_cast<std::size_t>(selected) - 1]);
+}
+
+void App::beginCalibration(const CalibrationScope& scope)
+{
+    if (simulation_ || calibrating_ || !canCalibrate(scope))
+        return;
+    calibrationScope_ = scope;
+    const auto planned = std::ranges::copy_if(calibrationSteps, steps_.begin(),
+        [&scope](const Step& step) { return scope[step.channel]; });
+    stepCount_ = static_cast<std::size_t>(planned.out - steps_.begin());
+    measured_ = {};
+    const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
+    for (std::size_t i = 0; i < axes.size(); ++i) {
+        if (!scope[i] && draft_[i])
+            *axes[i] = *draft_[i];
+    }
     calibrating_ = true;
     step_ = 0;
-    skipUnassignedSteps();
-    measured_ = {};
     candidates_.clear();
     calibrationMessage_.clear();
     updateCalibrationView();
     SetFocus(measure_);
-}
-
-void App::skipUnassignedSteps()
-{
-    while (step_ < steps.size() && deviceId(steps[step_].channel).empty())
-        ++step_;
 }
 
 void App::measureStep()
@@ -1456,7 +1563,7 @@ void App::measureStep()
 
 void App::finishCapture(const chrome_axis::AxisCapture& sample)
 {
-    const auto step = steps[step_];
+    const auto step = steps_[step_];
     calibrationMessage_.clear();
     if (step.position == Position::Neutral) {
         neutral_ = negative_ = sample;
@@ -1493,12 +1600,14 @@ void App::finishCapture(const chrome_axis::AxisCapture& sample)
 
 void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
 {
-    const auto channel = steps[step_].channel;
+    const auto channel = steps_[step_].channel;
     auto axis = chrome_axis::makeCalibration(deviceId(channel), neutral_, negative_, positive_, candidate);
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
     candidates_.clear();
-    for (std::size_t i = 0; i < channel; ++i) {
-        const bool compatible = i == 1 && channel == 2
+    for (std::size_t i = 0; i < axes.size(); ++i) {
+        if (i == channel)
+            continue;
+        const bool compatible = i > 0 && channel > 0
             ? chrome_axis::compatibleAxisPair(*axes[i], axis)
             : axes[i]->deviceId != axis.deviceId || axes[i]->axis != axis.axis;
         if (!compatible) {
@@ -1511,20 +1620,18 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
     }
     *axes[channel] = std::move(axis);
     ++step_;
-    skipUnassignedSteps();
-    if (step_ == steps.size()) {
+    if (step_ == stepCount_) {
         calibrating_ = false;
         for (std::size_t i = 0; i < axes.size(); ++i) {
-            draft_[i].reset();
-            if (!axes[i]->deviceId.empty())
+            if (calibrationScope_[i])
                 draft_[i] = std::move(*axes[i]);
         }
         dirty_ = true;
         profileMessage_.clear();
         calibrationMessage_ = tr(Text::mainCalibrationComplete);
-        updateProfileView();
+        updateProfileView(calibrationScope_);
         updateCalibrationView();
-        SetFocus(save_);
+        SetFocus(IsWindowEnabled(save_) ? save_ : calibrationScopeButton_);
     } else {
         updateCalibrationView();
         SetFocus(measure_);
@@ -1544,7 +1651,7 @@ void App::tick()
             refreshUsbToggle();
     }
     if (capture_ && foreground) {
-        const auto channel = steps[step_].channel;
+        const auto channel = steps_[step_].channel;
         const auto sample = input_->sample(deviceId(channel));
         ++captureTicks_;
         if ((sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
@@ -1610,8 +1717,10 @@ void App::contextMenu(int x, int y)
                     configureAccessories, tr(Text::mainAccessories));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
                     configureFeedback, tr(Text::mainForceFeedback));
-        AppendMenuW(menu, MF_STRING | (!calibrating_ && canCalibrate() ? MF_ENABLED : MF_GRAYED),
+        AppendMenuW(menu, MF_STRING | (GetMenuState(deviceMenu_, startCalibration, MF_BYCOMMAND) & MF_GRAYED),
                     startCalibration, tr(Text::mainCalibrateAxes));
+        AppendMenuW(menu, MF_STRING | (GetMenuState(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND) & MF_GRAYED),
+                    chooseCalibrationScope, tr(Text::mainCalibrationScope));
         AppendMenuW(menu, MF_STRING | (IsWindowEnabled(save_) ? MF_ENABLED : MF_GRAYED), saveProfile, tr(Text::mainSaveProfile));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), selectProfile, tr(Text::mainSelectProfile));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), simulationTab, tr(Text::mainShowSimulation));

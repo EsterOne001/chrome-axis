@@ -1,6 +1,7 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/configuration.hpp"
 #include "chrome_axis/controls.hpp"
+#include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/input.hpp"
 #include "chrome_axis/presets.hpp"
@@ -36,6 +37,10 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
+using chrome_axis::DiagnosticAccessoryState;
+using chrome_axis::DiagnosticAxisState;
+using chrome_axis::DiagnosticFeedbackState;
+using chrome_axis::DiagnosticMode;
 using Vehicle = RED4ext::vehicle::BaseObject;
 using UpdateVehicleInput = void (*)(Vehicle*);
 
@@ -54,6 +59,8 @@ constexpr auto idlePollInterval = 25ms;
 constexpr auto hudSignalDuration = 2s;
 constexpr auto feedbackInterval = 20ms;
 constexpr auto motionLifetime = 250ms;
+constexpr auto diagnosticInterval = 150ms;
+constexpr auto diagnosticIssueDuration = 1s;
 
 // Values returned to the HUD in driving_context.reds.
 enum class HudStatus : std::int32_t { hidden = 0, loaded = 1, usbWaiting = 2, usbReady = 3, usbSignal = 4, simulation = 5 };
@@ -61,6 +68,7 @@ enum class HudStatus : std::int32_t { hidden = 0, loaded = 1, usbWaiting = 2, us
 struct DrivingContext {
     Vehicle* vehicle{};
     std::uint64_t generation{};
+    std::uint64_t diagnosticSession{};
     Clock::time_point refreshed{};
     Clock::time_point vehicleUpdated{};
 };
@@ -88,8 +96,14 @@ struct HudFrame {
     Clock::time_point sampled{};
 };
 
+struct AppliedAxis {
+    float value{};
+    std::uint64_t tick{};
+};
+
 std::mutex stateMutex;
 DrivingContext context;
+std::array<AppliedAxis, 3> appliedAxes;
 VehicleMotion vehicleMotion;
 InputFrame inputFrame;
 HudFrame hudFrame;
@@ -265,25 +279,30 @@ struct OutputContext {
     }
 };
 
+struct AccessoryDelivery {
+    unsigned int key{};
+    bool blocked{};
+};
+
 class AccessoryKeys {
 public:
     bool hasInjectedKeys() const noexcept { return pending_.load(std::memory_order_acquire); }
 
-    bool apply(const std::bitset<256>& requested, HWND window = nullptr, OutputContext output = {}) noexcept {
+    AccessoryDelivery apply(const std::bitset<256>& requested, HWND window = nullptr, OutputContext output = {}) noexcept {
         std::scoped_lock lock(mutex_);
         if (requested.any() && (!window || !output.current())) {
             abandon(requested);
-            return false;
+            return {0, true};
         }
         lastSample_ = output.sampled;
         blocked_ &= requested;
+        AccessoryDelivery delivery{0, blocked_.any()};
         const auto allowed = requested & ~blocked_;
         release(held_ & ~allowed);
         const auto press = allowed & ~held_;
         if (!window || press.none()) {
-            return false;
+            return delivery;
         }
-        bool sentPress = false;
         const auto layout = GetKeyboardLayout(GetWindowThreadProcessId(window, nullptr));
         for (std::size_t key = 0; key < press.size(); ++key) {
             if (!press.test(key)) {
@@ -295,19 +314,22 @@ public:
                 scan = (scan & 0xff) | 0xe000;
             }
             if (scan == 0) {
+                delivery.blocked = true;
                 continue;
             }
             if (!output.current() || foregroundGameWindow() != window || modifierDown()) {
                 abandon(requested);
-                return sentPress;
+                delivery.blocked = true;
+                return delivery;
             }
             // Avoid taking ownership of a key that the player already holds.
             if (keyDown(static_cast<int>(key))) {
                 blocked_.set(key);
+                delivery.blocked = true;
                 continue;
             }
             if (send(static_cast<WORD>(scan), 0)) {
-                sentPress = true;
+                delivery.key = static_cast<unsigned int>(key);
                 scans_[key] = static_cast<WORD>(scan);
                 held_.set(key);
                 pending_.store(true, std::memory_order_release);
@@ -315,12 +337,15 @@ public:
                     info("First USB accessory key sent to Windows with the game in the foreground.");
                     loggedPress_ = true;
                 }
-            } else if (!loggedFailure_) {
-                warn("Windows did not accept a USB accessory key event (SendInput failed).");
-                loggedFailure_ = true;
+            } else {
+                delivery.blocked = true;
+                if (!loggedFailure_) {
+                    warn("Windows did not accept a USB accessory key event (SendInput failed).");
+                    loggedFailure_ = true;
+                }
             }
         }
-        return sentPress;
+        return delivery;
     }
 
     void releaseStale(Clock::time_point now, bool invalidated) noexcept {
@@ -467,6 +492,10 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
             context.vehicleUpdated = {};
             invalidateFrames();
         }
+        if (current && context.vehicle != current) {
+            ++context.diagnosticSession;
+            appliedAxes = {};
+        }
         context.vehicle = current;
         context.refreshed = now;
         drivingVehicle.store(current, std::memory_order_release);
@@ -539,7 +568,93 @@ bool sameProfile(const std::optional<chrome_axis::Profile>& first, const std::op
            values(first->brake) == values(second->brake);
 }
 
+DiagnosticAxisState diagnosticAxisState(chrome_axis::AxisStatus state, bool sampleExpired) noexcept {
+    using chrome_axis::AxisStatus;
+    if (state != AxisStatus::unassigned && sampleExpired)
+        return DiagnosticAxisState::sampleExpired;
+    switch (state) {
+    case AxisStatus::unassigned: return DiagnosticAxisState::unassigned;
+    case AxisStatus::deviceUnavailable: return DiagnosticAxisState::deviceUnavailable;
+    case AxisStatus::axisUnavailable: return DiagnosticAxisState::axisUnavailable;
+    case AxisStatus::waitingForNeutral: return DiagnosticAxisState::waitingForNeutral;
+    case AxisStatus::armed: return DiagnosticAxisState::armed;
+    }
+    return DiagnosticAxisState::inactive;
+}
+
+DiagnosticAccessoryState diagnosticAccessoryState(chrome_axis::AccessoryReadiness readiness, bool ready,
+    bool inputAvailable, bool sampleExpired, bool blocked) noexcept {
+    if (blocked)
+        return DiagnosticAccessoryState::blocked;
+    if (sampleExpired)
+        return DiagnosticAccessoryState::sampleExpired;
+    if (!inputAvailable || readiness.deviceUnavailable)
+        return DiagnosticAccessoryState::deviceUnavailable;
+    if (readiness.inputUnavailable)
+        return DiagnosticAccessoryState::inputUnavailable;
+    return ready ? DiagnosticAccessoryState::ready : DiagnosticAccessoryState::waiting;
+}
+
+DiagnosticFeedbackState diagnosticFeedbackState(const chrome_axis::DirectInput* input) noexcept {
+    if (!input)
+        return DiagnosticFeedbackState::waiting;
+    switch (input->wheelForceState()) {
+    case chrome_axis::WheelForceState::waiting: return DiagnosticFeedbackState::waiting;
+    case chrome_axis::WheelForceState::active: return DiagnosticFeedbackState::active;
+    case chrome_axis::WheelForceState::unavailable: return DiagnosticFeedbackState::unavailable;
+    }
+    return DiagnosticFeedbackState::waiting;
+}
+
 void pollInput(std::stop_token stop, const std::filesystem::path& configurationDirectory) {
+    std::optional<chrome_axis::DiagnosticPublisher> diagnostics;
+    try {
+        const auto executable = chrome_axis::modulePath(nullptr);
+        const auto gameRoot = executable.parent_path().parent_path().parent_path();
+        if (!gameRoot.empty())
+            diagnostics.emplace(gameRoot);
+    } catch (const std::exception&) {
+        warn("Could not initialize the Chrome Axis diagnostics channel.");
+    }
+    chrome_axis::DiagnosticSnapshot diagnostic;
+    Clock::time_point nextDiagnostic{};
+    Clock::time_point accessoryBlockedUntil{};
+    Clock::time_point sampleExpiredUntil{};
+    std::uint64_t diagnosticSession{};
+    const auto publishDiagnostics = [&](HWND foreground, const DrivingContext& polled) {
+        const auto now = Clock::now();
+        nextDiagnostic = now + diagnosticInterval;
+        if (!diagnostics || !active.load(std::memory_order_acquire))
+            return;
+        const bool gameForeground = foregroundGameWindow() != nullptr;
+        {
+            std::scoped_lock lock(stateMutex);
+            // A vehicle transition can invalidate the worker's sample before publishing.
+            if (gameForeground && foreground && context.generation != polled.generation)
+                return;
+            if (!gameForeground) {
+                diagnostic.mode = DiagnosticMode::gameNotForeground;
+                if (diagnostic.feedback != DiagnosticFeedbackState::disabled)
+                    diagnostic.feedback = DiagnosticFeedbackState::inactive;
+            } else if (!foreground) {
+                diagnostic.mode = DiagnosticMode::waitingForDriver;
+            } else if ((diagnostic.mode == DiagnosticMode::usb || diagnostic.mode == DiagnosticMode::simulation) &&
+                       (context.vehicleUpdated == Clock::time_point{} || now - context.vehicleUpdated > inputLifetime)) {
+                diagnostic.mode = DiagnosticMode::waitingForVehicleInput;
+            }
+            if (context.diagnosticSession != diagnosticSession) {
+                diagnosticSession = context.diagnosticSession;
+                diagnostic.lastAccessoryKey = 0;
+                diagnostic.accessorySentAt = 0;
+            }
+            // The input thread owns the mapping. Copy only the actual writes from the game hook.
+            for (std::size_t i = 0; i < appliedAxes.size(); ++i) {
+                diagnostic.axes[i].value = appliedAxes[i].value;
+                diagnostic.axes[i].appliedAt = appliedAxes[i].tick;
+            }
+        }
+        diagnostics->publish(diagnostic);
+    };
     std::filesystem::path activeDirectory;
     std::optional<chrome_axis::Profile> profile;
     std::optional<chrome_axis::ControlReader> reader;
@@ -577,6 +692,11 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         const HWND foreground = current.vehicle && start - current.refreshed <= contextLifetime
             ? foregroundGameWindow() : nullptr;
+        if (current.diagnosticSession != diagnosticSession) {
+            diagnosticSession = current.diagnosticSession;
+            diagnostic.lastAccessoryKey = 0;
+            diagnostic.accessorySentAt = 0;
+        }
         if (!foreground) {
             feedbackRequested.store(false, std::memory_order_relaxed);
             if (accessoryKeys.hasInjectedKeys()) {
@@ -601,6 +721,11 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             wasDriving = false;
             lastAxisStatuses.reset();
+            if (start >= nextDiagnostic && diagnostics) {
+                diagnostic.feedback = feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
+                                                                : DiagnosticFeedbackState::disabled;
+                publishDiagnostics(foreground, current);
+            }
             std::this_thread::sleep_until(start + idlePollInterval);
             continue;
         }
@@ -620,10 +745,16 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         if (!simulated && (!wasDriving || modeChanged || start >= nextConfigurationPoll)) {
             nextConfigurationPoll = start + configurationPollInterval;
             const bool enabled = chrome_axis::usbEnabled(configurationDirectory);
-            auto selected = enabled ? chrome_axis::activePreset(configurationDirectory).directory : std::filesystem::path{};
-            presetChanged = selected != activeDirectory;
+            auto selected = enabled ? chrome_axis::activePreset(configurationDirectory) : chrome_axis::ProfilePreset{};
+            presetChanged = selected.directory != activeDirectory;
             if (presetChanged) {
-                activeDirectory = std::move(selected);
+                activeDirectory = std::move(selected.directory);
+                diagnostic.profile.fill(0);
+                if (!selected.name.empty()) {
+                    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, selected.name.data(),
+                        static_cast<int>(selected.name.size()), diagnostic.profile.data(),
+                        static_cast<int>(diagnostic.profile.size() - 1), nullptr, nullptr);
+                }
                 watchedProfile = {};
                 watchedAccessories = {};
                 watchedFeedback = {};
@@ -719,9 +850,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             wasUsbEnabled = enabled;
         }
-        if (!wasDriving || lastGeneration != current.generation || modeChanged ||
-            session == chrome_axis::SimulationSession::restarted || windowChanged ||
-            presetChanged || profileChanged || accessoryChanged) {
+        const bool sourceChanged = modeChanged || session == chrome_axis::SimulationSession::restarted || presetChanged;
+        if (!wasDriving || lastGeneration != current.generation || sourceChanged || windowChanged ||
+            profileChanged || accessoryChanged) {
             accessoryKeys.apply({});
             if (input) {
                 input->stopWheelForce();
@@ -737,7 +868,16 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             std::scoped_lock lock(stateMutex);
             if (context.generation == current.generation) {
                 invalidateFrames();
+                if (sourceChanged || profileChanged)
+                    appliedAxes = {};
             }
+            if (sourceChanged || accessoryChanged) {
+                diagnostic.lastAccessoryKey = 0;
+                diagnostic.accessorySentAt = 0;
+                accessoryBlockedUntil = {};
+            }
+            if (sourceChanged || profileChanged)
+                sampleExpiredUntil = {};
             lastGeneration = current.generation;
         }
         if (modeChanged || windowChanged || presetChanged || profileChanged || accessoryChanged) {
@@ -847,15 +987,22 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 }
             }
         }
-        if (hasRequestedKeys && (!accessoryContextLive || stop.stop_requested() || modifierDown())) {
+        const bool accessoryBlocked = hasRequestedKeys &&
+            (!accessoryContextLive || stop.stop_requested() || modifierDown());
+        if (accessoryBlocked) {
             requestedKeys.reset();
             accessories->reset();
         }
+        AccessoryDelivery delivery;
         if (accessories || accessoryKeys.hasInjectedKeys()) {
-            if (accessoryKeys.apply(requestedKeys, foreground, output)) {
+            delivery = accessoryKeys.apply(requestedKeys, foreground, output);
+            if (delivery.key) {
                 std::scoped_lock lock(stateMutex);
-                if (context.generation == current.generation && hudFrame.status == HudStatus::usbReady) {
-                    lastUsbSignal = Clock::now();
+                if (context.generation == current.generation) {
+                    diagnostic.lastAccessoryKey = delivery.key;
+                    diagnostic.accessorySentAt = GetTickCount64();
+                    if (hudFrame.status == HudStatus::usbReady)
+                        lastUsbSignal = Clock::now();
                 }
             }
         }
@@ -898,6 +1045,41 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
         } else {
             lastAxisStatuses.reset();
+        }
+        if (diagnostics) {
+            const auto now = Clock::now();
+            if (accessoryBlocked || delivery.blocked)
+                accessoryBlockedUntil = now + diagnosticIssueDuration;
+            if (physical && now - start > inputLifetime)
+                sampleExpiredUntil = now + diagnosticIssueDuration;
+        }
+        if (start >= nextDiagnostic && diagnostics) {
+            const bool sampleExpired = start < sampleExpiredUntil;
+            diagnostic.mode = simulated ? DiagnosticMode::simulation : !wasUsbEnabled ? DiagnosticMode::usbDisabled
+                : !physical ? DiagnosticMode::profileUnavailable : DiagnosticMode::usb;
+            diagnostic.profileLoaded = physical && !activeDirectory.empty();
+            for (std::size_t i = 0; i < diagnostic.axes.size(); ++i) {
+                diagnostic.axes[i].state = simulated ? DiagnosticAxisState::simulated
+                    : !wasUsbEnabled ? DiagnosticAxisState::inactive
+                    : !reader ? DiagnosticAxisState::awaitingProfile
+                    : diagnosticAxisState(reader->axisStatuses()[i], sampleExpired);
+            }
+            diagnostic.accessoryCount = physical && accessoryProfile
+                ? static_cast<std::uint32_t>(accessoryProfile->size()) : 0;
+            diagnostic.accessoryArmed = 0;
+            diagnostic.accessories = simulated || !wasUsbEnabled ? DiagnosticAccessoryState::inactive
+                : !accessoryError.empty() ? DiagnosticAccessoryState::profileError : DiagnosticAccessoryState::unconfigured;
+            if (physical && accessories) {
+                const auto readiness = accessories->readiness();
+                diagnostic.accessoryArmed = static_cast<std::uint32_t>(readiness.armed);
+                diagnostic.accessories = diagnosticAccessoryState(readiness, accessoriesReady, input && input->ready(),
+                                                                   sampleExpired, start < accessoryBlockedUntil);
+            }
+            diagnostic.feedback = simulated && feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
+                : !feedbackSettings.enabled ? DiagnosticFeedbackState::disabled
+                : !wantFeedback ? DiagnosticFeedbackState::unavailable
+                : diagnosticFeedbackState(input.get());
+            publishDiagnostics(foreground, current);
         }
         const auto interval = physical ? physicalPollInterval : simulated ? simulationPollInterval : idlePollInterval;
         std::this_thread::sleep_until(start + interval);
@@ -982,8 +1164,16 @@ void updateVehicle(Vehicle* vehicle) {
         writeField(*vehicle, driveOffset, throttle - brake);
         writeField(*vehicle, secondaryDriveOffset, throttle - brake);
     }
-    if (!simulated && (steer || pedals) && hudFrame.status == HudStatus::usbReady) {
-        lastUsbSignal = now;
+    if (steer || pedals) {
+        const auto tick = GetTickCount64();
+        if (steer)
+            appliedAxes[0] = {compensated, tick};
+        if (throttle != gameThrottle)
+            appliedAxes[1] = {throttle, tick};
+        if (brake != gameBrake)
+            appliedAxes[2] = {brake, tick};
+        if (!simulated && hudFrame.status == HudStatus::usbReady)
+            lastUsbSignal = now;
     }
     lock.unlock();
 
@@ -1014,6 +1204,7 @@ void stopPlugin() {
     }
     std::scoped_lock lock(stateMutex);
     context = {};
+    appliedAxes = {};
     invalidateFrames();
 }
 

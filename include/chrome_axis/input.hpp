@@ -46,6 +46,8 @@ bool isDeviceId(std::string_view id) noexcept;
 using DirectInputDiagnostic = void (*)(std::string_view deviceId, std::string_view stage,
     HRESULT result, bool available);
 
+enum class WheelForceState { waiting, active, unavailable };
+
 // Use each instance from one thread, with a top-level window of this process.
 class DirectInput {
 public:
@@ -64,6 +66,7 @@ public:
     // The optional guard is called synchronously to recheck context around driver calls.
     void setWheelForce(const std::string& id, std::size_t axis, float force,
                        bool (*stillCurrent)(const void*) noexcept = nullptr, const void* context = nullptr);
+    WheelForceState wheelForceState() const noexcept;
     void stopWheelForce() noexcept;
     void close();
 

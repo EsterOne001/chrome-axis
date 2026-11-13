@@ -21,6 +21,8 @@ constexpr Translation catalog[]{
 #define CHROME_AXIS_TEXT(id, french, english) {french, english},
 #include "locale_main.inc"
 #include "locale_dialogs.inc"
+#include "locale_calibration_scope.inc"
+#include "locale_diagnostics.inc"
 #undef CHROME_AXIS_TEXT
 };
 static_assert(std::size(catalog) == static_cast<std::size_t>(Text::count));

@@ -4,9 +4,9 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.15** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.16** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
-[Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
+[Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
 Chrome Axis is an unofficial fan mod maintained by EsterOne001. [GitHub profile](https://github.com/EsterOne001) · [CD PROJEKT RED fan content guidelines](https://www.cdprojektred.com/en/fan-content)
 
@@ -53,6 +53,8 @@ The plugin log reports `Keyboard simulation active` when the game accepts simula
 4. Click **Save profile** to write the calibration to `chrome_axis.ini` in the active profile. Click **Reload** to read the saved settings.
 
 If your driver puts both pedals on one axis, Chrome Axis accepts a shared rest position with travel in opposite directions. Use separate axes in the driver settings to measure both pedals at once.
+
+To take a measurement again, open **Calibrate separately…**, then choose an axis or device. Choosing a device recalibrates all driving axes assigned to it. Other measurements and accessory bindings are kept. Save the profile to apply the result.
 
 **Select profile…** lets you switch to **Default profile** or create a named copy from the current saved settings. Each profile stores its own calibration, accessory bindings and force feedback settings. **Save profile** and **Reload** act on the active profile. The plugin picks up the same selection on its next settings check. USB activation is shared across profiles.
 
@@ -111,6 +113,16 @@ To stop USB input during a session, use **Disable USB in game**. The game resume
 
 To uninstall, close the game and app, then disable or remove the mod in Vortex and deploy the changes. Back up `Profil` first if you want to reuse your settings.
 
+## In-game diagnostics
+
+Open **Diagnostics…** in **USB Hardware** or the **Help** menu. This panel shows the status reported by the plugin for your Cyberpunk installation. Launch the game, put V in the driver’s seat, enable USB input, and move your controls. Switch back to Chrome Axis to see the last applied values and how long ago they were applied.
+
+- **Steering, throttle and brake.** The panel distinguishes an unavailable device, a missing axis and a control waiting to return to neutral. An armed control is ready. The applied value appears when Chrome Axis has actually changed the control in the game.
+- **Accessories.** See how many bindings are armed and the last key Windows accepted. Your transmission mod determines which gear the game selects.
+- **Force feedback.** See whether an effect is active, waiting or unavailable, based on the driver's response.
+
+The panel indicates when Cyberpunk is out of focus or its plugin data is stale. The last applied value helps diagnose an input after Alt-Tab. You can keep the app open during this USB test.
+
 ## Project folders
 
 - `src/core/` contains DirectInput handling, calibration, profiles, and logic shared by the app and plugin.
@@ -132,10 +144,10 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.15-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.16-Cyberpunk-2.5.zip'
 ```
 
-The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation and force feedback calculations.
+The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.
 
 After deploying the ZIP through Vortex, follow the checklist to test hardware and in-game behavior. [Manual validation](https://github.com/EsterOne001/chrome-axis/blob/main/docs/manual-validation.md#english)
 

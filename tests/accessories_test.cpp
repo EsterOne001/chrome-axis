@@ -61,6 +61,10 @@ int run()
     for (int i = 0; i < 3; ++i) {
         if (reader.update(connected).any() || reader.ready() != (i == 2))
             return 3;
+        const auto readiness = reader.readiness();
+        // The two buttons left released during the initial checks are already armed.
+        if (readiness.armed != (i == 2 ? profile.size() : 2) || readiness.deviceUnavailable || readiness.inputUnavailable)
+            return 17;
     }
 
     wheel.buttons.set(chrome_axis::buttonCount - 1);
@@ -78,6 +82,9 @@ int run()
     keys = reader.update(disconnected);
     if (keys.count() != 1 || !keys.test(VK_SPACE) || reader.ready())
         return 5;
+    const auto disconnectedReadiness = reader.readiness();
+    if (disconnectedReadiness.armed != 1 || !disconnectedReadiness.deviceUnavailable || disconnectedReadiness.inputUnavailable)
+        return 18;
 
     handbrake.axes[7] = 700;
     if (reader.update(connected).any())
@@ -92,12 +99,18 @@ int run()
     handbrake.axesPresent[7] = false;
     if (reader.update(connected).any())
         return 9;
+    const auto missingInput = reader.readiness();
+    if (missingInput.armed != 0 || missingInput.deviceUnavailable || !missingInput.inputUnavailable)
+        return 19;
     handbrake.axesPresent[7] = true;
     if (reader.update(connected).any())
         return 10;
     reader.reset();
     if (reader.ready() || chrome_axis::AccessoryReader(*empty).ready())
         return 11;
+    const auto afterReset = reader.readiness();
+    if (afterReset.armed != 0 || afterReset.deviceUnavailable || afterReset.inputUnavailable)
+        return 20;
 
     // A connected base can report a different layout after a driver or mode change.
     wheel.buttons.reset();
