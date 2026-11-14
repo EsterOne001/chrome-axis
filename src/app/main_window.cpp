@@ -894,7 +894,9 @@ private:
     void cancelCurrentCalibration();
     void enterCalibrationReview();
     void updateCalibrationReview(bool foreground);
+    Text calibrationReviewStatus(std::size_t channel, chrome_axis::AxisStatus status) const;
     void updateReviewBrakeOutput(std::optional<float> value);
+    void updateCapture();
     void rewindCalibration(std::size_t target);
     void finishCalibration();
     void finishCapture(const chrome_axis::AxisCapture& capture);
@@ -2148,8 +2150,8 @@ void App::beginCalibration(const CalibrationScope& scope)
     const auto planned = std::ranges::copy_if(calibrationSteps, steps_.begin(),
         [&scope](const Step& step) { return scope[step.channel]; });
     stepCount_ = static_cast<std::size_t>(planned.out - steps_.begin());
-    // The calibration review checks the full axis travel before applying the saved brake response.
     measured_ = {};
+    measured_.brakeResponse = brakeResponse_;
     positions_ = {};
     retry_.reset();
     reviewPreview_.reset();
@@ -2255,76 +2257,50 @@ void App::enterCalibrationReview()
 
 void App::updateCalibrationReview(bool foreground)
 {
-    using chrome_axis::AxisStatus;
-    using chrome_axis::DeviceReadStatus;
-    std::array<std::optional<chrome_axis::DeviceSample>, commands.size()> samples;
-    std::array<const chrome_axis::DeviceSample*, commands.size()> inputs{};
-    std::array<DeviceReadStatus, commands.size()> statuses{};
-    const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
+    chrome_axis::ControlReader::CalibrationReadings readings;
     if (foreground) {
         input_->beginPoll();
-        for (std::size_t i = 0; i < axes.size(); ++i) {
-            const auto& axis = *axes[i];
-            if (axis.deviceId.empty())
-                continue;
-            samples[i] = input_->sample(axis.deviceId, {}, &statuses[i]);
-            if (samples[i])
-                inputs[i] = &*samples[i];
-        }
+        readings = reviewPreview_->review(*input_);
+    } else {
+        reviewPreview_->reset();
     }
 
-    // Arming uses the same neutral gate as the game, while the review gauges show measured travel.
-    reviewPreview_->update(inputs, nullptr, statuses);
     chrome_axis::ControlState travel;
     const std::array values{&travel.values.steering, &travel.values.throttle, &travel.values.brake};
     const std::array ready{&travel.steeringReady, &travel.throttleReady, &travel.brakeReady};
-    std::optional<float> adjustedBrake;
-    for (std::size_t i = 0; i < axes.size(); ++i) {
+    for (std::size_t i = 0; i < calibrationScope_.size(); ++i) {
         if (!calibrationScope_[i])
             continue;
-
-        const auto& axis = *axes[i];
-        Text state = Text::guideReviewWindowPaused;
-        if (foreground) {
-            switch (reviewPreview_->axisStatuses()[i]) {
-            case AxisStatus::unassigned:
-            case AxisStatus::axisUnavailable:
-                state = Text::guideReviewAxisUnavailable;
-                break;
-            case AxisStatus::deviceUnavailable:
-                state = device(axis.deviceId) ? Text::guideReviewNoSignal : Text::guideReviewDeviceDisconnected;
-                break;
-            case AxisStatus::temporarilyUnavailable:
-                state = Text::guideReviewAwaitSignal;
-                break;
-            case AxisStatus::waitingForNeutral:
-                state = i == 0 ? Text::guideReviewCentreWheel : Text::guideReviewReleasePedal;
-                break;
-            case AxisStatus::armed:
-                state = Text::guideReviewReady;
-                break;
-            }
-        }
+        const auto state = foreground ? calibrationReviewStatus(i, reviewPreview_->axisStatuses()[i])
+                                      : Text::guideReviewWindowPaused;
         if (reviewStates_[i] != state) {
             reviewStates_[i] = state;
             setText(reviewStatuses_[i], tr(state));
         }
-        if (!inputs[i] || !inputs[i]->axesPresent[axis.axis])
-            continue;
-
-        *ready[i] = true;
-        const auto raw = inputs[i]->axes[axis.axis];
-        const auto delta = static_cast<double>(raw) - axis.neutral;
-        const auto positive = static_cast<double>(axis.positive) - axis.neutral;
-        const auto fraction = delta / positive;
-        *values[i] = i == 0 && fraction < 0.0
-            ? -static_cast<float>(std::clamp(delta / (static_cast<double>(axis.negative) - axis.neutral), 0.0, 1.0))
-            : static_cast<float>(std::clamp(fraction, 0.0, 1.0));
-        if (i == 2)
-            adjustedBrake = chrome_axis::previewBrake(axis, raw, brakeResponse_).adjusted;
+        *ready[i] = readings.travel[i].has_value();
+        *values[i] = readings.travel[i].value_or(0.0f);
     }
     updateLiveControls(travel);
-    updateReviewBrakeOutput(adjustedBrake);
+    updateReviewBrakeOutput(calibrationScope_[2] ? readings.adjustedBrake : std::nullopt);
+}
+
+Text App::calibrationReviewStatus(std::size_t channel, chrome_axis::AxisStatus status) const
+{
+    using chrome_axis::AxisStatus;
+    switch (status) {
+    case AxisStatus::unassigned:
+    case AxisStatus::axisUnavailable:
+        return Text::guideReviewAxisUnavailable;
+    case AxisStatus::deviceUnavailable:
+        return device(deviceId(channel)) ? Text::guideReviewNoSignal : Text::guideReviewDeviceDisconnected;
+    case AxisStatus::temporarilyUnavailable:
+        return Text::guideReviewAwaitSignal;
+    case AxisStatus::waitingForNeutral:
+        return channel == 0 ? Text::guideReviewCentreWheel : Text::guideReviewReleasePedal;
+    case AxisStatus::armed:
+        return Text::guideReviewReady;
+    }
+    return Text::guideReviewNoSignal;
 }
 
 void App::updateReviewBrakeOutput(std::optional<float> value)
@@ -2463,37 +2439,7 @@ void App::tick()
     }
     updateCalibrationMotion(foreground);
     if (capture_ && foreground) {
-        using chrome_axis::DeviceReadStatus;
-        const auto channel = steps_[step_].channel;
-        input_->beginPoll();
-        DeviceReadStatus status{};
-        const auto sample = input_->sample(deviceId(channel), {}, &status);
-        ++captureTicks_;
-        const bool interrupted = captureHadSignal_ &&
-            (status == DeviceReadStatus::resumed || status == DeviceReadStatus::unavailable);
-        if (interrupted || (sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
-            capture_.reset();
-            calibrationMessage_ = tr(Text::guideCaptureInterrupted);
-            scanDevices();
-            if (IsWindowEnabled(measure_))
-                SetFocus(measure_);
-        } else if (!sample) {
-            capture_.emplace();
-        } else {
-            captureHadSignal_ = true;
-            if (capture_->complete()) {
-                const auto result = capture_->result();
-                capture_.reset();
-                if (result)
-                    finishCapture(*result);
-            }
-        }
-        if (capture_) {
-            RECT client{};
-            GetClientRect(window_, &client);
-            const auto track = captureProgressBounds(contentBounds(client.right).first);
-            InvalidateRect(window_, &track, FALSE);
-        }
+        updateCapture();
         return;
     }
     if (reviewPreview_) {
@@ -2504,6 +2450,42 @@ void App::tick()
         updateLiveControls(simulation_ ? previewSimulation()
             : foreground && !calibrating_ && preview_ ? preview_->poll(*input_) : chrome_axis::ControlState{});
     }
+}
+
+void App::updateCapture()
+{
+    using chrome_axis::DeviceReadStatus;
+    const auto channel = steps_[step_].channel;
+    input_->beginPoll();
+    DeviceReadStatus status{};
+    const auto sample = input_->sample(deviceId(channel), {}, &status);
+    ++captureTicks_;
+    const bool interrupted = captureHadSignal_ &&
+        (status == DeviceReadStatus::resumed || status == DeviceReadStatus::unavailable);
+    if (interrupted || (sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
+        capture_.reset();
+        calibrationMessage_ = tr(Text::guideCaptureInterrupted);
+        scanDevices();
+        if (IsWindowEnabled(measure_))
+            SetFocus(measure_);
+        return;
+    }
+    if (!sample) {
+        capture_.emplace();
+    } else {
+        captureHadSignal_ = true;
+        if (capture_->complete()) {
+            const auto result = capture_->result();
+            capture_.reset();
+            if (result)
+                finishCapture(*result);
+            return;
+        }
+    }
+    RECT client{};
+    GetClientRect(window_, &client);
+    const auto track = captureProgressBounds(contentBounds(client.right).first);
+    InvalidateRect(window_, &track, FALSE);
 }
 
 void App::updateLiveControls(const chrome_axis::ControlState& state)

@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.28** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.29** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -88,6 +88,8 @@ L’effort de direction varie avec la vitesse, la masse du véhicule et son dép
 
 ## Boîtes de vitesses, palettes et autres accessoires
 
+Sélectionnez une affectation dans **Accessoires…** pour voir son état en direct. Pour un axe, la jauge montre la course et les seuils d’appui et de relâchement. L’aperçu indique la touche qui serait tenue ou relâchée et fonctionne sans lancer Cyberpunk.
+
 Dans **Accessoires…** et **Boîte / palettes…**, cliquez sur le bouton de touche pour ouvrir le clavier visuel, puis sur la touche à attribuer. La rangée de chiffres et le pavé numérique sont distincts. Vous pouvez fermer le clavier sans modifier la sélection.
 
 Pour changer la touche d’une entrée déjà capturée, sélectionnez l’affectation et cliquez sur **Modifier la touche…**. Dans **Boîte / palettes…**, sélectionnez d’abord le périphérique, puis cliquez sur **Appliquer** après vos modifications. Finalisez dans **Accessoires…** avec **Enregistrer**.
@@ -156,6 +158,8 @@ Si le dossier du jeu est reconnu, le panneau signale une DLL ou un script absent
 
 Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rapport dans le presse-papiers inclut le profil actif, les modèles détectés par l’application, les versions installées et jusqu’à huit changements d’état récents. Il distingue l’état actuel du dernier état en conduite. Pour chaque axe, il associe la valeur calibrée lue à la commande demandée lorsqu’elles proviennent de la même mesure. La dernière valeur effectivement écrite apparaît séparément, avec son ancienneté. Le rapport se copie localement et omet les chemins d’installation et les identifiants de périphériques. Déployez ensemble l’application et le plugin du même ZIP pour que le panneau puisse lire les données du jeu.
 
+Pour mesurer les délais, cliquez sur **Mesurer les performances** dans **Diagnostic…**, revenez dans Cyberpunk et conduisez avec l’USB activé. Revenez dans l’application, cliquez sur **Arrêter la mesure**, puis sur **Copier le diagnostic**. Le rapport résume la durée des lectures USB et des appels de retour de force, l’âge des données à leur application en jeu et le nombre de lectures expirées. Ces mesures décrivent le chemin des commandes du mod. Pour mesurer le temps de trame, suivez le protocole d’essai manuel.
+
 ## Dossiers du projet
 
 - `src/core/` contient la lecture DirectInput, la calibration, les profils et la logique partagée par l’application et le plugin.
@@ -175,12 +179,10 @@ Utilisez PowerShell avec Visual Studio Build Tools, le SDK Windows et une versio
 cmake -S . -B build/msvc -G "Visual Studio 18 2026" -A x64
 cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
-cmake --install build/msvc --config Release --prefix build/package-chrome-axis
-New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.28-Cyberpunk-2.5.zip'
+cpack --config build/msvc/CPackConfig.cmake -C Release
 ```
 
-Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.
+CPack construit le ZIP dans `build/msvc/packages` à partir d’une installation temporaire. Le numéro de version vient de CMake, et les dossiers `archive` et `red4ext` sont directement à la racine de l’archive. Pour une compilation de l’application seule, arrêtez-vous après CTest. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.
 
 Après avoir déployé le ZIP via Vortex, suivez la liste de vérification pour tester le matériel et le comportement en jeu. [Essais manuels](https://github.com/EsterOne001/chrome-axis/blob/main/docs/manual-validation.md#français)
 

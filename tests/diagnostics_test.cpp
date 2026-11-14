@@ -23,6 +23,84 @@ struct TemporaryDirectory {
     }
 };
 
+int testPerformanceCapture(const std::filesystem::path& root)
+{
+    using namespace chrome_axis;
+    DiagnosticReader owner(root);
+    DiagnosticReader observer(root);
+    DiagnosticSnapshot snapshot;
+    snapshot.mode = DiagnosticMode::gameNotForeground;
+    if (owner.requestPerformanceCapture(true))
+        return 13;
+    {
+        DiagnosticPublisher publisher(root);
+        publisher.publish(snapshot);
+        owner.read();
+        observer.read();
+        const auto start = owner.requestPerformanceCapture(true);
+        const auto startRequest = publisher.performanceRequest();
+        if (!start || !owner.ownsPerformanceCapture() || !startRequest || startRequest->id != start ||
+            !startRequest->enabled || startRequest->leaseUntil <= GetTickCount64() ||
+            observer.requestPerformanceCapture(false) || observer.requestPerformanceCapture(true))
+            return 14;
+
+        PerformanceReport performance;
+        performance.state = PerformanceState::capturing;
+        performance.requestId = start;
+        performance.startedAt = GetTickCount64();
+        performance.usbRead.add(300);
+        performance.usbRead.add(500);
+        performance.feedback.add(200);
+        performance.inputAge.add(1500);
+        performance.expiredReads = 2;
+        performance.transientReads = 3;
+        publisher.publish(snapshot, 1, performance);
+        const auto live = observer.read();
+        if (observer.ownsPerformanceCapture() || live.performance.state != PerformanceState::capturing ||
+            live.performance.requestId != start || live.performance.usbRead.samples != 2 ||
+            live.performance.usbRead.totalMicros != 800 || live.performance.usbRead.maxMicros != 500 ||
+            live.performance.feedback.totalMicros != 200 || live.performance.inputAge.maxMicros != 1500 ||
+            live.performance.expiredReads != 2 || live.performance.transientReads != 3)
+            return 15;
+
+        const auto stop = owner.requestPerformanceCapture(false);
+        const auto stopRequest = publisher.performanceRequest();
+        if (stop <= start || owner.ownsPerformanceCapture() || !stopRequest || stopRequest->id != stop ||
+            stopRequest->enabled || stopRequest->leaseUntil)
+            return 16;
+        performance.requestId = stop;
+        performance.state = PerformanceState::complete;
+        performance.endedAt = GetTickCount64();
+        publisher.publish(snapshot, 2, performance);
+        const auto finished = owner.read().performance;
+        if (finished.state != PerformanceState::complete || finished.requestId != stop ||
+            finished.startedAt != performance.startedAt || finished.endedAt != performance.endedAt ||
+            finished.usbRead.totalMicros != 800)
+            return 17;
+
+        {
+            DiagnosticReader closing(root);
+            closing.read();
+            if (closing.requestPerformanceCapture(true) <= stop)
+                return 18;
+        }
+        const auto closedRequest = publisher.performanceRequest();
+        if (!closedRequest || closedRequest->id <= stop || closedRequest->enabled)
+            return 19;
+
+        if (observer.requestPerformanceCapture(true) <= closedRequest->id)
+            return 20;
+    }
+
+    DiagnosticPublisher restarted(root);
+    restarted.publish(snapshot);
+    const auto restartedRequest = restarted.performanceRequest();
+    if (observer.requestPerformanceCapture(false) || observer.read().performance.state != PerformanceState::idle ||
+        observer.ownsPerformanceCapture() || !restartedRequest || restartedRequest->id)
+        return 21;
+    return 0;
+}
+
 int run()
 {
     using namespace chrome_axis;
@@ -152,7 +230,7 @@ int run()
         restart.snapshot.mode != DiagnosticMode::waitingForDriver || restart.lastDriveAt ||
         restart.eventCount != 1 || restart.events[0].mode != DiagnosticMode::waitingForDriver)
         return 7;
-    return 0;
+    return testPerformanceCapture(otherRoot);
 }
 
 } // namespace

@@ -144,7 +144,8 @@ void ThemeState::updateDpi()
     logo_ = ui::loadLogo(GetModuleHandleW(nullptr), px(ui::headerLogoSize));
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
         const auto& theme = *reinterpret_cast<const ThemeState*>(data);
-        const bool heading = GetDlgCtrlID(control) == IDC_MODAL_LIST_HEADING;
+        const auto id = GetDlgCtrlID(control);
+        const bool heading = id == IDC_MODAL_LIST_HEADING || id == IDC_ACCESSORY_PREVIEW_HEADING;
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(theme.fonts_[heading ? 1 : 0]), FALSE);
         if (classIs(control, L"ComboBox"))
             SendMessageW(control, CB_SETITEMHEIGHT, 0, theme.px(24));
@@ -290,7 +291,7 @@ HBRUSH ThemeState::controlColor(HDC dc, HWND control, UINT message) const
         return fieldBrush_;
     }
     const auto id = GetDlgCtrlID(control);
-    SetTextColor(dc, id == IDC_MODAL_LIST_HEADING ? ui::yellow
+    SetTextColor(dc, (id == IDC_MODAL_LIST_HEADING || id == IDC_ACCESSORY_PREVIEW_HEADING) ? ui::yellow
         : id == statusId_ || id == IDC_MODAL_INTRO ? ui::secondary : ui::ink);
     SetBkColor(dc, ui::panel);
     SetBkMode(dc, OPAQUE);

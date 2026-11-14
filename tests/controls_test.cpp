@@ -278,12 +278,22 @@ int run()
         return 24;
 
     chrome_axis::ControlReader tunedReader(*loadedTuned);
+    chrome_axis::ControlReader::CalibrationReadings review;
+    wheel.axes[0] = 500;
+    pedals.axes[1] = 750;
     pedals.axes[2] = 400;
     for (int i = 0; i < 4; ++i)
-        state = tunedReader.update(connected, &readings);
+        state = tunedReader.update(connected, &readings, {}, &review);
     if (state.brakeReady || state.values.brake != 0.0f || !readings[2]
         || !approximatelyEqual(*readings[2], 0.3f / 0.9f))
         return 25;
+    if (review.travel != std::array<std::optional<float>, 3>{-0.25f, 0.25f, midpoint.raw}
+        || !review.adjustedBrake || !approximatelyEqual(*review.adjustedBrake, midpoint.adjusted))
+        return 41;
+    tunedReader.update({&wheel, nullptr, nullptr}, nullptr, {}, &review);
+    if (!review.travel[0] || review.travel[1] || review.travel[2] || review.adjustedBrake)
+        return 42;
+
     pedals.axes[2] = 0;
     for (int i = 0; i < 3; ++i)
         state = tunedReader.update(connected);

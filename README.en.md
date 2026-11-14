@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.28** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.29** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -82,6 +82,8 @@ Steering effort varies with the vehicle’s speed, mass and sideways motion. Col
 
 In **Accessories…** and **Shifter / paddles…**, click the key button to open the visual keyboard and choose a key. Number row and numpad keys are separate.
 
+Select a binding in **Accessories…** to see its live state. For an axis, the gauge shows travel and the press and release thresholds. The preview shows whether the mapped key would be held or released and works with Cyberpunk closed.
+
 To change the key for an already captured input, select the binding and click **Change key…**. In **Shifter / paddles…**, select the device first, then click **Apply** after making changes. Finish by clicking **Save** in **Accessories…**.
 
 1. Open **USB Hardware → Accessories…**, select the DirectInput device and click **Shifter / paddles…**. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
@@ -144,6 +146,8 @@ When the game directory is recognized, the panel names a missing DLL or script a
 
 After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it pairs the calibrated reading with the requested command when they come from the same sample. The last value actually written appears separately with its age. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
 
+To measure delays, click **Measure performance** in **Diagnostics…**, switch to Cyberpunk, and drive with USB enabled. Switch back, click **Stop measurement**, and choose **Copy diagnostics**. The report summarizes USB read and force feedback call durations, the age of input when it was applied in game, and the number of expired reads. These measurements cover the mod’s input path. Use the manual validation procedure to measure frame time.
+
 ## Project folders
 
 - `src/core/` contains DirectInput handling, calibration, profiles, and logic shared by the app and plugin.
@@ -163,12 +167,10 @@ Use PowerShell with Visual Studio Build Tools, the Windows SDK, and CMake. The c
 cmake -S . -B build/msvc -G "Visual Studio 18 2026" -A x64
 cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
-cmake --install build/msvc --config Release --prefix build/package-chrome-axis
-New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.28-Cyberpunk-2.5.zip'
+cpack --config build/msvc/CPackConfig.cmake -C Release
 ```
 
-The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.
+CPack builds the ZIP in `build/msvc/packages` from a temporary install. The version comes from CMake, and the `archive` and `red4ext` directories sit at the ZIP root for Vortex. For an app-only build, stop after CTest. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.
 
 After deploying the ZIP through Vortex, follow the checklist to test hardware and in-game behavior. [Manual validation](https://github.com/EsterOne001/chrome-axis/blob/main/docs/manual-validation.md#english)
 

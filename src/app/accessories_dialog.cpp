@@ -1,6 +1,7 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "app_text.hpp"
 #include "dialog_theme.hpp"
+#include "ui_theme.hpp"
 
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/calibration.hpp"
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <system_error>
 #include <utility>
 
@@ -50,6 +52,13 @@ namespace {
 constexpr UINT_PTR captureTimer = 1;
 constexpr UINT captureIntervalMs = 30;
 constexpr ULONGLONG captureTimeoutMs = 12000;
+constexpr UINT_PTR previewTimer = 2;
+constexpr UINT previewIntervalMs = 50;
+
+std::wstring percent(int value)
+{
+    return std::to_wstring(value) + tr(Text::mainPercentSuffix);
+}
 
 enum class CaptureStage { Idle, Digital, AxisRest, AwaitingTravel, AxisTravel };
 
@@ -75,7 +84,8 @@ std::wstring accessoryInputLabel(const AccessoryBinding& binding)
     case AccessoryKind::Button:
         return tr(Text::DlgInputButton) + std::to_wstring(binding.index + 1);
     case AccessoryKind::Pov:
-        return tr(Text::DlgInputDpad) + std::to_wstring(binding.index + 1) + L" · " + tr(directions[binding.engaged / 4500]);
+        return tr(Text::DlgInputDpad) + std::to_wstring(binding.index + 1) + L" · "
+            + tr(directions[binding.engaged / povDirectionStep]);
     case AccessoryKind::Axis:
         return tr(Text::DlgInputAxis) + wide(axisName(binding.index)) + (binding.engaged > binding.rest ? L" (+)" : L" (−)");
     }
@@ -104,11 +114,6 @@ std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding)
 }
 
 namespace {
-
-long povDirection(std::uint16_t value)
-{
-    return value == povCentered ? povCentered : ((value + 2250) / 4500 % 8) * 4500;
-}
 
 std::optional<AccessoryThresholds> readThresholds(HWND window)
 {
@@ -198,6 +203,11 @@ public:
     void refreshDevices();
     void clearCapture();
     void refreshActions();
+    void selectPreview();
+    void setPreviewFocus(bool focused);
+    void pollPreview();
+    void drawPreview(const DRAWITEMSTRUCT& item) const;
+    void selectCapturedInput();
     void chooseKey();
     void shifter();
     void add();
@@ -218,6 +228,7 @@ private:
     void startSampling(CaptureStage stage, const wchar_t* text);
     void finishCapture();
     void refreshBindings(LRESULT selection = LB_ERR);
+    void renderPreview(std::wstring status, std::optional<int> travel);
 
     DirectInput& input_;
     const std::filesystem::path& root_;
@@ -228,6 +239,10 @@ private:
     std::vector<DeviceInfo> devices_;
     AccessoryProfile bindings_;
     std::vector<AccessoryBinding> captured_;
+    std::optional<AccessoryBinding> previewBinding_;
+    std::optional<AccessoryReader> preview_;
+    std::wstring previewStatus_;
+    std::optional<int> previewTravel_;
     std::optional<DeviceSample> previous_;
     std::optional<AxisCapture> rest_;
     CalibrationCapture measurements_;
@@ -235,6 +250,8 @@ private:
     unsigned int key_{};
     ULONGLONG deadline_{};
     bool modified_{};
+    bool previewPolling_{};
+    bool previewAxis_{};
 };
 
 bool AccessoryDialog::initialise(HWND window)
@@ -329,6 +346,147 @@ void AccessoryDialog::refreshActions()
         stage_ == CaptureStage::Idle && selected && bindings_[static_cast<std::size_t>(row)].kind == AccessoryKind::Axis);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), selected);
     EnableWindow(GetDlgItem(window_, IDOK), modified_);
+    selectPreview();
+}
+
+void AccessoryDialog::selectCapturedInput()
+{
+    send(IDC_ACCESSORY_LIST, LB_SETCURSEL, static_cast<WPARAM>(-1));
+    refreshActions();
+}
+
+void AccessoryDialog::selectPreview()
+{
+    std::optional<AccessoryBinding> binding;
+    if (stage_ == CaptureStage::Idle) {
+        const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
+        const auto capture = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
+        if (row >= 0 && static_cast<std::size_t>(row) < bindings_.size()) {
+            binding = bindings_[static_cast<std::size_t>(row)];
+        } else if (capture >= 0 && static_cast<std::size_t>(capture) < captured_.size()) {
+            binding = captured_[static_cast<std::size_t>(capture)];
+            binding->key = key_;
+        }
+    }
+    if (binding != previewBinding_) {
+        previewBinding_ = std::move(binding);
+        preview_.reset();
+        if (previewBinding_) {
+            auto mapping = *previewBinding_;
+            if (!isAccessoryKey(mapping.key))
+                mapping.key = VK_SPACE; // Use a valid internal key to evaluate an unassigned draft.
+            preview_.emplace(AccessoryProfile{std::move(mapping)});
+        }
+        const bool axis = previewBinding_ && previewBinding_->kind == AccessoryKind::Axis;
+        if (axis != previewAxis_) {
+            for (const int control : {IDC_ACCESSORY_PREVIEW_METER, IDC_ACCESSORY_PREVIEW_LEVEL,
+                                       IDC_ACCESSORY_PREVIEW_LIMITS})
+                ShowWindow(GetDlgItem(window_, control), axis ? SW_SHOW : SW_HIDE);
+            previewAxis_ = axis;
+        }
+        if (axis) {
+            const auto thresholds = previewBinding_->thresholds;
+            const auto limits = tr(Text::DlgAccessoryPreviewPress) + percent(static_cast<int>(thresholds.press))
+                + L"  ·  " + tr(Text::DlgAccessoryPreviewRelease) + percent(static_cast<int>(thresholds.release));
+            SetDlgItemTextW(window_, IDC_ACCESSORY_PREVIEW_LIMITS, limits.c_str());
+            SetDlgItemTextW(window_, IDC_ACCESSORY_PREVIEW_LEVEL,
+                                (tr(Text::DlgAccessoryPreviewTravel) + std::wstring(L"—")).c_str());
+            InvalidateRect(GetDlgItem(window_, IDC_ACCESSORY_PREVIEW_METER), nullptr, FALSE);
+        }
+        renderPreview(tr(Text::DlgAccessoryPreviewPaused), std::nullopt);
+    }
+    setPreviewFocus(GetForegroundWindow() == window_);
+}
+
+void AccessoryDialog::setPreviewFocus(bool focused)
+{
+    const bool shouldPoll = focused && IsWindowEnabled(window_) && stage_ == CaptureStage::Idle && preview_;
+    if (shouldPoll) {
+        if (!previewPolling_)
+            previewPolling_ = SetTimer(window_, previewTimer, previewIntervalMs, nullptr) != 0;
+        return;
+    }
+    if (previewPolling_) {
+        KillTimer(window_, previewTimer);
+        previewPolling_ = false;
+        if (preview_)
+            preview_->reset();
+    }
+    renderPreview(tr(stage_ != CaptureStage::Idle || previewBinding_
+        ? Text::DlgAccessoryPreviewPaused : Text::DlgAccessoryPreviewSelect), std::nullopt);
+}
+
+void AccessoryDialog::pollPreview()
+{
+    if (!previewPolling_)
+        return;
+    const auto focused = [&] { return GetForegroundWindow() == window_ && IsWindowEnabled(window_); };
+    if (!focused()) {
+        setPreviewFocus(false);
+        return;
+    }
+    std::array<AccessoryObservation, 1> observations;
+    input_.beginPoll();
+    preview_->poll(input_, observations);
+    if (!focused()) {
+        setPreviewFocus(false);
+        return;
+    }
+    const auto& observation = observations.front();
+    const auto travel = observation.travel
+        ? std::optional{static_cast<int>(std::lround(std::clamp(*observation.travel, 0.0, 1.0) * 100.0))}
+        : std::nullopt;
+    const auto status = [&] {
+        switch (observation.status) {
+        case AccessoryStatus::deviceUnavailable: return Text::DlgAccessoryPreviewDevice;
+        case AccessoryStatus::inputUnavailable: return Text::DlgAccessoryPreviewInput;
+        case AccessoryStatus::temporarilyUnavailable: return Text::DlgAccessoryPreviewPending;
+        case AccessoryStatus::waitingForNeutral: return Text::DlgAccessoryPreviewNeutral;
+        case AccessoryStatus::armed:
+            return !isAccessoryKey(previewBinding_->key) ? Text::DlgAccessoryPreviewUnassigned
+                : observation.active ? Text::DlgAccessoryPreviewPressed : Text::DlgAccessoryPreviewReleased;
+        }
+        return Text::DlgAccessoryPreviewInput;
+    }();
+    auto message = std::wstring(tr(status));
+    if (isAccessoryKey(previewBinding_->key) && observation.status == AccessoryStatus::armed)
+        message = accessoryKeyLabel(previewBinding_->key) + message;
+    renderPreview(std::move(message), travel);
+}
+
+void AccessoryDialog::renderPreview(std::wstring status, std::optional<int> travel)
+{
+    if (status != previewStatus_) {
+        SetDlgItemTextW(window_, IDC_ACCESSORY_PREVIEW_STATUS, status.c_str());
+        previewStatus_ = std::move(status);
+    }
+    if (travel != previewTravel_) {
+        previewTravel_ = travel;
+        const auto value = tr(Text::DlgAccessoryPreviewTravel) + (travel ? percent(*travel) : L"—");
+        SetDlgItemTextW(window_, IDC_ACCESSORY_PREVIEW_LEVEL, value.c_str());
+        InvalidateRect(GetDlgItem(window_, IDC_ACCESSORY_PREVIEW_METER), nullptr, FALSE);
+    }
+}
+
+void AccessoryDialog::drawPreview(const DRAWITEMSTRUCT& item) const
+{
+    if (!previewBinding_ || !previewAxis_)
+        return;
+    const bool contrast = ui::isHighContrast();
+    const auto color = [contrast](COLORREF themed, int native) { return contrast ? GetSysColor(native) : themed; };
+    const auto rect = item.rcItem;
+    if (IsRectEmpty(&rect))
+        return;
+    const auto x = [&](int percentValue) { return rect.left + MulDiv(rect.right - rect.left, percentValue, 100); };
+    ui::fill(item.hDC, rect, color(ui::field, COLOR_BTNFACE));
+    if (previewTravel_)
+        ui::fill(item.hDC, {rect.left, rect.top, x(*previewTravel_), rect.bottom}, color(ui::cyan, COLOR_HIGHLIGHT));
+    const auto line = [&](unsigned int value, COLORREF marker) {
+        const auto position = std::clamp(x(static_cast<int>(value)), rect.left, rect.right - 1);
+        ui::fill(item.hDC, {position, rect.top, position + 1, rect.bottom}, marker);
+    };
+    line(previewBinding_->thresholds.release, color(ui::ink, COLOR_WINDOWTEXT));
+    line(previewBinding_->thresholds.press, color(ui::yellow, COLOR_WINDOWTEXT));
 }
 
 void AccessoryDialog::chooseKey()
@@ -339,7 +497,10 @@ void AccessoryDialog::chooseKey()
         key_ = *key;
         const auto label = accessoryKeyLabel(key_) + L"…";
         SetDlgItemTextW(window_, IDC_ACCESSORY_KEY, label.c_str());
-        refreshActions();
+        if (!captured_.empty())
+            selectCapturedInput();
+        else
+            refreshActions();
     }
 }
 
@@ -408,13 +569,17 @@ void AccessoryDialog::sample()
         setStatus(tr(Text::DlgAccessoriesCaptureInterrupted));
         return;
     }
+    if (GetTickCount64() >= deadline_) {
+        clearCapture();
+        setStatus(tr(Text::DlgAccessoriesCaptureExpired));
+        return;
+    }
     const auto* device = selectedDevice();
     input_.beginPoll();
     const auto state = device ? input_.sample(device->id) : std::nullopt;
     if (!state || GetTickCount64() >= deadline_) {
         clearCapture();
-        setStatus(state ? tr(Text::DlgAccessoriesCaptureExpired)
-                        : tr(Text::DlgAccessoriesInputUnavailable));
+        setStatus(tr(state ? Text::DlgAccessoriesCaptureExpired : Text::DlgAccessoriesInputUnavailable));
         return;
     }
     if (stage_ == CaptureStage::Digital) {
@@ -424,8 +589,8 @@ void AccessoryDialog::sample()
                 captured_.push_back({device->id, AccessoryKind::Button, i, 0, 1, 0});
         }
         for (std::size_t i = 0; i < povCount; ++i) {
-            const auto direction = povDirection(state->povs[i]);
-            if (direction != povCentered && direction != povDirection(previous_->povs[i]))
+            const auto direction = quantizePov(state->povs[i]);
+            if (direction != povCentered && direction != quantizePov(previous_->povs[i]))
                 captured_.push_back({device->id, AccessoryKind::Pov, i, povCentered, direction, 0});
         }
         previous_ = state;
@@ -433,7 +598,10 @@ void AccessoryDialog::sample()
             finishCapture();
         return;
     }
-    measurements_.add(*state);
+    if (!measurements_.add(*state)) {
+        measurements_ = {};
+        return;
+    }
     const auto measured = measurements_.result();
     if (!measured)
         return;
@@ -465,7 +633,7 @@ void AccessoryDialog::finishCapture()
     setStatus(captured_.empty() ? tr(Text::DlgAccessoriesAxisDidNotMove)
         : captured_.size() == 1 ? tr(Text::DlgAccessoriesChooseKeyAndAdd)
         : tr(Text::DlgAccessoriesMultipleInputs));
-    refreshActions();
+    selectCapturedInput();
 }
 
 void AccessoryDialog::refreshBindings(LRESULT selection)
@@ -508,7 +676,7 @@ void AccessoryDialog::add()
     bindings_.push_back(std::move(binding));
     modified_ = true;
     clearCapture();
-    refreshBindings();
+    refreshBindings(static_cast<LRESULT>(bindings_.size() - 1));
     setStatus(tr(Text::DlgAccessoriesBindingAdded));
 }
 
@@ -623,6 +791,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgAccessoriesSavedList));
         SetDlgItemTextW(window, IDC_ACCESSORY_EDIT, tr(Text::DlgBindingEdit));
         SetDlgItemTextW(window, IDC_ACCESSORY_THRESHOLDS, tr(Text::DlgAccessoriesThresholds));
+        SetDlgItemTextW(window, IDC_ACCESSORY_PREVIEW_HEADING, tr(Text::DlgAccessoryPreview));
         SetDlgItemTextW(window, IDC_ACCESSORY_REMOVE, tr(Text::DlgAccessoriesRemove));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
@@ -633,8 +802,23 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     auto* dialog = reinterpret_cast<AccessoryDialog*>(GetWindowLongPtrW(window, DWLP_USER));
     if (!dialog)
         return FALSE;
-    if (message == WM_TIMER && wParam == captureTimer) {
-        dialog->sample();
+    if (message == WM_TIMER) {
+        if (wParam == captureTimer) {
+            dialog->sample();
+            return TRUE;
+        }
+        if (wParam == previewTimer) {
+            dialog->pollPreview();
+            return TRUE;
+        }
+    }
+    if (message == WM_ACTIVATE || message == WM_ENABLE) {
+        const bool focused = message == WM_ACTIVATE ? LOWORD(wParam) != WA_INACTIVE : wParam != 0;
+        dialog->setPreviewFocus(focused);
+        return FALSE;
+    }
+    if (message == WM_DRAWITEM && wParam == IDC_ACCESSORY_PREVIEW_METER) {
+        dialog->drawPreview(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam));
         return TRUE;
     }
     if (message == WM_CLOSE) {
@@ -650,7 +834,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             dialog->clearCapture();
         return TRUE;
     case IDC_ACCESSORY_INPUT:
-        dialog->refreshActions();
+        if (HIWORD(wParam) == CBN_SELCHANGE)
+            dialog->selectCapturedInput();
         return TRUE;
     case IDC_ACCESSORY_LIST:
         if (HIWORD(wParam) == LBN_DBLCLK)

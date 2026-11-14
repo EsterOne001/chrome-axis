@@ -121,14 +121,18 @@ bool forceActuator(IDirectInputDevice8W& device, std::size_t axis) {
         && (object.dwFlags & DIDOI_FFACTUATOR) != 0 && (object.dwType & DIDFT_ABSAXIS) != 0;
 }
 
-std::array<bool, axisCount> availableForceAxes(IDirectInputDevice8W& device) {
-    std::array<bool, axisCount> axes{};
+bool supportsConstantForce(IDirectInputDevice8W& device) {
     DIDEVCAPS caps{};
     caps.dwSize = sizeof(caps);
     DIEFFECTINFOW info{};
     info.dwSize = sizeof(info);
-    if (SUCCEEDED(device.GetCapabilities(&caps)) && (caps.dwFlags & DIDC_FORCEFEEDBACK) != 0 &&
-        SUCCEEDED(device.GetEffectInfo(&info, GUID_ConstantForce))) {
+    return SUCCEEDED(device.GetCapabilities(&caps)) && (caps.dwFlags & DIDC_FORCEFEEDBACK) != 0 &&
+        SUCCEEDED(device.GetEffectInfo(&info, GUID_ConstantForce));
+}
+
+std::array<bool, axisCount> availableForceAxes(IDirectInputDevice8W& device) {
+    std::array<bool, axisCount> axes{};
+    if (supportsConstantForce(device)) {
         for (std::size_t axis = 0; axis < axes.size(); ++axis)
             axes[axis] = forceActuator(device, axis);
     }
@@ -519,7 +523,7 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
             return;
         }
         result = wheel.device->SetDataFormat(&c_dfDIJoystick2);
-        if (FAILED(result) || !availableForceAxes(*wheel.device)[axis]) {
+        if (FAILED(result) || !supportsConstantForce(*wheel.device) || !forceActuator(*wheel.device, axis)) {
             fail("force feedback actuator", FAILED(result) ? result : DIERR_UNSUPPORTED);
             return;
         }

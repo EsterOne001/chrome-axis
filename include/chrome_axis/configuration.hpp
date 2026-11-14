@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace chrome_axis {
 
@@ -26,6 +27,8 @@ PluginFiles pluginFiles(const std::filesystem::path& directory);
 bool isInstalledPluginDirectory(const std::filesystem::path& directory);
 // The app can be launched through the staging link created by a mod manager.
 std::filesystem::path calibrationProfileDirectory(const std::filesystem::path& appFile);
+// Build a per-installation name for diagnostics and simulation, including through path aliases.
+std::wstring installationChannelName(const std::filesystem::path& gameRoot, std::wstring_view prefix);
 bool isTemporaryProfileDirectory(const std::filesystem::path& directory);
 bool usbEnabled(const std::filesystem::path& directory) noexcept;
 

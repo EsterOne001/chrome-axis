@@ -49,7 +49,8 @@ private:
     void updateNumLockHint();
     void position();
     void captured(AccessoryBinding binding);
-    bool runTimer();
+    void runTimer();
+    void interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage);
     bool hasCaptureChanges() const { return !draft_.empty() || pending_.has_value(); }
     bool confirmDiscard(Text message) const;
     ShifterRole role() const;
@@ -238,14 +239,30 @@ void ShifterDialog::enterSetup()
     selectDevice();
 }
 
-bool ShifterDialog::runTimer()
+void ShifterDialog::runTimer()
 {
     deadline_ = GetTickCount64() + captureTimeout;
     if (SetTimer(window_, captureTimer, captureInterval, nullptr))
-        return true;
+        return;
     enterSetup();
     status(tr(Text::DlgShifterMeasurementFailed));
-    return false;
+}
+
+void ShifterDialog::interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage)
+{
+    KillTimer(window_, captureTimer);
+    if (stage_ == Stage::AnalogMeasure) {
+        stage_ = Stage::AnalogReady;
+        status(tr(analogMessage));
+    } else if (stage_ == Stage::Position) {
+        stage_ = Stage::Paused;
+        status(tr(positionMessage));
+    } else {
+        enterSetup();
+        status(tr(neutralMessage));
+        return;
+    }
+    updateControls();
 }
 
 void ShifterDialog::start()
@@ -375,37 +392,22 @@ void ShifterDialog::poll()
     if (!IsWindowEnabled(window_) || (stage_ != Stage::Neutral && stage_ != Stage::Position && stage_ != Stage::AnalogMeasure))
         return;
     if (GetForegroundWindow() != window_) {
-        KillTimer(window_, captureTimer);
-        if (stage_ == Stage::AnalogMeasure) {
-            stage_ = Stage::AnalogReady;
-            status(tr(Text::DlgShifterMeasureInterrupted));
-        } else if (stage_ == Stage::Position) {
-            stage_ = Stage::Paused;
-            status(tr(Text::DlgShifterCaptureInterrupted));
-        } else {
-            enterSetup();
-            status(tr(Text::DlgShifterInitialCaptureInterrupted));
-        }
-        updateControls();
+        interruptCapture(Text::DlgShifterMeasureInterrupted, Text::DlgShifterCaptureInterrupted,
+                         Text::DlgShifterInitialCaptureInterrupted);
         return;
     }
     if (GetTickCount64() >= deadline_) {
-        KillTimer(window_, captureTimer);
-        if (stage_ == Stage::AnalogMeasure) {
-            stage_ = Stage::AnalogReady;
-            status(tr(Text::DlgShifterMeasureExpired));
-        } else if (stage_ == Stage::Position) {
-            stage_ = Stage::Paused;
-            status(tr(Text::DlgShifterCapturePaused));
-        } else {
-            enterSetup();
-            status(tr(Text::DlgShifterCaptureExpired));
-        }
-        updateControls();
+        interruptCapture(Text::DlgShifterMeasureExpired, Text::DlgShifterCapturePaused,
+                         Text::DlgShifterCaptureExpired);
         return;
     }
     input_.beginPoll();
     const auto sample = input_.sample(deviceId_);
+    if (GetTickCount64() >= deadline_) {
+        interruptCapture(Text::DlgShifterMeasureExpired, Text::DlgShifterCapturePaused,
+                         Text::DlgShifterCaptureExpired);
+        return;
+    }
     if (!sample) {
         if (digital_ && stage_ == Stage::Neutral)
             digital_.emplace(deviceId_);

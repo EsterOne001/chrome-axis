@@ -1,6 +1,6 @@
 #include "chrome_axis/simulation.hpp"
 
-#include "chrome_axis/diagnostics.hpp"
+#include "chrome_axis/configuration.hpp"
 
 #include <algorithm>
 #include <bit>

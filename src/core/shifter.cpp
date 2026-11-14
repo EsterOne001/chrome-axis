@@ -7,8 +7,6 @@ namespace chrome_axis {
 namespace {
 
 constexpr unsigned int stableReports = 3;
-constexpr unsigned int povStep = 4500;
-constexpr unsigned int povFullTurn = 36000;
 
 } // namespace
 
@@ -30,12 +28,8 @@ ShifterCapture::ShifterCapture(std::string deviceId)
 ShifterCapture::DigitalState ShifterCapture::digitalState(const DeviceSample& sample) noexcept
 {
     DigitalState state{sample.buttons, sample.povs};
-    for (auto& angle : state.povs) {
-        if (angle < povFullTurn)
-            angle = static_cast<std::uint16_t>(((angle + povStep / 2) / povStep * povStep) % povFullTurn);
-        else
-            angle = povCentered;
-    }
+    for (auto& angle : state.povs)
+        angle = quantizePov(angle);
     return state;
 }
 

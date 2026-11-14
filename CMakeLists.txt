@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ChromeAxis VERSION 0.4.28 LANGUAGES CXX)
+project(ChromeAxis VERSION 0.4.29 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Chrome Axis requires a Windows x64 MSVC build.")
@@ -94,4 +94,13 @@ install(FILES assets/Profil/Lisez-moi.txt DESTINATION "${CHROME_AXIS_INSTALL_DIR
 include(CTest)
 if(BUILD_TESTING)
   add_subdirectory(tests)
+endif()
+
+# Only a build with both binaries can produce the Vortex package.
+if(CHROME_AXIS_BUILD_PLUGIN)
+  set(CPACK_GENERATOR ZIP)
+  set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+  set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
+  set(CPACK_PACKAGE_FILE_NAME "ChromeAxis-${PROJECT_VERSION}-Cyberpunk-2.5")
+  include(CPack)
 endif()

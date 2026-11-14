@@ -145,6 +145,45 @@ int testShifterRoles(const std::filesystem::path& path, const std::string& devic
     return 0;
 }
 
+int testPreviewReadings(const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    AccessoryReader reader({
+        {deviceId, AccessoryKind::Axis, 2, 1000, 0, VK_SPACE, {60, 35}},
+        {deviceId, AccessoryKind::Button, 0, 0, 1, 'G', {}, ShifterRole::Gear1},
+    });
+    DeviceSample sample;
+    sample.axesPresent[2] = true;
+    sample.buttonsPresent.set(0);
+    const std::array<const DeviceSample*, 2> connected{&sample, &sample};
+    std::array<AccessoryObservation, 2> observations{};
+    sample.axes[2] = 300;
+    if (reader.update(connected, {}, observations).any() || observations[0].travel != 0.7
+        || observations[0].status != AccessoryStatus::waitingForNeutral || observations[0].active)
+        return 53;
+    sample.axes[2] = 1000;
+    for (int i = 0; i < 3; ++i)
+        reader.update(connected, {}, observations);
+    if (observations[0].status != AccessoryStatus::armed || observations[0].travel != 0.0
+        || observations[1].status != AccessoryStatus::armed || observations[1].travel)
+        return 54;
+    sample.axes[2] = 400;
+    sample.buttons.set(0);
+    const auto keys = reader.update(connected, {}, observations);
+    if (!keys.test(VK_SPACE) || !keys.test('G') || !observations[0].active || !observations[1].active
+        || observations[0].travel != 0.6 || observations[1].travel)
+        return 55;
+    sample.axes[2] = 600;
+    if (!reader.update(connected, {}, observations).test(VK_SPACE) || !observations[0].active)
+        return 56;
+    const std::array<const DeviceSample*, 2> disconnected{};
+    reader.update(disconnected, {}, observations);
+    if (observations[0].status != AccessoryStatus::deviceUnavailable || observations[0].active
+        || observations[0].travel || observations[1].active)
+        return 57;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -185,6 +224,8 @@ int run()
         return thresholdResult;
     if (roleResult != 0)
         return roleResult;
+    if (const auto result = testPreviewReadings(wheelId); result != 0)
+        return result;
 
     chrome_axis::AccessoryReader reader(*loaded);
     chrome_axis::DeviceSample wheel;

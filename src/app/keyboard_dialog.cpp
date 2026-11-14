@@ -40,12 +40,23 @@ bool isAlphanumeric(UINT key)
     return (key >= 'A' && key <= 'Z') || (key >= '0' && key <= '9');
 }
 
-bool completeLayout(HKL layout)
+using MainKeyLayout = std::array<std::array<UINT, 13>, std::size(mainRows)>;
+
+MainKeyLayout mappedMainKeys(HKL layout)
+{
+    MainKeyLayout mapped{};
+    for (std::size_t row = 0; row < mapped.size(); ++row) {
+        for (std::size_t index = 0; index < mainRows[row].fallback.size(); ++index)
+            mapped[row][index] = MapVirtualKeyExW(mainRows[row].scanCodes[index], MAPVK_VSC_TO_VK_EX, layout);
+    }
+    return mapped;
+}
+
+bool completeLayout(const MainKeyLayout& mapped)
 {
     std::bitset<256> keys;
-    for (const auto& row : mainRows) {
-        for (std::size_t index = 0; index < row.fallback.size(); ++index) {
-            const auto key = MapVirtualKeyExW(row.scanCodes[index], MAPVK_VSC_TO_VK_EX, layout);
+    for (const auto& row : mapped) {
+        for (const auto key : row) {
             if (isAlphanumeric(key))
                 keys.set(key);
         }
@@ -117,19 +128,22 @@ bool Keyboard::build(HKL layout)
         add(VK_F1 + index, L"", 50 + static_cast<int>(index) * keyPitch + static_cast<int>(index / 4) * 4, 85);
     }
 
-    const bool useLayout = completeLayout(layout);
+    const auto mapped = mappedMainKeys(layout);
+    const bool useLayout = completeLayout(mapped);
     add(0, L"⌫", 243, 104, 25);
     add(0, L"Tab", 22, 122, 25);
     add(0, tr(Text::DlgKeyboardCapsLock), 22, 140, 28);
     add(0, tr(Text::DlgKeyboardEnter), 238, 140, 30);
     add(0, tr(Text::DlgKeyboardShift), 22, 158, 29);
     add(0, tr(Text::DlgKeyboardShift), 239, 158, 29);
-    for (const auto& row : mainRows) {
+    for (std::size_t rowIndex = 0; rowIndex < mapped.size(); ++rowIndex) {
+        const auto& row = mainRows[rowIndex];
         for (std::size_t index = 0; index < row.fallback.size(); ++index) {
-            const auto mapped = MapVirtualKeyExW(row.scanCodes[index], MAPVK_VSC_TO_VK_EX, layout);
-            const auto candidate = useLayout ? mapped : static_cast<UINT>(row.fallback[index]);
-            const auto legend = inactiveLegend(mapped, layout);
-            add(isAlphanumeric(candidate) ? candidate : 0, legend.c_str(),
+            const auto key = mapped[rowIndex][index];
+            const auto candidate = useLayout ? key : static_cast<UINT>(row.fallback[index]);
+            const bool selectable = isAlphanumeric(candidate) && !added_.test(candidate);
+            const auto legend = selectable ? std::wstring{} : inactiveLegend(key, layout);
+            add(selectable ? candidate : 0, legend.c_str(),
                 row.x + static_cast<int>(index) * keyPitch, row.y);
         }
     }

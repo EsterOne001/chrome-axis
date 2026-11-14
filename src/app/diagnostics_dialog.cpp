@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,6 +39,13 @@ constexpr UINT refreshIntervalMs = 250;
 constexpr UINT_PTR copyTimer = 2;
 constexpr UINT copyFeedbackMs = 2500;
 constexpr wchar_t unavailableValue[] = L"—";
+constexpr ULONGLONG performanceCommandTimeoutMs = 3000;
+
+struct PerformanceCommand {
+    std::uint64_t id{};
+    ULONGLONG expiresAt{};
+    bool start{};
+};
 
 struct DialogState {
     DiagnosticReader reader;
@@ -47,6 +55,8 @@ struct DialogState {
     const wchar_t* missingFiles{};
     std::wstring pluginVersion{};
     std::wstring versionMismatch{};
+    PerformanceCommand performanceCommand{};
+    bool performanceCommandFailed{};
 };
 
 struct AxisControls {
@@ -60,6 +70,22 @@ constexpr std::array axisControls{
     AxisControls{IDC_DIAGNOSTICS_STEERING_LABEL, Text::mainSteering, IDC_DIAGNOSTICS_STEERING_STATE, IDC_DIAGNOSTICS_STEERING_VALUE},
     AxisControls{IDC_DIAGNOSTICS_THROTTLE_LABEL, Text::mainThrottle, IDC_DIAGNOSTICS_THROTTLE_STATE, IDC_DIAGNOSTICS_THROTTLE_VALUE},
     AxisControls{IDC_DIAGNOSTICS_BRAKE_LABEL, Text::mainBrake, IDC_DIAGNOSTICS_BRAKE_STATE, IDC_DIAGNOSTICS_BRAKE_VALUE}
+};
+
+struct PerformanceControls {
+    Text label;
+    int labelId;
+    int valueId;
+    PerformanceTiming PerformanceReport::*timing;
+};
+
+constexpr std::array performanceControls{
+    PerformanceControls{Text::DlgDiagnosticsPerformanceUSB, IDC_DIAGNOSTICS_PERFORMANCE_USB_LABEL,
+        IDC_DIAGNOSTICS_PERFORMANCE_USB, &PerformanceReport::usbRead},
+    PerformanceControls{Text::DlgDiagnosticsPerformanceFeedback, IDC_DIAGNOSTICS_PERFORMANCE_FEEDBACK_LABEL,
+        IDC_DIAGNOSTICS_PERFORMANCE_FEEDBACK, &PerformanceReport::feedback},
+    PerformanceControls{Text::DlgDiagnosticsPerformanceAge, IDC_DIAGNOSTICS_PERFORMANCE_AGE_LABEL,
+        IDC_DIAGNOSTICS_PERFORMANCE_AGE, &PerformanceReport::inputAge}
 };
 
 const wchar_t* connectionText(DiagnosticConnection connection)
@@ -271,6 +297,57 @@ std::wstring lastAccessoryKey(const DiagnosticSnapshot& snapshot, std::uint64_t 
         : unavailableValue;
 }
 
+std::wstring milliseconds(double micros)
+{
+    auto formatted = std::format(L"{:.3f}", micros / 1000.0);
+    const auto decimal = formatted.find(L'.');
+    formatted[decimal] = tr(Text::mainDecimalSeparator)[0];
+    return formatted + L" ms";
+}
+
+std::wstring performanceTiming(const PerformanceTiming& timing)
+{
+    if (!timing.samples)
+        return unavailableValue;
+    return milliseconds(static_cast<double>(timing.totalMicros) / static_cast<double>(timing.samples)) +
+        tr(Text::DlgDiagnosticsPerformanceMean) + L" · " + milliseconds(static_cast<double>(timing.maxMicros)) +
+        tr(Text::DlgDiagnosticsPerformanceMaximum) + L" · " + std::to_wstring(timing.samples) +
+        L" " + tr(timing.samples == 1 ? Text::DlgDiagnosticsPerformanceSample : Text::DlgDiagnosticsPerformanceSamples);
+}
+
+bool hasPerformanceData(const PerformanceReport& report)
+{
+    return report.expiredReads || report.transientReads ||
+        std::ranges::any_of(performanceControls, [&](const auto& control) {
+            return (report.*control.timing).samples != 0;
+        });
+}
+
+bool performancePluginReady(const DiagnosticRead& read, const DialogState& state)
+{
+    return read.connection == DiagnosticConnection::connected && !state.missingFiles && state.versionMismatch.empty();
+}
+
+std::wstring performanceStatus(const DiagnosticRead& read, ULONGLONG now)
+{
+    const auto& performance = read.performance;
+    Text label;
+    auto end = performance.endedAt;
+    if (performance.state == PerformanceState::capturing) {
+        const bool driving = read.connection == DiagnosticConnection::connected && read.snapshot.mode == DiagnosticMode::usb;
+        label = driving ? Text::DlgDiagnosticsPerformanceActive : Text::DlgDiagnosticsPerformancePaused;
+        end = read.connection == DiagnosticConnection::connected ? now : read.sampledAt;
+    } else {
+        label = hasPerformanceData(performance) ? Text::DlgDiagnosticsPerformanceComplete : Text::DlgDiagnosticsPerformanceNoData;
+    }
+    std::wstring status = tr(label);
+    if (performance.startedAt && end >= performance.startedAt) {
+        const auto elapsed = end - performance.startedAt;
+        status += elapsed && elapsed < 1000 ? L" · < 1 s" : L" · " + std::to_wstring(elapsed / 1000) + L" s";
+    }
+    return status;
+}
+
 std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& state, std::uint64_t now)
 {
     std::wstring report = tr(Text::DlgDiagnosticsReport);
@@ -356,6 +433,16 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         report += L"\r\n";
         previous = &event;
     }
+    if (read.performance.state != PerformanceState::idle) {
+        report += L"\r\n" + std::wstring(tr(Text::DlgDiagnosticsPerformanceReport)) + L"\r\n";
+        report += performanceStatus(read, now) + L"\r\n";
+        for (const auto& control : performanceControls)
+            line(control.label, performanceTiming(read.performance.*control.timing));
+        line(Text::DlgDiagnosticsPerformanceExpired, std::to_wstring(read.performance.expiredReads));
+        line(Text::DlgDiagnosticsPerformanceTransient, std::to_wstring(read.performance.transientReads));
+        report += tr(Text::DlgDiagnosticsPerformanceReadingGuide);
+        report += L"\r\n";
+    }
     return report;
 }
 
@@ -390,6 +477,43 @@ void setChangedText(HWND window, int id, std::wstring_view text)
         SetDlgItemTextW(window, id, text.data());
 }
 
+void refreshPerformance(HWND window, DialogState& state, const DiagnosticRead& read, ULONGLONG now)
+{
+    const auto& performance = read.performance;
+    auto& command = state.performanceCommand;
+    if (command.id && (performance.requestId == command.id || now >= command.expiresAt)) {
+        state.performanceCommandFailed = performance.requestId != command.id;
+        command = {};
+    }
+    const bool running = performance.state == PerformanceState::capturing;
+    const bool pluginReady = performancePluginReady(read, state);
+    const bool showResults = performance.state != PerformanceState::idle;
+    const bool canControl = pluginReady && (!running || state.reader.ownsPerformanceCapture());
+    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE,
+                   tr(running ? Text::DlgDiagnosticsPerformanceStop : Text::DlgDiagnosticsPerformanceStart));
+    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_PERFORMANCE), canControl && !command.id);
+
+    if (command.id) {
+        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE,
+                       tr(command.start ? Text::DlgDiagnosticsPerformanceStarting : Text::DlgDiagnosticsPerformanceStopping));
+    } else if (pluginReady && running && !canControl) {
+        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, tr(Text::DlgDiagnosticsPerformanceElsewhere));
+    } else if (state.performanceCommandFailed) {
+        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, tr(Text::DlgDiagnosticsPerformanceFailed));
+    } else if (showResults) {
+        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, performanceStatus(read, now));
+    } else {
+        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE,
+                       tr(pluginReady ? Text::DlgDiagnosticsPerformanceReady : Text::DlgDiagnosticsPerformanceUnavailable));
+    }
+    for (const auto& control : performanceControls)
+        setChangedText(window, control.valueId, performanceTiming(performance.*control.timing));
+    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_WARNINGS, showResults
+        ? std::wstring(tr(Text::DlgDiagnosticsPerformanceExpired)) + L" · " + std::to_wstring(performance.expiredReads) +
+            L"    " + tr(Text::DlgDiagnosticsPerformanceTransient) + L" · " + std::to_wstring(performance.transientReads)
+        : L"");
+}
+
 void refresh(HWND window, DialogState& state)
 {
     const auto read = state.reader.read();
@@ -418,6 +542,7 @@ void refresh(HWND window, DialogState& state)
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORIES, showControls ? accessoryStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORY, showControls ? lastAccessoryKey(snapshot, now) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackText(snapshot.feedback) : unavailableValue);
+    refreshPerformance(window, state, read, now);
 }
 
 INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -441,6 +566,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORIES_LABEL, tr(Text::DlgDiagnosticsAccessories));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORY_LABEL, tr(Text::DlgDiagnosticsLastKey));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_FEEDBACK_LABEL, tr(Text::DlgDiagnosticsFeedback));
+        for (const auto& control : performanceControls)
+            SetDlgItemTextW(window, control.labelId, tr(control.label));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_COPY, tr(Text::DlgDiagnosticsCopy));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgDiagnosticsClose));
         DialogTheme::attach(window, tr(Text::DlgDiagnosticsHeading), IDC_DIAGNOSTICS_CONNECTION, 0, {IDCANCEL});
@@ -467,6 +594,19 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (SetTimer(window, copyTimer, copyFeedbackMs, nullptr))
                 SetDlgItemTextW(window, IDC_DIAGNOSTICS_COPY,
                                 tr(copied ? Text::DlgDiagnosticsCopied : Text::DlgDiagnosticsCopyError));
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_DIAGNOSTICS_PERFORMANCE && state) {
+            const auto read = state->reader.read();
+            const bool start = read.performance.state != PerformanceState::capturing;
+            if (!state->performanceCommand.id && performancePluginReady(read, *state) &&
+                (start || state->reader.ownsPerformanceCapture())) {
+                const auto id = state->reader.requestPerformanceCapture(start);
+                state->performanceCommandFailed = !id;
+                if (id)
+                    state->performanceCommand = {id, GetTickCount64() + performanceCommandTimeoutMs, start};
+                refresh(window, *state);
+            }
             return TRUE;
         }
         if (LOWORD(wParam) != IDCANCEL)

@@ -66,6 +66,11 @@ bool capturesHPattern()
 
 bool capturesPovDirections()
 {
+    using chrome_axis::quantizePov;
+    if (quantizePov(2249) != 0 || quantizePov(2250) != 4500 || quantizePov(33750) != 0
+        || quantizePov(36000) != povCentered || quantizePov(povCentered) != povCentered)
+        return false;
+
     ShifterCapture capture(shifterId);
     const DeviceSample released;
     capture.captureNeutral(released);

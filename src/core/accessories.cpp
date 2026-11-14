@@ -15,8 +15,6 @@ namespace {
 constexpr auto requiredNeutralPolls = 3u;
 constexpr double neutralThreshold = 0.15;
 constexpr AccessoryThresholds defaultThresholds{};
-constexpr int povStep = 4500;
-constexpr int povFullTurn = 36000;
 constexpr std::array<std::string_view, 3> kindNames{"button", "pov", "axis"};
 constexpr std::string_view rolePrefix = "# shifter-role=";
 constexpr std::array<std::string_view, 12> roleNames{
@@ -106,7 +104,7 @@ bool validInput(const AccessoryBinding& binding)
         return binding.index < buttonCount && binding.rest == 0 && binding.engaged == 1;
     case AccessoryKind::Pov:
         return binding.index < povCount && binding.rest == povCentered
-            && binding.engaged >= 0 && binding.engaged < povFullTurn && binding.engaged % povStep == 0;
+            && binding.engaged >= 0 && binding.engaged < povFullTurn && binding.engaged % povDirectionStep == 0;
     case AccessoryKind::Axis:
         return binding.index < axisCount && std::abs(travel(binding)) >= 16.0
             && validAccessoryThresholds(binding.thresholds);
@@ -142,7 +140,8 @@ struct InputLevel {
     bool engaged{};
 };
 
-std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const DeviceSample& sample, bool active)
+std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const DeviceSample& sample, bool active,
+                                   std::optional<double>* travelReading)
 {
     switch (binding.kind) {
     case AccessoryKind::Button: {
@@ -154,16 +153,17 @@ std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const Devic
     case AccessoryKind::Pov: {
         if (!sample.povsPresent[binding.index])
             return std::nullopt;
-        const auto angle = sample.povs[binding.index];
+        const auto angle = quantizePov(sample.povs[binding.index]);
         if (angle == povCentered)
             return InputLevel{true, false};
-        const int nearest = ((angle + povStep / 2) / povStep * povStep) % povFullTurn;
-        return InputLevel{false, nearest == binding.engaged};
+        return InputLevel{false, angle == binding.engaged};
     }
     case AccessoryKind::Axis: {
         if (!sample.axesPresent[binding.index])
             return std::nullopt;
         const double fraction = (static_cast<double>(sample.axes[binding.index]) - binding.rest) / travel(binding);
+        if (travelReading)
+            *travelReading = fraction;
         const double releaseThreshold = binding.thresholds.release / 100.0;
         const double pressThreshold = binding.thresholds.press / 100.0;
         // A low release setting also narrows the neutral gate.
@@ -319,7 +319,7 @@ AccessoryReadiness AccessoryReader::readiness() const noexcept
     return result;
 }
 
-std::bitset<256> AccessoryReader::poll(DirectInput& input)
+std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryObservation> observations)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
@@ -333,11 +333,47 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input)
         if (storage[owner])
             samples[i] = &*storage[owner];
     }
-    return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()));
+    return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()), observations);
+}
+
+void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
+                              DeviceReadStatus status, std::optional<double>* travelReading)
+{
+    if (!sample && status == DeviceReadStatus::pending) {
+        if (state.neutralPolls < requiredNeutralPolls)
+            state.neutralPolls = 0;
+        else
+            state.waitForRelease = true;
+        state.active = false;
+        state.status = AccessoryStatus::temporarilyUnavailable;
+        return;
+    }
+    if (status == DeviceReadStatus::resumed)
+        state = {};
+    const auto level = sample ? readLevel(binding, *sample, state.active, travelReading) : std::nullopt;
+    if (!level) {
+        state = {};
+        state.status = sample ? AccessoryStatus::inputUnavailable : AccessoryStatus::deviceUnavailable;
+        return;
+    }
+    if (state.neutralPolls < requiredNeutralPolls) {
+        state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
+        state.status = state.neutralPolls == requiredNeutralPolls
+            ? AccessoryStatus::armed : AccessoryStatus::waitingForNeutral;
+        return;
+    }
+    if (state.waitForRelease) {
+        state.waitForRelease = !level->neutral;
+        state.status = state.waitForRelease ? AccessoryStatus::waitingForNeutral : AccessoryStatus::armed;
+        return;
+    }
+    state.status = AccessoryStatus::armed;
+    state.active = level->engaged;
 }
 
 std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> samples,
-                                         std::span<const DeviceReadStatus> statuses)
+                                       std::span<const DeviceReadStatus> statuses,
+                                       std::span<AccessoryObservation> observations)
 {
     std::bitset<256> keys;
     for (std::size_t i = 0; i < profile_.size(); ++i) {
@@ -345,36 +381,14 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         auto& state = states_[i];
         const auto* sample = i < samples.size() ? samples[i] : nullptr;
         const auto status = i < statuses.size() ? statuses[i] : DeviceReadStatus::unavailable;
-        if (!sample && status == DeviceReadStatus::pending) {
-            if (state.neutralPolls < requiredNeutralPolls)
-                state.neutralPolls = 0;
-            else
-                state.waitForRelease = true;
-            state.active = false;
-            state.status = AccessoryStatus::temporarilyUnavailable;
-            continue;
+        auto* observation = i < observations.size() ? &observations[i] : nullptr;
+        if (observation)
+            observation->travel.reset();
+        advance(binding, state, sample, status, observation ? &observation->travel : nullptr);
+        if (observation) {
+            observation->status = state.status;
+            observation->active = state.active;
         }
-        if (status == DeviceReadStatus::resumed)
-            state = {};
-        const auto level = sample ? readLevel(binding, *sample, state.active) : std::nullopt;
-        if (!level) {
-            state = {};
-            state.status = sample ? AccessoryStatus::inputUnavailable : AccessoryStatus::deviceUnavailable;
-            continue;
-        }
-        if (state.neutralPolls < requiredNeutralPolls) {
-            state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
-            state.status = state.neutralPolls == requiredNeutralPolls
-                ? AccessoryStatus::armed : AccessoryStatus::waitingForNeutral;
-            continue;
-        }
-        if (state.waitForRelease) {
-            state.waitForRelease = !level->neutral;
-            state.status = state.waitForRelease ? AccessoryStatus::waitingForNeutral : AccessoryStatus::armed;
-            continue;
-        }
-        state.status = AccessoryStatus::armed;
-        state.active = level->engaged;
         if (state.active)
             keys.set(binding.key);
     }

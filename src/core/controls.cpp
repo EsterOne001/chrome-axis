@@ -33,33 +33,36 @@ bool sameAxis(const AxisCalibration& first, const AxisCalibration& second) noexc
     return !first.deviceId.empty() && first.axis == second.axis && first.deviceId == second.deviceId;
 }
 
-float normalize(const AxisCalibration& calibration, long raw, bool steering)
+double axisPosition(const AxisCalibration& calibration, long raw, bool steering)
 {
     const double delta = distance(raw, calibration.neutral);
     const double positive = distance(calibration.positive, calibration.neutral);
-    const bool positiveSide = delta / positive >= 0.0;
-    const double span = positiveSide || !steering
-        ? positive
-        : distance(calibration.negative, calibration.neutral);
-    const auto magnitude = static_cast<float>(std::clamp(delta / span, 0.0, 1.0));
-    const float value = std::max(0.0f, magnitude - calibration.deadzone) / (1.0f - calibration.deadzone);
-    return steering && !positiveSide ? -value : value;
+    const double position = delta / positive;
+    return steering && position < 0.0 ? -delta / distance(calibration.negative, calibration.neutral) : position;
 }
 
-bool isNeutral(const AxisCalibration& calibration, long raw, bool steering, bool combinedPedals)
+float applyDeadzone(float travel, float deadzone)
 {
-    const double delta = distance(raw, calibration.neutral);
-    const double positive = distance(calibration.positive, calibration.neutral);
-    const double span = steering && delta / positive < 0.0
-        ? distance(calibration.negative, calibration.neutral)
-        : positive;
-    const double progress = delta / span;
+    const float value = std::max(0.0f, std::abs(travel) - deadzone) / (1.0f - deadzone);
+    return std::copysign(value, travel);
+}
+
+bool isNeutral(double position, float deadzone, bool steering, bool combinedPedals)
+{
     // A dedicated pedal can return beyond its measured rest position and still produce zero.
     // Shared pedals must stay near the common center so neither is held during arming.
     // Keep a small steering arming tolerance even when all steering input is applied.
-    const double deadzone = calibration.deadzone;
-    const double tolerance = steering ? std::max(deadzone, minimumSteeringNeutralTolerance) : deadzone;
-    return (steering || combinedPedals ? std::abs(progress) : progress) <= tolerance;
+    const double tolerance = steering ? std::max<double>(deadzone, minimumSteeringNeutralTolerance) : deadzone;
+    return (steering || combinedPedals ? std::abs(position) : position) <= tolerance;
+}
+
+float applyBrakeResponse(float magnitude, float deadzone, const BrakeResponse& response) noexcept
+{
+    const float saturation = static_cast<float>(response.saturation) / 100.0f;
+    const float position = std::clamp((magnitude - deadzone) / (saturation - deadzone), 0.0f, 1.0f);
+    const float progressivity = static_cast<float>(response.progressivity) / 100.0f;
+    // The endpoints stay fixed. The full adjustment spans a quadratic ease-in to an ease-out.
+    return position - progressivity * position * (1.0f - position);
 }
 
 std::string_view trim(std::string_view value)
@@ -102,16 +105,11 @@ bool validateBrakeResponse(const BrakeResponse& response) noexcept
 
 BrakePreview previewBrake(const AxisCalibration& calibration, long raw, const BrakeResponse& response) noexcept
 {
-    const auto travel = distance(calibration.positive, calibration.neutral);
-    const float saturation = static_cast<float>(response.saturation) / 100.0f;
-    if (travel == 0.0 || !(calibration.deadzone < saturation))
+    if (calibration.positive == calibration.neutral ||
+        !(calibration.deadzone < static_cast<float>(response.saturation) / 100.0f))
         return {};
-    const auto magnitude = static_cast<float>(
-        std::clamp(distance(raw, calibration.neutral) / travel, 0.0, 1.0));
-    const float position = std::clamp((magnitude - calibration.deadzone) / (saturation - calibration.deadzone), 0.0f, 1.0f);
-    const float progressivity = static_cast<float>(response.progressivity) / 100.0f;
-    // The endpoints stay fixed. The full adjustment spans a quadratic ease-in to an ease-out.
-    return {magnitude, position - progressivity * position * (1.0f - position)};
+    const auto magnitude = static_cast<float>(std::clamp(axisPosition(calibration, raw, false), 0.0, 1.0));
+    return {magnitude, applyBrakeResponse(magnitude, calibration.deadzone, response)};
 }
 
 bool validateProfile(const Profile& profile, std::string& error)
@@ -281,6 +279,18 @@ void ControlReader::reset() noexcept
 
 ControlState ControlReader::poll(DirectInput& input, Readings* readings)
 {
+    return poll(input, readings, nullptr);
+}
+
+ControlReader::CalibrationReadings ControlReader::review(DirectInput& input)
+{
+    CalibrationReadings readings;
+    poll(input, nullptr, &readings);
+    return readings;
+}
+
+ControlState ControlReader::poll(DirectInput& input, Readings* readings, CalibrationReadings* calibration)
+{
     const auto axes = channels(profile_);
     std::array<std::optional<DeviceSample>, 3> storage;
     std::array<const DeviceSample*, 3> samples{};
@@ -296,14 +306,16 @@ ControlState ControlReader::poll(DirectInput& input, Readings* readings)
         if (storage[owner])
             samples[i] = &*storage[owner];
     }
-    return update(samples, readings, statuses);
+    return update(samples, readings, statuses, calibration);
 }
 
 ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& samples, Readings* readings,
-                                  const std::array<DeviceReadStatus, 3>& statuses)
+                                  const std::array<DeviceReadStatus, 3>& statuses, CalibrationReadings* review)
 {
     if (readings)
         *readings = {};
+    if (review)
+        *review = {};
     const auto axes = channels(profile_);
     ControlState state;
     const std::array outputs{&state.values.steering, &state.values.throttle, &state.values.brake};
@@ -328,11 +340,20 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         if (statuses[i] == DeviceReadStatus::resumed)
             neutralPolls_[i] = 0;
         const long raw = sample->axes[calibration.axis];
+        const bool steering = i == 0;
+        const bool brake = i == 2;
+        const double position = axisPosition(calibration, raw, steering);
+        const auto travel = static_cast<float>(std::clamp(position, steering ? -1.0 : 0.0, 1.0));
+        if (review) {
+            review->travel[i] = travel;
+            if (brake)
+                review->adjustedBrake = applyBrakeResponse(travel, calibration.deadzone, profile_.brakeResponse);
+        }
         if (readings)
-            (*readings)[i] = normalize(calibration, raw, i == 0);
+            (*readings)[i] = applyDeadzone(travel, calibration.deadzone);
         if (neutralPolls_[i] < requiredNeutralPolls) {
             axisStatuses_[i] = AxisStatus::waitingForNeutral;
-            if (!isNeutral(calibration, raw, i == 0, combinedPedals_)) {
+            if (!isNeutral(position, calibration.deadzone, steering, combinedPedals_)) {
                 neutralPolls_[i] = 0;
                 continue;
             }
@@ -340,10 +361,10 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
                 continue;
         }
         *readiness[i] = true;
-        if (i == 2 && profile_.brakeResponse != BrakeResponse{})
-            *outputs[i] = previewBrake(calibration, raw, profile_.brakeResponse).adjusted;
+        if (brake && profile_.brakeResponse != BrakeResponse{})
+            *outputs[i] = review ? *review->adjustedBrake : applyBrakeResponse(travel, calibration.deadzone, profile_.brakeResponse);
         else
-            *outputs[i] = readings ? *(*readings)[i] : normalize(calibration, raw, i == 0);
+            *outputs[i] = readings ? *(*readings)[i] : applyDeadzone(travel, calibration.deadzone);
         axisStatuses_[i] = AxisStatus::armed;
     }
     return state;

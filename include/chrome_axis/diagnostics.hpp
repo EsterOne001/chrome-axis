@@ -5,8 +5,8 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
-#include <string_view>
 
 namespace chrome_axis {
 
@@ -62,6 +62,34 @@ struct DiagnosticEvent {
     DiagnosticFeedbackState feedback{DiagnosticFeedbackState::disabled};
 };
 
+enum class PerformanceState : std::uint32_t { idle, capturing, complete };
+
+struct PerformanceTiming {
+    std::uint64_t samples{};
+    std::uint64_t totalMicros{};
+    std::uint64_t maxMicros{};
+
+    void add(std::uint64_t micros) noexcept;
+};
+
+struct PerformanceReport {
+    PerformanceState state{PerformanceState::idle};
+    std::uint64_t requestId{};
+    std::uint64_t startedAt{}; // GetTickCount64() at start.
+    std::uint64_t endedAt{};
+    PerformanceTiming usbRead;
+    PerformanceTiming feedback;
+    PerformanceTiming inputAge;
+    std::uint64_t expiredReads{};
+    std::uint64_t transientReads{};
+};
+
+struct PerformanceRequest {
+    std::uint64_t id{};
+    std::uint64_t leaseUntil{}; // GetTickCount64() deadline for an active capture.
+    std::uint32_t enabled{};
+};
+
 struct DiagnosticRead {
     DiagnosticConnection connection{DiagnosticConnection::unavailable};
     DiagnosticSnapshot snapshot{};
@@ -70,12 +98,10 @@ struct DiagnosticRead {
     std::uint64_t lastDriveAt{};
     std::array<DiagnosticEvent, 8> events{}; // Oldest first. Only status transitions are kept.
     std::uint32_t eventCount{};
+    PerformanceReport performance{};
 };
 
 struct DiagnosticFrame;
-
-// Identify the same installation through directory aliases and links.
-std::wstring installationChannelName(const std::filesystem::path& gameRoot, std::wstring_view prefix);
 
 // One publisher per installation. Reads and writes never wait on the other process.
 class DiagnosticPublisher {
@@ -86,7 +112,9 @@ public:
     DiagnosticPublisher& operator=(const DiagnosticPublisher&) = delete;
 
     // A nonzero driving session identifies a snapshot taken in the driver's seat with game focus.
-    void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0) noexcept;
+    void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0,
+                 const PerformanceReport& performance = {}) noexcept;
+    std::optional<PerformanceRequest> performanceRequest() const noexcept;
 
 private:
     HANDLE owner_{};
@@ -95,6 +123,7 @@ private:
     DiagnosticFrame* frame_{};
     DiagnosticRead report_{};
     std::uint64_t drivingSession_{};
+    std::uint64_t publisherId_{};
 };
 
 class DiagnosticReader {
@@ -105,14 +134,19 @@ public:
     DiagnosticReader& operator=(const DiagnosticReader&) = delete;
 
     DiagnosticRead read() noexcept;
+    // Submit a command for this reader's capture. A zero result means no request was sent.
+    std::uint64_t requestPerformanceCapture(bool enabled) noexcept;
+    bool ownsPerformanceCapture() const noexcept { return captureOwner_ != 0; }
 
 private:
     std::wstring channel_;
     std::wstring mutexName_;
     HANDLE mutex_{};
     HANDLE mapping_{};
-    const DiagnosticFrame* frame_{};
+    DiagnosticFrame* frame_{};
     DiagnosticRead last_{};
+    std::uint64_t publisherId_{};
+    std::uint64_t captureOwner_{};
 };
 
 } // namespace chrome_axis

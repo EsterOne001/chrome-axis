@@ -106,6 +106,38 @@ std::filesystem::path calibrationProfileDirectory(const std::filesystem::path& a
     return GetLastError() == ERROR_HANDLE_EOF && !deployed.empty() ? deployed : local;
 }
 
+std::wstring installationChannelName(const std::filesystem::path& gameRoot, std::wstring_view prefix)
+{
+    if (gameRoot.empty())
+        return {};
+    const auto file = CreateFileW(gameRoot.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return {};
+    FILE_ID_INFO id{};
+    const bool identified = GetFileInformationByHandleEx(file, FileIdInfo, &id, sizeof(id)) != FALSE;
+    BY_HANDLE_FILE_INFORMATION legacy{};
+    const bool hasLegacyId = !identified && GetFileInformationByHandle(file, &legacy);
+    CloseHandle(file);
+    if (!identified && !hasLegacyId)
+        return {};
+
+    // Use file identity so different spelling, drive mappings or directory aliases agree.
+    std::wstring name(prefix);
+    if (identified) {
+        name += std::to_wstring(id.VolumeSerialNumber) + L".";
+        constexpr wchar_t hex[] = L"0123456789abcdef";
+        for (const auto byte : id.FileId.Identifier) {
+            name += hex[byte >> 4];
+            name += hex[byte & 0xf];
+        }
+    } else {
+        name += L"legacy." + std::to_wstring(legacy.dwVolumeSerialNumber) + L"." +
+            std::to_wstring(legacy.nFileIndexHigh) + L"." + std::to_wstring(legacy.nFileIndexLow);
+    }
+    return name;
+}
+
 bool isTemporaryProfileDirectory(const std::filesystem::path& directory)
 {
     if (!directory.is_absolute())

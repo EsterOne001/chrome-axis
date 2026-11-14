@@ -82,20 +82,27 @@ bool saveProfile(const std::filesystem::path& path, const Profile& profile, std:
 class ControlReader {
 public:
     using Readings = std::array<std::optional<float>, 3>;
+    struct CalibrationReadings {
+        Readings travel;
+        std::optional<float> adjustedBrake;
+    };
 
     explicit ControlReader(const Profile& profile);
     ControlState poll(DirectInput& input, Readings* readings = nullptr);
+    CalibrationReadings review(DirectInput& input);
     void reset() noexcept;
 
     // Status from the latest sample in steering, throttle, and brake order.
     const std::array<AxisStatus, 3>& axisStatuses() const noexcept { return axisStatuses_; }
 
     // Each channel refers to one sample. Channels on the same device share a sample.
-    // Requested diagnostic readings are independent of the neutral gate.
+    // Readings and calibration travel are available before the axis arms.
     ControlState update(const std::array<const DeviceSample*, 3>& samples, Readings* readings = nullptr,
-        const std::array<DeviceReadStatus, 3>& statuses = {});
+        const std::array<DeviceReadStatus, 3>& statuses = {}, CalibrationReadings* calibration = nullptr);
 
 private:
+    ControlState poll(DirectInput& input, Readings* readings, CalibrationReadings* calibration);
+
     Profile profile_;
     bool combinedPedals_{};
     std::array<std::size_t, 3> sampleOwners_{};

@@ -19,7 +19,7 @@ namespace {
 constexpr wchar_t presetsFolder[] = L"Profils";
 constexpr wchar_t selectionFile[] = L"active_profile.txt";
 constexpr wchar_t backupMarker[] = L"chrome_axis_backup.txt";
-constexpr wchar_t backupLock[] = L".chrome_axis_profile_backup.lock";
+constexpr wchar_t profileLockFilename[] = L".chrome_axis_profile_backup.lock";
 constexpr wchar_t originalFiles[] = L"Fichiers-originaux";
 constexpr std::string_view backupVersion = "Chrome Axis profile backup 1";
 constexpr std::size_t maxNameLength = 64;
@@ -300,15 +300,15 @@ struct TemporaryDirectory {
     }
 };
 
-struct BackupLock {
-    explicit BackupLock(const std::filesystem::path& parent)
-        : handle(CreateFileW((parent / backupLock).c_str(), DELETE, 0, nullptr, CREATE_NEW,
+struct ProfileLock {
+    explicit ProfileLock(const std::filesystem::path& parent)
+        : handle(CreateFileW((parent / profileLockFilename).c_str(), DELETE, 0, nullptr, CREATE_NEW,
                              FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT, nullptr))
     {}
 
     HANDLE handle;
 
-    ~BackupLock()
+    ~ProfileLock()
     {
         if (handle != INVALID_HANDLE_VALUE)
             CloseHandle(handle);
@@ -596,7 +596,7 @@ PresetSaveResult savePresetSettings(const std::filesystem::path& root, const Pro
     const auto extendedRoot = extendedPath(root);
     if (extendedRoot.empty() || expected.directory.empty())
         return PresetSaveResult::changed;
-    const BackupLock lock(extendedRoot.parent_path());
+    const ProfileLock lock(extendedRoot.parent_path());
     if (!lock)
         return PresetSaveResult::ioError;
     const auto current = activePreset(root);
@@ -660,7 +660,7 @@ bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std
     std::error_code ioError;
     std::filesystem::create_directories(root, ioError);
     const auto extendedRoot = extendedPath(root);
-    const BackupLock lock(extendedRoot.parent_path());
+    const ProfileLock lock(extendedRoot.parent_path());
     if (ioError || !lock) {
         error = "Impossible d’enregistrer la sélection dans le dossier Profil.";
         return false;
@@ -683,7 +683,7 @@ bool createPreset(const std::filesystem::path& root, std::wstring_view name, std
         error = "Impossible de créer le dossier Profils.";
         return false;
     }
-    const BackupLock lock(extendedRoot.parent_path());
+    const ProfileLock lock(extendedRoot.parent_path());
     if (!lock) {
         error = "Impossible de copier les réglages vers le nouveau profil.";
         return false;
@@ -740,7 +740,7 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         error = Error::invalidSelection;
         return false;
     }
-    const BackupLock lock(root.parent_path());
+    const ProfileLock lock(root.parent_path());
     TemporaryDirectory staging{lock ? createTemporaryDirectory(directory) : std::filesystem::path{}};
     if (staging.path.empty()) {
         error = Error::ioError;
@@ -892,7 +892,7 @@ bool createProfileBackup(const std::filesystem::path& profileRoot, const std::fi
         error = ProfileBackupError::invalidLocation;
         return false;
     }
-    const BackupLock lock(root.parent_path());
+    const ProfileLock lock(root.parent_path());
     if (!lock) {
         error = ProfileBackupError::ioError;
         return false;
@@ -954,7 +954,7 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
         error = ProfileBackupError::invalidLocation;
         return false;
     }
-    const BackupLock lock(root.parent_path());
+    const ProfileLock lock(root.parent_path());
     if (!lock) {
         error = ProfileBackupError::ioError;
         return false;
