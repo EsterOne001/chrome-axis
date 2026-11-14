@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.24** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.25** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -72,6 +72,8 @@ Les commandes **Sauvegarder les profils…** et **Restaurer les profils…** du 
 
 Les anciens dossiers `Profil` copiés à la main restent importables s’ils contiennent des fichiers de réglages Chrome Axis ou la sélection valide d’un profil nommé. Un dossier vide ordinaire est refusé. Une sauvegarde créée par Chrome Axis peut représenter une configuration volontairement vierge.
 
+Si un périphérique du profil apparaît déconnecté après un transfert, branchez son remplaçant et ouvrez **Périphériques → Réassocier un périphérique…** avec le jeu fermé. Choisissez l’entrée enregistrée et le périphérique connecté qui doit la remplacer. L’application vérifie la présence des axes, boutons et croix enregistrés. La réassociation s’enregistre dans le profil actif et conserve les mesures, zones mortes, touches et paramètres de retour de force. Vérifiez le repos et la course sur les jauges, puis le sens du retour de force à faible intensité si vous l’utilisez. Si le nouveau pilote présente les commandes sur d’autres entrées ou avec une course différente, reprenez les mesures ou les captures concernées.
+
 ### Retour de force
 
 Après avoir enregistré l’axe de direction, ouvrez **Retour de force…** depuis **Matériel USB**. Le panneau vérifie si le pilote expose un actionneur DirectInput sur cet axe. Activez l’effet pour le profil courant et commencez à faible intensité. Le réglage va de 1 à 35 % de la force nominale DirectInput. Les chocs peuvent être désactivés séparément et le sens peut être inversé si le volant pousse vers la butée au lieu de revenir au centre.
@@ -81,6 +83,8 @@ L’effort de direction varie avec la vitesse, la masse du véhicule et son dép
 ## Boîtes de vitesses, palettes et autres accessoires
 
 Dans **Accessoires…** et **Boîte / palettes…**, cliquez sur le bouton de touche pour ouvrir le clavier visuel, puis sur la touche à attribuer. La rangée de chiffres et le pavé numérique sont distincts. Vous pouvez fermer le clavier sans modifier la sélection.
+
+Pour changer la touche d’une entrée déjà capturée, sélectionnez l’affectation et cliquez sur **Modifier la touche…**. Dans **Boîte / palettes…**, sélectionnez d’abord le périphérique, puis cliquez sur **Appliquer** après vos modifications. Finalisez dans **Accessoires…** avec **Enregistrer**.
 
 1. Ouvrez **Matériel USB → Accessoires…**, sélectionnez le périphérique DirectInput puis cliquez sur **Boîte / palettes…**. Si le levier ou les palettes passent par la base, sélectionnez le volant. Pour un appareil USB autonome, sélectionnez son entrée Windows.
 2. En mode **Séquentiel / palettes**, capturez les commandes de montée et de descente. Le mode numérique détecte les boutons ou directions de croix. Si le pilote expose un axe, capturez le repos et chaque butée. Affectez les mêmes touches dans le mod de transmission.
@@ -166,7 +170,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.24-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.25-Cyberpunk-2.5.zip'
 ```
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.

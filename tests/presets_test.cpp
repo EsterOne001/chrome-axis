@@ -6,6 +6,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <iterator>
 
 namespace {
 
@@ -24,6 +25,113 @@ bool check(bool condition, const char* description)
     if (!condition)
         std::cerr << description << '\n';
     return condition;
+}
+
+std::string readBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+bool testDeviceReplacement(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    using Error = DeviceReplacementError;
+    const std::string oldWheel = "{11111111-1111-1111-1111-111111111111}";
+    const std::string newWheel = "{22222222-2222-2222-2222-222222222222}";
+    const std::string other = "{33333333-3333-3333-3333-333333333333}";
+    const auto root = fixture / L"Replacement";
+    std::filesystem::create_directory(root);
+    const Profile calibration{{oldWheel, 0, 500, 0, 1000, 0.04f}, {newWheel, 1, 0, 0, 900, 0.03f}};
+    const AccessoryProfile bindings{{oldWheel, AccessoryKind::Button, 3, 0, 1, VK_ADD},
+        {oldWheel, AccessoryKind::Pov, 0, povCentered, 0, VK_SUBTRACT},
+        {newWheel, AccessoryKind::Pov, 0, povCentered, 18000, VK_SPACE}};
+    const FeedbackSettings feedback{true, 19, false, true};
+    std::string details;
+    if (!check(saveProfile(root / profileFilename, calibration, details)
+               && saveAccessoryProfile(root / accessoryFilename, bindings, details)
+               && saveFeedbackSettings(root / feedbackFilename, feedback, details)
+               && createPreset(root, L"Pilote", details) && setUsbEnabled(root, true, details)
+               && writeProfileLanguage(root, "fr"), "Could not seed device-replacement fixture"))
+        return false;
+
+    const auto selected = activePreset(root);
+    const auto analog = selected.directory / profileFilename;
+    const auto digital = selected.directory / accessoryFilename;
+    const auto note = selected.directory / L"Unrelated.txt";
+    std::ofstream(note, std::ios::binary) << "preserve\r\n";
+    std::ofstream(analog, std::ios::binary | std::ios::app) << "# " << oldWheel << "\r\nfuture.value = " << oldWheel;
+    std::ofstream(digital, std::ios::binary | std::ios::app) << "# " << oldWheel << "\r\n";
+    const auto originalAnalog = readBytes(analog);
+    const auto originalDigital = readBytes(digital);
+    const auto untouched = [&] {
+        return readBytes(analog) == originalAnalog && readBytes(digital) == originalDigital;
+    };
+
+    Error error{};
+    auto recovery = fixture;
+    if (!check(!replacePresetDevice(root, selected, other, newWheel, error, &recovery)
+               && error == Error::deviceNotMapped && recovery.empty() && untouched(),
+               "Unknown source device must not modify the profile")
+        || !check(selectPreset(root, L"", details) && !replacePresetDevice(root, selected, oldWheel, newWheel, error)
+                  && error == Error::invalidSelection && untouched() && selectPreset(root, selected.name, details),
+                  "A replacement must apply to the expected active profile only"))
+        return false;
+
+    const HANDLE locked = CreateFileW(digital.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (!check(locked != INVALID_HANDLE_VALUE, "Could not hold the accessory settings open"))
+        return false;
+    const bool replacedWhileLocked = replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery);
+    CloseHandle(locked);
+    if (!check(!replacedWhileLocked && error == Error::ioError && recovery.empty() && untouched(),
+               "An open accessory file must roll back the calibration replacement"))
+        return false;
+
+    const auto replaceAfter = [&](std::string& bytes, std::string_view prefix) {
+        const auto offset = bytes.find(std::string(prefix) + oldWheel);
+        if (offset != bytes.npos)
+            bytes.replace(offset + prefix.size(), oldWheel.size(), newWheel);
+    };
+    auto expectedAnalog = originalAnalog;
+    auto expectedDigital = originalDigital;
+    replaceAfter(expectedAnalog, "steering.device=");
+    replaceAfter(expectedDigital, "binding=");
+    replaceAfter(expectedDigital, "binding=");
+    if (!check(replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery)
+               && error == Error::none && recovery.empty() && readBytes(analog) == expectedAnalog
+               && readBytes(digital) == expectedDigital && readBytes(note) == "preserve\r\n"
+               && activePreset(root).name == selected.name && usbEnabled(root) && readProfileLanguage(root) == "fr"
+               && loadFeedbackSettings(selected.directory / feedbackFilename, details) == feedback
+               && loadAccessoryProfile(root / accessoryFilename, details) == bindings,
+               "Only exact device tokens in the active profile may change")) {
+        std::cerr << "Replacement error: " << static_cast<int>(error) << '\n';
+        return false;
+    }
+
+    auto conflictingAxes = calibration;
+    conflictingAxes.throttle.axis = 0;
+    if (!check(saveProfile(analog, conflictingAxes, details) && saveAccessoryProfile(digital, bindings, details)
+               && !replacePresetDevice(root, selected, oldWheel, newWheel, error) && error == Error::conflict,
+               "Merging two devices must not place pedals on the steering axis"))
+        return false;
+    auto conflictingDigital = bindings;
+    conflictingDigital.push_back({newWheel, AccessoryKind::Button, 3, 0, 1, VK_F6});
+    if (!check(saveProfile(analog, calibration, details) && saveAccessoryProfile(digital, conflictingDigital, details)
+               && !replacePresetDevice(root, selected, oldWheel, newWheel, error) && error == Error::conflict
+               && loadAccessoryProfile(digital, details) == conflictingDigital,
+               "Merging two devices must not put two commands on one button"))
+        return false;
+
+    std::filesystem::remove(analog);
+    std::filesystem::remove(digital);
+    conflictingDigital = {{oldWheel, AccessoryKind::Button, 5, 0, 1, VK_ADD}};
+    if (!check(saveAccessoryProfile(digital, conflictingDigital, details)
+               && replacePresetDevice(root, selected, oldWheel, newWheel, error)
+               && !std::filesystem::exists(analog), "Accessory-only presets must stay accessory-only"))
+        return false;
+    conflictingDigital[0].deviceId = newWheel;
+    return check(loadAccessoryProfile(digital, details) == conflictingDigital, "Accessory-only binding did not change");
 }
 
 bool testProfileBackups(const std::filesystem::path& fixture)
@@ -253,5 +361,5 @@ int main()
     std::ofstream(root / L"active_profile.txt", std::ios::trunc) << "../other\n";
     return check(activePreset(root).directory.empty(), "Corrupt selection must not activate a different profile")
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
-        && testProfileBackups(root) ? 0 : 1;
+        && testProfileBackups(root) && testDeviceReplacement(root) ? 0 : 1;
 }

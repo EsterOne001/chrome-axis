@@ -31,6 +31,18 @@ std::wstring accessoryKeyLabel(unsigned int key)
     }
 }
 
+BindingKeyEdit chooseBindingKey(HWND owner, AccessoryProfile& bindings, std::size_t row)
+{
+    auto& binding = bindings[row];
+    const auto key = chooseAccessoryKey(owner, binding.key);
+    if (!key || *key == binding.key)
+        return BindingKeyEdit::unchanged;
+    if (std::ranges::find(bindings, *key, &AccessoryBinding::key) != bindings.end())
+        return BindingKeyEdit::occupied;
+    binding.key = *key;
+    return BindingKeyEdit::changed;
+}
+
 namespace {
 
 constexpr UINT_PTR captureTimer = 1;
@@ -51,7 +63,9 @@ std::wstring wide(std::string_view text)
     return result;
 }
 
-std::wstring inputLabel(const AccessoryBinding& binding)
+} // namespace
+
+std::wstring accessoryInputLabel(const AccessoryBinding& binding)
 {
     constexpr std::array directions{Text::DlgPovNorth, Text::DlgPovNorthEast, Text::DlgPovEast,
         Text::DlgPovSouthEast, Text::DlgPovSouth, Text::DlgPovSouthWest, Text::DlgPovWest, Text::DlgPovNorthWest};
@@ -61,10 +75,12 @@ std::wstring inputLabel(const AccessoryBinding& binding)
     case AccessoryKind::Pov:
         return tr(Text::DlgInputDpad) + std::to_wstring(binding.index + 1) + L" · " + tr(directions[binding.engaged / 4500]);
     case AccessoryKind::Axis:
-        return tr(Text::DlgInputAxis) + wide(axisName(binding.index));
+        return tr(Text::DlgInputAxis) + wide(axisName(binding.index)) + (binding.engaged > binding.rest ? L" (+)" : L" (−)");
     }
     return {};
 }
+
+namespace {
 
 long povDirection(std::uint16_t value)
 {
@@ -85,6 +101,7 @@ public:
     void chooseKey();
     void shifter();
     void add();
+    void edit();
     void remove();
     void save();
     void cancel();
@@ -99,7 +116,7 @@ private:
     void setStatus(const wchar_t* text) const;
     void startSampling(CaptureStage stage, const wchar_t* text);
     void finishCapture();
-    void refreshBindings();
+    void refreshBindings(LRESULT selection = LB_ERR);
 
     DirectInput& input_;
     std::filesystem::path path_;
@@ -195,12 +212,14 @@ void AccessoryDialog::clearCapture()
 
 void AccessoryDialog::refreshActions()
 {
+    const bool selected = send(IDC_ACCESSORY_LIST, LB_GETCURSEL) >= 0;
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_CAPTURE), selectedDevice() != nullptr);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_INPUT), !captured_.empty());
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_KEY), stage_ == CaptureStage::Idle);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ADD),
         send(IDC_ACCESSORY_INPUT, CB_GETCURSEL) >= 0 && isAccessoryKey(key_));
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), send(IDC_ACCESSORY_LIST, LB_GETCURSEL) >= 0);
+    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_EDIT), stage_ == CaptureStage::Idle && selected);
+    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), selected);
     EnableWindow(GetDlgItem(window_, IDOK), modified_);
 }
 
@@ -329,7 +348,7 @@ void AccessoryDialog::finishCapture()
     stage_ = CaptureStage::Idle;
     SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCapture));
     for (const auto& binding : captured_) {
-        const auto label = inputLabel(binding);
+        const auto label = accessoryInputLabel(binding);
         send(IDC_ACCESSORY_INPUT, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
     }
     send(IDC_ACCESSORY_INPUT, CB_SETCURSEL, 0);
@@ -339,14 +358,20 @@ void AccessoryDialog::finishCapture()
     refreshActions();
 }
 
-void AccessoryDialog::refreshBindings()
+void AccessoryDialog::refreshBindings(LRESULT selection)
 {
+    const auto top = send(IDC_ACCESSORY_LIST, LB_GETTOPINDEX);
     send(IDC_ACCESSORY_LIST, LB_RESETCONTENT);
     for (const auto& binding : bindings_) {
         const auto device = std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id);
-        const auto label = accessoryKeyLabel(binding.key) + L"  ←  " + inputLabel(binding) + L"  ·  "
+        const auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryInputLabel(binding) + L"  ·  "
             + wide(device == devices_.end() || device->name.empty() ? binding.deviceId : device->name);
         send(IDC_ACCESSORY_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+    }
+    if (selection >= 0) {
+        send(IDC_ACCESSORY_LIST, LB_SETCURSEL, static_cast<WPARAM>(selection));
+        if (top >= 0)
+            send(IDC_ACCESSORY_LIST, LB_SETTOPINDEX, static_cast<WPARAM>(top));
     }
     refreshActions();
 }
@@ -371,6 +396,27 @@ void AccessoryDialog::add()
     clearCapture();
     refreshBindings();
     setStatus(tr(Text::DlgAccessoriesBindingAdded));
+}
+
+void AccessoryDialog::edit()
+{
+    if (stage_ != CaptureStage::Idle)
+        return;
+    const auto selection = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
+    if (selection < 0 || static_cast<std::size_t>(selection) >= bindings_.size())
+        return;
+    switch (chooseBindingKey(window_, bindings_, static_cast<std::size_t>(selection))) {
+    case BindingKeyEdit::unchanged:
+        break;
+    case BindingKeyEdit::occupied:
+        setStatus(tr(Text::DlgAccessoriesKeyAlreadyAssigned));
+        break;
+    case BindingKeyEdit::changed:
+        modified_ = true;
+        refreshBindings(selection);
+        setStatus(tr(Text::DlgAccessoriesBindingEdited));
+        break;
+    }
 }
 
 void AccessoryDialog::remove()
@@ -430,6 +476,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_ACCESSORY_KEY, tr(Text::DlgChooseKey));
         SetDlgItemTextW(window, IDC_ACCESSORY_ADD, tr(Text::DlgAccessoriesAdd));
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgAccessoriesSavedList));
+        SetDlgItemTextW(window, IDC_ACCESSORY_EDIT, tr(Text::DlgBindingEdit));
         SetDlgItemTextW(window, IDC_ACCESSORY_REMOVE, tr(Text::DlgAccessoriesRemove));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
@@ -457,8 +504,13 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             dialog->clearCapture();
         return TRUE;
     case IDC_ACCESSORY_INPUT:
-    case IDC_ACCESSORY_LIST:
         dialog->refreshActions();
+        return TRUE;
+    case IDC_ACCESSORY_LIST:
+        if (HIWORD(wParam) == LBN_DBLCLK)
+            dialog->edit();
+        else
+            dialog->refreshActions();
         return TRUE;
     case IDC_ACCESSORY_KEY:
         if (HIWORD(wParam) == BN_CLICKED)
@@ -475,6 +527,9 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return TRUE;
     case IDC_ACCESSORY_ADD:
         dialog->add();
+        return TRUE;
+    case IDC_ACCESSORY_EDIT:
+        dialog->edit();
         return TRUE;
     case IDC_ACCESSORY_REMOVE:
         dialog->remove();

@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.24** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.25** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -64,6 +64,8 @@ To take a measurement again, open **Calibrate separately…**, then choose an ax
 
 Manually copied legacy `Profil` folders remain importable if they contain Chrome Axis settings files or a valid named-profile selection. An ordinary empty folder is rejected. A backup created by Chrome Axis can represent an intentionally blank configuration.
 
+If a profile device appears disconnected after a transfer, connect its replacement and open **Devices → Reassign a device…** with the game closed. Choose the saved device and the connected replacement. The app checks that the saved axes, buttons and POV hats are available. Reassignment saves to the active profile and preserves measurements, deadzones, keys and force feedback settings. Check resting positions and full travel on the gauges, then check force feedback direction at low strength if you use it. Repeat the affected measurements or captures if the new driver exposes controls on different inputs or with different travel.
+
 ### Force feedback
 
 Save the steering calibration and open **Force feedback…** from **USB Hardware**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. The setting ranges from 1% to 35% of DirectInput’s nominal force. You can disable impacts separately or invert the direction if the wheel pushes away from center.
@@ -73,6 +75,8 @@ Steering effort varies with the vehicle’s speed, mass and sideways motion. Col
 ## Shifters, paddles and accessories
 
 In **Accessories…** and **Shifter / paddles…**, click the key button to open the visual keyboard and choose a key. Number row and numpad keys are separate.
+
+To change the key for an already captured input, select the binding and click **Change key…**. In **Shifter / paddles…**, select the device first, then click **Apply** after making changes. Finish by clicking **Save** in **Accessories…**.
 
 1. Open **USB Hardware → Accessories…**, select the DirectInput device and click **Shifter / paddles…**. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
 2. In **Sequential / paddles**, capture **Shift up** and **Shift down**. Select **Button or D-pad** for digital inputs. For an analog axis, capture neutral and full travel in each direction. Bind the same keys in your transmission mod.
@@ -154,7 +158,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.24-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.25-Cyberpunk-2.5.zip'
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.

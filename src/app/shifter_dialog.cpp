@@ -21,7 +21,7 @@ enum class Stage { Setup, Neutral, Position, Paused, AnalogReady, AnalogMeasure,
 class ShifterDialog {
 public:
     ShifterDialog(DirectInput& input, AccessoryProfile& bindings, std::string_view preferredDevice)
-        : input_(input), bindings_(bindings), preferredDevice_(preferredDevice) {}
+        : input_(input), bindings_(bindings), preferredDevice_(preferredDevice), edited_(bindings) {}
 
     void initialise(HWND window);
     void start();
@@ -29,7 +29,9 @@ public:
     void advance();
     void skip();
     void updateControls();
+    void selectDevice();
     void chooseKey();
+    void editSavedKey();
     void apply();
     void cancel();
 
@@ -42,10 +44,15 @@ private:
     void position();
     void captured(AccessoryBinding binding);
     bool runTimer();
-    bool confirmDiscard() const;
+    bool hasCaptureChanges() const { return !draft_.empty() || pending_.has_value(); }
+    bool confirmDiscard(Text message) const;
     std::wstring role() const;
     unsigned int suggestedKey() const;
     void setKey(unsigned int key);
+    void enterSetup();
+    void showSavedBindings(LRESULT selection = LB_ERR);
+    Text setupStatus() const;
+    const DeviceInfo* selectedDevice(bool attachedOnly = false) const;
     bool sequential() const { return send(IDC_SHIFTER_MODE, CB_GETCURSEL) == 0; }
 
     DirectInput& input_;
@@ -53,6 +60,9 @@ private:
     std::string preferredDevice_;
     HWND window_{};
     std::vector<DeviceInfo> devices_;
+    std::size_t attachedCount_{};
+    AccessoryProfile edited_;
+    std::vector<std::size_t> savedRows_;
     AccessoryProfile draft_;
     std::optional<AccessoryBinding> pending_;
     std::optional<ShifterCapture> digital_;
@@ -72,18 +82,35 @@ void ShifterDialog::initialise(HWND window)
 {
     window_ = window;
     devices_ = input_.devices();
+    attachedCount_ = devices_.size();
+    for (const auto& binding : edited_) {
+        if (std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id) == devices_.end()) {
+            DeviceInfo offline;
+            offline.id = binding.deviceId;
+            devices_.push_back(std::move(offline));
+        }
+    }
     WPARAM selection = 0;
-    for (const auto& device : devices_) {
+    for (std::size_t i = 0; i < devices_.size(); ++i) {
+        const auto& device = devices_[i];
         const auto& name = device.name.empty() ? device.id : device.name;
         const auto length = static_cast<int>(name.size());
         const int count = MultiByteToWideChar(CP_UTF8, 0, name.data(), length, nullptr, 0);
         std::wstring display(static_cast<std::size_t>(count), L'\0');
         if (count > 0)
             MultiByteToWideChar(CP_UTF8, 0, name.data(), length, display.data(), count);
-        if (device.id.size() == 38 && std::ranges::count(devices_, device.name, &DeviceInfo::name) > 1)
-            display.append(L" [").append(device.id.end() - 9, device.id.end() - 1).append(L"]");
+        if (i >= attachedCount_)
+            display += tr(Text::DlgShifterOfflineDevice);
+        else if (!device.name.empty() && device.id.size() == 38 && std::ranges::count(devices_, device.name, &DeviceInfo::name) > 1)
+            display.append(L" [").append(device.id.begin() + 1, device.id.begin() + 9).append(L"]");
         const auto row = send(IDC_SHIFTER_DEVICE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(display.c_str()));
-        if (row >= 0 && device.id == preferredDevice_)
+        if (row < 0)
+            continue;
+        if (send(IDC_SHIFTER_DEVICE, CB_SETITEMDATA, static_cast<WPARAM>(row), static_cast<LPARAM>(i)) == CB_ERR) {
+            send(IDC_SHIFTER_DEVICE, CB_DELETESTRING, static_cast<WPARAM>(row));
+            continue;
+        }
+        if (device.id == preferredDevice_)
             selection = static_cast<WPARAM>(row);
     }
     constexpr std::array modes{Text::DlgShifterSequential, Text::DlgShifterH6, Text::DlgShifterH7, Text::DlgShifterH8};
@@ -94,9 +121,7 @@ void ShifterDialog::initialise(HWND window)
     send(IDC_SHIFTER_DEVICE, CB_SETCURSEL, selection);
     send(IDC_SHIFTER_MODE, CB_SETCURSEL, 0);
     send(IDC_SHIFTER_SIGNAL, CB_SETCURSEL, 0);
-    status(devices_.empty() ? tr(Text::DlgShifterNoDevices)
-        : tr(Text::DlgShifterNeutralThenStart));
-    updateControls();
+    selectDevice();
 }
 
 void ShifterDialog::status(const wchar_t* text)
@@ -112,18 +137,87 @@ void ShifterDialog::updateControls()
     const bool setup = stage_ == Stage::Setup;
     const bool canAdvance = stage_ == Stage::Captured || stage_ == Stage::AnalogReady || stage_ == Stage::Paused;
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_DEVICE), setup && !devices_.empty());
-    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_MODE), setup);
-    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_SIGNAL), setup && sequential());
-    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_START), !devices_.empty());
+    const bool canCapture = selectedDevice(true) != nullptr;
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_MODE), setup && canCapture);
+    if (setup && !sequential())
+        send(IDC_SHIFTER_SIGNAL, CB_SETCURSEL, 0);
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_SIGNAL), setup && canCapture && sequential());
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_START), !setup || canCapture);
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_ADVANCE), canAdvance);
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_KEY), stage_ == Stage::Captured ||
         stage_ == Stage::AnalogReady || stage_ == Stage::Paused);
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_SKIP), forward_ != 0 &&
         (stage_ == Stage::Position || stage_ == Stage::Paused || stage_ == Stage::Captured));
-    EnableWindow(GetDlgItem(window_, IDOK), stage_ == Stage::Done && !draft_.empty());
+    ShowWindow(GetDlgItem(window_, IDC_SHIFTER_SKIP), setup ? SW_HIDE : SW_SHOW);
+    ShowWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), setup ? SW_SHOW : SW_HIDE);
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), setup && send(IDC_SHIFTER_LIST, LB_GETCURSEL) >= 0);
+    EnableWindow(GetDlgItem(window_, IDOK), (setup && edited_ != bindings_) ||
+        (stage_ == Stage::Done && (!draft_.empty() || edited_ != bindings_)));
     SetDlgItemTextW(window_, IDC_SHIFTER_START, setup ? tr(Text::DlgShifterStart) : tr(Text::DlgShifterRestart));
     SetDlgItemTextW(window_, IDC_SHIFTER_ADVANCE, stage_ == Stage::AnalogReady ? tr(Text::DlgShifterMeasure)
         : stage_ == Stage::Paused ? tr(Text::DlgShifterResume) : tr(Text::DlgShifterNext));
+}
+
+const DeviceInfo* ShifterDialog::selectedDevice(bool attachedOnly) const
+{
+    const auto selected = send(IDC_SHIFTER_DEVICE, CB_GETCURSEL);
+    if (selected == CB_ERR)
+        return nullptr;
+    const auto index = static_cast<std::size_t>(send(IDC_SHIFTER_DEVICE, CB_GETITEMDATA, static_cast<WPARAM>(selected)));
+    return index < (attachedOnly ? attachedCount_ : devices_.size()) ? &devices_[index] : nullptr;
+}
+
+void ShifterDialog::showSavedBindings(LRESULT selection)
+{
+    const auto top = send(IDC_SHIFTER_LIST, LB_GETTOPINDEX);
+    send(IDC_SHIFTER_LIST, LB_RESETCONTENT);
+    savedRows_.clear();
+    const auto* device = selectedDevice();
+    if (!device)
+        return;
+    // Legacy profiles store physical inputs and keys without a gear or paddle role.
+    for (std::size_t i = 0; i < edited_.size(); ++i) {
+        const auto& binding = edited_[i];
+        if (binding.deviceId != device->id)
+            continue;
+        const auto label = accessoryInputLabel(binding) + L"  →  " + accessoryKeyLabel(binding.key);
+        if (send(IDC_SHIFTER_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())) >= 0)
+            savedRows_.push_back(i);
+    }
+    if (selection >= 0) {
+        send(IDC_SHIFTER_LIST, LB_SETCURSEL, static_cast<WPARAM>(selection));
+        if (top >= 0)
+            send(IDC_SHIFTER_LIST, LB_SETTOPINDEX, static_cast<WPARAM>(top));
+    }
+}
+
+void ShifterDialog::selectDevice()
+{
+    if (stage_ != Stage::Setup)
+        return;
+    showSavedBindings();
+    status(tr(setupStatus()));
+    updateControls();
+}
+
+Text ShifterDialog::setupStatus() const
+{
+    if (edited_ != bindings_)
+        return Text::DlgShifterEditApply;
+    if (devices_.empty())
+        return Text::DlgShifterNoDevices;
+    if (!selectedDevice(true))
+        return Text::DlgShifterEditOffline;
+    return savedRows_.empty() ? Text::DlgShifterNeutralThenStart : Text::DlgShifterEditOrStart;
+}
+
+void ShifterDialog::enterSetup()
+{
+    stage_ = Stage::Setup;
+    setKey(0);
+    SetDlgItemTextW(window_, IDC_SHIFTER_STEP, tr(Text::DlgShifterCapture));
+    SetDlgItemTextW(window_, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterDeviceBindings));
+    selectDevice();
 }
 
 bool ShifterDialog::runTimer()
@@ -131,15 +225,14 @@ bool ShifterDialog::runTimer()
     deadline_ = GetTickCount64() + captureTimeout;
     if (SetTimer(window_, captureTimer, captureInterval, nullptr))
         return true;
-    stage_ = Stage::Setup;
+    enterSetup();
     status(tr(Text::DlgShifterMeasurementFailed));
-    updateControls();
     return false;
 }
 
 void ShifterDialog::start()
 {
-    if (!confirmDiscard())
+    if (hasCaptureChanges() && !confirmDiscard(Text::DlgShifterDiscardCapture))
         return;
     KillTimer(window_, captureTimer);
     draft_.clear();
@@ -147,25 +240,21 @@ void ShifterDialog::start()
     rest_.reset();
     digital_.reset();
     measurements_ = {};
-    send(IDC_SHIFTER_LIST, LB_RESETCONTENT);
     if (stage_ != Stage::Setup) {
-        stage_ = Stage::Setup;
-        setKey(0);
-        SetDlgItemTextW(window_, IDC_SHIFTER_STEP, tr(Text::DlgShifterCapture));
-        status(tr(Text::DlgShifterNeutralThenStart));
-        updateControls();
+        enterSetup();
         return;
     }
-    const auto selected = send(IDC_SHIFTER_DEVICE, CB_GETCURSEL);
-    if (selected < 0 || static_cast<std::size_t>(selected) >= devices_.size())
+    const auto* device = selectedDevice(true);
+    if (!device)
         return;
-    const auto& device = devices_[static_cast<std::size_t>(selected)];
     analog_ = sequential() && send(IDC_SHIFTER_SIGNAL, CB_GETCURSEL) == 1;
-    if (analog_ && std::ranges::none_of(device.axes, [](bool present) { return present; })) {
+    if (analog_ && std::ranges::none_of(device->axes, [](bool present) { return present; })) {
         status(tr(Text::DlgShifterNoAnalogAxis));
         return;
     }
-    deviceId_ = device.id;
+    send(IDC_SHIFTER_LIST, LB_RESETCONTENT);
+    SetDlgItemTextW(window_, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterCapturedList));
+    deviceId_ = device->id;
     forward_ = sequential() ? 0 : static_cast<std::size_t>(send(IDC_SHIFTER_MODE, CB_GETCURSEL)) + 5;
     step_ = 0;
     if (!analog_)
@@ -203,6 +292,27 @@ void ShifterDialog::chooseKey()
         return;
     if (const auto key = chooseAccessoryKey(window_, key_))
         setKey(*key);
+}
+
+void ShifterDialog::editSavedKey()
+{
+    if (stage_ != Stage::Setup)
+        return;
+    const auto selection = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
+    if (selection < 0 || static_cast<std::size_t>(selection) >= savedRows_.size())
+        return;
+    switch (chooseBindingKey(window_, edited_, savedRows_[static_cast<std::size_t>(selection)])) {
+    case BindingKeyEdit::unchanged:
+        break;
+    case BindingKeyEdit::occupied:
+        status(tr(Text::DlgAccessoriesKeyAlreadyAssigned));
+        break;
+    case BindingKeyEdit::changed:
+        showSavedBindings(selection);
+        status(tr(setupStatus()));
+        updateControls();
+        break;
+    }
 }
 
 void ShifterDialog::position()
@@ -252,7 +362,7 @@ void ShifterDialog::poll()
             stage_ = Stage::Paused;
             status(tr(Text::DlgShifterCaptureInterrupted));
         } else {
-            stage_ = Stage::Setup;
+            enterSetup();
             status(tr(Text::DlgShifterInitialCaptureInterrupted));
         }
         updateControls();
@@ -267,7 +377,7 @@ void ShifterDialog::poll()
             stage_ = Stage::Paused;
             status(tr(Text::DlgShifterCapturePaused));
         } else {
-            stage_ = Stage::Setup;
+            enterSetup();
             status(tr(Text::DlgShifterCaptureExpired));
         }
         updateControls();
@@ -364,7 +474,7 @@ void ShifterDialog::advance()
         status(tr(Text::DlgShifterKeyAlreadyUsed));
         return;
     }
-    if (std::ranges::any_of(bindings_, [&](const auto& other) {
+    if (std::ranges::any_of(edited_, [&](const auto& other) {
             const bool sameInput = sameShifterInput(*pending_, other);
             return sameInput != (other.key == key);
         })) {
@@ -390,15 +500,18 @@ void ShifterDialog::skip()
 
 void ShifterDialog::apply()
 {
-    if (stage_ != Stage::Done || draft_.empty())
+    const bool applyingCapture = stage_ == Stage::Done && !draft_.empty();
+    if (!applyingCapture && ((stage_ != Stage::Setup && stage_ != Stage::Done) || edited_ == bindings_))
         return;
-    auto updated = bindings_;
-    for (const auto& binding : draft_) {
-        const auto existing = std::ranges::find(updated, binding.key, &AccessoryBinding::key);
-        if (existing == updated.end())
-            updated.push_back(binding);
-        else
-            *existing = binding;
+    auto updated = edited_;
+    if (applyingCapture) {
+        for (const auto& binding : draft_) {
+            const auto existing = std::ranges::find(updated, binding.key, &AccessoryBinding::key);
+            if (existing == updated.end())
+                updated.push_back(binding);
+            else
+                *existing = binding;
+        }
     }
     if (updated.size() > maxAccessoryBindings) {
         status(tr(Text::DlgShifterBindingLimit));
@@ -408,15 +521,15 @@ void ShifterDialog::apply()
     EndDialog(window_, IDOK);
 }
 
-bool ShifterDialog::confirmDiscard() const
+bool ShifterDialog::confirmDiscard(Text message) const
 {
-    return (draft_.empty() && !pending_) || MessageBoxW(window_, tr(Text::DlgShifterDiscard),
+    return MessageBoxW(window_, tr(message),
         tr(Text::DlgShifterTitle), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
 }
 
 void ShifterDialog::cancel()
 {
-    if (confirmDiscard())
+    if ((!hasCaptureChanges() && edited_ == bindings_) || confirmDiscard(Text::DlgShifterDiscard))
         EndDialog(window_, IDCANCEL);
 }
 
@@ -433,8 +546,9 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(window, IDC_SHIFTER_STEP, tr(Text::DlgShifterCapture));
         SetDlgItemTextW(window, IDC_MODAL_KEY_LABEL, tr(Text::DlgKey));
         SetDlgItemTextW(window, IDC_SHIFTER_KEY, tr(Text::DlgChooseKey));
-        SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterCapturedList));
+        SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterDeviceBindings));
         SetDlgItemTextW(window, IDC_SHIFTER_SKIP, tr(Text::DlgShifterSkip));
+        SetDlgItemTextW(window, IDC_SHIFTER_EDIT, tr(Text::DlgBindingEdit));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgShifterApply));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
         DialogTheme::attach(window, tr(Text::DlgShifterHeading), IDC_SHIFTER_STATUS, IDC_SHIFTER_LIST,
@@ -456,9 +570,22 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
     if (message != WM_COMMAND)
         return FALSE;
     switch (LOWORD(wp)) {
+    case IDC_SHIFTER_DEVICE:
+        if (HIWORD(wp) == CBN_SELCHANGE)
+            dialog->selectDevice();
+        return TRUE;
     case IDC_SHIFTER_MODE:
         if (HIWORD(wp) == CBN_SELCHANGE)
             dialog->updateControls();
+        return TRUE;
+    case IDC_SHIFTER_LIST:
+        if (HIWORD(wp) == LBN_DBLCLK)
+            dialog->editSavedKey();
+        else if (HIWORD(wp) == LBN_SELCHANGE)
+            dialog->updateControls();
+        return TRUE;
+    case IDC_SHIFTER_EDIT:
+        dialog->editSavedKey();
         return TRUE;
     case IDC_SHIFTER_START:
         dialog->start();

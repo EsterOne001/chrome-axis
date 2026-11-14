@@ -21,6 +21,14 @@ bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std
 // Copy the active profile's saved files, then select the new profile.
 bool createPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error);
 
+enum class DeviceReplacementError { none, invalidSelection, invalidProfile, deviceNotMapped, conflict, ioError, recoveryRequired };
+
+// Replace saved assignments only in the expected active preset. On interrupted rollback,
+// recoveryDirectory contains the original files that still need to be restored.
+bool replacePresetDevice(const std::filesystem::path& root, const ProfilePreset& expected,
+                         std::string_view oldId, std::string_view newId, DeviceReplacementError& error,
+                         std::filesystem::path* recoveryDirectory = nullptr);
+
 inline constexpr wchar_t profileLanguageFilename[] = L"language.txt";
 inline constexpr wchar_t profileBackupsFolder[] = L"Sauvegardes";
 

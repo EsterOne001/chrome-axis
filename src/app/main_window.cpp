@@ -60,7 +60,7 @@ enum Command {
     saveProfile, reloadProfile, openProfileFolder, closeApp, aboutApp, hardwareTab, simulationTab, toggleSimulation,
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
-    backupProfiles, restoreProfiles, openModInfo,
+    backupProfiles, restoreProfiles, openModInfo, reassignDevice,
     deadzoneFirst = 200, meterFirst = 210, retryAxisFirst = 220
 };
 
@@ -375,6 +375,7 @@ private:
         AppendMenuW(deviceMenu_, MF_STRING, refreshDevices, tr(Text::mainMenuRefresh));
         AppendMenuW(deviceMenu_, MF_STRING, startCalibration, tr(Text::mainMenuCalibrate));
         AppendMenuW(deviceMenu_, MF_STRING, chooseCalibrationScope, tr(Text::mainMenuCalibrationScope));
+        AppendMenuW(deviceMenu_, MF_STRING, reassignDevice, tr(Text::mainMenuReassignDevice));
         AppendMenuW(deviceMenu_, MF_STRING, configureAccessories, tr(Text::mainMenuAccessories));
         AppendMenuW(deviceMenu_, MF_STRING, configureFeedback, tr(Text::mainMenuFeedback));
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(deviceMenu_), tr(Text::mainMenuDevices));
@@ -784,6 +785,7 @@ private:
     bool confirmPersistentDirectory() const;
     bool confirmCurrentPreset();
     void chooseStoredProfile();
+    void reassignStoredDevice();
     void transferProfiles(bool restoring);
     void updateLanguageIndicator(Language preference);
     void persist();
@@ -978,6 +980,9 @@ void App::action(int command, int notification)
     case refreshDevices:
         if (!simulation_)
             scanDevices();
+        break;
+    case reassignDevice:
+        reassignStoredDevice();
         break;
     case configureAccessories:
         if (!simulation_ && !calibrating_ && confirmCurrentPreset()) {
@@ -1375,6 +1380,101 @@ void App::updateLanguageIndicator(Language preference)
     InvalidateRect(englishFlag_, nullptr, FALSE);
 }
 
+void App::reassignStoredDevice()
+{
+    if (simulation_ || calibrating_ || !confirmPersistentDirectory() || !confirmCurrentPreset())
+        return;
+    if (dirty_) {
+        if (MessageBoxW(window_, tr(Text::mainReassignSaveDraft), title,
+                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+            return;
+        if (!canSaveProfile()) {
+            MessageBoxW(window_, tr(Text::mainFinishOrDiscard), title, MB_OK | MB_ICONWARNING);
+            return;
+        }
+        persist();
+        if (dirty_)
+            return;
+    }
+
+    const auto expected = preset_;
+    const auto readSavedBindings = [&](chrome_axis::Profile& profile, chrome_axis::AccessoryProfile& accessories) {
+        const auto exists = [](const auto& file) {
+            std::error_code error;
+            return std::filesystem::exists(file, error) || error;
+        };
+        std::string error;
+        const auto axesFile = expected.directory / chrome_axis::profileFilename;
+        if (exists(axesFile)) {
+            const auto loaded = chrome_axis::loadProfile(axesFile, error);
+            if (!loaded)
+                return false;
+            profile = *loaded;
+        }
+        const auto accessoryFile = expected.directory / chrome_axis::accessoryFilename;
+        if (exists(accessoryFile)) {
+            auto loaded = chrome_axis::loadAccessoryProfile(accessoryFile, error);
+            if (!loaded)
+                return false;
+            accessories = std::move(*loaded);
+        }
+        return true;
+    };
+    chrome_axis::Profile profile;
+    chrome_axis::AccessoryProfile accessories;
+    if (!readSavedBindings(profile, accessories)) {
+        MessageBoxW(window_, tr(Text::mainReassignInvalidProfile), title, MB_OK | MB_ICONERROR);
+        return;
+    }
+    scanDevices();
+    const auto connected = devices_;
+    const auto choice = chrome_axis::chooseDeviceReassignment(window_, profile, accessories, connected);
+    if (!choice)
+        return;
+
+    const auto message = expected.name.empty() ? std::wstring(tr(Text::mainDefaultProfile))
+        : tr(Text::mainProfilePrefix) + expected.name;
+    const auto confirmed = message + L"\n\n" + tr(Text::mainReassignConfirm);
+    if (MessageBoxW(window_, confirmed.c_str(), title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+        return;
+
+    if (!confirmCurrentPreset())
+        return;
+    scanDevices();
+    chrome_axis::Profile currentProfile;
+    chrome_axis::AccessoryProfile currentAccessories;
+    const auto target = device(choice->target);
+    if (!target || !readSavedBindings(currentProfile, currentAccessories) ||
+        !chrome_axis::supportsReassignment(choice->source, *target, currentProfile, currentAccessories)) {
+        MessageBoxW(window_, tr(Text::mainReassignChanged), title, MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    using Error = chrome_axis::DeviceReplacementError;
+    Error error{};
+    std::filesystem::path recovery;
+    if (!chrome_axis::replacePresetDevice(directory_, expected, choice->source, choice->target, error, &recovery)) {
+        auto reason = Text::mainReassignFailed;
+        switch (error) {
+        case Error::invalidSelection:
+        case Error::deviceNotMapped: reason = Text::mainReassignChanged; break;
+        case Error::invalidProfile: reason = Text::mainReassignInvalidProfile; break;
+        case Error::conflict: reason = Text::mainReassignConflict; break;
+        case Error::recoveryRequired: reason = Text::mainReassignRecovery; break;
+        default: break;
+        }
+        auto failure = std::wstring(tr(reason));
+        if (error == Error::recoveryRequired)
+            failure += L"\n\n" + recovery.wstring();
+        MessageBoxW(window_, failure.c_str(), title, MB_OK | MB_ICONERROR);
+        return;
+    }
+    readProfile();
+    profileMessage_ = tr(Text::mainReassignSaved);
+    scanDevices();
+    rebuildPreview();
+}
+
 void App::transferProfiles(bool restoring)
 {
     if (calibrating_ || simulation_)
@@ -1611,6 +1711,8 @@ void App::updateCalibrationView()
     EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | (canChooseScope ? MF_ENABLED : MF_GRAYED));
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_ENABLED);
     EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
+    EnableMenuItem(deviceMenu_, reassignDevice, MF_BYCOMMAND |
+        (calibrating_ || activeDirectory().empty() || temporaryDirectory_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, reloadProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, selectProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
@@ -1795,6 +1897,7 @@ void App::updateSimulationView()
     EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | MF_GRAYED);
+    EnableMenuItem(deviceMenu_, reassignDevice, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, reloadProfile, MF_BYCOMMAND | MF_GRAYED);
@@ -2210,6 +2313,8 @@ void App::contextMenu(int x, int y)
                     startCalibration, tr(Text::mainCalibrateAxes));
         AppendMenuW(menu, MF_STRING | (GetMenuState(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND) & MF_GRAYED),
                     chooseCalibrationScope, tr(Text::mainCalibrationScope));
+        AppendMenuW(menu, MF_STRING | (GetMenuState(deviceMenu_, reassignDevice, MF_BYCOMMAND) & MF_GRAYED),
+                    reassignDevice, tr(Text::mainMenuReassignDevice));
         AppendMenuW(menu, MF_STRING | (IsWindowEnabled(save_) ? MF_ENABLED : MF_GRAYED), saveProfile, tr(Text::mainSaveProfile));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), selectProfile, tr(Text::mainSelectProfile));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED), simulationTab, tr(Text::mainShowSimulation));

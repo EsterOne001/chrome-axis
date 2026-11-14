@@ -5,6 +5,8 @@
 
 #include <shobjidl.h>
 
+#include <algorithm>
+#include <array>
 #include <iterator>
 #include <memory>
 
@@ -55,6 +57,152 @@ struct Picker {
     std::wstring_view active;
     std::optional<ProfileChoice> choice;
 };
+
+struct SavedDevice {
+    std::string id;
+    std::wstring roles;
+};
+
+struct DevicePicker {
+    const Profile& profile;
+    const AccessoryProfile& accessories;
+    const std::vector<DeviceInfo>& connected;
+    std::vector<SavedDevice> saved;
+    std::optional<DeviceReassignment> choice;
+};
+
+std::wstring fromDeviceName(const DeviceInfo& device)
+{
+    const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, device.name.c_str(), -1, nullptr, 0);
+    if (count <= 1)
+        return tr(Text::mainTextUnavailable);
+    std::wstring name(static_cast<std::size_t>(count), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, device.name.c_str(), -1, name.data(), count);
+    name.pop_back();
+    return name;
+}
+
+std::wstring deviceLabel(std::string_view id, const std::vector<DeviceInfo>& connected)
+{
+    const auto found = std::ranges::find(connected, id, &DeviceInfo::id);
+    if (found != connected.end() &&
+        std::ranges::count(connected, found->name, &DeviceInfo::name) == 1) {
+        return fromDeviceName(*found);
+    }
+    const auto shortId = id.substr(id.starts_with('{') ? 1 : 0, 8);
+    const auto name = found == connected.end() ? std::wstring(tr(Text::mainReassignUnknownDevice)) : fromDeviceName(*found);
+    return name + L" [" + std::wstring(shortId.begin(), shortId.end()) + L"]";
+}
+
+void addDeviceRole(std::vector<SavedDevice>& saved, const std::string& id, Text role)
+{
+    if (id.empty())
+        return;
+    const auto existing = std::ranges::find(saved, id, &SavedDevice::id);
+    if (existing == saved.end())
+        saved.push_back({id, tr(role)});
+    else
+        existing->roles += std::wstring(L", ") + tr(role);
+}
+
+void addDeviceRow(HWND dialog, int control, const std::wstring& label, std::size_t index)
+{
+    const auto combo = GetDlgItem(dialog, control);
+    const auto row = SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+    if (row >= 0)
+        SendMessageW(combo, CB_SETITEMDATA, static_cast<WPARAM>(row), static_cast<LPARAM>(index));
+}
+
+const SavedDevice* selectedSource(HWND dialog, const DevicePicker& picker)
+{
+    const auto row = SendDlgItemMessageW(dialog, IDC_REASSIGN_SOURCE, CB_GETCURSEL, 0, 0);
+    const auto index = SendDlgItemMessageW(dialog, IDC_REASSIGN_SOURCE, CB_GETITEMDATA, row, 0);
+    return index >= 0 && static_cast<std::size_t>(index) < picker.saved.size() ? &picker.saved[index] : nullptr;
+}
+
+const DeviceInfo* selectedTarget(HWND dialog, const DevicePicker& picker)
+{
+    const auto row = SendDlgItemMessageW(dialog, IDC_REASSIGN_TARGET, CB_GETCURSEL, 0, 0);
+    const auto index = SendDlgItemMessageW(dialog, IDC_REASSIGN_TARGET, CB_GETITEMDATA, row, 0);
+    return index >= 0 && static_cast<std::size_t>(index) < picker.connected.size() ? &picker.connected[index] : nullptr;
+}
+
+void refreshDeviceTargets(HWND dialog, const DevicePicker& picker)
+{
+    const auto source = selectedSource(dialog, picker);
+    SendDlgItemMessageW(dialog, IDC_REASSIGN_TARGET, CB_RESETCONTENT, 0, 0);
+    if (source) {
+        for (std::size_t i = 0; i < picker.connected.size(); ++i) {
+            const auto& device = picker.connected[i];
+            if (device.id != source->id)
+                addDeviceRow(dialog, IDC_REASSIGN_TARGET, deviceLabel(device.id, picker.connected), i);
+        }
+    }
+    EnableWindow(GetDlgItem(dialog, IDC_REASSIGN_TARGET),
+                 SendDlgItemMessageW(dialog, IDC_REASSIGN_TARGET, CB_GETCOUNT, 0, 0) > 0);
+}
+
+void updateDeviceStatus(HWND dialog, const DevicePicker& picker)
+{
+    const auto source = selectedSource(dialog, picker);
+    const auto target = selectedTarget(dialog, picker);
+    const bool supported = source && target && supportsReassignment(source->id, *target, picker.profile, picker.accessories);
+    const auto status = supported ? Text::mainReassignReady : target ? Text::mainReassignMissingInputs
+        : IsWindowEnabled(GetDlgItem(dialog, IDC_REASSIGN_TARGET)) ? Text::mainReassignChoose : Text::mainReassignConnect;
+    SetDlgItemTextW(dialog, IDC_REASSIGN_STATUS, tr(status));
+    EnableWindow(GetDlgItem(dialog, IDOK), supported);
+}
+
+INT_PTR CALLBACK reassignDeviceProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp)
+{
+    if (message == WM_INITDIALOG) {
+        const auto& picker = *reinterpret_cast<DevicePicker*>(lp);
+        SetWindowLongPtrW(dialog, DWLP_USER, lp);
+        SetWindowTextW(dialog, tr(Text::mainReassignTitle));
+        SetDlgItemTextW(dialog, IDC_REASSIGN_SOURCE_LABEL, tr(Text::mainReassignSource));
+        SetDlgItemTextW(dialog, IDC_REASSIGN_TARGET_LABEL, tr(Text::mainReassignTarget));
+        SetDlgItemTextW(dialog, IDOK, tr(Text::mainReassignApply));
+        SetDlgItemTextW(dialog, IDCANCEL, tr(Text::DlgCancel));
+        DialogTheme::attach(dialog, tr(Text::mainReassignHeading), IDC_REASSIGN_STATUS, 0, {IDOK});
+        for (std::size_t i = 0; i < picker.saved.size(); ++i) {
+            const auto& entry = picker.saved[i];
+            addDeviceRow(dialog, IDC_REASSIGN_SOURCE, deviceLabel(entry.id, picker.connected) + L" · " + entry.roles, i);
+        }
+        SendDlgItemMessageW(dialog, IDC_REASSIGN_SOURCE, CB_SETCURSEL, 0, 0);
+        refreshDeviceTargets(dialog, picker);
+        updateDeviceStatus(dialog, picker);
+        return TRUE;
+    }
+
+    if (message != WM_COMMAND)
+        return FALSE;
+    const auto picker = reinterpret_cast<DevicePicker*>(GetWindowLongPtrW(dialog, DWLP_USER));
+    if (!picker)
+        return FALSE;
+    switch (LOWORD(wp)) {
+    case IDC_REASSIGN_SOURCE:
+    case IDC_REASSIGN_TARGET:
+        if (HIWORD(wp) == CBN_SELCHANGE) {
+            if (LOWORD(wp) == IDC_REASSIGN_SOURCE)
+                refreshDeviceTargets(dialog, *picker);
+            updateDeviceStatus(dialog, *picker);
+        }
+        return TRUE;
+    case IDOK: {
+        const auto source = selectedSource(dialog, *picker);
+        const auto target = selectedTarget(dialog, *picker);
+        if (source && target && supportsReassignment(source->id, *target, picker->profile, picker->accessories)) {
+            picker->choice = DeviceReassignment{source->id, target->id};
+            EndDialog(dialog, IDOK);
+        }
+        return TRUE;
+    }
+    case IDCANCEL:
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
 
 INT_PTR CALLBACK profileDialogProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 {
@@ -133,6 +281,52 @@ std::optional<ProfileChoice> chooseProfile(HWND owner, const std::vector<std::ws
     Picker picker{names, active, {}};
     DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_PROFILES), owner, profileDialogProc,
                     reinterpret_cast<LPARAM>(&picker));
+    return picker.choice;
+}
+
+bool supportsReassignment(std::string_view source, const DeviceInfo& target, const Profile& profile,
+                          const AccessoryProfile& accessories)
+{
+    if (target.id == source)
+        return false;
+    const auto hasAxis = [&](std::size_t axis) { return axis < target.axes.size() && target.axes[axis]; };
+    const std::array axes{&profile.steering, &profile.throttle, &profile.brake};
+    if (!std::ranges::all_of(axes, [&](const AxisCalibration* axis) {
+            return axis->deviceId != source || hasAxis(axis->axis);
+        }))
+        return false;
+    return std::ranges::all_of(accessories, [&](const AccessoryBinding& binding) {
+        if (binding.deviceId != source)
+            return true;
+        switch (binding.kind) {
+        case AccessoryKind::Button: return binding.index < target.buttons.size() && target.buttons.test(binding.index);
+        case AccessoryKind::Pov: return binding.index < target.povs.size() && target.povs[binding.index];
+        case AccessoryKind::Axis: return hasAxis(binding.index);
+        }
+        return false;
+    });
+}
+
+std::optional<DeviceReassignment> chooseDeviceReassignment(HWND owner, const Profile& profile,
+    const AccessoryProfile& accessories, const std::vector<DeviceInfo>& connected)
+{
+    DevicePicker picker{profile, accessories, connected, {}, {}};
+    addDeviceRole(picker.saved, profile.steering.deviceId, Text::mainSteering);
+    addDeviceRole(picker.saved, profile.throttle.deviceId, Text::mainThrottle);
+    addDeviceRole(picker.saved, profile.brake.deviceId, Text::mainBrake);
+    std::vector<std::string_view> accessoryDevices;
+    for (const auto& binding : accessories) {
+        if (std::ranges::find(accessoryDevices, binding.deviceId) == accessoryDevices.end()) {
+            accessoryDevices.push_back(binding.deviceId);
+            addDeviceRole(picker.saved, binding.deviceId, Text::mainReassignAccessories);
+        }
+    }
+    if (picker.saved.empty()) {
+        MessageBoxW(owner, tr(Text::mainReassignNoBindings), tr(Text::mainReassignTitle), MB_OK | MB_ICONINFORMATION);
+    } else {
+        DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DEVICE_REASSIGN), owner, reassignDeviceProc,
+                        reinterpret_cast<LPARAM>(&picker));
+    }
     return picker.choice;
 }
 

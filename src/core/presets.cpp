@@ -433,6 +433,135 @@ bool moveEntry(const std::filesystem::path& from, const std::filesystem::path& t
     return MoveFileExW((from / filename).c_str(), (to / filename).c_str(), MOVEFILE_WRITE_THROUGH);
 }
 
+struct FileHandleCloser {
+    void operator()(HANDLE file) const noexcept { CloseHandle(file); }
+};
+
+struct SettingsSnapshot {
+    std::unique_ptr<void, FileHandleCloser> file;
+    BY_HANDLE_FILE_INFORMATION info{};
+    std::string bytes;
+    bool present{};
+};
+
+DeviceReplacementError readSettings(const std::filesystem::path& path, SettingsSnapshot& snapshot)
+{
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                   OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return missing(GetLastError()) ? DeviceReplacementError::none : DeviceReplacementError::ioError;
+    snapshot.file.reset(file);
+    snapshot.present = true;
+    if (!GetFileInformationByHandle(file, &snapshot.info))
+        return DeviceReplacementError::ioError;
+    const auto& info = snapshot.info;
+    if (!plainFile(info.dwFileAttributes) || info.nFileSizeHigh != 0 || info.nFileSizeLow > 16 * 1024)
+        return DeviceReplacementError::invalidProfile;
+    snapshot.bytes.resize(info.nFileSizeLow);
+    DWORD length{};
+    if (!ReadFile(file, snapshot.bytes.data(), info.nFileSizeLow, &length, nullptr) || length != info.nFileSizeLow)
+        return DeviceReplacementError::ioError;
+    return DeviceReplacementError::none;
+}
+
+bool matchesSettings(const std::filesystem::path& path, const SettingsSnapshot& expected)
+{
+    const HANDLE file = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return !expected.present && missing(GetLastError());
+    const std::unique_ptr<void, FileHandleCloser> current(file);
+    BY_HANDLE_FILE_INFORMATION info{};
+    const auto& original = expected.info;
+    return expected.present && GetFileInformationByHandle(file, &info) && plainFile(info.dwFileAttributes)
+        && info.dwVolumeSerialNumber == original.dwVolumeSerialNumber && info.nFileIndexHigh == original.nFileIndexHigh
+        && info.nFileIndexLow == original.nFileIndexLow && info.nFileSizeHigh == original.nFileSizeHigh
+        && info.nFileSizeLow == original.nFileSizeLow && CompareFileTime(&info.ftLastWriteTime, &original.ftLastWriteTime) == 0;
+}
+
+bool writeSettings(const std::filesystem::path& path, std::string_view contents)
+{
+    const HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    const std::unique_ptr<void, FileHandleCloser> file(handle);
+    const auto length = static_cast<DWORD>(contents.size());
+    DWORD written{};
+    return WriteFile(handle, contents.data(), length, &written, nullptr) && length == written && FlushFileBuffers(handle);
+}
+
+std::string_view trimSettings(std::string_view value)
+{
+    constexpr std::string_view whitespace = " \t\r\n";
+    const auto start = value.find_first_not_of(whitespace);
+    if (start == value.npos)
+        return {};
+    return value.substr(start, value.find_last_not_of(whitespace) - start + 1);
+}
+
+bool replaceDeviceTokens(std::string& bytes, bool accessories, std::string_view oldId, std::string_view newId)
+{
+    bool changed = false;
+    for (std::size_t start = 0; start < bytes.size();) {
+        const auto newline = bytes.find('\n', start);
+        const auto end = newline == bytes.npos ? bytes.size() : newline;
+        const auto line = trimSettings(std::string_view(bytes).substr(start, end - start));
+        const auto equals = line.find('=');
+        if (equals != line.npos) {
+            const auto name = trimSettings(line.substr(0, equals));
+            const bool deviceEntry = accessories ? name == "binding"
+                : name == "steering.device" || name == "throttle.device" || name == "brake.device";
+            if (deviceEntry) {
+                auto value = line.substr(equals + 1);
+                if (accessories)
+                    value = value.substr(0, value.find(','));
+                value = trimSettings(value);
+                if (value == oldId) {
+                    // Both IDs are GUIDs of the same length, so all other bytes keep their offsets.
+                    bytes.replace(static_cast<std::size_t>(value.data() - bytes.data()), oldId.size(), newId);
+                    changed = true;
+                }
+            }
+        }
+        start = end + 1;
+    }
+    return changed;
+}
+
+bool conflictingInputs(const std::optional<Profile>& axes, const std::optional<AccessoryProfile>& accessories,
+                       std::string_view oldId, std::string_view newId)
+{
+    if (!accessories)
+        return false;
+    const auto merges = [&](std::string_view left, std::string_view right) {
+        return (left == oldId && right == newId) || (left == newId && right == oldId);
+    };
+    for (std::size_t index = 0; index < accessories->size(); ++index) {
+        const auto& binding = (*accessories)[index];
+        for (std::size_t other = index + 1; other < accessories->size(); ++other) {
+            const auto& second = (*accessories)[other];
+            if (binding.kind != second.kind || binding.index != second.index || !merges(binding.deviceId, second.deviceId))
+                continue;
+            if (binding.kind == AccessoryKind::Button || (binding.kind == AccessoryKind::Pov && binding.engaged == second.engaged))
+                return true;
+            if (binding.kind == AccessoryKind::Axis) {
+                const auto delta = static_cast<double>(binding.engaged) - binding.rest;
+                const auto secondDelta = static_cast<double>(second.engaged) - second.rest;
+                // A shared lever can trigger opposite directions from the same physical rest point.
+                if (binding.rest != second.rest || delta * secondDelta >= 0.0)
+                    return true;
+            }
+        }
+        if (axes && binding.kind == AccessoryKind::Axis) {
+            for (const auto* axis : {&axes->steering, &axes->throttle, &axes->brake}) {
+                if (axis->axis == binding.index && merges(axis->deviceId, binding.deviceId))
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 ProfilePreset activePreset(const std::filesystem::path& root)
@@ -520,6 +649,151 @@ bool createPreset(const std::filesystem::path& root, std::wstring_view name, std
         error = "Le profil a été créé, mais sa sélection n’a pas pu être enregistrée.";
         return false;
     }
+    return true;
+}
+
+bool replacePresetDevice(const std::filesystem::path& profileRoot, const ProfilePreset& expected,
+                         std::string_view oldId, std::string_view newId, DeviceReplacementError& error,
+                         std::filesystem::path* recoveryDirectory)
+{
+    using Error = DeviceReplacementError;
+    if (recoveryDirectory)
+        recoveryDirectory->clear();
+    const auto root = extendedPath(profileRoot);
+    const auto directory = extendedPath(expected.directory);
+    const auto sameSelection = [&] {
+        const auto selected = activePreset(root);
+        return !selected.directory.empty() && selected.name == expected.name && samePathPart(selected.directory, directory);
+    };
+    if (directory.empty() || !plainDirectory(GetFileAttributesW(root.c_str())) || !sameSelection()
+        || !isDeviceId(oldId) || !isDeviceId(newId) || oldId == newId) {
+        error = Error::invalidSelection;
+        return false;
+    }
+    const BackupLock lock(root.parent_path());
+    TemporaryDirectory staging{lock ? createTemporaryDirectory(directory) : std::filesystem::path{}};
+    if (staging.path.empty()) {
+        error = Error::ioError;
+        return false;
+    }
+
+    struct Change {
+        std::filesystem::path live;
+        std::filesystem::path staged;
+        std::filesystem::path backup;
+        SettingsSnapshot original;
+        SettingsSnapshot replacement;
+        bool changed{};
+    };
+    std::array<Change, 2> changes{};
+    constexpr std::array filenames{profileFilename, accessoryFilename};
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        auto& change = changes[i];
+        change.live = directory / filenames[i];
+        change.staged = staging.path / filenames[i];
+        if ((error = readSettings(change.live, change.original)) != Error::none)
+            return false;
+    }
+
+    const auto isUnchanged = [](const Change& change) { return matchesSettings(change.live, change.original); };
+    const auto settingsUnchanged = [&] { return std::ranges::all_of(changes, isUnchanged); };
+    std::string details;
+    std::optional<Profile> axes;
+    std::optional<AccessoryProfile> accessories;
+    if (changes[0].original.present)
+        axes = loadProfile(changes[0].live, details);
+    if (changes[1].original.present)
+        accessories = loadAccessoryProfile(changes[1].live, details);
+    if (!settingsUnchanged()) {
+        error = Error::invalidSelection;
+        return false;
+    }
+    if ((!axes && changes[0].original.present) || (!accessories && changes[1].original.present)) {
+        error = Error::invalidProfile;
+        return false;
+    }
+    if (conflictingInputs(axes, accessories, oldId, newId)) {
+        error = Error::conflict;
+        return false;
+    }
+    if (axes) {
+        for (auto* axis : {&axes->steering, &axes->throttle, &axes->brake}) {
+            if (axis->deviceId == oldId)
+                axis->deviceId = newId;
+        }
+        if (!validateProfile(*axes, details)) {
+            error = Error::conflict;
+            return false;
+        }
+    }
+
+    bool changed = false;
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        auto& change = changes[i];
+        auto bytes = change.original.bytes;
+        change.changed = replaceDeviceTokens(bytes, i == 1, oldId, newId);
+        if (!change.changed)
+            continue;
+        changed = true;
+        if (!writeSettings(change.staged, bytes) || readSettings(change.staged, change.replacement) != Error::none
+            || !change.replacement.present) {
+            error = Error::ioError;
+            return false;
+        }
+        change.replacement.file.reset();
+        if (i == 0 ? !loadProfile(change.staged, details) : !loadAccessoryProfile(change.staged, details)) {
+            error = Error::invalidProfile;
+            return false;
+        }
+    }
+    if (!changed) {
+        error = Error::deviceNotMapped;
+        return false;
+    }
+
+    const auto originals = staging.path / originalFiles;
+    if (!CreateDirectoryW(originals.c_str(), nullptr)) {
+        error = Error::ioError;
+        return false;
+    }
+    for (std::size_t i = 0; i < changes.size(); ++i)
+        changes[i].backup = originals / filenames[i];
+
+    const auto rollback = [&](Error reason) {
+        bool recovered = true;
+        for (auto it = changes.rbegin(); it != changes.rend(); ++it) {
+            if (!plainFile(GetFileAttributesW(it->backup.c_str())))
+                continue;
+            const DWORD attributes = GetFileAttributesW(it->live.c_str());
+            const bool missingLive = attributes == INVALID_FILE_ATTRIBUTES && missing(GetLastError());
+            // A failed ReplaceFile may already have renamed the original. Do not overwrite a concurrent edit.
+            if (!(missingLive || matchesSettings(it->live, it->replacement))
+                || !MoveFileExW(it->backup.c_str(), it->live.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                recovered = false;
+        }
+        error = recovered ? reason : Error::recoveryRequired;
+        if (!recovered) {
+            if (recoveryDirectory)
+                *recoveryDirectory = expected.directory / staging.path.filename() / originalFiles;
+            staging.path.clear();
+        }
+        return false;
+    };
+
+    if (!sameSelection() || !settingsUnchanged()) {
+        error = Error::invalidSelection;
+        return false;
+    }
+    for (auto& change : changes) {
+        if (!change.changed)
+            continue;
+        if (!sameSelection() || !isUnchanged(change))
+            return rollback(Error::invalidSelection);
+        if (!ReplaceFileW(change.live.c_str(), change.staged.c_str(), change.backup.c_str(), 0, nullptr, nullptr)
+            || !matchesSettings(change.backup, change.original))
+            return rollback(Error::ioError);
+    }
+    error = Error::none;
     return true;
 }
 
