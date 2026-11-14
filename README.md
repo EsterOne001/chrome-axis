@@ -38,7 +38,7 @@ Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche e
 
 ## Simulation sans volant ni pédalier
 
-1. Dans l’application, ouvrez l’onglet **Simulation**. Avec cette fenêtre au premier plan, maintenez une touche de commande pour voir l’axe monter progressivement dans l’aperçu.
+1. Ouvrez **Aide → Outils de test → Simulation clavier…**. Avec l’application au premier plan, maintenez une touche de commande pour voir l’axe monter progressivement dans l’aperçu.
 2. Depuis l’application déployée, cliquez sur **Activer dans le jeu**. La demande est réservée à cette installation de Cyberpunk. Laissez l’application ouverte. Vous pouvez la réduire.
 3. Lancez Cyberpunk 2077 avec Chrome Axis déployé par Vortex, ou revenez au jeu s’il utilise déjà `ChromeAxis.dll`. Installez V au siège conducteur, relâchez les touches de simulation pour armer les axes, puis testez les commandes avec le jeu au premier plan.
 
@@ -49,7 +49,7 @@ Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche e
 | Accélérer | 8 | F8 |
 | Freiner | 2 | F10 |
 
-Le journal du plugin dans `red4ext/logs` indique `Keyboard simulation active` lorsque le jeu prend en compte ce mode et `First simulated analog input applied` au premier mouvement transmis au véhicule. Pour terminer l’essai, cliquez sur **Arrêter la simulation**, repassez dans l’onglet **Matériel USB** ou fermez l’application.
+Le journal du plugin dans `red4ext/logs` indique `Keyboard simulation active` lorsque le jeu prend en compte ce mode et `First simulated analog input applied` au premier mouvement transmis au véhicule. Pour terminer l’essai, cliquez sur **Arrêter la simulation** ou **Retour au matériel USB**, ou fermez l’application.
 
 L’application affiche **Simulation demandée** jusqu’à ce que le plugin confirme le mode en conduite. Une copie autonome permet de tester les jauges dans l’aperçu. Pour activer la simulation en jeu, déployez ensemble l’application et le plugin du même ZIP et ouvrez l’EXE du mod dans le dossier de Cyberpunk.
 
@@ -114,7 +114,7 @@ Chrome Axis lit jusqu’à huit axes, 128 boutons et quatre croix par périphér
 
 ## Essai en jeu avec le matériel USB
 
-L’USB en jeu est désactivé par défaut. Depuis l’application installée dans le dossier du jeu, enregistrez une calibration ou des affectations, puis cliquez sur **Activer l’USB en jeu** dans l’onglet **Matériel USB**. Fermez Chrome Axis, installez V au siège conducteur et laissez le jeu au premier plan. Centrez le volant et relâchez les pédales et les palettes pour armer les commandes.
+L’USB en jeu est désactivé par défaut. Depuis l’application installée dans le dossier du jeu, enregistrez une calibration ou des affectations, puis cliquez sur **Activer l’USB en jeu** dans le bandeau, à droite de **Matériel USB**. Fermez Chrome Axis, installez V au siège conducteur et laissez le jeu au premier plan. Centrez le volant et relâchez les pédales et les palettes pour armer les commandes.
 
 Le logo de Chrome Axis et le texte du HUD changent de couleur ensemble, sans panneau de fond. La conduite USB utilise le profil enregistré et fonctionne avec l’application fermée.
 

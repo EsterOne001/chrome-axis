@@ -32,7 +32,7 @@ The HUD follows Cyberpunk 2077’s on-screen language. It uses French when the g
 
 ## Keyboard simulation
 
-1. Open the **Simulation** tab. Hold a simulation key with the app in the foreground to see its axis build up in the preview.
+1. Open **Help → Test tools → Keyboard simulation…**. Hold a simulation key with the app in the foreground to see its axis build up in the preview.
 2. In the deployed app, click **Enable in game**. The request applies only to that Cyberpunk installation. Leave the app open. You can minimize it.
 3. Launch or return to Cyberpunk 2077 with the mod deployed, put V in the driver’s seat, release the simulation keys to arm the axes, and use the keys with the game in the foreground.
 
@@ -43,7 +43,7 @@ The HUD follows Cyberpunk 2077’s on-screen language. It uses French when the g
 | Accelerate | 8 | F8 |
 | Brake | 2 | F10 |
 
-The plugin log reports `Keyboard simulation active` when the game accepts simulation and `First simulated analog input applied` when the first input reaches the vehicle. To stop, click **Stop simulation**, switch to **USB Hardware**, or close the app.
+The plugin log reports `Keyboard simulation active` when the game accepts simulation and `First simulated analog input applied` when the first input reaches the vehicle. To stop, click **Stop simulation** or **Back to USB hardware**, or close the app.
 
 The app displays **Simulation requested** until the plugin confirms simulation while driving. A standalone copy can display the local input gauges. To enable simulation in the game, deploy the app and plugin from the same ZIP and open the mod's EXE in the Cyberpunk installation.
 
@@ -106,7 +106,7 @@ Chrome Axis reads up to eight axes, 128 buttons and four D-pads per DirectInput 
 
 ## Drive with USB hardware
 
-USB input starts disabled. Open the deployed app, save a calibration or accessory binding, then click **Enable USB in game**. Close Chrome Axis, put V in the driver’s seat and leave the game in the foreground. Center the wheel and release the pedals and paddles to arm the inputs. The plugin reads the saved profile with the app closed.
+USB input starts disabled. Open the deployed app, save a calibration or accessory binding, then click **Enable USB in game** in the header next to **USB Hardware**. Close Chrome Axis, put V in the driver’s seat and leave the game in the foreground. Center the wheel and release the pedals and paddles to arm the inputs. The plugin reads the saved profile with the app closed.
 
 | HUD color | Status |
 | --- | --- |
