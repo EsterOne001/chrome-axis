@@ -578,7 +578,8 @@ bool sameProfile(const std::optional<chrome_axis::Profile>& first, const std::op
     };
     return values(first->steering) == values(second->steering) &&
            values(first->throttle) == values(second->throttle) &&
-           values(first->brake) == values(second->brake);
+           values(first->brake) == values(second->brake) &&
+           first->brakeResponse == second->brakeResponse;
 }
 
 DiagnosticAxisState diagnosticAxisState(chrome_axis::AxisStatus state, bool sampleExpired) noexcept {

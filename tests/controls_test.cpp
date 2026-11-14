@@ -36,7 +36,8 @@ int run()
     const bool rejectedDuplicate = !chrome_axis::loadProfile(path, error);
     std::filesystem::remove(path);
     if (!loaded || !rejectedDuplicate || loaded->throttle.deviceId != pedalId
-        || loaded->steering.deviceId != wheelId || loaded->throttle.positive != 0)
+        || loaded->steering.deviceId != wheelId || loaded->throttle.positive != 0
+        || loaded->brakeResponse != chrome_axis::BrakeResponse{})
         return 2;
 
     using chrome_axis::AxisStatus;
@@ -187,6 +188,104 @@ int run()
     state = reader.update(connected);
     if (state.values.throttle <= 0.0f || state.values.brake <= 0.0f)
         return 22;
+
+    // Preview reports the calibrated physical travel and the value sent after shaping.
+    using chrome_axis::previewBrake;
+    auto tuned = *loaded;
+    tuned.brake.deadzone = 0.10f;
+    tuned.brakeResponse = {100, 70};
+    const auto midpoint = previewBrake(tuned.brake, 400, tuned.brakeResponse);
+    if (!approximatelyEqual(midpoint.raw, 0.4f) || !approximatelyEqual(midpoint.adjusted, 0.25f)
+        || !approximatelyEqual(previewBrake(tuned.brake, 400, {-100, 70}).adjusted, 0.75f)
+        || !approximatelyEqual(previewBrake(tuned.brake, 400, {0, 70}).adjusted, 0.5f)
+        || previewBrake(tuned.brake, 100, tuned.brakeResponse).adjusted != 0.0f
+        || previewBrake(tuned.brake, -100, tuned.brakeResponse).raw != 0.0f
+        || previewBrake(tuned.brake, 699, tuned.brakeResponse).adjusted >= 1.0f
+        || previewBrake(tuned.brake, 700, tuned.brakeResponse).adjusted != 1.0f
+        || previewBrake(tuned.brake, 1100, tuned.brakeResponse).raw != 1.0f
+        || !approximatelyEqual(previewBrake(loaded->brake, 500, {}).adjusted, 0.47f / 0.97f))
+        return 23;
+
+    const auto savedTuned = chrome_axis::saveProfile(path, tuned, error);
+    const auto loadedTuned = savedTuned ? chrome_axis::loadProfile(path, error) : std::nullopt;
+    auto invalidResponse = tuned;
+    invalidResponse.brakeResponse.saturation = 49;
+    const auto rejectedInvalidSave = !chrome_axis::saveProfile(path, invalidResponse, error);
+    const auto unchangedTuned = chrome_axis::loadProfile(path, error);
+    const auto savedLegacy = chrome_axis::saveProfile(path, *loaded, error);
+    {
+        std::ofstream malformed(path, std::ios::app);
+        malformed << "brake_response.progressivity=101\n";
+    }
+    const auto rejectedInvalidRead = !chrome_axis::loadProfile(path, error);
+    std::filesystem::remove(path);
+    if (!loadedTuned || loadedTuned->brakeResponse != tuned.brakeResponse || !rejectedInvalidSave
+        || !unchangedTuned || unchangedTuned->brakeResponse != tuned.brakeResponse || !savedLegacy || !rejectedInvalidRead)
+        return 24;
+
+    chrome_axis::ControlReader tunedReader(*loadedTuned);
+    pedals.axes[2] = 400;
+    for (int i = 0; i < 4; ++i)
+        state = tunedReader.update(connected, &readings);
+    if (state.brakeReady || state.values.brake != 0.0f || !readings[2]
+        || !approximatelyEqual(*readings[2], 0.3f / 0.9f))
+        return 25;
+    pedals.axes[2] = 0;
+    for (int i = 0; i < 3; ++i)
+        state = tunedReader.update(connected);
+    pedals.axes[2] = 400;
+    state = tunedReader.update(connected, &readings);
+    if (!state.brakeReady || !approximatelyEqual(state.values.brake, midpoint.adjusted)
+        || !readings[2] || !approximatelyEqual(*readings[2], 0.3f / 0.9f))
+        return 26;
+
+    combined.brakeResponse = {100, 70};
+    chrome_axis::ControlReader tunedCombinedReader(combined);
+    pedals.axes[1] = combined.brake.neutral;
+    for (int i = 0; i < 3; ++i)
+        state = tunedCombinedReader.update(connected);
+    pedals.axes[1] = combined.throttle.positive;
+    state = tunedCombinedReader.update(connected);
+    if (!state.throttleReady || !state.brakeReady || state.values.throttle != 1.0f || state.values.brake != 0.0f)
+        return 27;
+    pedals.axes[1] = 250;
+    state = tunedCombinedReader.update(connected);
+    if (state.values.throttle != 0.0f || !approximatelyEqual(state.values.brake,
+            previewBrake(combined.brake, 250, combined.brakeResponse).adjusted))
+        return 28;
+
+    auto zeroSteering = *loaded;
+    zeroSteering.steering.deadzone = 0.0f;
+    const auto savedZero = chrome_axis::saveProfile(path, zeroSteering, error);
+    const auto loadedZero = savedZero ? chrome_axis::loadProfile(path, error) : std::nullopt;
+    std::filesystem::remove(path);
+    if (!loadedZero || loadedZero->steering.deadzone != 0.0f)
+        return 29;
+
+    chrome_axis::ControlReader zeroSteeringReader(*loadedZero);
+    wheel.axes[0] = 390;
+    for (int i = 0; i < 3; ++i)
+        state = zeroSteeringReader.update(connected);
+    if (state.steeringReady || state.values.steering != 0.0f)
+        return 30;
+    for (const auto noisyCenter : {402L, 398L, 401L}) {
+        wheel.axes[0] = noisyCenter;
+        state = zeroSteeringReader.update(connected);
+    }
+    if (!state.steeringReady || !approximatelyEqual(state.values.steering, -0.0025f))
+        return 31;
+    wheel.axes[0] = 399;
+    state = zeroSteeringReader.update(connected);
+    if (!state.steeringReady || !approximatelyEqual(state.values.steering, 0.0025f))
+        return 32;
+
+    invalid = zeroSteering;
+    invalid.brake.deadzone = 0.0f;
+    if (chrome_axis::validateProfile(invalid, error))
+        return 33;
+    zeroSteering.steering.deadzone = 0.001f;
+    if (!chrome_axis::validateProfile(zeroSteering, error))
+        return 34;
     return 0;
 }
 

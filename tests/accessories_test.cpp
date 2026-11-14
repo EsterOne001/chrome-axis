@@ -2,8 +2,103 @@
 
 #include <fstream>
 #include <iostream>
+#include <utility>
 
 namespace {
+
+int testThresholds(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    const AccessoryBinding handbrake{deviceId, AccessoryKind::Axis, 7, 1000, 0, VK_SPACE};
+    const AccessoryBinding button{deviceId, AccessoryKind::Button, 0, 0, 1, VK_ADD};
+    auto adjusted = handbrake;
+    adjusted.thresholds = {45, 20};
+    const AccessoryProfile profile{adjusted, button};
+    std::string error;
+    const auto version = [&] {
+        std::ifstream file(path);
+        std::string line;
+        std::getline(file, line);
+        std::getline(file, line);
+        return line;
+    };
+    if (!saveAccessoryProfile(path, profile, error) || version() != "version=2"
+        || loadAccessoryProfile(path, error) != profile)
+        return 21;
+    auto invalid = profile;
+    for (const AccessoryThresholds thresholds : {AccessoryThresholds{0, 0}, AccessoryThresholds{101, 20},
+                                                AccessoryThresholds{25, 25}, AccessoryThresholds{25, 60}}) {
+        invalid.front().thresholds = thresholds;
+        if (saveAccessoryProfile(path, invalid, error))
+            return 22;
+    }
+    invalid = profile;
+    invalid.back().thresholds = adjusted.thresholds;
+    if (saveAccessoryProfile(path, invalid, error) || loadAccessoryProfile(path, error) != profile)
+        return 23;
+
+    for (const auto& [number, row] : std::array<std::pair<int, const char*>, 4>{{
+             {1, ",axis,7,1000,0,32,45,20"},
+             {2, ",axis,7,1000,0,32,45"},
+             {2, ",axis,7,1000,0,32,45,20,1"},
+             {2, ",button,0,0,1,32,45,20"},
+         }}) {
+        std::ofstream file(path, std::ios::trunc);
+        file << "version=" << number << "\nbinding=" << deviceId << row << '\n';
+        file.close();
+        if (loadAccessoryProfile(path, error))
+            return 24;
+    }
+    if (!saveAccessoryProfile(path, {handbrake, button}, error) || version() != "version=1"
+        || loadAccessoryProfile(path, error) != AccessoryProfile{handbrake, button})
+        return 25;
+
+    DeviceSample sample;
+    sample.axesPresent[7] = true;
+    const std::array<const DeviceSample*, 1> connected{&sample};
+    AccessoryReader legacy({handbrake});
+    AccessoryReader custom({adjusted});
+    sample.axes[7] = 1000;
+    for (int i = 0; i < 3; ++i) {
+        legacy.update(connected);
+        custom.update(connected);
+    }
+    struct Expected {
+        long raw;
+        bool legacy;
+        bool custom;
+    };
+    for (const auto [raw, legacyDown, customDown] : std::array<Expected, 7>{{
+             {551, false, false}, {550, false, true}, {450, true, true}, {650, true, true},
+             {651, false, true}, {800, false, true}, {801, false, false},
+         }}) {
+        sample.axes[7] = raw;
+        if (legacy.update(connected).test(VK_SPACE) != legacyDown ||
+            custom.update(connected).test(VK_SPACE) != customDown)
+            return 26;
+    }
+
+    adjusted.rest = 0;
+    adjusted.engaged = 100;
+    adjusted.thresholds = {8, 4};
+    AccessoryReader low({adjusted});
+    sample.axes[7] = 12;
+    for (int i = 0; i < 4; ++i) {
+        if (low.update(connected).any() || low.ready())
+            return 27;
+    }
+    sample.axes[7] = 0;
+    for (int i = 0; i < 3; ++i)
+        low.update(connected);
+    sample.axes[7] = 8;
+    if (!low.ready() || !low.update(connected).test(VK_SPACE))
+        return 28;
+    sample.axes[7] = 4;
+    if (!low.update(connected).test(VK_SPACE))
+        return 29;
+    sample.axes[7] = 3;
+    return low.update(connected).any() ? 30 : 0;
+}
 
 int run()
 {
@@ -35,10 +130,13 @@ int run()
     const bool rejectedDisallowedKey = !chrome_axis::loadAccessoryProfile(path, error);
     const bool savedEmpty = chrome_axis::saveAccessoryProfile(path, {}, error);
     const auto empty = chrome_axis::loadAccessoryProfile(path, error);
+    const auto thresholdResult = testThresholds(path, handbrakeId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
         return 1;
+    if (thresholdResult != 0)
+        return thresholdResult;
 
     chrome_axis::AccessoryReader reader(*loaded);
     chrome_axis::DeviceSample wheel;

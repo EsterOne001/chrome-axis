@@ -9,6 +9,9 @@
 
 namespace chrome_axis {
 
+inline constexpr float minimumPedalDeadzone = 0.005f;
+inline constexpr float maximumAxisDeadzone = 0.25f;
+
 struct AxisCalibration {
     std::string deviceId;
     std::size_t axis{};
@@ -18,10 +21,32 @@ struct AxisCalibration {
     float deadzone{};
 };
 
+inline constexpr int minimumBrakeProgressivity = -100;
+inline constexpr int maximumBrakeProgressivity = 100;
+inline constexpr int minimumBrakeSaturation = 50;
+inline constexpr int maximumBrakeSaturation = 100;
+
+struct BrakeResponse {
+    int progressivity{};
+    int saturation{maximumBrakeSaturation};
+
+    bool operator==(const BrakeResponse&) const = default;
+};
+
+struct BrakePreview {
+    float raw{};
+    float adjusted{};
+};
+
+bool validateBrakeResponse(const BrakeResponse& response) noexcept;
+// A valid calibration and response produce fractions of calibrated travel and brake output.
+BrakePreview previewBrake(const AxisCalibration& calibration, long raw, const BrakeResponse& response) noexcept;
+
 struct Profile {
     AxisCalibration steering;
     AxisCalibration throttle;
     AxisCalibration brake;
+    BrakeResponse brakeResponse;
 };
 
 struct Controls {

@@ -509,8 +509,11 @@ void ShifterDialog::apply()
             const auto existing = std::ranges::find(updated, binding.key, &AccessoryBinding::key);
             if (existing == updated.end())
                 updated.push_back(binding);
-            else
+            else {
+                const auto thresholds = existing->thresholds;
                 *existing = binding;
+                existing->thresholds = thresholds;
+            }
         }
     }
     if (updated.size() > maxAccessoryBindings) {

@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.25** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.26** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -66,6 +66,12 @@ Manually copied legacy `Profil` folders remain importable if they contain Chrome
 
 If a profile device appears disconnected after a transfer, connect its replacement and open **Devices → Reassign a device…** with the game closed. Choose the saved device and the connected replacement. The app checks that the saved axes, buttons and POV hats are available. Reassignment saves to the active profile and preserves measurements, deadzones, keys and force feedback settings. Check resting positions and full travel on the gauges, then check force feedback direction at low strength if you use it. Repeat the affected measurements or captures if the new driver exposes controls on different inputs or with different travel.
 
+### Deadzones and brake response
+
+The **Steering** field in the **Deadzone (%)** column accepts 0–25%. Enter **0** to turn off the steering deadzone. **None** appears next to the field. The wheel still has a 0.5% centering tolerance when it rearms in game. Once armed, small movements reach the game with a 0% deadzone. Pedals keep the 0.5–25% range.
+
+After calibrating the brake, open **Brake settings…**. Progressivity of **0** gives a linear response. A positive value softens the start of the travel and a negative value makes it more responsive. Set **Travel for full brake** to **50–100%** of calibrated travel. The gauges compare travel before the deadzone with adjusted output. Press the pedal or enter a simulated travel of 0–100%. Click **Apply**, then **Save profile**.
+
 ### Force feedback
 
 Save the steering calibration and open **Force feedback…** from **USB Hardware**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. The setting ranges from 1% to 35% of DirectInput’s nominal force. You can disable impacts separately or invert the direction if the wheel pushes away from center.
@@ -85,7 +91,7 @@ To change the key for an already captured input, select the binding and click **
 
 **Manual Transmission V10 4.3** offers rebindable sequential shift commands. Chrome Axis suggests **Numpad + / Numpad −** to avoid the **↑ / ↓** keys used by Cyberpunk for throttle and brake. Set the same keys in V10. To use a clutch pedal, capture it as an accessory axis, assign a key without modifiers, and set the same key in V10. Testing the two mods together is still pending. [V10 controls](https://www.nexusmods.com/cyberpunk2077/mods/28342) · [V10 discussion about sequential and H-pattern shifting](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts)
 
-You can also bind an individual button, D-pad direction or axis in **Accessories…**. **Space** is the default handbrake key. Chrome Axis holds the assigned key as long as the input is active. An axis presses the key at 55% of its measured travel and releases it at 35%.
+You can also bind an individual button, D-pad direction or axis in **Accessories…**. **Space** is the default handbrake key. Chrome Axis holds the assigned key as long as the input is active. By default, an axis presses the key at **55%** of its measured travel and releases it below **35%**. For a handbrake or clutch captured as an axis, select the binding, open **Axis thresholds…** and keep the release threshold below the press threshold. Click **Apply**, then **Save**. The accessory outputs a keyboard key.
 
 ### PC connections
 
@@ -158,7 +164,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.25-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.26-Cyberpunk-2.5.zip'
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.

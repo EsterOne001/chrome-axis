@@ -87,6 +87,83 @@ long povDirection(std::uint16_t value)
     return value == povCentered ? povCentered : ((value + 2250) / 4500 % 8) * 4500;
 }
 
+std::optional<AccessoryThresholds> readThresholds(HWND window)
+{
+    const auto readPercent = [window](int control) {
+        wchar_t text[5]{};
+        const auto length = GetDlgItemTextW(window, control, text, static_cast<int>(std::size(text)));
+        if (!length || length > 3)
+            return 0u;
+        unsigned int value = 0;
+        for (UINT i = 0; i < length; ++i) {
+            if (text[i] < L'0' || text[i] > L'9')
+                return 0u;
+            value = value * 10 + static_cast<unsigned int>(text[i] - L'0');
+        }
+        return value;
+    };
+    const AccessoryThresholds values{readPercent(IDC_THRESHOLDS_PRESS), readPercent(IDC_THRESHOLDS_RELEASE)};
+    if (!validAccessoryThresholds(values))
+        return std::nullopt;
+    return values;
+}
+
+void setThresholds(HWND window, AccessoryThresholds values)
+{
+    SetDlgItemInt(window, IDC_THRESHOLDS_PRESS, values.press, FALSE);
+    SetDlgItemInt(window, IDC_THRESHOLDS_RELEASE, values.release, FALSE);
+}
+
+void updateThresholdsActions(HWND window)
+{
+    const bool valid = readThresholds(window).has_value();
+    EnableWindow(GetDlgItem(window, IDOK), valid);
+    SetDlgItemTextW(window, IDC_THRESHOLDS_STATUS, valid ? L"" : tr(Text::DlgThresholdsInvalid));
+}
+
+INT_PTR CALLBACK thresholdsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_INITDIALOG) {
+        SetWindowLongPtrW(window, DWLP_USER, lParam);
+        SetWindowTextW(window, tr(Text::DlgThresholdsTitle));
+        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgThresholdsHint));
+        SetDlgItemTextW(window, IDC_THRESHOLDS_PRESS_LABEL, tr(Text::DlgThresholdsPress));
+        SetDlgItemTextW(window, IDC_THRESHOLDS_RELEASE_LABEL, tr(Text::DlgThresholdsRelease));
+        SetDlgItemTextW(window, IDC_THRESHOLDS_DEFAULTS, tr(Text::DlgThresholdsDefaults));
+        SetDlgItemTextW(window, IDOK, tr(Text::DlgThresholdsApply));
+        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
+        DialogTheme::attach(window, tr(Text::DlgThresholdsHeading), IDC_THRESHOLDS_STATUS, 0, {IDOK});
+        for (const int control : {IDC_THRESHOLDS_PRESS, IDC_THRESHOLDS_RELEASE})
+            SendDlgItemMessageW(window, control, EM_SETLIMITTEXT, 3, 0);
+        setThresholds(window, *reinterpret_cast<const AccessoryThresholds*>(lParam));
+        updateThresholdsActions(window);
+        return TRUE;
+    }
+    if (message != WM_COMMAND)
+        return FALSE;
+    switch (LOWORD(wParam)) {
+    case IDC_THRESHOLDS_PRESS:
+    case IDC_THRESHOLDS_RELEASE:
+        if (HIWORD(wParam) == EN_CHANGE)
+            updateThresholdsActions(window);
+        return TRUE;
+    case IDC_THRESHOLDS_DEFAULTS:
+        setThresholds(window, {});
+        return TRUE;
+    case IDOK:
+        if (const auto values = readThresholds(window)) {
+            auto* selected = reinterpret_cast<AccessoryThresholds*>(GetWindowLongPtrW(window, DWLP_USER));
+            *selected = *values;
+            EndDialog(window, IDOK);
+        }
+        return TRUE;
+    case IDCANCEL:
+        EndDialog(window, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 class AccessoryDialog {
 public:
     AccessoryDialog(DirectInput& input, std::filesystem::path path)
@@ -102,6 +179,7 @@ public:
     void shifter();
     void add();
     void edit();
+    void editThresholds();
     void remove();
     void save();
     void cancel();
@@ -212,13 +290,16 @@ void AccessoryDialog::clearCapture()
 
 void AccessoryDialog::refreshActions()
 {
-    const bool selected = send(IDC_ACCESSORY_LIST, LB_GETCURSEL) >= 0;
+    const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
+    const bool selected = row >= 0 && static_cast<std::size_t>(row) < bindings_.size();
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_CAPTURE), selectedDevice() != nullptr);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_INPUT), !captured_.empty());
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_KEY), stage_ == CaptureStage::Idle);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ADD),
         send(IDC_ACCESSORY_INPUT, CB_GETCURSEL) >= 0 && isAccessoryKey(key_));
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_EDIT), stage_ == CaptureStage::Idle && selected);
+    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_THRESHOLDS),
+        stage_ == CaptureStage::Idle && selected && bindings_[static_cast<std::size_t>(row)].kind == AccessoryKind::Axis);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), selected);
     EnableWindow(GetDlgItem(window_, IDOK), modified_);
 }
@@ -364,8 +445,12 @@ void AccessoryDialog::refreshBindings(LRESULT selection)
     send(IDC_ACCESSORY_LIST, LB_RESETCONTENT);
     for (const auto& binding : bindings_) {
         const auto device = std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id);
-        const auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryInputLabel(binding) + L"  ·  "
-            + wide(device == devices_.end() || device->name.empty() ? binding.deviceId : device->name);
+        auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryInputLabel(binding);
+        if (binding.kind == AccessoryKind::Axis) {
+            label += L" · " + std::to_wstring(binding.thresholds.press) + L"% / "
+                + std::to_wstring(binding.thresholds.release) + L"%";
+        }
+        label += L"  ·  " + wide(device == devices_.end() || device->name.empty() ? binding.deviceId : device->name);
         send(IDC_ACCESSORY_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
     }
     if (selection >= 0) {
@@ -416,6 +501,29 @@ void AccessoryDialog::edit()
         refreshBindings(selection);
         setStatus(tr(Text::DlgAccessoriesBindingEdited));
         break;
+    }
+}
+
+void AccessoryDialog::editThresholds()
+{
+    if (stage_ != CaptureStage::Idle)
+        return;
+    const auto selection = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
+    if (selection < 0 || static_cast<std::size_t>(selection) >= bindings_.size())
+        return;
+    auto& binding = bindings_[static_cast<std::size_t>(selection)];
+    if (binding.kind != AccessoryKind::Axis)
+        return;
+    auto values = binding.thresholds;
+    const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORY_THRESHOLDS),
+        window_, thresholdsProc, reinterpret_cast<LPARAM>(&values));
+    if (result == -1) {
+        MessageBoxW(window_, tr(Text::DlgThresholdsOpenError), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
+    } else if (result == IDOK && values != binding.thresholds) {
+        binding.thresholds = values;
+        modified_ = true;
+        refreshBindings(selection);
+        setStatus(tr(Text::DlgAccessoriesThresholdsEdited));
     }
 }
 
@@ -477,6 +585,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_ACCESSORY_ADD, tr(Text::DlgAccessoriesAdd));
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgAccessoriesSavedList));
         SetDlgItemTextW(window, IDC_ACCESSORY_EDIT, tr(Text::DlgBindingEdit));
+        SetDlgItemTextW(window, IDC_ACCESSORY_THRESHOLDS, tr(Text::DlgAccessoriesThresholds));
         SetDlgItemTextW(window, IDC_ACCESSORY_REMOVE, tr(Text::DlgAccessoriesRemove));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
@@ -530,6 +639,9 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return TRUE;
     case IDC_ACCESSORY_EDIT:
         dialog->edit();
+        return TRUE;
+    case IDC_ACCESSORY_THRESHOLDS:
+        dialog->editThresholds();
         return TRUE;
     case IDC_ACCESSORY_REMOVE:
         dialog->remove();

@@ -14,6 +14,9 @@ namespace {
 
 constexpr std::array<std::string_view, 3> channelNames{"steering", "throttle", "brake"};
 constexpr unsigned int requiredNeutralPolls = 3;
+constexpr double minimumSteeringNeutralTolerance = 0.005;
+constexpr char brakeProgressivityKey[] = "brake_response.progressivity";
+constexpr char brakeSaturationKey[] = "brake_response.saturation";
 
 std::array<const AxisCalibration*, 3> channels(const Profile& profile)
 {
@@ -53,7 +56,10 @@ bool isNeutral(const AxisCalibration& calibration, long raw, bool steering, bool
     const double progress = delta / span;
     // A dedicated pedal can return beyond its measured rest position and still produce zero.
     // Shared pedals must stay near the common center so neither is held during arming.
-    return (steering || combinedPedals ? std::abs(progress) : progress) <= calibration.deadzone;
+    // Keep a small steering arming tolerance even when all steering input is applied.
+    const double deadzone = calibration.deadzone;
+    const double tolerance = steering ? std::max(deadzone, minimumSteeringNeutralTolerance) : deadzone;
+    return (steering || combinedPedals ? std::abs(progress) : progress) <= tolerance;
 }
 
 std::string_view trim(std::string_view value)
@@ -88,6 +94,26 @@ bool compatibleAxisPair(const AxisCalibration& throttle, const AxisCalibration& 
         && centerGap <= std::abs(brakeTravel) * brake.deadzone;
 }
 
+bool validateBrakeResponse(const BrakeResponse& response) noexcept
+{
+    return response.progressivity >= minimumBrakeProgressivity && response.progressivity <= maximumBrakeProgressivity
+        && response.saturation >= minimumBrakeSaturation && response.saturation <= maximumBrakeSaturation;
+}
+
+BrakePreview previewBrake(const AxisCalibration& calibration, long raw, const BrakeResponse& response) noexcept
+{
+    const auto travel = distance(calibration.positive, calibration.neutral);
+    const float saturation = static_cast<float>(response.saturation) / 100.0f;
+    if (travel == 0.0 || !(calibration.deadzone < saturation))
+        return {};
+    const auto magnitude = static_cast<float>(
+        std::clamp(distance(raw, calibration.neutral) / travel, 0.0, 1.0));
+    const float position = std::clamp((magnitude - calibration.deadzone) / (saturation - calibration.deadzone), 0.0f, 1.0f);
+    const float progressivity = static_cast<float>(response.progressivity) / 100.0f;
+    // The endpoints stay fixed. The full adjustment spans a quadratic ease-in to an ease-out.
+    return {magnitude, position - progressivity * position * (1.0f - position)};
+}
+
 bool validateProfile(const Profile& profile, std::string& error)
 {
     const auto axes = channels(profile);
@@ -101,8 +127,9 @@ bool validateProfile(const Profile& profile, std::string& error)
         const double negative = distance(axis.negative, axis.neutral);
         const bool validRange = std::abs(positive) >= 16.0
             && (i != 0 || (std::abs(negative) >= 16.0 && positive * negative < 0.0));
+        const float minimumDeadzone = i == 0 ? 0.0f : minimumPedalDeadzone;
         if (!isDeviceId(axis.deviceId) || axis.axis >= axisCount || !validRange
-            || !std::isfinite(axis.deadzone) || axis.deadzone < 0.005f || axis.deadzone > 0.25f) {
+            || !std::isfinite(axis.deadzone) || axis.deadzone < minimumDeadzone || axis.deadzone > maximumAxisDeadzone) {
             error = "Invalid calibration for " + std::string(channelNames[i]);
             return false;
         }
@@ -117,6 +144,10 @@ bool validateProfile(const Profile& profile, std::string& error)
     }
     if (!compatibleAxisPair(profile.throttle, profile.brake)) {
         error = "Pedals on a shared axis must travel in opposite directions from the same rest position";
+        return false;
+    }
+    if (!validateBrakeResponse(profile.brakeResponse)) {
+        error = "Invalid brake response settings";
         return false;
     }
     error.clear();
@@ -156,6 +187,13 @@ std::optional<Profile> loadProfile(const std::filesystem::path& path, std::strin
     }
 
     Profile profile;
+    const auto progressivity = values.find(brakeProgressivityKey);
+    const auto saturation = values.find(brakeSaturationKey);
+    if ((progressivity != values.end() && !parseNumber(progressivity->second, profile.brakeResponse.progressivity))
+        || (saturation != values.end() && !parseNumber(saturation->second, profile.brakeResponse.saturation))) {
+        error = "Invalid brake response settings";
+        return std::nullopt;
+    }
     const std::array axes{&profile.steering, &profile.throttle, &profile.brake};
     for (std::size_t i = 0; i < axes.size(); ++i) {
         const std::string prefix = std::string(channelNames[i]) + '.';
@@ -201,6 +239,10 @@ bool saveProfile(const std::filesystem::path& path, const Profile& profile, std:
              << name << ".negative=" << axis.negative << '\n'
              << name << ".positive=" << axis.positive << '\n'
              << name << ".deadzone=" << axis.deadzone << '\n';
+    }
+    if (profile.brakeResponse != BrakeResponse{}) {
+        file << '\n' << brakeProgressivityKey << '=' << profile.brakeResponse.progressivity << '\n'
+             << brakeSaturationKey << '=' << profile.brakeResponse.saturation << '\n';
     }
     file.close();
 
@@ -286,7 +328,10 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
                 continue;
         }
         *readiness[i] = true;
-        *outputs[i] = readings ? *(*readings)[i] : normalize(calibration, raw, i == 0);
+        if (i == 2 && profile_.brakeResponse != BrakeResponse{})
+            *outputs[i] = previewBrake(calibration, raw, profile_.brakeResponse).adjusted;
+        else
+            *outputs[i] = readings ? *(*readings)[i] : normalize(calibration, raw, i == 0);
         axisStatuses_[i] = AxisStatus::armed;
     }
     return state;

@@ -42,10 +42,12 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
     const std::string other = "{33333333-3333-3333-3333-333333333333}";
     const auto root = fixture / L"Replacement";
     std::filesystem::create_directory(root);
-    const Profile calibration{{oldWheel, 0, 500, 0, 1000, 0.04f}, {newWheel, 1, 0, 0, 900, 0.03f}};
+    const Profile calibration{{oldWheel, 0, 500, 0, 1000, 0.0f}, {newWheel, 1, 0, 0, 900, 0.03f},
+        {newWheel, 2, 0, 0, 900, 0.02f}, {50, 80}};
     const AccessoryProfile bindings{{oldWheel, AccessoryKind::Button, 3, 0, 1, VK_ADD},
         {oldWheel, AccessoryKind::Pov, 0, povCentered, 0, VK_SUBTRACT},
-        {newWheel, AccessoryKind::Pov, 0, povCentered, 18000, VK_SPACE}};
+        {newWheel, AccessoryKind::Pov, 0, povCentered, 18000, VK_SPACE},
+        {oldWheel, AccessoryKind::Axis, 3, 0, 1000, VK_F8, {65, 30}}};
     const FeedbackSettings feedback{true, 19, false, true};
     std::string details;
     if (!check(saveProfile(root / profileFilename, calibration, details)
@@ -98,6 +100,7 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
     replaceAfter(expectedAnalog, "steering.device=");
     replaceAfter(expectedDigital, "binding=");
     replaceAfter(expectedDigital, "binding=");
+    replaceAfter(expectedDigital, "binding=");
     if (!check(replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery)
                && error == Error::none && recovery.empty() && readBytes(analog) == expectedAnalog
                && readBytes(digital) == expectedDigital && readBytes(note) == "preserve\r\n"
@@ -142,8 +145,10 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     const std::wstring name = L"Pédales été";
     const auto named = root / L"Profils" / name;
     const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
-    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.04f}};
-    const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD}};
+    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f}, {},
+        {wheel, 2, 0, 0, 1000, 0.03f}, {-40, 75}};
+    const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD},
+        {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}}};
     const FeedbackSettings feedback{true, 17, false, true};
     std::string error;
     ProfileBackupError backupError{};
@@ -230,6 +235,7 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     const auto axes = loadProfile(named / profileFilename, error);
     if (!check(activePreset(root).name == name && listPresets(root) == std::vector{name}
                && axes && axes->steering.deadzone == calibration.steering.deadzone
+               && axes->brakeResponse == calibration.brakeResponse
                && loadAccessoryProfile(root / accessoryFilename, error) == bindings
                && loadAccessoryProfile(named / accessoryFilename, error) == bindings
                && loadFeedbackSettings(named / feedbackFilename, error) == feedback

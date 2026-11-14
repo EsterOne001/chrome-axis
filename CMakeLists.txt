@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ChromeAxis VERSION 0.4.25 LANGUAGES CXX)
+project(ChromeAxis VERSION 0.4.26 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Chrome Axis requires a Windows x64 MSVC build.")
@@ -40,6 +40,7 @@ add_executable(chrome_axis_app WIN32
   src/app/main_window.cpp
   src/app/accessories_dialog.cpp
   src/app/app_text.cpp
+  src/app/brake_dialog.cpp
   src/app/calibration_guide.cpp
   src/app/diagnostics_dialog.cpp
   src/app/dialog_theme.cpp
@@ -49,6 +50,7 @@ add_executable(chrome_axis_app WIN32
   src/app/shifter_dialog.cpp
   src/app/ui_theme.cpp
   assets/windows/accessories_dialog.rc
+  assets/windows/brake_dialog.rc
   assets/windows/diagnostics_dialog.rc
   assets/windows/feedback_dialog.rc
   assets/windows/keyboard_dialog.rc

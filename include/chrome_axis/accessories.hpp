@@ -12,6 +12,18 @@ inline constexpr std::size_t maxAccessoryBindings = 32;
 
 enum class AccessoryKind { Button, Pov, Axis };
 
+struct AccessoryThresholds {
+    unsigned int press{55};
+    unsigned int release{35};
+
+    bool operator==(const AccessoryThresholds&) const = default;
+};
+
+constexpr bool validAccessoryThresholds(AccessoryThresholds thresholds) noexcept
+{
+    return thresholds.release >= 1 && thresholds.release < thresholds.press && thresholds.press <= 100;
+}
+
 struct AccessoryBinding {
     std::string deviceId;
     AccessoryKind kind{};
@@ -19,6 +31,7 @@ struct AccessoryBinding {
     long rest{};
     long engaged{};
     unsigned int key{};
+    AccessoryThresholds thresholds{};
 
     bool operator==(const AccessoryBinding&) const = default;
 };

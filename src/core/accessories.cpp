@@ -1,5 +1,6 @@
 #include "chrome_axis/accessories.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <fstream>
@@ -12,8 +13,7 @@ namespace {
 
 constexpr auto requiredNeutralPolls = 3u;
 constexpr double neutralThreshold = 0.15;
-constexpr double engageThreshold = 0.55;
-constexpr double releaseThreshold = 0.35;
+constexpr AccessoryThresholds defaultThresholds{};
 constexpr int povStep = 4500;
 constexpr int povFullTurn = 36000;
 constexpr std::array<std::string_view, 3> kindNames{"button", "pov", "axis"};
@@ -37,17 +37,21 @@ bool parseNumber(std::string_view value, T& result)
     return parsed.ec == std::errc{} && parsed.ptr == end;
 }
 
-bool parseBinding(std::string_view value, AccessoryBinding& binding)
+bool parseBinding(std::string_view value, AccessoryBinding& binding, bool allowsThresholds)
 {
     std::array<std::string_view, 6> fields;
     for (std::size_t i = 0; i < fields.size(); ++i) {
         const auto comma = value.find(',');
-        const bool last = i + 1 == fields.size();
-        if (last != (comma == std::string_view::npos))
+        if (i + 1 != fields.size() && comma == std::string_view::npos)
             return false;
         fields[i] = trim(value.substr(0, comma));
-        if (!last)
+        if (comma == std::string_view::npos) {
+            value = {};
+        } else {
             value.remove_prefix(comma + 1);
+            if (value.empty())
+                return false;
+        }
     }
     std::size_t kind = 0;
     while (kind < kindNames.size() && kindNames[kind] != fields[1])
@@ -57,6 +61,14 @@ bool parseBinding(std::string_view value, AccessoryBinding& binding)
 
     binding.deviceId = fields[0];
     binding.kind = static_cast<AccessoryKind>(kind);
+    if (!value.empty()) {
+        const auto comma = value.find(',');
+        if (!allowsThresholds || binding.kind != AccessoryKind::Axis || comma == std::string_view::npos
+            || !parseNumber(trim(value.substr(0, comma)), binding.thresholds.press)
+            || !parseNumber(trim(value.substr(comma + 1)), binding.thresholds.release)) {
+            return false;
+        }
+    }
     return parseNumber(fields[2], binding.index)
         && parseNumber(fields[3], binding.rest)
         && parseNumber(fields[4], binding.engaged)
@@ -72,6 +84,8 @@ bool validInput(const AccessoryBinding& binding)
 {
     if (!isDeviceId(binding.deviceId))
         return false;
+    if (binding.kind != AccessoryKind::Axis && binding.thresholds != defaultThresholds)
+        return false;
     switch (binding.kind) {
     case AccessoryKind::Button:
         return binding.index < buttonCount && binding.rest == 0 && binding.engaged == 1;
@@ -79,7 +93,8 @@ bool validInput(const AccessoryBinding& binding)
         return binding.index < povCount && binding.rest == povCentered
             && binding.engaged >= 0 && binding.engaged < povFullTurn && binding.engaged % povStep == 0;
     case AccessoryKind::Axis:
-        return binding.index < axisCount && std::abs(travel(binding)) >= 16.0;
+        return binding.index < axisCount && std::abs(travel(binding)) >= 16.0
+            && validAccessoryThresholds(binding.thresholds);
     }
     return false;
 }
@@ -133,8 +148,11 @@ std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const Devic
         if (!sample.axesPresent[binding.index])
             return std::nullopt;
         const double fraction = (static_cast<double>(sample.axes[binding.index]) - binding.rest) / travel(binding);
-        return InputLevel{std::abs(fraction) <= neutralThreshold,
-                          fraction >= (active ? releaseThreshold : engageThreshold)};
+        const double releaseThreshold = binding.thresholds.release / 100.0;
+        const double pressThreshold = binding.thresholds.press / 100.0;
+        // A low release setting also narrows the neutral gate.
+        return InputLevel{std::abs(fraction) <= neutralThreshold && fraction < releaseThreshold,
+                          fraction >= (active ? releaseThreshold : pressThreshold)};
     }
     }
     return std::nullopt;
@@ -164,26 +182,26 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
     file.seekg(0);
 
     AccessoryProfile profile;
-    bool versionRead = false;
+    int version = 0;
     std::string line;
     while (std::getline(file, line)) {
         const auto entry = trim(line);
         if (entry.empty() || entry.starts_with('#'))
             continue;
-        if (!versionRead && entry == "version=1") {
-            versionRead = true;
+        if (!version && (entry == "version=1" || entry == "version=2")) {
+            version = entry.back() - '0';
             continue;
         }
         constexpr std::string_view prefix = "binding=";
         AccessoryBinding binding;
-        if (!versionRead || !entry.starts_with(prefix) || profile.size() == maxAccessoryBindings
-            || !parseBinding(entry.substr(prefix.size()), binding)) {
+        if (!version || !entry.starts_with(prefix) || profile.size() == maxAccessoryBindings
+            || !parseBinding(entry.substr(prefix.size()), binding, version == 2)) {
             error = "Invalid accessory profile entry";
             return std::nullopt;
         }
         profile.push_back(std::move(binding));
     }
-    if (file.bad() || !versionRead) {
+    if (file.bad() || !version) {
         error = "Unsupported or unreadable accessory profile version";
         return std::nullopt;
     }
@@ -201,10 +219,16 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     temporary += L".tmp." + std::to_wstring(GetCurrentProcessId());
     std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
     file.imbue(std::locale::classic());
-    file << "# Chrome Axis accessories\nversion=1\n";
+    const bool hasCustomThresholds = std::ranges::any_of(profile, [](const AccessoryBinding& binding) {
+        return binding.thresholds != defaultThresholds;
+    });
+    file << "# Chrome Axis accessories\nversion=" << (hasCustomThresholds ? 2 : 1) << '\n';
     for (const auto& binding : profile) {
         file << "binding=" << binding.deviceId << ',' << kindNames[static_cast<std::size_t>(binding.kind)]
-             << ',' << binding.index << ',' << binding.rest << ',' << binding.engaged << ',' << binding.key << '\n';
+             << ',' << binding.index << ',' << binding.rest << ',' << binding.engaged << ',' << binding.key;
+        if (binding.thresholds != defaultThresholds)
+            file << ',' << binding.thresholds.press << ',' << binding.thresholds.release;
+        file << '\n';
     }
     file.close();
 
