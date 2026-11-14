@@ -437,9 +437,8 @@ private:
         }
 
         calibrationTitle_ = label(tr(Text::mainCalibration));
-        diagnostics_ = button(tr(Text::DlgDiagnosticsButton), showDiagnostics);
-        feedback_ = button(tr(Text::mainForceFeedback), configureFeedback);
         brakeSettings_ = button(tr(Text::mainBrakeSettings), configureBrake);
+        feedback_ = button(tr(Text::mainForceFeedback), configureFeedback);
         instruction_ = label(tr(Text::mainConnectToBegin));
         guideStep_ = label(L"");
         guideAction_ = label(L"");
@@ -447,6 +446,7 @@ private:
         guideNotice_ = label(L"");
         start_ = button(tr(Text::mainCalibrateAxes), startCalibration);
         calibrationScopeButton_ = button(tr(Text::mainCalibrationScope), chooseCalibrationScope);
+        diagnostics_ = button(tr(Text::DlgDiagnosticsButton), showDiagnostics);
         axisChoice_ = combo(chooseAxis);
         cancel_ = button(tr(Text::mainCancel), cancelCalibration);
         previous_ = button(tr(Text::guidePrevious), previousCalibration);
@@ -558,11 +558,11 @@ private:
         }
         place(steeringDeadzoneHint_, column[2] + 68, 306, 65, 22);
 
-        place(brakeSettings_, width - 486, 428, 137, 29);
-        place(diagnostics_, width - 339, 428, 133, 29);
+        place(brakeSettings_, width - 343, 428, 137, 29);
         place(feedback_, width - 196, 428, 154, 29);
         place(start_, 42, 491, 158, 29);
         place(calibrationScopeButton_, 210, 491, 180, 29);
+        place(diagnostics_, width - 175, 491, 133, 29);
         if (calibrating_) {
             place(calibrationTitle_, 46, 119, width - 270, 29);
             place(guideStep_, width - 194, 124, 148, 24);
@@ -577,7 +577,7 @@ private:
             place(previous_, width - 406, 468, 144, 38);
             place(measure_, width - 252, 468, 206, 38);
         } else {
-            place(calibrationTitle_, 42, 430, width - 548, 24);
+            place(calibrationTitle_, 42, 430, width - 397, 24);
             place(instruction_, 42, 459, width - 84, 24);
         }
         place(simDirections_, 42, 460, width - 84, 22);
