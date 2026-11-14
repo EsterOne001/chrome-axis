@@ -6,6 +6,7 @@
 #include <fstream>
 #include <locale>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace chrome_axis {
@@ -17,6 +18,12 @@ constexpr AccessoryThresholds defaultThresholds{};
 constexpr int povStep = 4500;
 constexpr int povFullTurn = 36000;
 constexpr std::array<std::string_view, 3> kindNames{"button", "pov", "axis"};
+constexpr std::string_view rolePrefix = "# shifter-role=";
+constexpr std::array<std::string_view, 12> roleNames{
+    "", "gear-1", "gear-2", "gear-3", "gear-4", "gear-5", "gear-6", "gear-7", "gear-8",
+    "reverse", "upshift", "downshift"
+};
+static_assert(roleNames.size() == static_cast<std::size_t>(ShifterRole::Downshift) + 1);
 
 std::string_view trim(std::string_view value)
 {
@@ -25,6 +32,14 @@ std::string_view trim(std::string_view value)
     if (first == std::string_view::npos)
         return {};
     return value.substr(first, value.find_last_not_of(whitespace) - first + 1);
+}
+
+ShifterRole parseRole(std::string_view entry)
+{
+    if (!entry.starts_with(rolePrefix))
+        return ShifterRole::None;
+    const auto role = std::ranges::find(roleNames, trim(entry.substr(rolePrefix.size())));
+    return role == roleNames.end() ? ShifterRole::None : static_cast<ShifterRole>(role - roleNames.begin());
 }
 
 template <class T>
@@ -107,7 +122,8 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
     }
     std::bitset<256> keys;
     for (const auto& binding : profile) {
-        if (!validInput(binding) || !isAccessoryKey(binding.key)) {
+        if (!validInput(binding) || !isAccessoryKey(binding.key)
+            || static_cast<std::size_t>(binding.role) >= roleNames.size()) {
             error = "Invalid accessory input or keyboard key";
             return false;
         }
@@ -183,17 +199,22 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
 
     AccessoryProfile profile;
     int version = 0;
+    auto role = ShifterRole::None;
     std::string line;
     while (std::getline(file, line)) {
         const auto entry = trim(line);
-        if (entry.empty() || entry.starts_with('#'))
+        if (entry.empty() || entry.starts_with('#')) {
+            role = parseRole(entry);
             continue;
+        }
         if (!version && (entry == "version=1" || entry == "version=2")) {
             version = entry.back() - '0';
+            role = ShifterRole::None;
             continue;
         }
         constexpr std::string_view prefix = "binding=";
         AccessoryBinding binding;
+        binding.role = std::exchange(role, ShifterRole::None);
         if (!version || !entry.starts_with(prefix) || profile.size() == maxAccessoryBindings
             || !parseBinding(entry.substr(prefix.size()), binding, version == 2)) {
             error = "Invalid accessory profile entry";
@@ -224,6 +245,9 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     });
     file << "# Chrome Axis accessories\nversion=" << (hasCustomThresholds ? 2 : 1) << '\n';
     for (const auto& binding : profile) {
+        // Accessory versions 1 and 2 already ignore comment lines.
+        if (binding.role != ShifterRole::None)
+            file << rolePrefix << roleNames[static_cast<std::size_t>(binding.role)] << '\n';
         file << "binding=" << binding.deviceId << ',' << kindNames[static_cast<std::size_t>(binding.kind)]
              << ',' << binding.index << ',' << binding.rest << ',' << binding.engaged << ',' << binding.key;
         if (binding.thresholds != defaultThresholds)
@@ -239,6 +263,18 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     std::filesystem::remove(temporary, ignored);
     error = "Cannot write the accessory profile. Check the destination and its permissions";
     return false;
+}
+
+bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
+                               const std::optional<AccessoryProfile>& second)
+{
+    if (!first || !second)
+        return first.has_value() == second.has_value();
+    const auto mapping = [](const AccessoryBinding& binding) {
+        return std::tie(binding.deviceId, binding.kind, binding.index, binding.rest, binding.engaged, binding.key,
+                        binding.thresholds);
+    };
+    return std::ranges::equal(*first, *second, std::ranges::equal_to{}, mapping, mapping);
 }
 
 AccessoryReader::AccessoryReader(const AccessoryProfile& profile)
@@ -278,6 +314,7 @@ AccessoryReadiness AccessoryReader::readiness() const noexcept
         result.armed += state.status == AccessoryStatus::armed;
         result.deviceUnavailable |= state.status == AccessoryStatus::deviceUnavailable;
         result.inputUnavailable |= state.status == AccessoryStatus::inputUnavailable;
+        result.temporarilyUnavailable |= state.status == AccessoryStatus::temporarilyUnavailable;
     }
     return result;
 }
@@ -286,23 +323,39 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
+    std::array<DeviceReadStatus, maxAccessoryBindings> statuses{};
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto owner = sampleOwners_[i];
         if (owner == i)
-            storage[owner] = input.sample(profile_[i].deviceId, requiredButtons_[owner]);
+            storage[owner] = input.sample(profile_[i].deviceId, requiredButtons_[owner], &statuses[owner]);
+        else
+            statuses[i] = statuses[owner];
         if (storage[owner])
             samples[i] = &*storage[owner];
     }
-    return update({samples.data(), profile_.size()});
+    return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()));
 }
 
-std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> samples)
+std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> samples,
+                                         std::span<const DeviceReadStatus> statuses)
 {
     std::bitset<256> keys;
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto& binding = profile_[i];
         auto& state = states_[i];
         const auto* sample = i < samples.size() ? samples[i] : nullptr;
+        const auto status = i < statuses.size() ? statuses[i] : DeviceReadStatus::unavailable;
+        if (!sample && status == DeviceReadStatus::pending) {
+            if (state.neutralPolls < requiredNeutralPolls)
+                state.neutralPolls = 0;
+            else
+                state.waitForRelease = true;
+            state.active = false;
+            state.status = AccessoryStatus::temporarilyUnavailable;
+            continue;
+        }
+        if (status == DeviceReadStatus::resumed)
+            state = {};
         const auto level = sample ? readLevel(binding, *sample, state.active) : std::nullopt;
         if (!level) {
             state = {};
@@ -313,6 +366,11 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
             state.status = state.neutralPolls == requiredNeutralPolls
                 ? AccessoryStatus::armed : AccessoryStatus::waitingForNeutral;
+            continue;
+        }
+        if (state.waitForRelease) {
+            state.waitForRelease = !level->neutral;
+            state.status = state.waitForRelease ? AccessoryStatus::waitingForNeutral : AccessoryStatus::armed;
             continue;
         }
         state.status = AccessoryStatus::armed;

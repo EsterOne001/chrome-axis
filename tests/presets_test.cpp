@@ -111,10 +111,10 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
     std::filesystem::create_directory(root);
     const Profile calibration{{oldWheel, 0, 500, 0, 1000, 0.0f}, {newWheel, 1, 0, 0, 900, 0.03f},
         {newWheel, 2, 0, 0, 900, 0.02f}, {50, 80}};
-    const AccessoryProfile bindings{{oldWheel, AccessoryKind::Button, 3, 0, 1, VK_ADD},
-        {oldWheel, AccessoryKind::Pov, 0, povCentered, 0, VK_SUBTRACT},
+    const AccessoryProfile bindings{{oldWheel, AccessoryKind::Button, 3, 0, 1, VK_ADD, {}, ShifterRole::Upshift},
+        {oldWheel, AccessoryKind::Pov, 0, povCentered, 0, VK_SUBTRACT, {}, ShifterRole::Downshift},
         {newWheel, AccessoryKind::Pov, 0, povCentered, 18000, VK_SPACE},
-        {oldWheel, AccessoryKind::Axis, 3, 0, 1000, VK_F8, {65, 30}}};
+        {oldWheel, AccessoryKind::Axis, 3, 0, 1000, VK_F8, {65, 30}, ShifterRole::Gear3}};
     const FeedbackSettings feedback{true, 19, false, true};
     std::string details;
     if (!check(saveProfile(root / profileFilename, calibration, details)
@@ -214,7 +214,7 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
     const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f}, {},
         {wheel, 2, 0, 0, 1000, 0.03f}, {-40, 75}};
-    const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD},
+    const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD, {}, ShifterRole::Upshift},
         {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}}};
     const FeedbackSettings feedback{true, 17, false, true};
     std::string error;
@@ -386,7 +386,7 @@ int main()
 
     const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
     const Profile calibration{{wheel, 0, 500, 0, 1000, 0.02f}};
-    const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD}};
+    const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD, {}, ShifterRole::Upshift}};
     std::string error;
     if (!check(activePreset(root).directory == root && activePreset(root).name.empty(), "Legacy settings must remain active by default")
         || !check(saveProfile(root / profileFilename, calibration, error), "Could not save calibration")

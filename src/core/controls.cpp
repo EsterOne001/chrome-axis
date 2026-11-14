@@ -284,19 +284,23 @@ ControlState ControlReader::poll(DirectInput& input, Readings* readings)
     const auto axes = channels(profile_);
     std::array<std::optional<DeviceSample>, 3> storage;
     std::array<const DeviceSample*, 3> samples{};
+    std::array<DeviceReadStatus, 3> statuses{};
     for (std::size_t i = 0; i < axes.size(); ++i) {
         if (axes[i]->deviceId.empty())
             continue;
         const std::size_t owner = sampleOwners_[i];
         if (owner == i)
-            storage[owner] = input.sample(axes[i]->deviceId);
+            storage[owner] = input.sample(axes[i]->deviceId, {}, &statuses[owner]);
+        else
+            statuses[i] = statuses[owner];
         if (storage[owner])
             samples[i] = &*storage[owner];
     }
-    return update(samples, readings);
+    return update(samples, readings, statuses);
 }
 
-ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& samples, Readings* readings)
+ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& samples, Readings* readings,
+                                  const std::array<DeviceReadStatus, 3>& statuses)
 {
     if (readings)
         *readings = {};
@@ -310,11 +314,19 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         if (calibration.deviceId.empty())
             continue;
         const auto* sample = samples[i];
+        if (!sample && statuses[i] == DeviceReadStatus::pending) {
+            if (neutralPolls_[i] < requiredNeutralPolls)
+                neutralPolls_[i] = 0;
+            axisStatuses_[i] = AxisStatus::temporarilyUnavailable;
+            continue;
+        }
         if (!sample || calibration.axis >= axisCount || !sample->axesPresent[calibration.axis]) {
             neutralPolls_[i] = 0;
             axisStatuses_[i] = sample ? AxisStatus::axisUnavailable : AxisStatus::deviceUnavailable;
             continue;
         }
+        if (statuses[i] == DeviceReadStatus::resumed)
+            neutralPolls_[i] = 0;
         const long raw = sample->axes[calibration.axis];
         if (readings)
             (*readings)[i] = normalize(calibration, raw, i == 0);

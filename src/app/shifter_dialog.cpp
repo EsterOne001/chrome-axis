@@ -52,7 +52,7 @@ private:
     bool runTimer();
     bool hasCaptureChanges() const { return !draft_.empty() || pending_.has_value(); }
     bool confirmDiscard(Text message) const;
-    std::wstring role() const;
+    ShifterRole role() const;
     unsigned int suggestedKey() const;
     void setKey(unsigned int key);
     void enterSetup();
@@ -194,12 +194,11 @@ void ShifterDialog::showSavedBindings(LRESULT selection)
     const auto* device = selectedDevice();
     if (!device)
         return;
-    // Legacy profiles store physical inputs and keys without a gear or paddle role.
     for (std::size_t i = 0; i < edited_.size(); ++i) {
         const auto& binding = edited_[i];
         if (binding.deviceId != device->id)
             continue;
-        const auto label = accessoryInputLabel(binding) + L"  →  " + accessoryKeyLabel(binding.key);
+        const auto label = accessoryBindingInputLabel(binding) + L"  →  " + accessoryKeyLabel(binding.key);
         if (send(IDC_SHIFTER_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())) >= 0)
             savedRows_.push_back(i);
     }
@@ -284,11 +283,12 @@ void ShifterDialog::start()
     runTimer();
 }
 
-std::wstring ShifterDialog::role() const
+ShifterRole ShifterDialog::role() const
 {
     if (!forward_)
-        return step_ == 0 ? tr(Text::DlgShifterUpshift) : tr(Text::DlgShifterDownshift);
-    return step_ == forward_ ? tr(Text::DlgShifterReverse) : tr(Text::DlgShifterGear) + std::to_wstring(step_ + 1);
+        return step_ == 0 ? ShifterRole::Upshift : ShifterRole::Downshift;
+    return step_ == forward_ ? ShifterRole::Reverse
+        : static_cast<ShifterRole>(static_cast<std::size_t>(ShifterRole::Gear1) + step_);
 }
 
 unsigned int ShifterDialog::suggestedKey() const
@@ -347,7 +347,7 @@ void ShifterDialog::position()
         status(draft_.empty() ? tr(Text::DlgShifterNoPosition)
             : tr(Text::DlgShifterSaveAndConfigure));
     } else {
-        SetDlgItemTextW(window_, IDC_SHIFTER_STEP, role().c_str());
+        SetDlgItemTextW(window_, IDC_SHIFTER_STEP, shifterRoleLabel(role()).c_str());
         setKey(suggestedKey());
         if (analog_) {
             stage_ = Stage::AnalogReady;
@@ -404,6 +404,7 @@ void ShifterDialog::poll()
         updateControls();
         return;
     }
+    input_.beginPoll();
     const auto sample = input_.sample(deviceId_);
     if (!sample) {
         if (digital_ && stage_ == Stage::Neutral)
@@ -503,7 +504,8 @@ void ShifterDialog::advance()
         return;
     }
     pending_->key = key;
-    const auto summary = role() + L"  →  " + accessoryKeyLabel(key);
+    pending_->role = role();
+    const auto summary = accessoryBindingInputLabel(*pending_) + L"  →  " + accessoryKeyLabel(key);
     send(IDC_SHIFTER_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(summary.c_str()));
     draft_.push_back(std::move(*pending_));
     ++step_;

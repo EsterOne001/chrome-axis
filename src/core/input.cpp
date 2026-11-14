@@ -19,6 +19,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr auto reconnectDelay = std::chrono::milliseconds(500);
+// A temporarily missing USB report can preserve arming, never the old input itself.
+constexpr auto pendingGrace = std::chrono::milliseconds(100);
 constexpr auto forceDuration = std::chrono::milliseconds(100);
 constexpr auto forceRefresh = std::chrono::milliseconds(60);
 static_assert(forceRefresh < forceDuration);
@@ -179,6 +181,7 @@ struct OpenDevice {
             device.reset();
         }
         acquired = false;
+        continuity.reset();
         buttonsChecked.reset();
         buttonsPresent.reset();
     }
@@ -214,6 +217,8 @@ struct OpenDevice {
     bool acquired{};
     Clock::time_point retryAfter{};
     Clock::time_point pendingSince{};
+    DeviceReadContinuity continuity;
+    DeviceReadStatus readStatus{DeviceReadStatus::unavailable};
     std::string_view lastStage;
     HRESULT lastResult{};
     bool lastAvailable{};
@@ -263,6 +268,24 @@ struct WheelOutput {
 };
 
 } // namespace
+
+DeviceReadStatus DeviceReadContinuity::pending(Clock::time_point now) noexcept {
+    pending_ = true;
+    return lastSampled_ != Clock::time_point{} && now - lastSampled_ < pendingGrace
+        ? DeviceReadStatus::pending : DeviceReadStatus::unavailable;
+}
+
+DeviceReadStatus DeviceReadContinuity::available(Clock::time_point sampledAt) noexcept {
+    const bool interrupted = pending_ &&
+        (lastSampled_ == Clock::time_point{} || sampledAt - lastSampled_ >= pendingGrace);
+    lastSampled_ = sampledAt;
+    pending_ = false;
+    return interrupted ? DeviceReadStatus::resumed : DeviceReadStatus::available;
+}
+
+void DeviceReadContinuity::reset() noexcept {
+    *this = {};
+}
 
 struct DirectInput::Impl {
     Impl(HWND windowHandle, DirectInputDiagnostic callback)
@@ -321,12 +344,14 @@ void DirectInput::beginPoll() noexcept {
 }
 
 std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const std::string& id) {
+    opened.readStatus = DeviceReadStatus::unavailable;
     if (opened.retryAfter != Clock::time_point{} && Clock::now() < opened.retryAfter) {
         return std::nullopt;
     }
     opened.retryAfter = {};
     const auto retry = [&](std::string_view stage, HRESULT result) {
         opened.pendingSince = {};
+        opened.continuity.reset();
         opened.retryAfter = Clock::now() + reconnectDelay;
         opened.report(diagnostic, id, stage, result, false);
         return std::nullopt;
@@ -368,10 +393,12 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
 
     DIJOYSTATE2 state{};
     std::string_view stage;
+    const auto sampledAt = Clock::now();
     const auto result = opened.read(state, stage);
     if (result == E_PENDING) {
+        const auto now = Clock::now();
+        opened.readStatus = opened.continuity.pending(now);
         if (diagnostic) {
-            const auto now = Clock::now();
             if (opened.pendingSince == Clock::time_point{})
                 opened.pendingSince = now;
             if (now - opened.pendingSince >= reconnectDelay)
@@ -385,6 +412,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         return retry(stage, result);
     }
     opened.pendingSince = {};
+    opened.readStatus = opened.continuity.available(sampledAt);
     opened.report(diagnostic, id, stage, result, true);
 
     DeviceSample sample;
@@ -403,15 +431,21 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     return sample;
 }
 
-std::optional<DeviceSample> DirectInput::sample(const std::string& id, const std::bitset<buttonCount>& buttons) {
-    if (!ready() || id.empty())
+std::optional<DeviceSample> DirectInput::sample(const std::string& id, const std::bitset<buttonCount>& buttons,
+                                               DeviceReadStatus* status) {
+    if (!ready() || id.empty()) {
+        if (status)
+            *status = DeviceReadStatus::unavailable;
         return std::nullopt;
+    }
 
     auto& opened = impl_->openDevices[id];
     if (impl_->pollCycle == 0 || opened.sampleCycle != impl_->pollCycle) {
         opened.cachedSample = impl_->read(opened, id);
         opened.sampleCycle = impl_->pollCycle;
     }
+    if (status)
+        *status = opened.readStatus;
     if (opened.cachedSample) {
         const auto unchecked = buttons & ~opened.buttonsChecked;
         if (unchecked.any()) {

@@ -15,11 +15,13 @@ enum class DiagnosticMode : std::uint32_t {
 };
 
 enum class DiagnosticAxisState : std::uint32_t {
-    unassigned, deviceUnavailable, axisUnavailable, waitingForNeutral, armed, awaitingProfile, inactive, simulated, sampleExpired
+    unassigned, deviceUnavailable, axisUnavailable, waitingForNeutral, armed, awaitingProfile, inactive, simulated,
+    sampleExpired, temporarilyUnavailable
 };
 
 enum class DiagnosticAccessoryState : std::uint32_t {
-    unconfigured, waiting, ready, profileError, inactive, blocked, deviceUnavailable, inputUnavailable, sampleExpired
+    unconfigured, waiting, ready, profileError, inactive, blocked, deviceUnavailable, inputUnavailable, sampleExpired,
+    temporarilyUnavailable
 };
 
 enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive };

@@ -121,9 +121,21 @@ int run()
         if (nextDrive.eventCount != 1 || nextDrive.lastDrive.axes[1].state != DiagnosticAxisState::waitingForNeutral)
             return 11;
 
+        auto pending = snapshot;
+        pending.axes[0].state = DiagnosticAxisState::temporarilyUnavailable;
+        pending.axes[0].inputAvailable = 0;
+        pending.accessories = DiagnosticAccessoryState::temporarilyUnavailable;
+        publisher.publish(pending, 2);
+        publisher.publish(snapshot, 2);
+        const auto resumed = reader.read();
+        if (resumed.eventCount != 3 || resumed.events[1].axes[0] != DiagnosticAxisState::temporarilyUnavailable ||
+            resumed.events[1].accessories != DiagnosticAccessoryState::temporarilyUnavailable ||
+            resumed.snapshot.axes[0].state != DiagnosticAxisState::armed)
+            return 12;
+
         std::this_thread::sleep_for(1700ms);
         const auto stale = reader.read();
-        if (stale.connection != DiagnosticConnection::stale || !stale.lastDriveAt || stale.eventCount != 1)
+        if (stale.connection != DiagnosticConnection::stale || !stale.lastDriveAt || stale.eventCount != 3)
             return 4;
         publisher.publish(snapshot, 2);
         if (reader.read().connection != DiagnosticConnection::connected)

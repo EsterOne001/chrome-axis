@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.27** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.28** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -51,12 +51,12 @@ The app displays **Simulation requested** until the plugin confirms simulation w
 
 1. In **USB Hardware**, click **Refresh**. Select devices for **Wheel**, **Throttle** and **Brake**. For pedals attached to the wheelbase, select **Same as wheel** for the throttle and **Same as throttle** for the brake. Select **Game controls** to keep the game’s usual controls for an axis.
 2. Click **Calibrate axes**. At each step, the animation and instructions show the position to use on the displayed device. Once in position, click **Capture position** and hold the control still until the capture finishes. If several axes move, select the one that matches the requested control. Use **Previous** to retake a position while keeping earlier captures.
-3. On the **Review** screen, move each control and check its live gauge. Steering should range from −100% to +100% and each pedal from 0% to 100%, returning to zero at rest. Use the button for the control you want to repeat, such as **Redo brake**, to keep the other measurements. Click **Finish** to return to the main screen, where you can adjust deadzones if needed.
+3. On the **Review** screen, move each control. Each row shows whether to centre the wheel, release a pedal, or reconnect a device. The travel gauge moves as soon as a reading is available. Steering should range from −100% to +100% and each pedal from 0% to 100%, returning to zero at rest. Use the button for the control you want to repeat, such as **Redo brake**, to keep the other measurements. Click **Finish** to return to the main screen, where you can adjust deadzones if needed.
 4. Click **Save profile** to write the calibration to `chrome_axis.ini` in the active profile. Click **Reload** to read the saved settings.
 
 If your driver puts both pedals on one axis, Chrome Axis accepts a shared rest position with travel in opposite directions. Use separate axes in the driver settings to measure both pedals at once.
 
-To take a measurement again, open **Calibrate separately…**, then choose an axis or device. Choosing a device recalibrates all driving axes assigned to it. Other measurements and accessory bindings are kept. Save the profile to apply the result.
+To take a measurement again, open **Calibrate separately…**, then choose an axis or device. Choosing a device recalibrates all driving axes assigned to it. If a device disappears during capture, reconnect the same device and retry that position. Completed positions are kept. Other measurements and accessory bindings are kept. Save the profile to apply the result.
 
 **Select profile…** lets you switch to **Default profile** or create a named copy from the current saved settings. Each profile stores its own calibration, accessory bindings and force feedback settings. **Save profile** and **Reload** act on the active profile. The plugin picks up the same selection on its next settings check. USB activation is shared across profiles.
 
@@ -87,7 +87,7 @@ To change the key for an already captured input, select the binding and click **
 1. Open **USB Hardware → Accessories…**, select the DirectInput device and click **Shifter / paddles…**. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
 2. In **Sequential / paddles**, capture **Shift up** and **Shift down**. Select **Button or D-pad** for digital inputs. For an analog axis, capture neutral and full travel in each direction. Bind the same keys in your transmission mod.
 3. For an **H-pattern**, select 6, 7 or 8 forward gears plus reverse. Capture each position, returning to neutral between gears. Assign a different key to each gear. If you use the suggested numpad digits, turn on **Num Lock** or choose other keys in both mods. The transmission mod needs a separate command for each gear to use these bindings in Cyberpunk.
-4. Click **Apply** in the wizard and **Save** in **Accessories**. Then enable USB in game. Bindings are saved in the active profile’s `accessories.ini` and work without an axis calibration.
+4. Click **Apply** in the wizard and **Save** in **Accessories**. Then enable USB in game. Bindings are saved in the active profile’s `accessories.ini` and work without an axis calibration. New captures keep the gear or paddle label when you reopen the wizard or change its key. Older bindings keep their physical input label.
 
 **Manual Transmission V10 4.3** offers rebindable sequential shift commands. Chrome Axis suggests **Numpad + / Numpad −** to avoid the **↑ / ↓** keys used by Cyberpunk for throttle and brake. Set the same keys in V10. To use a clutch pedal, capture it as an accessory axis, assign a key without modifiers, and set the same key in V10. Testing the two mods together is still pending. [V10 controls](https://www.nexusmods.com/cyberpunk2077/mods/28342) · [V10 discussion about sequential and H-pattern shifting](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts)
 
@@ -140,7 +140,7 @@ Open **Diagnostics…** in **USB Hardware** or the **Help** menu. This panel sho
 
 The panel indicates when Cyberpunk is out of focus or its plugin data is stale. The last applied value helps diagnose an input after Alt-Tab. You can keep the app open during this USB test.
 
-When the game directory is recognized and a component is missing, the panel names the missing DLL or script. The copied report includes that information and the game version when available.
+When the game directory is recognized, the panel names a missing DLL or script and displays both versions if the executable and DLL differ. **Last drive** shows the previous driving state and values after you switch back. A temporary missing reading is distinguished from a disconnected device. The copied report includes that information and the game version when available.
 
 After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it pairs the calibrated reading with the requested command when they come from the same sample. The last value actually written appears separately with its age. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
 
@@ -165,7 +165,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.27-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.28-Cyberpunk-2.5.zip'
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.

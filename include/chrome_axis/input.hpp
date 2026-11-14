@@ -4,6 +4,7 @@
 
 #include <array>
 #include <bitset>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -48,6 +49,21 @@ using DirectInputDiagnostic = void (*)(std::string_view deviceId, std::string_vi
     HRESULT result, bool available);
 
 enum class WheelForceState { waiting, active, unavailable };
+// Only available and resumed carry fresh data. Resumed starts a new neutral check.
+enum class DeviceReadStatus { unavailable, pending, available, resumed };
+
+class DeviceReadContinuity {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    DeviceReadStatus pending(Clock::time_point now) noexcept;
+    DeviceReadStatus available(Clock::time_point sampledAt) noexcept;
+    void reset() noexcept;
+
+private:
+    Clock::time_point lastSampled_{};
+    bool pending_{};
+};
 
 // Use each instance from one thread, with a top-level window of this process.
 class DirectInput {
@@ -62,7 +78,8 @@ public:
     // Start a sampling cycle when several readers use the same device states.
     void beginPoll() noexcept;
     // Only readers that validate a saved button mapping need its availability checked.
-    std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>& buttons = {});
+    std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>& buttons = {},
+                                       DeviceReadStatus* status = nullptr);
     // Output is limited to the calibrated actuator and expires if calls stop.
     // The optional guard is called synchronously to recheck context around driver calls.
     void setWheelForce(const std::string& id, std::size_t axis, float force,

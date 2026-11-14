@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.27** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.28** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -57,12 +57,12 @@ L’application affiche **Simulation demandée** jusqu’à ce que le plugin con
 
 1. Dans l’onglet **Matériel USB**, actualisez la liste et choisissez un périphérique pour le **Volant**, l’**Accélérateur** et le **Frein**. Si les pédales sont raccordées à la base, choisissez **Même que le volant** pour l’accélérateur et **Même que l’accélérateur** pour le frein. Choisissez **Commandes du jeu** pour conserver le clavier ou la manette sur un axe.
 2. Cliquez sur **Calibrer les axes**. À chaque étape, l’animation et la consigne indiquent la position à prendre sur le périphérique affiché. Une fois en position, cliquez sur **Capturer la position** et gardez la commande immobile jusqu’à la fin de la capture. Si plusieurs axes réagissent, sélectionnez celui qui correspond à la commande demandée. **Précédent** permet de refaire une position tout en gardant les captures antérieures.
-3. Dans **Vérification**, actionnez chaque commande et contrôlez la jauge correspondante. La direction doit aller de −100 % à +100 % et chaque pédale de 0 % à 100 %, avec un retour à zéro au repos. Utilisez le bouton de la commande à reprendre, par exemple **Refaire le frein**, pour conserver les autres mesures. Cliquez sur **Terminer** pour revenir à la fenêtre principale et ajuster les zones mortes si nécessaire.
+3. Dans **Vérification**, actionnez chaque commande. L’état de chaque axe indique si vous devez recentrer le volant, relâcher une pédale ou rebrancher un périphérique. La jauge de course réagit dès qu’une mesure est disponible. La direction doit aller de −100 % à +100 % et chaque pédale de 0 % à 100 %, avec un retour à zéro au repos. Utilisez le bouton de la commande à reprendre, par exemple **Refaire le frein**, pour conserver les autres mesures. Cliquez sur **Terminer** pour revenir à la fenêtre principale et ajuster les zones mortes si nécessaire.
 4. Cliquez sur **Enregistrer le profil** pour écrire `chrome_axis.ini` dans le dossier du profil actif. Cliquez sur **Recharger** pour relire les réglages enregistrés.
 
 Si le pilote expose les deux pédales sur un même axe, la calibration accepte un point de repos commun avec des courses opposées. Choisissez des axes séparés dans le pilote pour mesurer les deux pressions simultanément.
 
-Pour reprendre une mesure, ouvrez **Calibrer séparément…**, puis choisissez un axe ou un périphérique. Le choix d’un périphérique reprend tous les axes de conduite qui lui sont affectés. Les autres mesures et les affectations d’accessoires sont conservées. Enregistrez le profil pour appliquer le résultat.
+Pour reprendre une mesure, ouvrez **Calibrer séparément…**, puis choisissez un axe ou un périphérique. Le choix d’un périphérique reprend tous les axes de conduite qui lui sont affectés. Si un périphérique disparaît durant une mesure, rebranchez le même appareil et reprenez cette mesure. Les positions déjà validées restent disponibles. Les autres mesures et les affectations d’accessoires sont conservées. Enregistrez le profil pour appliquer le résultat.
 
 ### Plusieurs profils
 
@@ -95,7 +95,7 @@ Pour changer la touche d’une entrée déjà capturée, sélectionnez l’affec
 1. Ouvrez **Matériel USB → Accessoires…**, sélectionnez le périphérique DirectInput puis cliquez sur **Boîte / palettes…**. Si le levier ou les palettes passent par la base, sélectionnez le volant. Pour un appareil USB autonome, sélectionnez son entrée Windows.
 2. En mode **Séquentiel / palettes**, capturez les commandes de montée et de descente. Le mode numérique détecte les boutons ou directions de croix. Si le pilote expose un axe, capturez le repos et chaque butée. Affectez les mêmes touches dans le mod de transmission.
 3. En mode **Boîte en H**, sélectionnez la grille de 6, 7 ou 8 rapports et capturez chaque position disponible, marche arrière comprise, en revenant au point mort entre les positions. Associez chaque position à une touche distincte. Si vous utilisez les chiffres proposés du pavé numérique, activez **Verr. Num.** ou choisissez d’autres touches dans les deux mods. Pour piloter les rapports dans Cyberpunk, le mod de transmission doit proposer une commande par rapport.
-4. Cliquez sur **Appliquer** dans l’assistant, puis sur **Enregistrer** dans le panneau **Accessoires…**. Activez ensuite l’USB en jeu. Les affectations se trouvent dans le fichier `accessories.ini` du profil actif et peuvent servir sans profil d’axes.
+4. Cliquez sur **Appliquer** dans l’assistant, puis sur **Enregistrer** dans le panneau **Accessoires…**. Activez ensuite l’USB en jeu. Les affectations se trouvent dans le fichier `accessories.ini` du profil actif et peuvent servir sans profil d’axes. Les nouvelles captures conservent le libellé du rapport ou de la palette lorsque vous rouvrez l’assistant ou changez la touche. Les anciennes affectations restent lisibles avec leur entrée physique.
 
 **Manual Transmission V10 4.3** propose des commandes séquentielles de montée et de descente, réaffectables dans son menu. L’assistant propose **Pavé + / Pavé −** pour éviter les flèches **↑ / ↓**, déjà utilisées par Cyberpunk pour l’accélération et le freinage. Réglez les mêmes touches dans V10. Pour l’embrayage, capturez la pédale comme un axe d’accessoire et choisissez une touche sans modificateur, puis reportez-la dans V10. L’essai des deux mods ensemble reste à faire. [Commandes de V10](https://www.nexusmods.com/cyberpunk2077/mods/28342), [FAQ sur le séquentiel et la grille en H](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts).
 
@@ -152,7 +152,7 @@ Ouvrez **Diagnostic…** dans **Matériel USB** ou dans le menu **Aide**. Le pan
 
 Le panneau indique quand Cyberpunk n’est plus au premier plan ou quand les données du plugin ne sont plus récentes. La dernière valeur appliquée aide à diagnostiquer un essai après Alt-Tab. Pour l’USB, l’application peut rester ouverte pendant cet essai.
 
-Si le dossier du jeu est reconnu et qu’un composant manque, le panneau indique le nom de la DLL ou du script absent. Le diagnostic copié inclut cette information et la version du jeu quand elle est disponible.
+Si le dossier du jeu est reconnu, le panneau signale une DLL ou un script absent et affiche les deux versions si l’EXE et la DLL diffèrent. Au retour du jeu, **Dernier essai** garde les valeurs et les états de la dernière conduite. Une lecture momentanément indisponible est distinguée d’un périphérique déconnecté. Le diagnostic copié inclut cette information et la version du jeu quand elle est disponible.
 
 Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rapport dans le presse-papiers inclut le profil actif, les modèles détectés par l’application, les versions installées et jusqu’à huit changements d’état récents. Il distingue l’état actuel du dernier état en conduite. Pour chaque axe, il associe la valeur calibrée lue à la commande demandée lorsqu’elles proviennent de la même mesure. La dernière valeur effectivement écrite apparaît séparément, avec son ancienneté. Le rapport se copie localement et omet les chemins d’installation et les identifiants de périphériques. Déployez ensemble l’application et le plugin du même ZIP pour que le panneau puisse lire les données du jeu.
 
@@ -177,7 +177,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.27-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.28-Cyberpunk-2.5.zip'
 ```
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.

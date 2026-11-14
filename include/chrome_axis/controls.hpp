@@ -68,6 +68,7 @@ enum class AxisStatus {
     axisUnavailable,
     waitingForNeutral,
     armed,
+    temporarilyUnavailable,
 };
 
 inline constexpr wchar_t profileFilename[] = L"chrome_axis.ini";
@@ -91,7 +92,8 @@ public:
 
     // Each channel refers to one sample. Channels on the same device share a sample.
     // Requested diagnostic readings are independent of the neutral gate.
-    ControlState update(const std::array<const DeviceSample*, 3>& samples, Readings* readings = nullptr);
+    ControlState update(const std::array<const DeviceSample*, 3>& samples, Readings* readings = nullptr,
+        const std::array<DeviceReadStatus, 3>& statuses = {});
 
 private:
     Profile profile_;

@@ -67,7 +67,7 @@ enum Command {
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
     backupProfiles, restoreProfiles, openModInfo, reassignDevice, configureBrake, leaveSimulation,
-    deadzoneFirst = 200, meterFirst = 210, retryAxisFirst = 220
+    deadzoneFirst = 200, meterFirst = 210, brakeResponseMeter = meterFirst + commands.size(), retryAxisFirst = 220
 };
 
 using CalibrationScope = std::array<bool, commands.size()>;
@@ -294,10 +294,13 @@ public:
             const bool isField = message != WM_CTLCOLORSTATIC || std::find(zones_.begin(), zones_.end(), control) != zones_.end();
             const bool heading = control == devicesTitle_ || control == axesTitle_ || control == calibrationTitle_;
             const bool muted = footer || control == hardware_ || control == instruction_ ||
-                control == steeringDeadzoneHint_ || !IsWindowEnabled(control);
-            const bool value = std::find(values_.begin(), values_.end(), control) != values_.end();
+                control == steeringDeadzoneHint_ || !IsWindowEnabled(control) ||
+                std::ranges::find(reviewStatuses_, control) != reviewStatuses_.end();
+            const bool value = std::ranges::find(values_, control) != values_.end();
             const bool guideNotice = control == guideNotice_ && (capture_ || !calibrationMessage_.empty());
             SetTextColor(dc, heading ? yellow : guideNotice || value ? cyan : muted ? secondary : ink);
+            if (control == reviewBrakeValue_)
+                SetTextColor(dc, yellow);
             SetBkColor(dc, footer ? background : isField ? field : panel);
             return reinterpret_cast<LRESULT>(footer ? backgroundBrush_ : isField ? fieldBrush_ : panelBrush_);
         }
@@ -316,7 +319,12 @@ public:
                 return TRUE;
             }
             if (item.CtlID >= meterFirst && item.CtlID < meterFirst + commands.size()) {
-                paintMeter(item, item.CtlID - meterFirst);
+                const auto i = item.CtlID - meterFirst;
+                paintMeter(item, i == 0, liveReady_[i] ? std::optional{live_[i]} : std::nullopt, cyan);
+                return TRUE;
+            }
+            if (item.CtlID == brakeResponseMeter) {
+                paintMeter(item, false, reviewBrakeOutput_, yellow);
                 return TRUE;
             }
             if (item.CtlType == ODT_BUTTON) {
@@ -445,8 +453,14 @@ private:
             values_[i] = label(L"—");
             simKeys_[i] = label(tr(keyLabels[i]));
             retryAxes_[i] = button(tr(retryAxisLabels[i]), retryAxisFirst + static_cast<int>(i));
+            reviewStatuses_[i] = label(L"");
             ShowWindow(retryAxes_[i], SW_HIDE);
+            ShowWindow(reviewStatuses_[i], SW_HIDE);
         }
+        reviewBrakeMeter_ = child(L"STATIC", L"", SS_OWNERDRAW, brakeResponseMeter);
+        reviewBrakeValue_ = label(tr(Text::guideReviewBrakeNoOutput));
+        ShowWindow(reviewBrakeMeter_, SW_HIDE);
+        ShowWindow(reviewBrakeValue_, SW_HIDE);
 
         calibrationTitle_ = label(tr(Text::mainCalibration));
         brakeSettings_ = button(tr(Text::mainBrakeSettings), configureBrake);
@@ -521,7 +535,7 @@ private:
             int x, y, width, height;
         };
         std::vector<Placement> placements;
-        placements.reserve(65);
+        placements.reserve(70);
         const auto place = [&](HWND control, int x, int y, int w, int h) {
             if (control)
                 placements.push_back({control, px(left + x), px(y), px(w), px(h)});
@@ -551,14 +565,14 @@ private:
         constexpr std::array headingWidths{130, 110, 132, 130};
         const bool reviewing = reviewingCalibration();
         const int meterLeft = reviewing ? 220 : column[3];
-        const int meterWidth = width - meterLeft - (reviewing ? 314 : 112);
+        const int meterWidth = width - meterLeft - (reviewing ? 346 : 112);
         const int pixelWidth = px(meterWidth);
         meterSpans_ = {pixelWidth - pixelWidth / 2, pixelWidth, pixelWidth};
         for (std::size_t i = 0; i < column.size(); ++i)
             place(headings_[i], column[i], 278, headingWidths[i], 20);
         int reviewRow = 0;
         for (std::size_t i = 0; i < commands.size(); ++i) {
-            const int y = reviewing ? 300 + reviewRow * 44 : 303 + static_cast<int>(i) * 32;
+            const int y = reviewing ? 293 + reviewRow * 50 : 303 + static_cast<int>(i) * 32;
             if (reviewing && calibrationScope_[i])
                 ++reviewRow;
             place(names_[i], reviewing ? 46 : column[0], y + 3, simulation_ ? 132 : 150, 22);
@@ -566,8 +580,16 @@ private:
             place(simKeys_[i], column[1], y + 3, 226, 22);
             place(zones_[i], column[2], y, 62, 24);
             place(meters_[i], meterLeft, y + 8, meterWidth, 11);
-            place(values_[i], width - (reviewing ? 302 : 102), y + 3, 64, 22);
+            place(values_[i], width - (reviewing ? 334 : 102), y + 3, reviewing ? 98 : 64, 22);
             place(retryAxes_[i], width - 226, y - 2, 180, 32);
+            if (reviewing) {
+                const int statusWidth = i == 2 ? (width - 238 - 46) : width - 266;
+                place(reviewStatuses_[i], 46, i == 2 ? y + 43 : y + 23, statusWidth, 20);
+                if (i == 2) {
+                    place(reviewBrakeMeter_, meterLeft, y + 29, meterWidth, 11);
+                    place(reviewBrakeValue_, width - 334, y + 24, 98, 22);
+                }
+            }
         }
         place(steeringDeadzoneHint_, column[2] + 68, 306, 65, 22);
 
@@ -583,7 +605,7 @@ private:
             const int guideWidth = width - guideLeft - 52;
             place(guideAction_, guideLeft, 196, guideWidth, 32);
             place(guideDevice_, guideLeft, 233, guideWidth, 25);
-            place(instruction_, guideLeft, reviewing ? 238 : 270, guideWidth, 57);
+            place(instruction_, guideLeft, reviewing ? 238 : 270, guideWidth, reviewing ? 51 : 57);
             place(guideNotice_, guideLeft, 338, guideWidth, 68);
             place(axisChoice_, 280, 412, width - 332, 180);
             place(cancel_, 46, 468, 144, 38);
@@ -726,18 +748,18 @@ private:
         return {px(left + 50), px(381), px(left + 250), px(387)};
     }
 
-    void paintMeter(const DRAWITEMSTRUCT& item, std::size_t index)
+    void paintMeter(const DRAWITEMSTRUCT& item, bool centered, std::optional<float> value, COLORREF accent)
     {
         const auto rect = item.rcItem;
         const bool highContrast = isHighContrast();
         fill(item.hDC, rect, highContrast ? GetSysColor(COLOR_BTNFACE) : field);
-        const LONG origin = index == 0 ? (rect.right + rect.left) / 2 : rect.left;
+        const LONG origin = centered ? (rect.right + rect.left) / 2 : rect.left;
         const auto width = static_cast<float>(rect.right - origin);
-        const auto end = origin + static_cast<LONG>(std::lround(live_[index] * width));
-        if (liveReady_[index] && end != origin)
+        const auto end = origin + static_cast<LONG>(std::lround(value.value_or(0.0f) * width));
+        if (end != origin)
             fill(item.hDC, {std::min(origin, end), rect.top, std::max(origin, end), rect.bottom},
-                 highContrast ? GetSysColor(COLOR_HIGHLIGHT) : cyan);
-        if (index == 0)
+                 highContrast ? GetSysColor(COLOR_HIGHLIGHT) : accent);
+        if (centered)
             fill(item.hDC, {origin, rect.top, origin + 1, rect.bottom},
                  highContrast ? GetSysColor(COLOR_WINDOWTEXT) : secondary);
     }
@@ -871,6 +893,8 @@ private:
     void retryAxis(std::size_t channel);
     void cancelCurrentCalibration();
     void enterCalibrationReview();
+    void updateCalibrationReview(bool foreground);
+    void updateReviewBrakeOutput(std::optional<float> value);
     void rewindCalibration(std::size_t target);
     void finishCalibration();
     void finishCapture(const chrome_axis::AxisCapture& capture);
@@ -948,6 +972,8 @@ private:
     std::array<HWND, 3> names_{}, bindings_{}, zones_{}, meters_{}, values_{};
     std::array<HWND, 3> simKeys_{};
     std::array<HWND, 3> retryAxes_{};
+    std::array<HWND, 3> reviewStatuses_{};
+    HWND reviewBrakeMeter_{}, reviewBrakeValue_{};
     std::unique_ptr<chrome_axis::DirectInput> input_;
     std::vector<chrome_axis::DeviceInfo> devices_;
     std::array<std::vector<std::string>, 3> deviceChoices_;
@@ -974,15 +1000,19 @@ private:
     float guideMotion_{1.0f};
     std::chrono::steady_clock::time_point guideMotionStart_{};
     CalibrationScope calibrationScope_{};
+    std::array<std::wstring, commands.size()> calibrationDeviceNames_{};
     std::array<Step, calibrationSteps.size()> steps_{};
     std::size_t step_{}, stepCount_{};
     std::optional<chrome_axis::CalibrationCapture> capture_;
     unsigned int captureTicks_{};
+    bool captureHadSignal_{};
     std::array<chrome_axis::AxisCapture, calibrationSteps.size()> positions_{};
     std::vector<chrome_axis::AxisCandidate> candidates_;
     chrome_axis::Profile measured_{};
     std::optional<AxisRetry> retry_;
     std::optional<chrome_axis::ControlReader> reviewPreview_;
+    std::array<std::optional<Text>, commands.size()> reviewStates_{};
+    std::optional<float> reviewBrakeOutput_;
     std::wstring calibrationMessage_;
     bool simulation_{};
     bool publisherFailed_{};
@@ -1202,11 +1232,9 @@ void App::scanDevices()
         hardwareStatus += advice;
     }
     setText(hardware_, hardwareStatus);
-    if (calibrating_ && !reviewingCalibration() && !retry_ && !canCalibrate(calibrationScope_)) {
-        calibrating_ = false;
+    if (capture_ && !availableCalibrationScope()[steps_[step_].channel]) {
         capture_.reset();
-        candidates_.clear();
-        calibrationMessage_ = tr(Text::mainReconnectBeforeCalibration);
+        calibrationMessage_.clear();
     }
     updateCalibrationView();
 }
@@ -1845,7 +1873,6 @@ void App::updateCalibrationView()
             EnableWindow(retryAxes_[i], available[i]);
             disconnected = disconnected || (calibrationScope_[i] && !available[i]);
         }
-        EnableWindow(previous_, !disconnected);
         setText(instruction_, tr(disconnected ? Text::guideReviewReconnect : Text::guideReviewInstruction));
         setText(measure_, tr(Text::guideFinish));
         EnableWindow(measure_, TRUE);
@@ -1857,14 +1884,13 @@ void App::updateCalibrationView()
     setText(guideStep_, tr(Text::guideStepPrefix) + std::to_wstring(step_ - first + 1) + tr(Text::guideStepSeparator)
         + std::to_wstring(end - first));
     setText(guideAction_, tr(choosing ? Text::guideSelectAxis : step.heading));
-    std::wstring deviceLine = tr(deviceLabels[step.channel]);
-    if (const auto* selected = device(deviceId(step.channel)))
-        deviceLine += L"  ·  " + deviceName(*selected);
+    const auto& deviceName = calibrationDeviceNames_[step.channel];
+    const auto deviceLine = tr(deviceLabels[step.channel]) + (deviceName.empty() ? L"" : L"  ·  " + deviceName);
     setText(guideDevice_, deviceLine);
     setText(instruction_, tr(choosing ? Text::mainChooseMatchingAxis : step.instruction));
     const bool disconnected = !available[step.channel];
-    setText(guideNotice_, !calibrationMessage_.empty() ? calibrationMessage_
-        : disconnected ? tr(Text::guideRetryReconnect)
+    setText(guideNotice_, disconnected ? tr(Text::guideRetryReconnect)
+        : !calibrationMessage_.empty() ? calibrationMessage_
         : choosing ? L"" : tr(step_ == first ? Text::guideCaptureHint : Text::guideNextCaptureHint));
     setText(measure_, capture_ ? tr(Text::mainMeasuring) : choosing ? tr(Text::mainChooseAxis) : tr(Text::guideCapture));
     EnableWindow(measure_, !capture_ && !disconnected);
@@ -1936,7 +1962,10 @@ void App::updateGuideVisibility()
         for (const auto control : {names_[i], meters_[i], values_[i]})
             show(control, !calibrating_ || reviewAxis);
         show(retryAxes_[i], reviewAxis);
+        show(reviewStatuses_[i], reviewAxis);
     }
+    show(reviewBrakeMeter_, reviewing && calibrationScope_[2]);
+    show(reviewBrakeValue_, reviewing && calibrationScope_[2]);
     layout();
 }
 
@@ -2128,6 +2157,8 @@ void App::beginCalibration(const CalibrationScope& scope)
     for (std::size_t i = 0; i < axes.size(); ++i) {
         if (!scope[i] && draft_[i])
             *axes[i] = *draft_[i];
+        const auto* selected = scope[i] ? device(deviceId(i)) : nullptr;
+        calibrationDeviceNames_[i] = selected ? deviceName(*selected) : std::wstring{};
     }
     calibrating_ = true;
     step_ = 0;
@@ -2158,13 +2189,14 @@ void App::measureStep()
     calibrationMessage_ = tr(Text::mainHoldSteady);
     capture_.emplace();
     captureTicks_ = 0;
+    captureHadSignal_ = false;
     updateCalibrationView();
 }
 
 void App::previousStep()
 {
     const auto first = retry_ ? retry_->first : 0;
-    if (!calibrating_ || capture_ || step_ == first || (reviewingCalibration() && !canCalibrate(calibrationScope_)))
+    if (!calibrating_ || capture_ || step_ == first)
         return;
 
     reviewPreview_.reset();
@@ -2216,9 +2248,102 @@ void App::enterCalibrationReview()
     retry_.reset();
     step_ = stepCount_;
     reviewPreview_.emplace(measured_);
-    updateLiveControls({});
+    updateCalibrationReview(GetForegroundWindow() == window_ && !IsIconic(window_));
     updateCalibrationView();
     SetFocus(measure_);
+}
+
+void App::updateCalibrationReview(bool foreground)
+{
+    using chrome_axis::AxisStatus;
+    using chrome_axis::DeviceReadStatus;
+    std::array<std::optional<chrome_axis::DeviceSample>, commands.size()> samples;
+    std::array<const chrome_axis::DeviceSample*, commands.size()> inputs{};
+    std::array<DeviceReadStatus, commands.size()> statuses{};
+    const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
+    if (foreground) {
+        input_->beginPoll();
+        for (std::size_t i = 0; i < axes.size(); ++i) {
+            const auto& axis = *axes[i];
+            if (axis.deviceId.empty())
+                continue;
+            samples[i] = input_->sample(axis.deviceId, {}, &statuses[i]);
+            if (samples[i])
+                inputs[i] = &*samples[i];
+        }
+    }
+
+    // Arming uses the same neutral gate as the game, while the review gauges show measured travel.
+    reviewPreview_->update(inputs, nullptr, statuses);
+    chrome_axis::ControlState travel;
+    const std::array values{&travel.values.steering, &travel.values.throttle, &travel.values.brake};
+    const std::array ready{&travel.steeringReady, &travel.throttleReady, &travel.brakeReady};
+    std::optional<float> adjustedBrake;
+    for (std::size_t i = 0; i < axes.size(); ++i) {
+        if (!calibrationScope_[i])
+            continue;
+
+        const auto& axis = *axes[i];
+        Text state = Text::guideReviewWindowPaused;
+        if (foreground) {
+            switch (reviewPreview_->axisStatuses()[i]) {
+            case AxisStatus::unassigned:
+            case AxisStatus::axisUnavailable:
+                state = Text::guideReviewAxisUnavailable;
+                break;
+            case AxisStatus::deviceUnavailable:
+                state = device(axis.deviceId) ? Text::guideReviewNoSignal : Text::guideReviewDeviceDisconnected;
+                break;
+            case AxisStatus::temporarilyUnavailable:
+                state = Text::guideReviewAwaitSignal;
+                break;
+            case AxisStatus::waitingForNeutral:
+                state = i == 0 ? Text::guideReviewCentreWheel : Text::guideReviewReleasePedal;
+                break;
+            case AxisStatus::armed:
+                state = Text::guideReviewReady;
+                break;
+            }
+        }
+        if (reviewStates_[i] != state) {
+            reviewStates_[i] = state;
+            setText(reviewStatuses_[i], tr(state));
+        }
+        if (!inputs[i] || !inputs[i]->axesPresent[axis.axis])
+            continue;
+
+        *ready[i] = true;
+        const auto raw = inputs[i]->axes[axis.axis];
+        const auto delta = static_cast<double>(raw) - axis.neutral;
+        const auto positive = static_cast<double>(axis.positive) - axis.neutral;
+        const auto fraction = delta / positive;
+        *values[i] = i == 0 && fraction < 0.0
+            ? -static_cast<float>(std::clamp(delta / (static_cast<double>(axis.negative) - axis.neutral), 0.0, 1.0))
+            : static_cast<float>(std::clamp(fraction, 0.0, 1.0));
+        if (i == 2)
+            adjustedBrake = chrome_axis::previewBrake(axis, raw, brakeResponse_).adjusted;
+    }
+    updateLiveControls(travel);
+    updateReviewBrakeOutput(adjustedBrake);
+}
+
+void App::updateReviewBrakeOutput(std::optional<float> value)
+{
+    if (reviewBrakeOutput_ == value)
+        return;
+    const auto percent = [](float fraction) { return std::lround(100.0f * fraction); };
+    const bool displayChanged = value.has_value() != reviewBrakeOutput_.has_value();
+    if (displayChanged ||
+        (value && percent(*value) != percent(*reviewBrakeOutput_))) {
+        auto label = std::wstring(tr(Text::guideReviewBrakeOutput));
+        label += value ? std::to_wstring(percent(*value)) + tr(Text::mainPercentSuffix) : L"—";
+        setText(reviewBrakeValue_, label);
+    }
+    const auto pixels = [&](float fraction) { return std::lround(fraction * static_cast<float>(meterSpans_[2])); };
+    const bool repaint = displayChanged || (value && pixels(*value) != pixels(*reviewBrakeOutput_));
+    reviewBrakeOutput_ = value;
+    if (repaint)
+        InvalidateRect(reviewBrakeMeter_, nullptr, FALSE);
 }
 
 void App::rewindCalibration(std::size_t target)
@@ -2338,21 +2463,30 @@ void App::tick()
     }
     updateCalibrationMotion(foreground);
     if (capture_ && foreground) {
+        using chrome_axis::DeviceReadStatus;
         const auto channel = steps_[step_].channel;
-        const auto sample = input_->sample(deviceId(channel));
+        input_->beginPoll();
+        DeviceReadStatus status{};
+        const auto sample = input_->sample(deviceId(channel), {}, &status);
         ++captureTicks_;
-        if ((sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
+        const bool interrupted = captureHadSignal_ &&
+            (status == DeviceReadStatus::resumed || status == DeviceReadStatus::unavailable);
+        if (interrupted || (sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
             capture_.reset();
-            calibrationMessage_ = tr(Text::mainReadInterrupted);
-            updateCalibrationView();
-            SetFocus(measure_);
+            calibrationMessage_ = tr(Text::guideCaptureInterrupted);
+            scanDevices();
+            if (IsWindowEnabled(measure_))
+                SetFocus(measure_);
         } else if (!sample) {
             capture_.emplace();
-        } else if (capture_->complete()) {
-            const auto result = capture_->result();
-            capture_.reset();
-            if (result)
-                finishCapture(*result);
+        } else {
+            captureHadSignal_ = true;
+            if (capture_->complete()) {
+                const auto result = capture_->result();
+                capture_.reset();
+                if (result)
+                    finishCapture(*result);
+            }
         }
         if (capture_) {
             RECT client{};
@@ -2362,9 +2496,14 @@ void App::tick()
         }
         return;
     }
-    auto* reader = reviewPreview_ ? &*reviewPreview_ : !calibrating_ && preview_ ? &*preview_ : nullptr;
-    updateLiveControls(simulation_ ? previewSimulation()
-        : reader && foreground ? reader->poll(*input_) : chrome_axis::ControlState{});
+    if (reviewPreview_) {
+        updateCalibrationReview(foreground);
+    } else {
+        if (foreground && !simulation_ && !calibrating_ && preview_)
+            input_->beginPoll();
+        updateLiveControls(simulation_ ? previewSimulation()
+            : foreground && !calibrating_ && preview_ ? preview_->poll(*input_) : chrome_axis::ControlState{});
+    }
 }
 
 void App::updateLiveControls(const chrome_axis::ControlState& state)

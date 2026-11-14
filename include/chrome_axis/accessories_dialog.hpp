@@ -58,6 +58,8 @@ bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path
 bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings, std::string_view preferredDevice);
 std::wstring accessoryKeyLabel(unsigned int key);
 std::wstring accessoryInputLabel(const AccessoryBinding& binding);
+std::wstring shifterRoleLabel(ShifterRole role);
+std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding);
 enum class BindingKeyEdit { unchanged, changed, occupied };
 BindingKeyEdit chooseBindingKey(HWND owner, AccessoryProfile& bindings, std::size_t row);
 

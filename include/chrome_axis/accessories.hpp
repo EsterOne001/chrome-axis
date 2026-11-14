@@ -11,6 +11,7 @@ inline constexpr wchar_t accessoryFilename[] = L"accessories.ini";
 inline constexpr std::size_t maxAccessoryBindings = 32;
 
 enum class AccessoryKind { Button, Pov, Axis };
+enum class ShifterRole { None, Gear1, Gear2, Gear3, Gear4, Gear5, Gear6, Gear7, Gear8, Reverse, Upshift, Downshift };
 
 struct AccessoryThresholds {
     unsigned int press{55};
@@ -32,23 +33,27 @@ struct AccessoryBinding {
     long engaged{};
     unsigned int key{};
     AccessoryThresholds thresholds{};
+    ShifterRole role{};
 
     bool operator==(const AccessoryBinding&) const = default;
 };
 
 using AccessoryProfile = std::vector<AccessoryBinding>;
 
-enum class AccessoryStatus { waitingForNeutral, deviceUnavailable, inputUnavailable, armed };
+enum class AccessoryStatus { waitingForNeutral, deviceUnavailable, inputUnavailable, armed, temporarilyUnavailable };
 
 struct AccessoryReadiness {
     std::size_t armed{};
     bool deviceUnavailable{};
     bool inputUnavailable{};
+    bool temporarilyUnavailable{};
 };
 
 bool isAccessoryKey(unsigned int key) noexcept;
 std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path& path, std::string& error);
 bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProfile& profile, std::string& error);
+bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
+                               const std::optional<AccessoryProfile>& second);
 
 class AccessoryReader {
 public:
@@ -60,12 +65,13 @@ public:
     AccessoryReadiness readiness() const noexcept;
 
     // Samples follow binding order. Bindings on the same device share a sample.
-    std::bitset<256> update(std::span<const DeviceSample* const> samples);
+    std::bitset<256> update(std::span<const DeviceSample* const> samples, std::span<const DeviceReadStatus> statuses = {});
 
 private:
     struct BindingState {
         unsigned int neutralPolls{};
         bool active{};
+        bool waitForRelease{};
         AccessoryStatus status{AccessoryStatus::waitingForNeutral};
     };
 

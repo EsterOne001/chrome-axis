@@ -1,5 +1,6 @@
 #include "chrome_axis/accessories.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <utility>
@@ -100,6 +101,50 @@ int testThresholds(const std::filesystem::path& path, const std::string& deviceI
     return low.update(connected).any() ? 30 : 0;
 }
 
+int testShifterRoles(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    AccessoryProfile profile{
+        {deviceId, AccessoryKind::Button, 0, 0, 1, VK_NUMPAD1, {}, ShifterRole::Reverse},
+        {deviceId, AccessoryKind::Pov, 0, povCentered, 9000, 'E', {}, ShifterRole::Gear8},
+        {deviceId, AccessoryKind::Axis, 2, 0, 100, VK_SUBTRACT, {60, 35}, ShifterRole::Downshift},
+        {deviceId, AccessoryKind::Button, 1, 0, 1, VK_ADD, {}, ShifterRole::Upshift},
+        {deviceId, AccessoryKind::Button, 2, 0, 1, VK_NUMPAD7},
+    };
+    std::string error;
+    if (!saveAccessoryProfile(path, profile, error) || loadAccessoryProfile(path, error) != profile)
+        return 41;
+
+    auto edited = profile;
+    edited.front().role = ShifterRole::Gear1;
+    if (edited == profile || !sameAccessoryInputProfile(profile, edited)
+        || sameAccessoryInputProfile(profile, std::nullopt))
+        return 42;
+    edited.front().key = 'G';
+    if (sameAccessoryInputProfile(profile, edited)
+        || !saveAccessoryProfile(path, edited, error) || loadAccessoryProfile(path, error) != edited)
+        return 43;
+    edited.front().role = static_cast<ShifterRole>(1000);
+    if (saveAccessoryProfile(path, edited, error))
+        return 44;
+
+    // Older readers ignore metadata comments. Unrecognized or detached comments do not name a binding.
+    std::ofstream file(path, std::ios::trunc);
+    file << "# shifter-role=reverse\nversion=1\nbinding=" << deviceId << ",button,0,0,1,97\n"
+         << "# shifter-role=gear-1\n\nbinding=" << deviceId << ",button,1,0,1,98\n"
+         << "# shifter-role=gear-2\n# an unrelated comment\nbinding=" << deviceId << ",button,2,0,1,99\n"
+         << "# shifter-role=gear-15\nbinding=" << deviceId << ",button,3,0,1,100\n"
+         << "# shifter-role=gear-5\nbinding=" << deviceId << ",button,4,0,1,101\n"
+         << "binding=" << deviceId << ",button,5,0,1,102\n";
+    file.close();
+    const auto restored = loadAccessoryProfile(path, error);
+    const std::array expected{ShifterRole::None, ShifterRole::None, ShifterRole::None, ShifterRole::None,
+                              ShifterRole::Gear5, ShifterRole::None};
+    if (!restored || !std::ranges::equal(*restored, expected, std::ranges::equal_to{}, &AccessoryBinding::role))
+        return 45;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -131,12 +176,15 @@ int run()
     const bool savedEmpty = chrome_axis::saveAccessoryProfile(path, {}, error);
     const auto empty = chrome_axis::loadAccessoryProfile(path, error);
     const auto thresholdResult = testThresholds(path, handbrakeId);
+    const auto roleResult = testShifterRoles(path, wheelId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
         return 1;
     if (thresholdResult != 0)
         return thresholdResult;
+    if (roleResult != 0)
+        return roleResult;
 
     chrome_axis::AccessoryReader reader(*loaded);
     chrome_axis::DeviceSample wheel;
@@ -242,6 +290,40 @@ int run()
     keys = reader.update(connected);
     if (keys.count() != 2 || !keys.test(VK_UP) || !keys.test(VK_NUMPAD7))
         return 16;
+
+    // A pending base report cannot replay a held shift, while a fresh handbrake still works.
+    using Status = chrome_axis::DeviceReadStatus;
+    const std::array pending{Status::pending, Status::pending, Status::available,
+                             Status::pending, Status::pending};
+    handbrake.axes[7] = 400;
+    keys = reader.update(disconnected, pending);
+    const auto pendingReadiness = reader.readiness();
+    if (keys.count() != 1 || !keys.test(VK_SPACE) || pendingReadiness.armed != 1 ||
+        !pendingReadiness.temporarilyUnavailable || pendingReadiness.deviceUnavailable)
+        return 47;
+    wheel.buttons.set(0); // A new press may also occur in an unknown interval.
+    if (reader.update(connected) != keys || reader.ready())
+        return 48;
+    wheel.buttons.reset();
+    wheel.povs[0] = chrome_axis::povCentered;
+    if (reader.update(connected) != keys || !reader.ready())
+        return 49;
+    wheel.buttons.set(0);
+    wheel.buttons.set(chrome_axis::buttonCount - 1);
+    keys = reader.update(connected);
+    if (keys.count() != 3 || !keys.test(VK_SPACE) || !keys.test(VK_ADD) || !keys.test(VK_UP))
+        return 50;
+    reader.update(disconnected, pending);
+    const std::array resumed{Status::resumed, Status::resumed, Status::available,
+                             Status::resumed, Status::resumed};
+    keys = reader.update(connected, resumed);
+    if (keys.count() != 1 || !keys.test(VK_SPACE) || reader.ready())
+        return 51;
+    wheel.buttons.reset();
+    for (int i = 0; i < 3; ++i)
+        reader.update(connected);
+    if (!reader.ready())
+        return 52;
     return 0;
 }
 

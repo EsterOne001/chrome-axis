@@ -11,6 +11,60 @@ bool approximatelyEqual(float actual, float expected)
     return std::abs(actual - expected) < 0.0001f;
 }
 
+int testTransientRead(const chrome_axis::Profile& profile)
+{
+    using namespace chrome_axis;
+    using namespace std::chrono_literals;
+    using Status = DeviceReadStatus;
+    DeviceReadContinuity continuity;
+    const auto first = DeviceReadContinuity::Clock::time_point{} + 1s;
+    if (continuity.pending(first) != Status::unavailable ||
+        continuity.available(first + 1ms) != Status::resumed ||
+        continuity.pending(first + 95ms) != Status::pending ||
+        continuity.available(first + 100ms) != Status::available ||
+        continuity.pending(first + 125ms) != Status::pending ||
+        continuity.available(first + 200ms) != Status::resumed ||
+        continuity.pending(first + 300ms) != Status::unavailable)
+        return 35;
+    continuity.reset();
+    if (continuity.pending(first + 400ms) != Status::unavailable)
+        return 36;
+
+    DeviceSample wheel, pedals;
+    wheel.axesPresent[0] = true;
+    wheel.axes[0] = profile.steering.neutral;
+    pedals.axesPresent[1] = pedals.axesPresent[2] = true;
+    pedals.axes[1] = profile.throttle.neutral;
+    pedals.axes[2] = profile.brake.neutral;
+    ControlReader reader(profile);
+    const std::array<const DeviceSample*, 3> connected{&wheel, &pedals, &pedals};
+    for (int i = 0; i < 3; ++i)
+        reader.update(connected);
+
+    pedals.axes[1] = profile.throttle.positive;
+    pedals.axes[2] = profile.brake.positive;
+    wheel.axes[0] = profile.steering.positive;
+    if (!reader.update(connected).brakeReady)
+        return 37;
+
+    ControlReader::Readings readings;
+    const std::array pending{Status::available, Status::pending, Status::pending};
+    auto state = reader.update({&wheel, nullptr, nullptr}, &readings, pending);
+    if (!state.steeringReady || state.throttleReady || state.brakeReady || state.values.brake != 0.0f ||
+        readings[1] || readings[2] || reader.axisStatuses()[2] != AxisStatus::temporarilyUnavailable)
+        return 38;
+    state = reader.update(connected);
+    if (!state.throttleReady || !state.brakeReady || state.values.brake != 1.0f)
+        return 39;
+
+    reader.update({&wheel, nullptr, nullptr}, nullptr, pending);
+    state = reader.update(connected, nullptr, {Status::available, Status::resumed, Status::resumed});
+    if (!state.steeringReady || state.throttleReady || state.brakeReady || state.values.brake != 0.0f ||
+        reader.axisStatuses()[2] != AxisStatus::waitingForNeutral)
+        return 40;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -286,7 +340,7 @@ int run()
     zeroSteering.steering.deadzone = 0.001f;
     if (!chrome_axis::validateProfile(zeroSteering, error))
         return 34;
-    return 0;
+    return testTransientRead(*loaded);
 }
 
 } // namespace

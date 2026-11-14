@@ -82,6 +82,27 @@ std::wstring accessoryInputLabel(const AccessoryBinding& binding)
     return {};
 }
 
+std::wstring shifterRoleLabel(ShifterRole role)
+{
+    switch (role) {
+    case ShifterRole::None: return {};
+    case ShifterRole::Reverse: return tr(Text::DlgShifterReverse);
+    case ShifterRole::Upshift: return tr(Text::DlgShifterUpshift);
+    case ShifterRole::Downshift: return tr(Text::DlgShifterDownshift);
+    default:
+        const auto gear = static_cast<int>(role) - static_cast<int>(ShifterRole::Gear1) + 1;
+        return tr(Text::DlgShifterGear) + std::to_wstring(gear);
+    }
+}
+
+std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding)
+{
+    auto input = accessoryInputLabel(binding);
+    if (binding.role != ShifterRole::None)
+        input = shifterRoleLabel(binding.role) + L" · " + input;
+    return input;
+}
+
 namespace {
 
 long povDirection(std::uint16_t value)
@@ -368,6 +389,7 @@ void AccessoryDialog::capture()
         }
         startSampling(CaptureStage::AxisRest, tr(Text::DlgAccessoriesHoldAtRest));
     } else {
+        input_.beginPoll();
         previous_ = input_.sample(device->id);
         if (!previous_) {
             setStatus(tr(Text::DlgAccessoriesInputUnavailable));
@@ -387,6 +409,7 @@ void AccessoryDialog::sample()
         return;
     }
     const auto* device = selectedDevice();
+    input_.beginPoll();
     const auto state = device ? input_.sample(device->id) : std::nullopt;
     if (!state || GetTickCount64() >= deadline_) {
         clearCapture();
@@ -451,7 +474,7 @@ void AccessoryDialog::refreshBindings(LRESULT selection)
     send(IDC_ACCESSORY_LIST, LB_RESETCONTENT);
     for (const auto& binding : bindings_) {
         const auto device = std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id);
-        auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryInputLabel(binding);
+        auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryBindingInputLabel(binding);
         if (binding.kind == AccessoryKind::Axis) {
             label += L" · " + std::to_wstring(binding.thresholds.press) + L"% / "
                 + std::to_wstring(binding.thresholds.release) + L"%";

@@ -45,6 +45,8 @@ struct DialogState {
     const std::filesystem::path& profileRoot;
     std::wstring models;
     const wchar_t* missingFiles{};
+    std::wstring pluginVersion{};
+    std::wstring versionMismatch{};
 };
 
 struct AxisControls {
@@ -97,6 +99,7 @@ const wchar_t* axisText(DiagnosticAxisState state)
     case DiagnosticAxisState::inactive: return tr(Text::DlgDiagnosticsInactive);
     case DiagnosticAxisState::simulated: return tr(Text::DlgDiagnosticsSimulated);
     case DiagnosticAxisState::sampleExpired: return tr(Text::DlgDiagnosticsSampleExpired);
+    case DiagnosticAxisState::temporarilyUnavailable: return tr(Text::DlgDiagnosticsTemporaryRead);
     }
     return unavailableValue;
 }
@@ -113,6 +116,7 @@ const wchar_t* accessoryText(DiagnosticAccessoryState state)
     case DiagnosticAccessoryState::deviceUnavailable: return tr(Text::DlgDiagnosticsDeviceUnavailable);
     case DiagnosticAccessoryState::inputUnavailable: return tr(Text::DlgDiagnosticsAccessoryInputUnavailable);
     case DiagnosticAccessoryState::sampleExpired: return tr(Text::DlgDiagnosticsSampleExpired);
+    case DiagnosticAccessoryState::temporarilyUnavailable: return tr(Text::DlgDiagnosticsTemporaryRead);
     }
     return unavailableValue;
 }
@@ -206,7 +210,7 @@ std::wstring reportLabel(std::wstring text)
     return text;
 }
 
-std::wstring fileVersion(const std::filesystem::path& path)
+std::wstring fileVersion(const std::filesystem::path& path, bool omitZeroRevision = false)
 {
     DWORD unused{};
     const auto bytes = GetFileVersionInfoSizeW(path.c_str(), &unused);
@@ -221,10 +225,11 @@ std::wstring fileVersion(const std::filesystem::path& path)
     const auto& info = *static_cast<const VS_FIXEDFILEINFO*>(data);
     if (info.dwSignature != 0xfeef04bd)
         return unavailableValue;
-    return std::to_wstring(HIWORD(info.dwFileVersionMS)) + L'.' +
-           std::to_wstring(LOWORD(info.dwFileVersionMS)) + L'.' +
-           std::to_wstring(HIWORD(info.dwFileVersionLS)) + L'.' +
-           std::to_wstring(LOWORD(info.dwFileVersionLS));
+    auto version = std::to_wstring(HIWORD(info.dwFileVersionMS)) + L'.' +
+        std::to_wstring(LOWORD(info.dwFileVersionMS)) + L'.' + std::to_wstring(HIWORD(info.dwFileVersionLS));
+    if (!omitZeroRevision || LOWORD(info.dwFileVersionLS))
+        version += L'.' + std::to_wstring(LOWORD(info.dwFileVersionLS));
+    return version;
 }
 
 std::wstring detectedModels(std::span<const DeviceInfo> devices)
@@ -279,12 +284,14 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
     line(Text::DlgDiagnosticsReportApp, CHROME_AXIS_VERSION_WIDE);
     if (!state.gameRoot.empty()) {
         line(Text::DlgDiagnosticsReportGame, fileVersion(state.gameRoot / L"bin" / L"x64" / L"Cyberpunk2077.exe"));
-        line(Text::DlgDiagnosticsReportPlugin, fileVersion(state.profileRoot.parent_path() / L"ChromeAxis.dll"));
+        line(Text::DlgDiagnosticsReportPlugin, state.pluginVersion);
     }
     if (state.missingFiles) {
         report += state.missingFiles;
         report += L"\r\n";
     }
+    if (!state.versionMismatch.empty())
+        report += state.versionMismatch + L"\r\n";
     report += connectionText(read.connection);
     report += L"\r\n";
     const auto localProfile = activePreset(state.profileRoot);
@@ -386,23 +393,31 @@ void setChangedText(HWND window, int id, std::wstring_view text)
 void refresh(HWND window, DialogState& state)
 {
     const auto read = state.reader.read();
-    setChangedText(window, IDC_DIAGNOSTICS_CONNECTION,
-                   state.missingFiles ? state.missingFiles : connectionText(read.connection));
+    setChangedText(window, IDC_DIAGNOSTICS_CONNECTION, state.missingFiles ? state.missingFiles :
+        !state.versionMismatch.empty() ? state.versionMismatch.c_str() : connectionText(read.connection));
     const bool connected = read.connection == DiagnosticConnection::connected;
-    const auto& snapshot = read.snapshot;
+    const auto mode = read.snapshot.mode;
+    const bool showLastDrive = read.lastDriveAt && (!connected || mode == DiagnosticMode::gameNotForeground ||
+        mode == DiagnosticMode::waitingForDriver);
+    const auto& snapshot = showLastDrive ? read.lastDrive : read.snapshot;
+    const bool showControls = connected || showLastDrive;
     const auto now = GetTickCount64();
-    setChangedText(window, IDC_DIAGNOSTICS_MODE, connected ? modeText(snapshot.mode) : unavailableValue);
-    setChangedText(window, IDC_DIAGNOSTICS_PROFILE, connected ? profileText(snapshot) : unavailableValue);
+    setChangedText(window, IDC_DIAGNOSTICS_MODE, connected ? modeText(mode) : unavailableValue);
+    setChangedText(window, IDC_DIAGNOSTICS_PROFILE_LABEL,
+                   tr(showLastDrive ? Text::DlgDiagnosticsLastDriveProfile : Text::DlgDiagnosticsProfile));
+    setChangedText(window, IDC_DIAGNOSTICS_PROFILE, showControls ? profileText(snapshot) : unavailableValue);
+    setChangedText(window, IDC_MODAL_LIST_HEADING,
+                   tr(showLastDrive ? Text::DlgDiagnosticsLastDriveHeading : Text::DlgDiagnosticsAxes));
     for (std::size_t i = 0; i < axisControls.size(); ++i) {
         const auto& controls = axisControls[i];
         const auto& axis = snapshot.axes[i];
-        setChangedText(window, controls.stateId, connected ? axisText(axis.state) : unavailableValue);
-        setChangedText(window, controls.valueId, connected ? appliedValue(axis, now) : unavailableValue);
+        setChangedText(window, controls.stateId, showControls ? axisText(axis.state) : unavailableValue);
+        setChangedText(window, controls.valueId, showControls ? appliedValue(axis, now) : unavailableValue);
     }
 
-    setChangedText(window, IDC_DIAGNOSTICS_ACCESSORIES, connected ? accessoryStatus(snapshot) : unavailableValue);
-    setChangedText(window, IDC_DIAGNOSTICS_ACCESSORY, connected ? lastAccessoryKey(snapshot, now) : unavailableValue);
-    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, connected ? feedbackText(snapshot.feedback) : unavailableValue);
+    setChangedText(window, IDC_DIAGNOSTICS_ACCESSORIES, showControls ? accessoryStatus(snapshot) : unavailableValue);
+    setChangedText(window, IDC_DIAGNOSTICS_ACCESSORY, showControls ? lastAccessoryKey(snapshot, now) : unavailableValue);
+    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackText(snapshot.feedback) : unavailableValue);
 }
 
 INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -414,7 +429,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         auto& initial = *reinterpret_cast<DialogState*>(lParam);
         SetWindowTextW(window, tr(Text::DlgDiagnosticsTitle));
         SetDlgItemTextW(window, IDC_MODAL_INTRO,
-                       tr(initial.missingFiles ? Text::DlgDiagnosticsRedeploy : Text::DlgDiagnosticsIntro));
+                       tr(initial.missingFiles || !initial.versionMismatch.empty()
+                           ? Text::DlgDiagnosticsRedeploy : Text::DlgDiagnosticsIntro));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_MODE_LABEL, tr(Text::DlgDiagnosticsMode));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_PROFILE_LABEL, tr(Text::DlgDiagnosticsProfile));
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgDiagnosticsAxes));
@@ -473,8 +489,16 @@ void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::
 {
     const auto pluginDirectory = profileRoot.parent_path();
     const auto gameRoot = installedGameRoot(pluginDirectory);
-    DialogState state{DiagnosticReader(gameRoot), gameRoot, profileRoot, detectedModels(devices),
-                      gameRoot.empty() ? nullptr : missingPluginFilesText(pluginFiles(pluginDirectory))};
+    DialogState state{DiagnosticReader(gameRoot), gameRoot, profileRoot, detectedModels(devices)};
+    if (!gameRoot.empty()) {
+        const auto files = pluginFiles(pluginDirectory);
+        state.missingFiles = missingPluginFilesText(files);
+        state.pluginVersion = files.library ? fileVersion(pluginDirectory / L"ChromeAxis.dll", true) : unavailableValue;
+        if (state.pluginVersion != unavailableValue && state.pluginVersion != CHROME_AXIS_VERSION_WIDE) {
+            state.versionMismatch = std::wstring(tr(Text::DlgDiagnosticsVersionMismatch)) + L" · " +
+                tr(Text::DlgDiagnosticsReportApp) + L" " CHROME_AXIS_VERSION_WIDE L" / DLL " + state.pluginVersion;
+        }
+    }
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIAGNOSTICS), owner,
                                        dialogProc, reinterpret_cast<LPARAM>(&state));
     if (result == -1)

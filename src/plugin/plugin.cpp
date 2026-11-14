@@ -600,6 +600,7 @@ DiagnosticAxisState diagnosticAxisState(chrome_axis::AxisStatus state, bool samp
     case AxisStatus::axisUnavailable: return DiagnosticAxisState::axisUnavailable;
     case AxisStatus::waitingForNeutral: return DiagnosticAxisState::waitingForNeutral;
     case AxisStatus::armed: return DiagnosticAxisState::armed;
+    case AxisStatus::temporarilyUnavailable: return DiagnosticAxisState::temporarilyUnavailable;
     }
     return DiagnosticAxisState::inactive;
 }
@@ -614,6 +615,8 @@ DiagnosticAccessoryState diagnosticAccessoryState(chrome_axis::AccessoryReadines
         return DiagnosticAccessoryState::deviceUnavailable;
     if (readiness.inputUnavailable)
         return DiagnosticAccessoryState::inputUnavailable;
+    if (readiness.temporarilyUnavailable)
+        return DiagnosticAccessoryState::temporarilyUnavailable;
     return ready ? DiagnosticAccessoryState::ready : DiagnosticAccessoryState::waiting;
 }
 
@@ -642,6 +645,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     Clock::time_point nextDiagnostic{};
     Clock::time_point accessoryBlockedUntil{};
     Clock::time_point nextTimeoutReport{};
+    Clock::time_point nextPendingReport{};
     std::uint64_t diagnosticSession{};
     const auto publishDiagnostics = [&](HWND foreground, const DrivingContext& polled) {
         const auto now = Clock::now();
@@ -841,9 +845,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 auto updated = watchedAccessories.stamp
                     ? chrome_axis::loadAccessoryProfile(accessoryPath, accessoryError) : std::nullopt;
                 watchedAccessories.readFinished(updated.has_value(), start);
-                accessoryChanged = accessoryProfile != updated;
+                accessoryChanged = !chrome_axis::sameAccessoryInputProfile(accessoryProfile, updated);
+                accessoryProfile = std::move(updated);
                 if (accessoryChanged) {
-                    accessoryProfile = std::move(updated);
                     accessories.reset();
                     if (accessoryProfile && !accessoryProfile->empty()) {
                         accessories.emplace(*accessoryProfile);
@@ -928,6 +932,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             if (sourceChanged || profileChanged)
                 nextTimeoutReport = {};
+            nextPendingReport = {};
             lastGeneration = current.generation;
         }
         if (modeChanged || windowChanged || presetChanged || profileChanged || accessoryChanged) {
@@ -950,7 +955,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         auto sampledAt = start;
         bool sampleExpired = false;
         std::bitset<256> requestedKeys;
-        bool accessoriesReady = false;
         const bool physical = !simulated && (reader || accessories);
         const bool wantFeedback = physical && feedbackSettings.enabled && profile && !profile->steering.deviceId.empty();
         feedbackRequested.store(wantFeedback, std::memory_order_relaxed);
@@ -981,7 +985,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 if (accessories && current.vehicleUpdated != Clock::time_point{} &&
                     sampledAt - current.vehicleUpdated <= inputLifetime) {
                     requestedKeys = accessories->poll(*input);
-                    accessoriesReady = accessories->ready();
                 } else if (accessories) {
                     accessories->reset();
                 }
@@ -997,16 +1000,18 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 controls = {};
                 readings = {};
                 requestedKeys.reset();
-                accessoriesReady = false;
             }
         }
         const bool axesReady = reader && std::ranges::all_of(reader->axisStatuses(), [](chrome_axis::AxisStatus status) {
             return status == chrome_axis::AxisStatus::armed || status == chrome_axis::AxisStatus::unassigned;
         });
         const bool profilesValid = (!watchedProfile.stamp || profileError.empty()) && accessoryError.empty();
+        auto readiness = physical && accessories ? accessories->readiness() : chrome_axis::AccessoryReadiness{};
+        const bool accessoriesReady = accessoryProfile && !accessoryProfile->empty() &&
+            readiness.armed == accessoryProfile->size();
         const bool usbReady = physical && profilesValid && (!reader || axesReady) && (!accessories || accessoriesReady);
         const bool usbCanSend = controls.steeringReady || controls.throttleReady || controls.brakeReady ||
-            accessoriesReady || (accessories && !simulated && accessories->readiness().armed != 0);
+            readiness.armed != 0;
         auto hudStatus = HudStatus::loaded;
         if (simulated) {
             hudStatus = HudStatus::simulation;
@@ -1050,6 +1055,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         if (accessoryBlocked) {
             requestedKeys.reset();
             accessories->reset();
+            readiness = {};
         }
         AccessoryDelivery delivery;
         if (accessories || accessoryKeys.hasInjectedKeys()) {
@@ -1093,6 +1099,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     case AxisStatus::axisUnavailable: return "axis unavailable";
                     case AxisStatus::waitingForNeutral: return "waiting for neutral";
                     case AxisStatus::armed: return "armed";
+                    case AxisStatus::temporarilyUnavailable: return "temporarily unavailable";
                     }
                     return "unknown";
                 };
@@ -1109,12 +1116,19 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (accessoryBlocked || delivery.blocked)
                 accessoryBlockedUntil = now + diagnosticIssueDuration;
         }
-        // Report a timeout even when it fell between the regular diagnostic snapshots.
+        // Capture brief interruptions that fall between regular diagnostic snapshots.
         // A slow effect submission does not change whether the earlier input read succeeded.
         const auto diagnosticAt = Clock::now();
-        if (diagnostics && (diagnosticAt >= nextDiagnostic || (sampleExpired && diagnosticAt >= nextTimeoutReport))) {
+        const bool reportPending = diagnostics && physical && diagnosticAt >= nextPendingReport &&
+            (readiness.temporarilyUnavailable || (reader &&
+                std::ranges::find(reader->axisStatuses(), chrome_axis::AxisStatus::temporarilyUnavailable) !=
+                    reader->axisStatuses().end()));
+        if (diagnostics && (diagnosticAt >= nextDiagnostic || (sampleExpired && diagnosticAt >= nextTimeoutReport) ||
+            reportPending)) {
             if (sampleExpired)
                 nextTimeoutReport = diagnosticAt + diagnosticIssueDuration;
+            if (reportPending)
+                nextPendingReport = diagnosticAt + diagnosticIssueDuration;
             diagnostic.mode = simulated ? DiagnosticMode::simulation : !wasUsbEnabled ? DiagnosticMode::usbDisabled
                 : !physical ? DiagnosticMode::profileUnavailable : DiagnosticMode::usb;
             diagnostic.profileLoaded = physical && !activeDirectory.empty();
@@ -1133,7 +1147,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             diagnostic.accessories = simulated || !wasUsbEnabled ? DiagnosticAccessoryState::inactive
                 : !accessoryError.empty() ? DiagnosticAccessoryState::profileError : DiagnosticAccessoryState::unconfigured;
             if (physical && accessories) {
-                const auto readiness = accessories->readiness();
                 diagnostic.accessoryArmed = static_cast<std::uint32_t>(readiness.armed);
                 diagnostic.accessories = diagnosticAccessoryState(readiness, accessoriesReady, input && input->ready(),
                                                                    sampleExpired, start < accessoryBlockedUntil);
