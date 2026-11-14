@@ -955,6 +955,7 @@ private:
     std::array<std::optional<chrome_axis::AxisCalibration>, 3> draft_{};
     chrome_axis::BrakeResponse brakeResponse_{};
     std::optional<chrome_axis::Profile> previewProfile_;
+    std::optional<chrome_axis::ProfileFileRevision> profileRevision_;
     std::optional<chrome_axis::AxisCalibration> savedSteering_;
     std::optional<chrome_axis::ControlReader> preview_;
     std::array<float, 3> live_{};
@@ -1057,7 +1058,7 @@ void App::action(int command, int notification)
         break;
     case configureAccessories:
         if (!simulation_ && !calibrating_ && confirmCurrentPreset()) {
-            if (chrome_axis::editAccessories(window_, *input_, activeDirectory())) {
+            if (chrome_axis::editAccessories(window_, *input_, directory_, preset_)) {
                 readAccessories();
                 profileMessage_.clear();
                 rebuildPreview();
@@ -1069,7 +1070,7 @@ void App::action(int command, int notification)
         if (!simulation_ && !calibrating_ && confirmCurrentPreset()) {
             const auto wheel = savedSteering_ ? device(savedSteering_->deviceId) : nullptr;
             const auto axis = savedSteering_ ? savedSteering_->axis : chrome_axis::axisCount;
-            chrome_axis::editForceFeedback(window_, activeDirectory(), wheel, axis);
+            chrome_axis::editForceFeedback(window_, directory_, preset_, profileRevision_, wheel, axis);
             scanDevices();
         }
         break;
@@ -1283,6 +1284,7 @@ void App::readProfile()
 {
     preset_ = chrome_axis::activePreset(directory_);
     path_ = activeDirectory().empty() ? std::filesystem::path{} : activeDirectory() / chrome_axis::profileFilename;
+    profileRevision_ = chrome_axis::profileFileRevision(path_);
     std::string error;
     const auto profile = path_.empty() ? std::nullopt : chrome_axis::loadProfile(path_, error);
     savedSteering_ = profile && !profile->steering.deviceId.empty() ? std::optional{profile->steering} : std::nullopt;
@@ -1672,39 +1674,40 @@ void App::persist()
         || (savedSteering_ && nextSteering && (savedSteering_->deviceId != nextSteering->deviceId
             || savedSteering_->axis != nextSteering->axis));
     bool resetFeedback = false;
-    if (changedActuator) {
-        const auto settingsPath = activeDirectory() / chrome_axis::feedbackFilename;
+    bool feedbackSaveFailed = false;
+    const std::array checks{chrome_axis::ProfileFileCheck{chrome_axis::profileFilename, profileRevision_}};
+    const auto result = chrome_axis::savePresetSettings(directory_, preset_, checks, [&] {
         std::string error;
-        auto settings = chrome_axis::loadFeedbackSettings(settingsPath, error);
-        if (settings && settings->enabled) {
-            settings->enabled = false;
-            if (!chrome_axis::saveFeedbackSettings(settingsPath, *settings, error)) {
-                MessageBoxW(window_, tr(Text::mainDisableOldFeedbackFailed),
-                    title, MB_OK | MB_ICONERROR);
-                return;
+        if (changedActuator) {
+            const auto settingsPath = activeDirectory() / chrome_axis::feedbackFilename;
+            auto settings = chrome_axis::loadFeedbackSettings(settingsPath, error);
+            if (settings && settings->enabled) {
+                settings->enabled = false;
+                if (!chrome_axis::saveFeedbackSettings(settingsPath, *settings, error)) {
+                    feedbackSaveFailed = true;
+                    return false;
+                }
+                resetFeedback = true;
             }
-            resetFeedback = true;
         }
-    }
-
-    bool success = false;
-    if (previewProfile_) {
-        if (!ensureProfileDirectory(activeDirectory()))
-            return;
-        std::string error;
-        success = chrome_axis::saveProfile(path_, *previewProfile_, error);
-    } else {
-        success = DeleteFileW(path_.c_str()) != FALSE;
-        if (!success) {
-            const auto error = GetLastError();
-            success = error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+        if (previewProfile_) {
+            std::error_code directoryError;
+            std::filesystem::create_directories(activeDirectory(), directoryError);
+            if (directoryError || !chrome_axis::saveProfile(path_, *previewProfile_, error))
+                return false;
+        } else if (!DeleteFileW(path_.c_str())) {
+            const auto code = GetLastError();
+            if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND)
+                return false;
         }
-    }
-    if (!success) {
-        MessageBoxW(window_, resetFeedback
-            ? tr(Text::mainSaveFailedFeedbackDisabled)
-            : tr(Text::mainSaveFailedCheckFolder),
-            title, MB_OK | MB_ICONERROR);
+        profileRevision_ = chrome_axis::profileFileRevision(path_);
+        return true;
+    });
+    if (result != chrome_axis::PresetSaveResult::saved) {
+        const auto message = result == chrome_axis::PresetSaveResult::changed ? Text::mainSaveProfileChanged
+            : feedbackSaveFailed ? Text::mainDisableOldFeedbackFailed
+            : resetFeedback ? Text::mainSaveFailedFeedbackDisabled : Text::mainSaveFailedCheckFolder;
+        MessageBoxW(window_, tr(message), title, MB_OK | MB_ICONWARNING);
         return;
     }
     dirty_ = false;
@@ -2272,6 +2275,8 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
     const std::size_t first = step_ - (channel == 0 ? 2 : 1);
     auto axis = chrome_axis::makeCalibration(deviceId(channel), positions_[first], positions_[step_ - 1],
                                              positions_[step_], candidate);
+    if (draft_[channel] && draft_[channel]->deviceId == axis.deviceId && draft_[channel]->axis == axis.axis)
+        axis.deadzone = draft_[channel]->deadzone;
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
     candidates_.clear();
     for (std::size_t i = 0; i < axes.size(); ++i) {
@@ -2281,8 +2286,10 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
             ? chrome_axis::compatibleAxisPair(*axes[i], axis)
             : axes[i]->deviceId != axis.deviceId || axes[i]->axis != axis.axis;
         if (!compatible) {
+            const bool sharedPedal = i > 0 && channel > 0
+                && axes[i]->deviceId == axis.deviceId && axes[i]->axis == axis.axis;
             rewindCalibration(first);
-            calibrationMessage_ = tr(Text::mainAxisAlreadyAssigned);
+            calibrationMessage_ = tr(sharedPedal ? Text::mainSharedPedalsOutOfRange : Text::mainAxisAlreadyAssigned);
             updateCalibrationView();
             SetFocus(measure_);
             return;

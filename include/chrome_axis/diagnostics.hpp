@@ -28,10 +28,10 @@ enum class DiagnosticDelivery : std::uint32_t { unavailable, applied, gameKept }
 
 struct DiagnosticAxis {
     DiagnosticAxisState state{DiagnosticAxisState::inactive};
-    float value{};
+    float value{}; // Last successful write, which can precede the reading below.
     std::uint64_t appliedAt{}; // GetTickCount64() when an input was last written to the vehicle.
     float inputValue{}; // Calibrated physical reading, before neutral gating.
-    float requestedValue{}; // Value the game hook considered, including steering compensation.
+    float requestedValue{}; // Value the game hook considered from that same reading, including steering compensation.
     std::uint32_t inputAvailable{};
     std::uint32_t requestedAvailable{};
     DiagnosticDelivery delivery{DiagnosticDelivery::unavailable};

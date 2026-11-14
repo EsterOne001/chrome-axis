@@ -72,6 +72,6 @@ CHROME_AXIS_TEXT(DlgDiagnosticsReportNoDrive, L"Aucun état en conduite disponib
 CHROME_AXIS_TEXT(DlgDiagnosticsReportEvents, L"Changements récents", L"Recent changes")
 CHROME_AXIS_TEXT(DlgDiagnosticsReportRead, L"Lu", L"Read")
 CHROME_AXIS_TEXT(DlgDiagnosticsReportRequested, L"Demandé", L"Requested")
-CHROME_AXIS_TEXT(DlgDiagnosticsReportWritten, L"Dernière écriture", L"Last write")
+CHROME_AXIS_TEXT(DlgDiagnosticsReportWritten, L"Dernière écriture (historique)", L"Last write (history)")
 CHROME_AXIS_TEXT(DlgDiagnosticsReportApplied, L"Commande appliquée", L"Input applied")
 CHROME_AXIS_TEXT(DlgDiagnosticsReportGameKept, L"Commande du jeu conservée", L"Game input retained")

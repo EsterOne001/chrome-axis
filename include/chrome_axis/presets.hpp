@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +15,30 @@ struct ProfilePreset {
     std::wstring name;
     std::filesystem::path directory;
 };
+
+struct ProfileFileRevision {
+    std::uint64_t volume{};
+    std::uint64_t file{};
+    std::uint64_t modified{};
+    std::uint64_t size{};
+    bool present{};
+
+    bool operator==(const ProfileFileRevision&) const = default;
+};
+
+// A missing file has a revision of its own. A failed observation has no revision.
+std::optional<ProfileFileRevision> profileFileRevision(const std::filesystem::path& path);
+
+struct ProfileFileCheck {
+    const wchar_t* filename;
+    const std::optional<ProfileFileRevision>& revision;
+};
+
+enum class PresetSaveResult { saved, changed, ioError };
+
+// Run the save with exclusive access to this installation's profile settings, if they are still current.
+PresetSaveResult savePresetSettings(const std::filesystem::path& root, const ProfilePreset& expected,
+                                    std::span<const ProfileFileCheck> checks, const std::function<bool()>& save);
 
 // The original profile has an empty name. An invalid selection has an empty directory.
 ProfilePreset activePreset(const std::filesystem::path& root);

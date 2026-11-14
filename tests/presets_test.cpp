@@ -4,6 +4,7 @@
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/presets.hpp"
 
+#include <array>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -31,6 +32,72 @@ std::string readBytes(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+bool testStaleWrites(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto parent = fixture / L"Concurrent";
+    const auto root = parent / L"Profil";
+    std::filesystem::create_directory(parent);
+    const auto preset = activePreset(root);
+    const auto axesFile = root / profileFilename;
+    const auto accessoriesFile = root / accessoryFilename;
+    const auto feedbackFile = root / feedbackFilename;
+    auto axesBaseline = profileFileRevision(axesFile);
+    auto accessoriesBaseline = profileFileRevision(accessoriesFile);
+    auto feedbackBaseline = profileFileRevision(feedbackFile);
+    const std::array axesCheck{ProfileFileCheck{profileFilename, axesBaseline}};
+    const std::array accessoriesCheck{ProfileFileCheck{accessoryFilename, accessoriesBaseline}};
+    const std::array feedbackChecks{ProfileFileCheck{profileFilename, axesBaseline},
+                                   ProfileFileCheck{feedbackFilename, feedbackBaseline}};
+    const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
+    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f}};
+    const AccessoryProfile bindings{{wheel, AccessoryKind::Axis, 1, 0, 1000, VK_F8, {70, 35}}};
+    const FeedbackSettings feedback{true, 14, false, true};
+    std::string error;
+    bool preventSaveCalled = false;
+    const auto shouldNotSave = [&] { preventSaveCalled = true; return true; };
+
+    if (!check(axesBaseline && !axesBaseline->present && preset.directory == root,
+               "Missing settings in a new Profil folder need a valid revision")
+        || !check(savePresetSettings(root, preset, axesCheck, [&] {
+                      std::filesystem::create_directory(root);
+                      return saveProfile(axesFile, calibration, error);
+                  }) == PresetSaveResult::saved, "A fresh calibration may create the Profil directory")
+        || !check(savePresetSettings(root, preset, axesCheck, shouldNotSave) == PresetSaveResult::changed,
+                  "A stale calibration must not overwrite the new calibration")
+        || !check(savePresetSettings(root, preset, feedbackChecks, shouldNotSave) == PresetSaveResult::changed,
+                  "A force feedback dialog for an earlier calibration must reject saving"))
+        return false;
+
+    axesBaseline = profileFileRevision(axesFile);
+    if (!check(savePresetSettings(root, preset, accessoriesCheck, [&] {
+                      return saveAccessoryProfile(accessoriesFile, bindings, error);
+                  }) == PresetSaveResult::saved
+                  && savePresetSettings(root, preset, accessoriesCheck, shouldNotSave) == PresetSaveResult::changed
+                  && loadAccessoryProfile(accessoriesFile, error) == bindings,
+               "A stale accessory dialog must not overwrite new bindings or thresholds")
+        || !check(savePresetSettings(root, preset, feedbackChecks, [&] {
+                      return saveFeedbackSettings(feedbackFile, feedback, error);
+                  }) == PresetSaveResult::saved
+                  && savePresetSettings(root, preset, feedbackChecks, shouldNotSave) == PresetSaveResult::changed
+                  && loadFeedbackSettings(feedbackFile, error) == feedback,
+               "A stale force feedback dialog must not overwrite new settings"))
+        return false;
+
+    accessoriesBaseline = profileFileRevision(accessoriesFile);
+    if (!check(createPreset(root, L"Pilote", error)
+                  && savePresetSettings(root, preset, accessoriesCheck, shouldNotSave) == PresetSaveResult::changed,
+               "A save for a preset that is no longer active must be rejected")
+        || !check(selectPreset(root, L"", error)
+                  && savePresetSettings(root, preset, accessoriesCheck, [&] {
+                      return savePresetSettings(root, preset, accessoriesCheck, shouldNotSave) == PresetSaveResult::ioError
+                          && !createPreset(root, L"Verrouillé", error) && !selectPreset(root, L"Pilote", error);
+                  }) == PresetSaveResult::saved,
+               "Preset writes, selection and copies share the same lock"))
+        return false;
+    return check(!preventSaveCalled, "A rejected save must have no side effects");
 }
 
 bool testDeviceReplacement(const std::filesystem::path& fixture)
@@ -367,5 +434,5 @@ int main()
     std::ofstream(root / L"active_profile.txt", std::ios::trunc) << "../other\n";
     return check(activePreset(root).directory.empty(), "Corrupt selection must not activate a different profile")
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
-        && testProfileBackups(root) && testDeviceReplacement(root) ? 0 : 1;
+        && testProfileBackups(root) && testDeviceReplacement(root) && testStaleWrites(root) ? 0 : 1;
 }

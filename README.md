@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.26** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.27** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -76,7 +76,7 @@ Si un périphérique du profil apparaît déconnecté après un transfert, branc
 
 ### Zone morte et réponse du frein
 
-Dans la colonne **Zone morte (%)**, la **Direction** accepte de 0 à 25 %. Saisissez **0** pour désactiver la zone morte. Le texte **Aucune** s’affiche à côté. Au retour en jeu, une tolérance de 0,5 % autour du centre permet toujours de réarmer le volant. Une fois armé, le volant transmet les petits mouvements avec une zone morte de 0 %. Les pédales gardent une plage de 0,5 à 25 %.
+Dans la colonne **Zone morte (%)**, la **Direction** accepte de 0 à 25 %. Saisissez **0** pour désactiver la zone morte. Le texte **Aucune** s’affiche à côté. Au retour en jeu, une tolérance de 0,5 % autour du centre permet toujours de réarmer le volant. Une fois armé, le volant transmet les petits mouvements avec une zone morte de 0 %. Les pédales gardent une plage de 0,5 à 25 %. Une nouvelle mesure du même axe sur le même périphérique conserve sa zone morte, y compris 0 % pour la direction.
 
 Une fois le frein calibré, ouvrez **Réglages frein…**. La progressivité à **0** donne une réponse linéaire. Une valeur positive adoucit le début de course et une valeur négative le rend plus réactif. Réglez la **course pour atteindre 100 %** entre **50 et 100 %** de la course calibrée. Les jauges comparent la course avant zone morte à la sortie réglée. Appuyez sur la pédale ou saisissez une course simulée de 0 à 100 %. Cliquez sur **Appliquer**, puis **Enregistrer le profil**.
 
@@ -94,7 +94,7 @@ Pour changer la touche d’une entrée déjà capturée, sélectionnez l’affec
 
 1. Ouvrez **Matériel USB → Accessoires…**, sélectionnez le périphérique DirectInput puis cliquez sur **Boîte / palettes…**. Si le levier ou les palettes passent par la base, sélectionnez le volant. Pour un appareil USB autonome, sélectionnez son entrée Windows.
 2. En mode **Séquentiel / palettes**, capturez les commandes de montée et de descente. Le mode numérique détecte les boutons ou directions de croix. Si le pilote expose un axe, capturez le repos et chaque butée. Affectez les mêmes touches dans le mod de transmission.
-3. En mode **Boîte en H**, sélectionnez la grille de 6, 7 ou 8 rapports et capturez chaque position disponible, marche arrière comprise, en revenant au point mort entre les positions. Associez chaque position à une touche distincte. Pour piloter les rapports dans Cyberpunk, le mod de transmission doit proposer une commande par rapport.
+3. En mode **Boîte en H**, sélectionnez la grille de 6, 7 ou 8 rapports et capturez chaque position disponible, marche arrière comprise, en revenant au point mort entre les positions. Associez chaque position à une touche distincte. Si vous utilisez les chiffres proposés du pavé numérique, activez **Verr. Num.** ou choisissez d’autres touches dans les deux mods. Pour piloter les rapports dans Cyberpunk, le mod de transmission doit proposer une commande par rapport.
 4. Cliquez sur **Appliquer** dans l’assistant, puis sur **Enregistrer** dans le panneau **Accessoires…**. Activez ensuite l’USB en jeu. Les affectations se trouvent dans le fichier `accessories.ini` du profil actif et peuvent servir sans profil d’axes.
 
 **Manual Transmission V10 4.3** propose des commandes séquentielles de montée et de descente, réaffectables dans son menu. L’assistant propose **Pavé + / Pavé −** pour éviter les flèches **↑ / ↓**, déjà utilisées par Cyberpunk pour l’accélération et le freinage. Réglez les mêmes touches dans V10. Pour l’embrayage, capturez la pédale comme un axe d’accessoire et choisissez une touche sans modificateur, puis reportez-la dans V10. L’essai des deux mods ensemble reste à faire. [Commandes de V10](https://www.nexusmods.com/cyberpunk2077/mods/28342), [FAQ sur le séquentiel et la grille en H](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts).
@@ -121,7 +121,8 @@ Le logo de Chrome Axis et le texte du HUD changent de couleur ensemble, sans pan
 | Couleur | État en jeu |
 | --- | --- |
 | Gris clair | **MOD CHARGÉ** indique que le mod est présent. |
-| Ambre | **USB EN ATTENTE** s’affiche si les commandes configurées ne sont pas prêtes. |
+| Ambre | **USB EN ATTENTE** s’affiche si des commandes restent à armer ou sont indisponibles. |
+| Ambre | **USB PARTIEL** apparaît brièvement quand une commande USB est transmise alors que d’autres commandes du profil restent en attente. |
 | Cyan | **USB PRÊT** indique que les commandes configurées sont armées. |
 | Vert | **SIGNAL USB** apparaît brièvement après l’application d’un axe au véhicule ou l’envoi d’une touche d’accessoire à Windows. |
 | Violet | **SIMULATION** indique que le jeu reçoit le signal de l’application ouverte en mode Simulation. |
@@ -153,7 +154,7 @@ Le panneau indique quand Cyberpunk n’est plus au premier plan ou quand les don
 
 Si le dossier du jeu est reconnu et qu’un composant manque, le panneau indique le nom de la DLL ou du script absent. Le diagnostic copié inclut cette information et la version du jeu quand elle est disponible.
 
-Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rapport dans le presse-papiers inclut le profil actif, les modèles détectés par l’application, les versions installées et jusqu’à huit changements d’état récents. Il distingue l’état actuel du dernier état en conduite. Pour chaque axe, il indique la valeur calibrée lue, la commande demandée au jeu et la dernière valeur effectivement écrite par le mod. Le rapport se copie localement et omet les chemins d’installation et les identifiants de périphériques. Déployez ensemble l’application et le plugin du même ZIP pour que le panneau puisse lire les données du jeu.
+Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rapport dans le presse-papiers inclut le profil actif, les modèles détectés par l’application, les versions installées et jusqu’à huit changements d’état récents. Il distingue l’état actuel du dernier état en conduite. Pour chaque axe, il associe la valeur calibrée lue à la commande demandée lorsqu’elles proviennent de la même mesure. La dernière valeur effectivement écrite apparaît séparément, avec son ancienneté. Le rapport se copie localement et omet les chemins d’installation et les identifiants de périphériques. Déployez ensemble l’application et le plugin du même ZIP pour que le panneau puisse lire les données du jeu.
 
 ## Dossiers du projet
 
@@ -176,7 +177,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.26-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.27-Cyberpunk-2.5.zip'
 ```
 
 Le répertoire `build/package-chrome-axis` contient les dossiers à placer à la racine du ZIP pour Vortex. Les tests CTest couvrent la calibration et les pédales combinées, la résolution du dossier du jeu, les profils nommés, le réarmement des accessoires, la capture des rapports, la simulation clavier, le calcul du retour de force et la communication du diagnostic.

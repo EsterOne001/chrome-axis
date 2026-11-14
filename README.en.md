@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.26** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.27** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -68,7 +68,7 @@ If a profile device appears disconnected after a transfer, connect its replaceme
 
 ### Deadzones and brake response
 
-The **Steering** field in the **Deadzone (%)** column accepts 0–25%. Enter **0** to turn off the steering deadzone. **None** appears next to the field. The wheel still has a 0.5% centering tolerance when it rearms in game. Once armed, small movements reach the game with a 0% deadzone. Pedals keep the 0.5–25% range.
+The **Steering** field in the **Deadzone (%)** column accepts 0–25%. Enter **0** to turn off the steering deadzone. **None** appears next to the field. The wheel still has a 0.5% centering tolerance when it rearms in game. Once armed, small movements reach the game with a 0% deadzone. Pedals keep the 0.5–25% range. Recalibrating the same axis on the same device keeps its deadzone, including 0% for steering.
 
 After calibrating the brake, open **Brake settings…**. Progressivity of **0** gives a linear response. A positive value softens the start of the travel and a negative value makes it more responsive. Set **Travel for full brake** to **50–100%** of calibrated travel. The gauges compare travel before the deadzone with adjusted output. Press the pedal or enter a simulated travel of 0–100%. Click **Apply**, then **Save profile**.
 
@@ -86,7 +86,7 @@ To change the key for an already captured input, select the binding and click **
 
 1. Open **USB Hardware → Accessories…**, select the DirectInput device and click **Shifter / paddles…**. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
 2. In **Sequential / paddles**, capture **Shift up** and **Shift down**. Select **Button or D-pad** for digital inputs. For an analog axis, capture neutral and full travel in each direction. Bind the same keys in your transmission mod.
-3. For an **H-pattern**, select 6, 7 or 8 forward gears plus reverse. Capture each position, returning to neutral between gears. Assign a different key to each gear. The transmission mod needs a separate command for each gear to use these bindings in Cyberpunk.
+3. For an **H-pattern**, select 6, 7 or 8 forward gears plus reverse. Capture each position, returning to neutral between gears. Assign a different key to each gear. If you use the suggested numpad digits, turn on **Num Lock** or choose other keys in both mods. The transmission mod needs a separate command for each gear to use these bindings in Cyberpunk.
 4. Click **Apply** in the wizard and **Save** in **Accessories**. Then enable USB in game. Bindings are saved in the active profile’s `accessories.ini` and work without an axis calibration.
 
 **Manual Transmission V10 4.3** offers rebindable sequential shift commands. Chrome Axis suggests **Numpad + / Numpad −** to avoid the **↑ / ↓** keys used by Cyberpunk for throttle and brake. Set the same keys in V10. To use a clutch pedal, capture it as an accessory axis, assign a key without modifiers, and set the same key in V10. Testing the two mods together is still pending. [V10 controls](https://www.nexusmods.com/cyberpunk2077/mods/28342) · [V10 discussion about sequential and H-pattern shifting](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts)
@@ -111,7 +111,8 @@ USB input starts disabled. Open the deployed app, save a calibration or accessor
 | HUD color | Status |
 | --- | --- |
 | Light gray | **MOD LOADED** confirms Chrome Axis is present. |
-| Amber | **USB WAITING** means configured inputs are still getting ready. |
+| Amber | **USB WAITING** means some configured inputs are still getting ready or unavailable. |
+| Amber | **PARTIAL USB** briefly appears when a USB input is delivered while other inputs in the profile are still waiting. |
 | Cyan | **USB READY** confirms the configured inputs are armed. |
 | Green | **USB INPUT** appears briefly after an axis reaches the vehicle or the plugin sends an accessory key to Windows. |
 | Violet | **SIMULATION** indicates the game is receiving the signal from the app in Simulation mode. |
@@ -141,7 +142,7 @@ The panel indicates when Cyberpunk is out of focus or its plugin data is stale. 
 
 When the game directory is recognized and a component is missing, the panel names the missing DLL or script. The copied report includes that information and the game version when available.
 
-After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it shows the calibrated reading, the requested command and the last value the mod actually wrote. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
+After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it pairs the calibrated reading with the requested command when they come from the same sample. The last value actually written appears separately with its age. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
 
 ## Project folders
 
@@ -164,7 +165,7 @@ cmake --build build/msvc --config Release
 ctest --test-dir build/msvc -C Release --output-on-failure
 cmake --install build/msvc --config Release --prefix build/package-chrome-axis
 New-Item -ItemType Directory -Path out -Force | Out-Null
-Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.26-Cyberpunk-2.5.zip'
+Compress-Archive -Path 'build/package-chrome-axis/*' -DestinationPath 'out/ChromeAxis-0.4.27-Cyberpunk-2.5.zip'
 ```
 
 The installed package contains the `archive` and `red4ext` folders at its root for Vortex. CTest covers the calibration, game folder detection, profiles, accessory rearming, shifter capture, keyboard simulation, force feedback calculations and the diagnostics connection.

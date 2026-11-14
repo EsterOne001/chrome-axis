@@ -464,19 +464,29 @@ DeviceReplacementError readSettings(const std::filesystem::path& path, SettingsS
     return DeviceReplacementError::none;
 }
 
-bool matchesSettings(const std::filesystem::path& path, const SettingsSnapshot& expected)
+ProfileFileRevision revisionFrom(const BY_HANDLE_FILE_INFORMATION& info)
+{
+    const auto combine = [](DWORD high, DWORD low) { return (std::uint64_t{high} << 32) | low; };
+    return {info.dwVolumeSerialNumber, combine(info.nFileIndexHigh, info.nFileIndexLow),
+            combine(info.ftLastWriteTime.dwHighDateTime, info.ftLastWriteTime.dwLowDateTime),
+            combine(info.nFileSizeHigh, info.nFileSizeLow), true};
+}
+
+std::optional<ProfileFileRevision> readRevision(const std::filesystem::path& path)
 {
     const HANDLE file = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                    nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (file == INVALID_HANDLE_VALUE)
-        return !expected.present && missing(GetLastError());
+        return missing(GetLastError()) ? std::optional{ProfileFileRevision{}} : std::nullopt;
     const std::unique_ptr<void, FileHandleCloser> current(file);
     BY_HANDLE_FILE_INFORMATION info{};
-    const auto& original = expected.info;
-    return expected.present && GetFileInformationByHandle(file, &info) && plainFile(info.dwFileAttributes)
-        && info.dwVolumeSerialNumber == original.dwVolumeSerialNumber && info.nFileIndexHigh == original.nFileIndexHigh
-        && info.nFileIndexLow == original.nFileIndexLow && info.nFileSizeHigh == original.nFileSizeHigh
-        && info.nFileSizeLow == original.nFileSizeLow && CompareFileTime(&info.ftLastWriteTime, &original.ftLastWriteTime) == 0;
+    return GetFileInformationByHandle(file, &info) && plainFile(info.dwFileAttributes)
+        ? std::optional{revisionFrom(info)} : std::nullopt;
+}
+
+bool matchesSettings(const std::filesystem::path& path, const SettingsSnapshot& expected)
+{
+    return readRevision(path) == (expected.present ? revisionFrom(expected.info) : ProfileFileRevision{});
 }
 
 bool writeSettings(const std::filesystem::path& path, std::string_view contents)
@@ -574,6 +584,34 @@ ProfilePreset activePreset(const std::filesystem::path& root)
     return {*selected, presetDirectory(root, *selected)};
 }
 
+std::optional<ProfileFileRevision> profileFileRevision(const std::filesystem::path& path)
+{
+    const auto extended = extendedPath(path);
+    return extended.empty() ? std::nullopt : readRevision(extended);
+}
+
+PresetSaveResult savePresetSettings(const std::filesystem::path& root, const ProfilePreset& expected,
+                                    std::span<const ProfileFileCheck> checks, const std::function<bool()>& save)
+{
+    const auto extendedRoot = extendedPath(root);
+    if (extendedRoot.empty() || expected.directory.empty())
+        return PresetSaveResult::changed;
+    const BackupLock lock(extendedRoot.parent_path());
+    if (!lock)
+        return PresetSaveResult::ioError;
+    const auto current = activePreset(root);
+    if (current.directory.empty() || current.name != expected.name || !samePathPart(current.directory, expected.directory))
+        return PresetSaveResult::changed;
+    for (const auto& check : checks) {
+        const auto revision = profileFileRevision(expected.directory / check.filename);
+        if (!revision || !check.revision)
+            return PresetSaveResult::ioError;
+        if (revision != check.revision)
+            return PresetSaveResult::changed;
+    }
+    return save() ? PresetSaveResult::saved : PresetSaveResult::ioError;
+}
+
 std::vector<std::wstring> listPresets(const std::filesystem::path& root)
 {
     const auto parent = root / presetsFolder;
@@ -592,7 +630,9 @@ std::vector<std::wstring> listPresets(const std::filesystem::path& root)
     return names;
 }
 
-bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error)
+namespace {
+
+bool writePresetSelection(const std::filesystem::path& root, std::wstring_view name, std::string& error)
 {
     error.clear();
     if (!root.is_absolute() || (!name.empty() && !validName(name)) || presetDirectory(root, name).empty()) {
@@ -609,11 +649,43 @@ bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std
     return true;
 }
 
+} // namespace
+
+bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error)
+{
+    if (!root.is_absolute() || (!name.empty() && !validName(name)) || presetDirectory(root, name).empty()) {
+        error = "Le profil sélectionné est introuvable.";
+        return false;
+    }
+    std::error_code ioError;
+    std::filesystem::create_directories(root, ioError);
+    const auto extendedRoot = extendedPath(root);
+    const BackupLock lock(extendedRoot.parent_path());
+    if (ioError || !lock) {
+        error = "Impossible d’enregistrer la sélection dans le dossier Profil.";
+        return false;
+    }
+    return writePresetSelection(root, name, error);
+}
+
 bool createPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error)
 {
     error.clear();
     if (!validName(name) || !encodeName(name)) {
         error = "Saisissez un nom de profil valide (64 caractères maximum).";
+        return false;
+    }
+    const auto extendedRoot = extendedPath(root);
+    std::error_code ioError;
+    if (!extendedRoot.empty())
+        std::filesystem::create_directories(root, ioError);
+    if (extendedRoot.empty() || ioError) {
+        error = "Impossible de créer le dossier Profils.";
+        return false;
+    }
+    const BackupLock lock(extendedRoot.parent_path());
+    if (!lock) {
+        error = "Impossible de copier les réglages vers le nouveau profil.";
         return false;
     }
     const auto source = activePreset(root);
@@ -623,9 +695,7 @@ bool createPreset(const std::filesystem::path& root, std::wstring_view name, std
     }
 
     const auto parent = root / presetsFolder;
-    std::error_code ioError;
-    std::filesystem::create_directories(root, ioError);
-    if (ioError || (!CreateDirectoryW(parent.c_str(), nullptr) && !plainDirectory(GetFileAttributesW(parent.c_str())))) {
+    if (!CreateDirectoryW(parent.c_str(), nullptr) && !plainDirectory(GetFileAttributesW(parent.c_str()))) {
         error = "Impossible de créer le dossier Profils.";
         return false;
     }
@@ -645,7 +715,7 @@ bool createPreset(const std::filesystem::path& root, std::wstring_view name, std
         error = "Impossible de copier les réglages vers le nouveau profil.";
         return false;
     }
-    if (!selectPreset(root, name, error)) {
+    if (!writePresetSelection(root, name, error)) {
         error = "Le profil a été créé, mais sa sélection n’a pas pu être enregistrée.";
         return false;
     }

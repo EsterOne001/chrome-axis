@@ -13,12 +13,12 @@
 
 #ifndef RC_INVOKED
 #include "chrome_axis/input.hpp"
-
-#include <filesystem>
+#include "chrome_axis/presets.hpp"
 
 namespace chrome_axis {
 
-bool editForceFeedback(HWND owner, const std::filesystem::path& directory,
+bool editForceFeedback(HWND owner, const std::filesystem::path& root, const ProfilePreset& preset,
+                       const std::optional<ProfileFileRevision>& calibrationRevision,
                        const DeviceInfo* steeringDevice, std::size_t steeringAxis);
 
 } // namespace chrome_axis

@@ -37,6 +37,7 @@
 #define IDC_SHIFTER_MODE_LABEL 2211
 #define IDC_SHIFTER_SIGNAL_LABEL 2212
 #define IDC_SHIFTER_EDIT 2213
+#define IDC_SHIFTER_NUMLOCK_HINT 2214
 #define IDC_MODAL_FORM 2301
 #define IDC_MODAL_RESULTS 2302
 #define IDC_MODAL_LIST_HEADING 2303
@@ -51,7 +52,9 @@
 
 namespace chrome_axis {
 
-bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& profileDirectory);
+struct ProfilePreset;
+
+bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& root, const ProfilePreset& preset);
 bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings, std::string_view preferredDevice);
 std::wstring accessoryKeyLabel(unsigned int key);
 std::wstring accessoryInputLabel(const AccessoryBinding& binding);

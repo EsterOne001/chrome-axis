@@ -215,6 +215,7 @@ INT_PTR CALLBACK keyboardProc(HWND window, UINT message, WPARAM wParam, LPARAM l
         SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgKeyboardIntro));
         SetDlgItemTextW(window, IDC_KEYBOARD_NAVIGATION_LABEL, tr(Text::DlgKeyboardNavigation));
         SetDlgItemTextW(window, IDC_KEYBOARD_NUMPAD_LABEL, tr(Text::DlgKeyboardNumpad));
+        SetDlgItemTextW(window, IDC_KEYBOARD_NUMLOCK_HINT, tr(Text::DlgKeypadNumLockHint));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
         DialogTheme::attach(window, tr(Text::DlgKeyboardHeading), 0, 0, {});
         if (!Keyboard(window).build(GetKeyboardLayout(0))) {

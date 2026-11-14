@@ -16,6 +16,11 @@ constexpr UINT_PTR captureTimer = 1;
 constexpr UINT captureInterval = 20;
 constexpr ULONGLONG captureTimeout = 30000;
 
+bool isNumpadDigit(unsigned int key)
+{
+    return key >= VK_NUMPAD0 && key <= VK_NUMPAD9;
+}
+
 enum class Stage { Setup, Neutral, Position, Paused, AnalogReady, AnalogMeasure, Captured, Done };
 
 class ShifterDialog {
@@ -41,6 +46,7 @@ private:
         return SendDlgItemMessageW(window_, control, message, wParam, lParam);
     }
     void status(const wchar_t* text);
+    void updateNumLockHint();
     void position();
     void captured(AccessoryBinding binding);
     bool runTimer();
@@ -156,6 +162,19 @@ void ShifterDialog::updateControls()
     SetDlgItemTextW(window_, IDC_SHIFTER_START, setup ? tr(Text::DlgShifterStart) : tr(Text::DlgShifterRestart));
     SetDlgItemTextW(window_, IDC_SHIFTER_ADVANCE, stage_ == Stage::AnalogReady ? tr(Text::DlgShifterMeasure)
         : stage_ == Stage::Paused ? tr(Text::DlgShifterResume) : tr(Text::DlgShifterNext));
+    updateNumLockHint();
+}
+
+void ShifterDialog::updateNumLockHint()
+{
+    const bool setup = stage_ == Stage::Setup;
+    const bool hPattern = setup ? !sequential() : forward_ != 0;
+    const bool usesNumpad = hPattern || (setup
+        ? std::ranges::any_of(savedRows_, [this](std::size_t row) { return isNumpadDigit(edited_[row].key); })
+        : isNumpadDigit(key_) || std::ranges::any_of(draft_, [](const auto& binding) {
+            return isNumpadDigit(binding.key);
+        }));
+    ShowWindow(GetDlgItem(window_, IDC_SHIFTER_NUMLOCK_HINT), usesNumpad ? SW_SHOW : SW_HIDE);
 }
 
 const DeviceInfo* ShifterDialog::selectedDevice(bool attachedOnly) const
@@ -290,8 +309,10 @@ void ShifterDialog::chooseKey()
 {
     if (stage_ != Stage::Captured && stage_ != Stage::AnalogReady && stage_ != Stage::Paused)
         return;
-    if (const auto key = chooseAccessoryKey(window_, key_))
+    if (const auto key = chooseAccessoryKey(window_, key_)) {
         setKey(*key);
+        updateNumLockHint();
+    }
 }
 
 void ShifterDialog::editSavedKey()
@@ -549,6 +570,7 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(window, IDC_SHIFTER_STEP, tr(Text::DlgShifterCapture));
         SetDlgItemTextW(window, IDC_MODAL_KEY_LABEL, tr(Text::DlgKey));
         SetDlgItemTextW(window, IDC_SHIFTER_KEY, tr(Text::DlgChooseKey));
+        SetDlgItemTextW(window, IDC_SHIFTER_NUMLOCK_HINT, tr(Text::DlgKeypadNumLockHint));
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterDeviceBindings));
         SetDlgItemTextW(window, IDC_SHIFTER_SKIP, tr(Text::DlgShifterSkip));
         SetDlgItemTextW(window, IDC_SHIFTER_EDIT, tr(Text::DlgBindingEdit));

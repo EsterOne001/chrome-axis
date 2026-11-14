@@ -64,7 +64,13 @@ constexpr auto diagnosticInterval = 150ms;
 constexpr auto diagnosticIssueDuration = 1s;
 
 // Values returned to the HUD in driving_context.reds.
-enum class HudStatus : std::int32_t { hidden = 0, loaded = 1, usbWaiting = 2, usbReady = 3, usbSignal = 4, simulation = 5 };
+enum class HudStatus : std::int32_t {
+    hidden = 0, loaded = 1, usbWaiting = 2, usbReady = 3, usbSignal = 4, simulation = 5, usbPartial = 6
+};
+
+bool usbHudStatus(HudStatus status) noexcept {
+    return status == HudStatus::usbReady || status == HudStatus::usbWaiting;
+}
 
 struct DrivingContext {
     Vehicle* vehicle{};
@@ -86,6 +92,7 @@ struct VehicleMotion {
 
 struct InputFrame {
     chrome_axis::ControlState state{};
+    chrome_axis::ControlReader::Readings readings{};
     std::uint64_t generation{};
     Clock::time_point sampled{};
     bool simulated{};
@@ -103,6 +110,7 @@ struct AppliedAxis {
 };
 
 struct AxisDelivery {
+    std::optional<float> reading;
     float requested{};
     DiagnosticDelivery outcome{DiagnosticDelivery::unavailable};
 };
@@ -519,13 +527,13 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
                     && now - hudFrame.sampled <= inputLifetime;
                 const bool vehicleLive = context.vehicleUpdated != Clock::time_point{}
                     && now - context.vehicleUpdated <= inputLifetime;
-                if (hudFrame.status == HudStatus::usbReady && sampleLive && vehicleLive) {
-                    status = HudStatus::usbReady;
-                    if (lastUsbSignal != Clock::time_point{} && now - lastUsbSignal <= hudSignalDuration) {
-                        status = HudStatus::usbSignal;
-                    }
-                } else if (hudFrame.status == HudStatus::usbReady || hudFrame.status == HudStatus::usbWaiting) {
+                if (usbHudStatus(hudFrame.status)) {
                     status = HudStatus::usbWaiting;
+                    if (sampleLive && vehicleLive) {
+                        status = hudFrame.status;
+                        if (lastUsbSignal != Clock::time_point{} && now - lastUsbSignal <= hudSignalDuration)
+                            status = status == HudStatus::usbReady ? HudStatus::usbSignal : HudStatus::usbPartial;
+                    }
                 } else if (hudFrame.status == HudStatus::simulation && sampleLive && vehicleLive) {
                     status = HudStatus::simulation;
                 }
@@ -633,7 +641,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     chrome_axis::DiagnosticSnapshot diagnostic;
     Clock::time_point nextDiagnostic{};
     Clock::time_point accessoryBlockedUntil{};
-    Clock::time_point sampleExpiredUntil{};
+    Clock::time_point nextTimeoutReport{};
     std::uint64_t diagnosticSession{};
     const auto publishDiagnostics = [&](HWND foreground, const DrivingContext& polled) {
         const auto now = Clock::now();
@@ -679,9 +687,13 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 if (hasDelivery && (axis.state == DiagnosticAxisState::armed ||
                                     axis.state == DiagnosticAxisState::simulated)) {
                     const auto& delivered = vehicleDelivery.axes[i];
-                    axis.requestedValue = delivered.requested;
-                    axis.requestedAvailable = delivered.outcome != DiagnosticDelivery::unavailable;
-                    axis.delivery = delivered.outcome;
+                    if (delivered.outcome != DiagnosticDelivery::unavailable) {
+                        axis.inputValue = delivered.reading.value_or(0.0f);
+                        axis.inputAvailable = delivered.reading.has_value();
+                        axis.requestedValue = delivered.requested;
+                        axis.requestedAvailable = 1;
+                        axis.delivery = delivered.outcome;
+                    }
                 }
             }
         }
@@ -915,7 +927,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 accessoryBlockedUntil = {};
             }
             if (sourceChanged || profileChanged)
-                sampleExpiredUntil = {};
+                nextTimeoutReport = {};
             lastGeneration = current.generation;
         }
         if (modeChanged || windowChanged || presetChanged || profileChanged || accessoryChanged) {
@@ -935,7 +947,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
 
         chrome_axis::ControlState controls{};
         chrome_axis::ControlReader::Readings readings;
-        const bool sampleDiagnostics = diagnostics && start >= nextDiagnostic;
+        auto sampledAt = start;
+        bool sampleExpired = false;
         std::bitset<256> requestedKeys;
         bool accessoriesReady = false;
         const bool physical = !simulated && (reader || accessories);
@@ -960,19 +973,21 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 }
             }
             if (input && input->ready()) {
+                sampledAt = Clock::now();
                 input->beginPoll();
                 if (reader) {
-                    controls = reader->poll(*input, sampleDiagnostics ? &readings : nullptr);
+                    controls = reader->poll(*input, diagnostics ? &readings : nullptr);
                 }
                 if (accessories && current.vehicleUpdated != Clock::time_point{} &&
-                    start - current.vehicleUpdated <= inputLifetime) {
+                    sampledAt - current.vehicleUpdated <= inputLifetime) {
                     requestedKeys = accessories->poll(*input);
                     accessoriesReady = accessories->ready();
                 } else if (accessories) {
                     accessories->reset();
                 }
+                sampleExpired = Clock::now() - sampledAt > inputLifetime;
             }
-            if (Clock::now() - start > inputLifetime) {
+            if (sampleExpired) {
                 if (reader) {
                     reader->reset();
                 }
@@ -980,6 +995,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     accessories->reset();
                 }
                 controls = {};
+                readings = {};
                 requestedKeys.reset();
                 accessoriesReady = false;
             }
@@ -989,6 +1005,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         });
         const bool profilesValid = (!watchedProfile.stamp || profileError.empty()) && accessoryError.empty();
         const bool usbReady = physical && profilesValid && (!reader || axesReady) && (!accessories || accessoriesReady);
+        const bool usbCanSend = controls.steeringReady || controls.throttleReady || controls.brakeReady ||
+            accessoriesReady || (accessories && !simulated && accessories->readiness().armed != 0);
         auto hudStatus = HudStatus::loaded;
         if (simulated) {
             hudStatus = HudStatus::simulation;
@@ -996,19 +1014,19 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             hudStatus = usbReady ? HudStatus::usbReady : HudStatus::usbWaiting;
         }
         const bool hasRequestedKeys = requestedKeys.any();
-        const OutputContext output{current.vehicle, current.generation, start};
+        const OutputContext output{current.vehicle, current.generation, sampledAt};
         bool accessoryContextLive = false;
         std::optional<chrome_axis::FeedbackSample> forceSample;
         {
             std::scoped_lock lock(stateMutex);
             // Timestamp from before polling so a stalled driver cannot publish a fresh-looking frame.
             if (context.generation == current.generation) {
-                hudFrame = {hudStatus, current.generation, start};
-                if (!usbReady) {
+                if (hudFrame.status != hudStatus || !usbCanSend) {
                     lastUsbSignal = {};
                 }
+                hudFrame = {hudStatus, current.generation, sampledAt};
                 if (simulated || reader) {
-                    inputFrame = {controls, current.generation, start, simulated};
+                    inputFrame = {controls, readings, current.generation, sampledAt, simulated};
                 }
                 if (hasRequestedKeys) {
                     const auto now = Clock::now();
@@ -1019,7 +1037,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     const auto now = Clock::now();
                     if (context.vehicleUpdated != Clock::time_point{} && vehicleMotion.sampled != Clock::time_point{} &&
                         now - context.vehicleUpdated <= inputLifetime && now - context.refreshed <= contextLifetime &&
-                        now - start <= inputLifetime && now - vehicleMotion.sampled <= motionLifetime) {
+                        now - sampledAt <= inputLifetime && now - vehicleMotion.sampled <= motionLifetime) {
                         forceSample = chrome_axis::FeedbackSample{controls.values.steering, vehicleMotion.forwardSpeed,
                             vehicleMotion.sideSpeed, vehicleMotion.mass, vehicleMotion.impactSpeed, vehicleMotion.impactSide,
                             std::chrono::duration<float>(now - vehicleMotion.impacted).count()};
@@ -1041,7 +1059,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 if (context.generation == current.generation) {
                     diagnostic.lastAccessoryKey = delivery.key;
                     diagnostic.accessorySentAt = GetTickCount64();
-                    if (hudFrame.status == HudStatus::usbReady)
+                    if (usbHudStatus(hudFrame.status))
                         lastUsbSignal = Clock::now();
                 }
             }
@@ -1090,11 +1108,13 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             const auto now = Clock::now();
             if (accessoryBlocked || delivery.blocked)
                 accessoryBlockedUntil = now + diagnosticIssueDuration;
-            if (physical && now - start > inputLifetime)
-                sampleExpiredUntil = now + diagnosticIssueDuration;
         }
-        if (sampleDiagnostics) {
-            const bool sampleExpired = start < sampleExpiredUntil;
+        // Report a timeout even when it fell between the regular diagnostic snapshots.
+        // A slow effect submission does not change whether the earlier input read succeeded.
+        const auto diagnosticAt = Clock::now();
+        if (diagnostics && (diagnosticAt >= nextDiagnostic || (sampleExpired && diagnosticAt >= nextTimeoutReport))) {
+            if (sampleExpired)
+                nextTimeoutReport = diagnosticAt + diagnosticIssueDuration;
             diagnostic.mode = simulated ? DiagnosticMode::simulation : !wasUsbEnabled ? DiagnosticMode::usbDisabled
                 : !physical ? DiagnosticMode::profileUnavailable : DiagnosticMode::usb;
             diagnostic.profileLoaded = physical && !activeDirectory.empty();
@@ -1202,13 +1222,13 @@ void updateVehicle(Vehicle* vehicle) {
     const float throttle = controls.throttleReady ? std::max(gameThrottle, controls.values.throttle) : gameThrottle;
     const float brake = controls.brakeReady ? std::max(gameBrake, controls.values.brake) : gameBrake;
     const bool pedals = throttle != gameThrottle || brake != gameBrake;
-    const auto delivery = [](float value, bool ready, bool applied) {
-        return AxisDelivery{value, !ready ? DiagnosticDelivery::unavailable
+    const auto delivery = [&](std::size_t axis, float value, bool ready, bool applied) {
+        return AxisDelivery{inputFrame.readings[axis], value, !ready ? DiagnosticDelivery::unavailable
             : applied ? DiagnosticDelivery::applied : DiagnosticDelivery::gameKept};
     };
-    vehicleDelivery = {{delivery(compensated, controls.steeringReady, steer),
-                        delivery(controls.values.throttle, controls.throttleReady, throttle != gameThrottle),
-                        delivery(controls.values.brake, controls.brakeReady, brake != gameBrake)}, now};
+    vehicleDelivery = {{delivery(0, compensated, controls.steeringReady, steer),
+                        delivery(1, controls.values.throttle, controls.throttleReady, throttle != gameThrottle),
+                        delivery(2, controls.values.brake, controls.brakeReady, brake != gameBrake)}, inputFrame.sampled};
     if (steer) {
         writeField(*vehicle, steeringOffset, compensated);
     }
@@ -1226,7 +1246,7 @@ void updateVehicle(Vehicle* vehicle) {
             appliedAxes[1] = {throttle, tick};
         if (brake != gameBrake)
             appliedAxes[2] = {brake, tick};
-        if (!simulated && hudFrame.status == HudStatus::usbReady)
+        if (!simulated && usbHudStatus(hudFrame.status))
             lastUsbSignal = now;
     }
     lock.unlock();

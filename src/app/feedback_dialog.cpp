@@ -2,9 +2,12 @@
 
 #include "chrome_axis/accessories_dialog.hpp"
 #include "chrome_axis/configuration.hpp"
+#include "chrome_axis/controls.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "app_text.hpp"
 #include "dialog_theme.hpp"
+
+#include <array>
 
 namespace chrome_axis {
 namespace {
@@ -49,7 +52,11 @@ void addToggle(HWND window, int control, const wchar_t* disabled, const wchar_t*
 }
 
 struct FeedbackDialog {
+    const std::filesystem::path& root;
+    const ProfilePreset& preset;
+    const std::optional<ProfileFileRevision>& calibrationRevision;
     std::filesystem::path file;
+    std::optional<ProfileFileRevision> revision;
     Compatibility state;
 
     void initialise(HWND window) const;
@@ -116,7 +123,14 @@ void FeedbackDialog::save(HWND window) const
         selected(IDC_FEEDBACK_DIRECTION) == 1,
     };
     std::string error;
-    if (!saveFeedbackSettings(file, settings, error)) {
+    const std::array checks{ProfileFileCheck{profileFilename, calibrationRevision},
+                            ProfileFileCheck{feedbackFilename, revision}};
+    const auto result = savePresetSettings(root, preset, checks, [&] { return saveFeedbackSettings(file, settings, error); });
+    if (result == PresetSaveResult::changed) {
+        MessageBoxW(window, tr(Text::DlgFeedbackChanged), tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (result != PresetSaveResult::saved) {
         MessageBoxW(window, tr(Text::DlgFeedbackSaveError),
                     tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONERROR);
         return;
@@ -161,12 +175,15 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 } // namespace
 
-bool editForceFeedback(HWND owner, const std::filesystem::path& directory,
+bool editForceFeedback(HWND owner, const std::filesystem::path& root, const ProfilePreset& preset,
+                       const std::optional<ProfileFileRevision>& calibrationRevision,
                        const DeviceInfo* steeringDevice, std::size_t steeringAxis)
 {
-    if (!directory.is_absolute())
+    if (!preset.directory.is_absolute())
         return false;
-    const FeedbackDialog dialog{directory / feedbackFilename, compatibility(steeringDevice, steeringAxis)};
+    const auto file = preset.directory / feedbackFilename;
+    const FeedbackDialog dialog{root, preset, calibrationRevision, file, profileFileRevision(file),
+                                compatibility(steeringDevice, steeringAxis)};
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_FORCE_FEEDBACK), owner,
                                         dialogProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)

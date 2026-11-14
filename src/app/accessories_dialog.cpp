@@ -6,8 +6,10 @@
 #include "chrome_axis/calibration.hpp"
 #include "chrome_axis/configuration.hpp"
 #include "chrome_axis/keyboard_dialog.hpp"
+#include "chrome_axis/presets.hpp"
 
 #include <algorithm>
+#include <array>
 #include <system_error>
 #include <utility>
 
@@ -166,8 +168,8 @@ INT_PTR CALLBACK thresholdsProc(HWND window, UINT message, WPARAM wParam, LPARAM
 
 class AccessoryDialog {
 public:
-    AccessoryDialog(DirectInput& input, std::filesystem::path path)
-        : input_(input), path_(std::move(path)) {}
+    AccessoryDialog(DirectInput& input, const std::filesystem::path& root, const ProfilePreset& preset)
+        : input_(input), root_(root), preset_(preset), path_(preset.directory / accessoryFilename) {}
 
     bool initialise(HWND window);
     void capture();
@@ -197,7 +199,10 @@ private:
     void refreshBindings(LRESULT selection = LB_ERR);
 
     DirectInput& input_;
+    const std::filesystem::path& root_;
+    const ProfilePreset& preset_;
     std::filesystem::path path_;
+    std::optional<ProfileFileRevision> revision_;
     HWND window_{};
     std::vector<DeviceInfo> devices_;
     AccessoryProfile bindings_;
@@ -214,6 +219,7 @@ private:
 bool AccessoryDialog::initialise(HWND window)
 {
     window_ = window;
+    revision_ = profileFileRevision(path_);
     std::error_code fileError;
     if (std::filesystem::exists(path_, fileError) || fileError) {
         std::string error;
@@ -546,15 +552,23 @@ void AccessoryDialog::save()
         MessageBoxW(window_, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
         return;
     }
-    std::error_code directoryError;
-    std::filesystem::create_directories(path_.parent_path(), directoryError);
-    if (directoryError) {
-        MessageBoxW(window_, tr(Text::DlgAccessoriesCreateProfileFailed), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
+    std::string error;
+    bool createFailed = false;
+    const std::array checks{ProfileFileCheck{accessoryFilename, revision_}};
+    const auto result = savePresetSettings(root_, preset_, checks, [&] {
+        std::error_code directoryError;
+        std::filesystem::create_directories(path_.parent_path(), directoryError);
+        createFailed = static_cast<bool>(directoryError);
+        return !createFailed && saveAccessoryProfile(path_, bindings_, error);
+    });
+    if (result == PresetSaveResult::changed) {
+        MessageBoxW(window_, tr(Text::DlgAccessoriesChanged), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
         return;
     }
-    std::string error;
-    if (!saveAccessoryProfile(path_, bindings_, error)) {
-        const auto message = tr(Text::DlgAccessoriesSaveError) + localizedError(error);
+    if (result != PresetSaveResult::saved) {
+        auto message = std::wstring(tr(createFailed ? Text::DlgAccessoriesCreateProfileFailed : Text::DlgAccessoriesSaveError));
+        if (!error.empty())
+            message += localizedError(error);
         MessageBoxW(window_, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
         return;
     }
@@ -658,9 +672,9 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 } // namespace
 
-bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& profileDirectory)
+bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& root, const ProfilePreset& preset)
 {
-    AccessoryDialog dialog(input, profileDirectory / accessoryFilename);
+    AccessoryDialog dialog(input, root, preset);
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORIES), owner,
         dialogProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)

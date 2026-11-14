@@ -183,6 +183,10 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
         text = "SIMULATION";
         color = HDRColor(0.74, 0.61, 1.0, 1.0);
         break;
+      case 6:
+        text = this.hudFrench ? "USB PARTIEL" : "PARTIAL USB";
+        color = HDRColor(1.0, 0.68, 0.25, 1.0);
+        break;
       default:
         return;
     }
