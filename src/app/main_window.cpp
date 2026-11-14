@@ -767,11 +767,13 @@ private:
     {
         const bool simulationTitle = item.hwndItem == simTitle_;
         const auto id = item.CtlID;
+        // The static mode title has no button state, even if Windows supplies ODS_DISABLED.
+        const UINT state = simulationTitle ? 0 : item.itemState;
         const bool highContrast = isHighContrast();
-        const bool disabled = (item.itemState & ODS_DISABLED) != 0;
+        const bool disabled = (state & ODS_DISABLED) != 0;
         const bool modeLabel = simulationTitle || id == hardwareTab;
         const bool active = id == toggleUsb ? usbEnabled_ : id == toggleSimulation && publisher_.enabled();
-        const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+        const bool pressed = (state & ODS_SELECTED) != 0;
         const auto accent = modeLabel ? yellow : cyan;
         fill(item.hDC, item.rcItem, highContrast ? GetSysColor(COLOR_WINDOW) : background);
         const auto face = highContrast ? GetSysColor(pressed ? COLOR_HIGHLIGHT : COLOR_BTNFACE)
@@ -817,7 +819,7 @@ private:
         SelectObject(item.hDC, font);
         if (fitted)
             DeleteObject(fitted);
-        if ((item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT)) {
+        if ((state & ODS_FOCUS) && !(state & ODS_NOFOCUSRECT)) {
             auto focus = item.rcItem;
             InflateRect(&focus, -px(4), -px(4));
             DrawFocusRect(item.hDC, &focus);
