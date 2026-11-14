@@ -39,7 +39,7 @@ Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche e
 ## Simulation sans volant ni pédalier
 
 1. Ouvrez **Aide → Outils de test → Simulation clavier…**. Avec l’application au premier plan, maintenez une touche de commande pour voir l’axe monter progressivement dans l’aperçu.
-2. Depuis l’application déployée, cliquez sur **Activer dans le jeu**. La demande est réservée à cette installation de Cyberpunk. Laissez l’application ouverte. Vous pouvez la réduire.
+2. Depuis l’application déployée, cliquez sur **Activer dans le jeu** dans le bandeau. La demande est réservée à cette installation de Cyberpunk. Laissez l’application ouverte. Vous pouvez la réduire.
 3. Lancez Cyberpunk 2077 avec Chrome Axis déployé par Vortex, ou revenez au jeu s’il utilise déjà `ChromeAxis.dll`. Installez V au siège conducteur, relâchez les touches de simulation pour armer les axes, puis testez les commandes avec le jeu au premier plan.
 
 | Commande | Pavé numérique avec Verr. num. activé | Autre touche |
@@ -49,7 +49,7 @@ Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche e
 | Accélérer | 8 | F8 |
 | Freiner | 2 | F10 |
 
-Le journal du plugin dans `red4ext/logs` indique `Keyboard simulation active` lorsque le jeu prend en compte ce mode et `First simulated analog input applied` au premier mouvement transmis au véhicule. Pour terminer l’essai, cliquez sur **Arrêter la simulation** ou **Retour au matériel USB**, ou fermez l’application.
+Le journal du plugin dans `red4ext/logs` indique `Keyboard simulation active` lorsque le jeu prend en compte ce mode et `First simulated analog input applied` au premier mouvement transmis au véhicule. Pour terminer l’essai, cliquez sur **Arrêter la simulation** dans le bandeau ou **Retour** en bas à droite, ou fermez l’application.
 
 L’application affiche **Simulation demandée** jusqu’à ce que le plugin confirme le mode en conduite. Une copie autonome permet de tester les jauges dans l’aperçu. Pour activer la simulation en jeu, déployez ensemble l’application et le plugin du même ZIP et ouvrez l’EXE du mod dans le dossier de Cyberpunk.
 

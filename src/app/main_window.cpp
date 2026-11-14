@@ -66,7 +66,7 @@ enum Command {
     saveProfile, reloadProfile, openProfileFolder, closeApp, aboutApp, hardwareTab, simulationTab, toggleSimulation,
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
-    backupProfiles, restoreProfiles, openModInfo, reassignDevice, configureBrake,
+    backupProfiles, restoreProfiles, openModInfo, reassignDevice, configureBrake, leaveSimulation,
     deadzoneFirst = 200, meterFirst = 210, retryAxisFirst = 220
 };
 
@@ -290,6 +290,11 @@ public:
                 SetBkColor(dc, GetSysColor(COLOR_WINDOW));
                 return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
             }
+            if (control == simTitle_) {
+                SetTextColor(dc, yellow);
+                SetBkColor(dc, background);
+                return reinterpret_cast<LRESULT>(backgroundBrush_);
+            }
             const bool footer = control == status_ || control == profileName_;
             const bool isField = message != WM_CTLCOLORSTATIC || std::find(zones_.begin(), zones_.end(), control) != zones_.end();
             const bool heading = control == devicesTitle_ || control == axesTitle_ || control == calibrationTitle_;
@@ -413,6 +418,8 @@ private:
 
         hardwareTab_ = button(tr(Text::mainUsbHardware), hardwareTab);
         usbToggle_ = button(usbActionLabel(), toggleUsb);
+        simTitle_ = child(L"STATIC", tr(Text::mainKeyboardSimulation), SS_CENTER | SS_NOPREFIX);
+        simToggle_ = button(tr(Text::mainEnableInGame), toggleSimulation);
         frenchFlag_ = button(L"Français", frenchFlag);
         englishFlag_ = button(L"English", englishFlag);
         devicesTitle_ = label(tr(Text::mainDevices));
@@ -423,7 +430,6 @@ private:
             deviceCombos_[i] = combo(deviceComboFirst + static_cast<int>(i));
         }
         hardware_ = label(tr(Text::mainScanning));
-        simToggle_ = button(tr(Text::mainEnableInGame), toggleSimulation);
         simState_ = label(L"");
         simHint_ = label(tr(Text::mainSimHint));
 
@@ -466,6 +472,7 @@ private:
         select_ = button(tr(Text::mainSelectProfile), selectProfile);
         reload_ = button(tr(Text::mainReload), reloadProfile);
         save_ = button(tr(Text::mainSaveProfile), saveProfile);
+        simBack_ = button(tr(Text::mainBack), leaveSimulation);
 
         input_ = std::make_unique<chrome_axis::DirectInput>(window_);
         updateAnimationPreference();
@@ -493,7 +500,7 @@ private:
             SendMessageW(control, WM_SETFONT, static_cast<WPARAM>(font), FALSE);
             return TRUE;
         }, reinterpret_cast<LPARAM>(fonts_[0]));
-        for (const auto control : {devicesTitle_, axesTitle_, calibrationTitle_, hardwareTab_, guideAction_})
+        for (const auto control : {devicesTitle_, axesTitle_, calibrationTitle_, hardwareTab_, simTitle_, guideAction_})
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(fonts_[1]), FALSE);
         for (const auto control : deviceCombos_)
             SendMessageW(control, CB_SETITEMHEIGHT, 0, px(24));
@@ -521,9 +528,10 @@ private:
                 placements.push_back({control, px(left + x), px(y), px(w), px(h)});
         };
 
-        place(hardwareTab_, width - (simulation_ ? headerUsbInset : headerHardwareInset), 26,
-              simulation_ ? headerUsbWidth : headerHardwareWidth, 36);
+        place(hardwareTab_, width - headerHardwareInset, 26, headerHardwareWidth, 36);
+        place(simTitle_, width - headerHardwareInset, 14, headerHardwareWidth, 62);
         place(usbToggle_, width - headerUsbInset, 26, headerUsbWidth, 36);
+        place(simToggle_, width - headerUsbInset, 26, headerUsbWidth, 36);
         for (const auto button : {frenchFlag_, englishFlag_})
             place(button, width - 24 - languageButtonSize, 26, languageButtonSize, languageButtonSize);
         const int comboWidth = (width - 112) / 3;
@@ -536,8 +544,7 @@ private:
             place(deviceCombos_[i], x, 165, comboWidth, 180);
         }
         place(hardware_, 42, 198, width - 84, 21);
-        place(simToggle_, width - 230, 123, 188, 35);
-        place(simState_, 42, 150, width - 290, 22);
+        place(simState_, 42, 150, width - 84, 22);
         place(simHint_, 42, 184, width - 84, 22);
 
         place(axesTitle_, 42, 247, 300, 24);
@@ -555,7 +562,7 @@ private:
             const int y = reviewing ? 300 + reviewRow * 44 : 303 + static_cast<int>(i) * 32;
             if (reviewing && calibrationScope_[i])
                 ++reviewRow;
-            place(names_[i], reviewing ? 46 : column[0], y + 3, 150, 22);
+            place(names_[i], reviewing ? 46 : column[0], y + 3, simulation_ ? 132 : 150, 22);
             place(bindings_[i], column[1], y + 3, 105, 22);
             place(simKeys_[i], column[1], y + 3, 226, 22);
             place(zones_[i], column[2], y, 62, 24);
@@ -595,7 +602,11 @@ private:
         place(select_, width - 492, footer, 180, 31);
         place(reload_, width - 302, footer, 106, 31);
         place(save_, width - 186, footer, 162, 31);
-        if (width >= 820 || simulation_) {
+        const int simFooter = MulDiv(rect.bottom, USER_DEFAULT_SCREEN_DPI, static_cast<int>(dpi_)) - 49;
+        place(simBack_, width - 144, simFooter, 120, 31);
+        if (simulation_) {
+            place(status_, 24, simFooter + 5, width - 182, 22);
+        } else if (width >= 820) {
             place(profileName_, 24, footer + 6, width - 684, 22);
             place(status_, 24, footer + 39, width - 48, 22);
         } else {
@@ -665,8 +676,7 @@ private:
         const auto [left, width] = contentBounds(client.right);
         const bool highContrast = isHighContrast();
         fill(dc, client, highContrast ? GetSysColor(COLOR_WINDOW) : background);
-        const int headerInset = simulation_ ? headerUsbInset : headerHardwareInset;
-        paintHeader(dc, dpi_, client.right, left + 24, px(left + width - headerInset + 2), headerLogo_.get(),
+        paintHeader(dc, dpi_, client.right, left + 24, px(left + width - headerHardwareInset + 2), headerLogo_.get(),
                     fonts_[0], fonts_[2], tr(Text::mainBannerSubtitle));
 
         const auto drawCard = [&](int top, int bottom) {
@@ -743,26 +753,24 @@ private:
                                 selectedLanguage_ == language);
             return;
         }
-        if (id != hardwareTab && id != toggleUsb) {
-            const bool primary = id == toggleSimulation || id == saveProfile ||
-                                 id == startCalibration || id == measure;
-            const bool stop = id == toggleSimulation && publisher_.enabled();
-            const bool footer = id == saveProfile || id == reloadProfile || id == selectProfile || id == openProfileFolder;
-            paintAction(item, fonts_[0], dpi_, footer ? background : panel, primary, stop);
+        if (id != hardwareTab && id != toggleUsb && id != toggleSimulation) {
+            const bool primary = id == saveProfile || id == startCalibration || id == measure;
+            const bool footer = id == saveProfile || id == reloadProfile || id == selectProfile ||
+                                id == openProfileFolder || id == leaveSimulation;
+            paintAction(item, fonts_[0], dpi_, footer ? background : panel, primary);
             return;
         }
 
         const bool highContrast = isHighContrast();
         const bool disabled = (item.itemState & ODS_DISABLED) != 0;
-        const bool usbAction = id == toggleUsb;
-        const bool activeUsb = usbAction && usbEnabled_;
-        const bool current = !usbAction && !simulation_;
+        const bool modeLabel = id == hardwareTab;
+        const bool active = id == toggleUsb ? usbEnabled_ : id == toggleSimulation && publisher_.enabled();
         const bool pressed = (item.itemState & ODS_SELECTED) != 0;
-        const auto accent = usbAction ? cyan : yellow;
+        const auto accent = modeLabel ? yellow : cyan;
         fill(item.hDC, item.rcItem, highContrast ? GetSysColor(COLOR_WINDOW) : background);
         const auto face = highContrast ? GetSysColor(pressed ? COLOR_HIGHLIGHT : COLOR_BTNFACE)
-            : disabled ? field : activeUsb ? red : current ? yellow : pressed ? field : background;
-        const auto border = highContrast ? GetSysColor(COLOR_BTNTEXT) : disabled ? edge : activeUsb ? red : accent;
+            : disabled ? field : active ? red : modeLabel ? yellow : pressed ? field : background;
+        const auto border = highContrast ? GetSysColor(COLOR_BTNTEXT) : disabled ? edge : active ? red : accent;
         const auto& box = item.rcItem;
         const LONG left = box.left, right = box.right - 1, top = box.top, bottom = box.bottom - 1;
         const LONG notch = px(11);
@@ -770,17 +778,17 @@ private:
             {left + notch, top}, {right, top}, {right, bottom}, {left, bottom}, {left, top + notch}
         };
         drawPolygon(item.hDC, shape, face, border);
-        if (!highContrast && !current && !disabled && !activeUsb) {
+        if (!highContrast && !modeLabel && !disabled && !active) {
             const POINT corner[]{{left + 1, top + notch}, {left + notch, top + 1}, {left + notch, top + notch}};
             drawPolygon(item.hDC, corner, accent, accent);
         }
         const auto color = highContrast
             ? GetSysColor(disabled ? COLOR_GRAYTEXT : pressed ? COLOR_HIGHLIGHTTEXT : COLOR_BTNTEXT)
-            : disabled ? secondary : activeUsb ? background : current ? background : accent;
+            : disabled ? secondary : active || modeLabel ? background : accent;
         const auto previous = SaveDC(item.hDC);
         SetTextColor(item.hDC, color);
         SetBkMode(item.hDC, TRANSPARENT);
-        const auto font = SelectObject(item.hDC, fonts_[usbAction || simulation_ ? 0 : 1]);
+        const auto font = SelectObject(item.hDC, fonts_[modeLabel ? 1 : 0]);
         wchar_t text[80]{};
         GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
         auto rect = item.rcItem;
@@ -908,7 +916,7 @@ private:
     HWND calibrationScopeButton_{}, axisChoice_{}, measure_{}, cancel_{}, previous_{};
     HWND guideStep_{}, guideAction_{}, guideDevice_{}, guideNotice_{};
     HWND profileName_{}, status_{}, folder_{}, select_{}, reload_{}, save_{};
-    HWND hardwareTab_{}, usbToggle_{}, simToggle_{}, simState_{}, simHint_{}, simDirections_{}, simArming_{};
+    HWND hardwareTab_{}, usbToggle_{}, simTitle_{}, simToggle_{}, simState_{}, simHint_{}, simDirections_{}, simArming_{}, simBack_{};
     HWND frenchFlag_{}, englishFlag_{};
     Language selectedLanguage_{chrome_axis::interfaceLanguage()};
     std::array<HWND, 4> headings_{};
@@ -987,6 +995,7 @@ void App::action(int command, int notification)
     }
     switch (command) {
     case hardwareTab:
+    case leaveSimulation:
         setMode(false);
         break;
     case simulationTab:
@@ -1933,11 +1942,11 @@ void App::applyMode()
         constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
         SetWindowPos(control, nullptr, 0, 0, 0, 0, flags | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     };
-    for (const auto control : {usbToggle_, refresh_, accessories_, diagnostics_, feedback_, brakeSettings_,
+    for (const auto control : {hardwareTab_, usbToggle_, refresh_, accessories_, diagnostics_, feedback_, brakeSettings_,
                               steeringDeadzoneHint_, hardware_, headings_[2],
                               instruction_, start_, calibrationScopeButton_, profileName_, folder_, select_, reload_, save_})
         setVisible(control, !simulation_);
-    for (const auto control : {simToggle_, simState_, simHint_, simDirections_, simArming_})
+    for (const auto control : {simTitle_, simToggle_, simState_, simHint_, simDirections_, simArming_, simBack_})
         setVisible(control, simulation_);
     for (std::size_t i = 0; i < commands.size(); ++i) {
         setVisible(deviceLabels_[i], !simulation_);
@@ -1946,8 +1955,7 @@ void App::applyMode()
         setVisible(zones_[i], !simulation_);
         setVisible(simKeys_[i], simulation_);
     }
-    setText(hardwareTab_, tr(simulation_ ? Text::mainBackToUsb : Text::mainUsbHardware));
-    setText(devicesTitle_, simulation_ ? tr(Text::mainKeyboardSimulation) : tr(Text::mainDevicesHeading));
+    setText(devicesTitle_, simulation_ ? tr(Text::mainSimulationStatus) : tr(Text::mainDevicesHeading));
     setText(axesTitle_, simulation_ ? tr(Text::mainSimulatedSignals) : tr(Text::mainVehicleAxesHeading));
     setText(headings_[1], simulation_ ? tr(Text::mainKeys) : tr(Text::mainDetectedAxis));
     setText(headings_[3], simulation_ ? tr(Text::mainLivePreview) : tr(Text::mainLocalPreview));
@@ -2371,7 +2379,7 @@ void App::contextMenu(int x, int y)
     if (simulation_) {
         AppendMenuW(menu, MF_STRING, toggleSimulation,
                     publisher_.enabled() ? tr(Text::mainStopSimulation) : tr(Text::mainEnableInGame));
-        AppendMenuW(menu, MF_STRING, hardwareTab, tr(Text::mainShowUsbHardware));
+        AppendMenuW(menu, MF_STRING, leaveSimulation, tr(Text::mainShowUsbHardware));
     } else {
         refreshUsbToggle();
         AppendMenuW(menu, MF_STRING | (canToggleUsb() ? MF_ENABLED : MF_GRAYED), toggleUsb, usbActionLabel());
