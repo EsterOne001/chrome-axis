@@ -290,11 +290,6 @@ public:
                 SetBkColor(dc, GetSysColor(COLOR_WINDOW));
                 return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
             }
-            if (control == simTitle_) {
-                SetTextColor(dc, yellow);
-                SetBkColor(dc, background);
-                return reinterpret_cast<LRESULT>(backgroundBrush_);
-            }
             const bool footer = control == status_ || control == profileName_;
             const bool isField = message != WM_CTLCOLORSTATIC || std::find(zones_.begin(), zones_.end(), control) != zones_.end();
             const bool heading = control == devicesTitle_ || control == axesTitle_ || control == calibrationTitle_;
@@ -316,6 +311,10 @@ public:
         }
         case WM_DRAWITEM: {
             const auto& item = *reinterpret_cast<const DRAWITEMSTRUCT*>(lp);
+            if (item.CtlType == ODT_STATIC && item.hwndItem == simTitle_) {
+                paintHeaderAction(item);
+                return TRUE;
+            }
             if (item.CtlID >= meterFirst && item.CtlID < meterFirst + commands.size()) {
                 paintMeter(item, item.CtlID - meterFirst);
                 return TRUE;
@@ -418,7 +417,7 @@ private:
 
         hardwareTab_ = button(tr(Text::mainUsbHardware), hardwareTab);
         usbToggle_ = button(usbActionLabel(), toggleUsb);
-        simTitle_ = child(L"STATIC", tr(Text::mainKeyboardSimulation), SS_CENTER | SS_NOPREFIX);
+        simTitle_ = child(L"STATIC", tr(Text::mainKeyboardSimulation), SS_OWNERDRAW);
         simToggle_ = button(tr(Text::mainEnableInGame), toggleSimulation);
         frenchFlag_ = button(L"Français", frenchFlag);
         englishFlag_ = button(L"English", englishFlag);
@@ -529,7 +528,7 @@ private:
         };
 
         place(hardwareTab_, width - headerHardwareInset, 26, headerHardwareWidth, 36);
-        place(simTitle_, width - headerHardwareInset, 14, headerHardwareWidth, 62);
+        place(simTitle_, width - headerHardwareInset, 26, headerHardwareWidth, 36);
         place(usbToggle_, width - headerUsbInset, 26, headerUsbWidth, 36);
         place(simToggle_, width - headerUsbInset, 26, headerUsbWidth, 36);
         for (const auto button : {frenchFlag_, englishFlag_})
@@ -761,9 +760,16 @@ private:
             return;
         }
 
+        paintHeaderAction(item);
+    }
+
+    void paintHeaderAction(const DRAWITEMSTRUCT& item)
+    {
+        const bool simulationTitle = item.hwndItem == simTitle_;
+        const auto id = item.CtlID;
         const bool highContrast = isHighContrast();
         const bool disabled = (item.itemState & ODS_DISABLED) != 0;
-        const bool modeLabel = id == hardwareTab;
+        const bool modeLabel = simulationTitle || id == hardwareTab;
         const bool active = id == toggleUsb ? usbEnabled_ : id == toggleSimulation && publisher_.enabled();
         const bool pressed = (item.itemState & ODS_SELECTED) != 0;
         const auto accent = modeLabel ? yellow : cyan;
@@ -790,11 +796,27 @@ private:
         SetBkMode(item.hDC, TRANSPARENT);
         const auto font = SelectObject(item.hDC, fonts_[modeLabel ? 1 : 0]);
         wchar_t text[80]{};
-        GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
+        const int length = GetWindowTextW(item.hwndItem, text, static_cast<int>(std::size(text)));
         auto rect = item.rcItem;
         InflateRect(&rect, -px(8), 0);
-        DrawTextW(item.hDC, text, -1, &rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        HFONT fitted{};
+        if (simulationTitle) {
+            SIZE natural{};
+            LOGFONTW heading{};
+            const LONG available = rect.right - rect.left;
+            if (available > 0 && GetTextExtentPoint32W(item.hDC, text, length, &natural) && natural.cx > available &&
+                GetObjectW(fonts_[1], sizeof(heading), &heading) == sizeof(heading)) {
+                // Keep the heading typeface and round down to leave room for glyph hinting.
+                heading.lfHeight = std::min(-1L, heading.lfHeight * available / natural.cx + 1);
+                fitted = CreateFontIndirectW(&heading);
+                if (fitted)
+                    SelectObject(item.hDC, fitted);
+            }
+        }
+        DrawTextW(item.hDC, text, length, &rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
         SelectObject(item.hDC, font);
+        if (fitted)
+            DeleteObject(fitted);
         if ((item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT)) {
             auto focus = item.rcItem;
             InflateRect(&focus, -px(4), -px(4));
