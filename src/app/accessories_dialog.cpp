@@ -68,6 +68,7 @@ std::wstring percent(int value)
 }
 
 enum class CaptureStage { Idle, Digital, AxisRest, AwaitingTravel, AxisTravel };
+enum class AccessoryPage { keys, handbrake };
 
 std::wstring wide(std::string_view text)
 {
@@ -215,52 +216,18 @@ INT_PTR CALLBACK thresholdsProc(HWND window, UINT message, WPARAM wParam, LPARAM
     return FALSE;
 }
 
-bool canConfigureHandbrake(const AccessoryBinding& binding)
+bool isLegacyHandbrakeAxis(const AccessoryBinding& binding)
 {
-    return binding.kind == AccessoryKind::Axis && binding.role == ShifterRole::None
-        && (binding.key == 0 || binding.key == VK_SPACE);
+    return binding.kind == AccessoryKind::Axis && binding.role == ShifterRole::None && binding.key == VK_SPACE;
 }
 
-void updateHandbrakeAction(HWND window)
+AccessoryBinding asHandbrake(AccessoryBinding binding, unsigned int ceiling)
 {
-    const bool valid = validHandbrakeCeilingPercent(readPercent(window, IDC_HANDBRAKE_CEILING));
-    EnableWindow(GetDlgItem(window, IDOK), valid);
-    SetDlgItemTextW(window, IDC_HANDBRAKE_STATUS, valid ? L"" : tr(Text::DlgHandbrakeInvalid));
-}
-
-INT_PTR CALLBACK handbrakeProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    if (message == WM_INITDIALOG) {
-        SetWindowLongPtrW(window, DWLP_USER, lParam);
-        SetWindowTextW(window, tr(Text::DlgHandbrakeTitle));
-        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgHandbrakeHint));
-        SetDlgItemTextW(window, IDC_HANDBRAKE_CEILING_LABEL, tr(Text::DlgHandbrakeCeiling));
-        SetDlgItemTextW(window, IDOK, tr(Text::DlgThresholdsApply));
-        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
-        DialogTheme::attach(window, tr(Text::DlgHandbrakeHeading), IDC_HANDBRAKE_STATUS, 0, {IDOK});
-        SendDlgItemMessageW(window, IDC_HANDBRAKE_CEILING, EM_SETLIMITTEXT, 3, 0);
-        SetDlgItemInt(window, IDC_HANDBRAKE_CEILING, *reinterpret_cast<const unsigned int*>(lParam), FALSE);
-        updateHandbrakeAction(window);
-        return TRUE;
-    }
-    if (message != WM_COMMAND)
-        return FALSE;
-    switch (LOWORD(wParam)) {
-    case IDC_HANDBRAKE_CEILING:
-        if (HIWORD(wParam) == EN_CHANGE)
-            updateHandbrakeAction(window);
-        return TRUE;
-    case IDOK:
-        if (const auto value = readPercent(window, IDC_HANDBRAKE_CEILING); validHandbrakeCeilingPercent(value)) {
-            *reinterpret_cast<unsigned int*>(GetWindowLongPtrW(window, DWLP_USER)) = value;
-            EndDialog(window, IDOK);
-        }
-        return TRUE;
-    case IDCANCEL:
-        EndDialog(window, IDCANCEL);
-        return TRUE;
-    }
-    return FALSE;
+    binding.key = 0;
+    binding.thresholds = {};
+    binding.activation = AccessoryActivation::hold;
+    binding.handbrakeCeilingPercent = ceiling;
+    return binding;
 }
 
 class AccessoryDialog {
@@ -269,6 +236,7 @@ public:
         : input_(input), root_(root), preset_(preset), path_(preset.directory / accessoryFilename) {}
 
     bool initialise(HWND window);
+    void showPage(AccessoryPage page, bool initialise = false);
     void capture();
     void sample();
     void refreshDevices();
@@ -285,7 +253,10 @@ public:
     void add();
     void edit();
     void editThresholds();
-    void configureHandbrake();
+    void useCapturedHandbrake();
+    void useLegacyHandbrake();
+    void changeHandbrakeCeiling();
+    void removeHandbrake();
     void remove();
     void save();
     void cancel();
@@ -296,11 +267,20 @@ private:
         return SendDlgItemMessageW(window_, control, message, wParam, lParam);
     }
 
+    bool handbrakePage() const noexcept { return page_ == AccessoryPage::handbrake; }
     const DeviceInfo* selectedDevice() const;
+    std::optional<std::size_t> selectedBinding() const;
+    std::optional<std::size_t> selectedCapture() const;
+    std::optional<std::size_t> handbrakeBinding() const;
+    std::optional<std::size_t> legacyHandbrakeBinding() const;
+    std::wstring deviceLabel(std::string_view id) const;
+    void selectDevice(std::string_view id);
     void setStatus(const wchar_t* text) const;
     void startSampling(CaptureStage stage, const wchar_t* text);
     void finishCapture();
-    void refreshBindings(LRESULT selection = LB_ERR);
+    void refreshBindings(std::optional<std::size_t> selection = {});
+    void refreshHandbrakeActions(bool idle, bool captured);
+    void applyHandbrake(AccessoryBinding binding);
     void renderPreview(std::wstring status, std::optional<int> travel, std::optional<int> handbrake = {});
     void setHandbrakePreview(std::optional<int> tenths) const;
 
@@ -322,9 +302,14 @@ private:
     std::optional<AxisCapture> rest_;
     CalibrationCapture measurements_;
     CaptureStage stage_{CaptureStage::Idle};
+    AccessoryPage page_{AccessoryPage::keys};
+    std::string keysDevice_;
+    std::string handbrakeDevice_;
     unsigned int key_{};
+    unsigned int handbrakeCeiling_{defaultHandbrakeCeilingPercent};
     ULONGLONG deadline_{};
     bool modified_{};
+    bool validCeiling_{true};
     bool previewPolling_{};
     bool previewAxis_{};
 };
@@ -349,7 +334,12 @@ bool AccessoryDialog::initialise(HWND window)
     send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgAnalog)));
     send(IDC_ACCESSORY_TYPE, CB_SETCURSEL, 0);
     populateAccessoryActivation(window_, IDC_ACCESSORY_ACTIVATION);
+    if (const auto binding = handbrakeBinding())
+        handbrakeCeiling_ = bindings_[*binding].handbrakeCeilingPercent;
+    send(IDC_HANDBRAKE_CEILING, EM_SETLIMITTEXT, 3);
+    SetDlgItemInt(window_, IDC_HANDBRAKE_CEILING, handbrakeCeiling_, FALSE);
     refreshDevices();
+    showPage(AccessoryPage::keys, true);
     SetFocus(GetDlgItem(window_, selectedDevice() ? IDC_ACCESSORY_DEVICE : IDC_ACCESSORY_REFRESH));
     return false;
 }
@@ -361,28 +351,134 @@ const DeviceInfo* AccessoryDialog::selectedDevice() const
         ? &devices_[static_cast<std::size_t>(selected)] : nullptr;
 }
 
+std::optional<std::size_t> AccessoryDialog::selectedBinding() const
+{
+    if (handbrakePage())
+        return {};
+    const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
+    if (row == LB_ERR)
+        return {};
+    const auto index = send(IDC_ACCESSORY_LIST, LB_GETITEMDATA, static_cast<WPARAM>(row));
+    if (index < 0 || static_cast<std::size_t>(index) >= bindings_.size())
+        return {};
+    return static_cast<std::size_t>(index);
+}
+
+std::optional<std::size_t> AccessoryDialog::selectedCapture() const
+{
+    const auto index = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
+    if (index < 0 || static_cast<std::size_t>(index) >= captured_.size())
+        return {};
+    return static_cast<std::size_t>(index);
+}
+
+std::optional<std::size_t> AccessoryDialog::handbrakeBinding() const
+{
+    const auto found = std::ranges::find_if(bindings_, [](const auto& binding) {
+        return binding.handbrakeCeilingPercent != 0;
+    });
+    if (found == bindings_.end())
+        return {};
+    return static_cast<std::size_t>(found - bindings_.begin());
+}
+
+std::optional<std::size_t> AccessoryDialog::legacyHandbrakeBinding() const
+{
+    const auto found = std::ranges::find_if(bindings_, isLegacyHandbrakeAxis);
+    if (found == bindings_.end())
+        return {};
+    return static_cast<std::size_t>(found - bindings_.begin());
+}
+
+std::wstring AccessoryDialog::deviceLabel(std::string_view id) const
+{
+    const auto device = std::ranges::find(devices_, id, &DeviceInfo::id);
+    return wide(device == devices_.end() || device->name.empty() ? id : std::string_view(device->name));
+}
+
+void AccessoryDialog::selectDevice(std::string_view id)
+{
+    const auto device = std::ranges::find(devices_, id, &DeviceInfo::id);
+    if (device != devices_.end()) {
+        send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, static_cast<WPARAM>(device - devices_.begin()));
+        return;
+    }
+    const bool chooseFirst = !devices_.empty() && (!handbrakePage() || (id.empty() && devices_.size() == 1));
+    send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, chooseFirst ? 0 : static_cast<WPARAM>(CB_ERR));
+}
+
+void AccessoryDialog::showPage(AccessoryPage page, bool initialise)
+{
+    if (!initialise && page == page_)
+        return;
+    if (!initialise) {
+        if (const auto* device = selectedDevice()) {
+            auto& selection = handbrakePage() ? handbrakeDevice_ : keysDevice_;
+            selection = device->id;
+        }
+        page_ = page;
+        if (handbrakePage()) {
+            if (handbrakeDevice_.empty()) {
+                const auto configured = handbrakeBinding();
+                const auto axis = configured ? configured : legacyHandbrakeBinding();
+                if (axis)
+                    handbrakeDevice_ = bindings_[*axis].deviceId;
+            }
+            selectDevice(handbrakeDevice_);
+        } else {
+            selectDevice(keysDevice_);
+        }
+    }
+    const bool handbrake = handbrakePage();
+    for (const auto control : {IDC_ACCESSORY_SHIFTER, IDC_ACCESSORY_TYPE_LABEL, IDC_ACCESSORY_TYPE,
+                               IDC_MODAL_KEY_LABEL, IDC_ACCESSORY_KEY, IDC_ACCESSORY_ADD,
+                               IDC_MODAL_LIST_HEADING, IDC_ACCESSORY_ACTIVATION_LABEL,
+                               IDC_ACCESSORY_ACTIVATION, IDC_ACCESSORY_THRESHOLDS, IDC_ACCESSORY_LIST,
+                               IDC_ACCESSORY_EDIT, IDC_ACCESSORY_REMOVE}) {
+        ShowWindow(GetDlgItem(window_, control), handbrake ? SW_HIDE : SW_SHOW);
+    }
+    for (const auto control : {IDC_HANDBRAKE_USE_SPACE, IDC_HANDBRAKE_AXIS, IDC_HANDBRAKE_APPLY_AXIS,
+                               IDC_HANDBRAKE_REMOVE, IDC_HANDBRAKE_HEADING, IDC_HANDBRAKE_CEILING_LABEL,
+                               IDC_HANDBRAKE_CEILING, IDC_HANDBRAKE_STATUS}) {
+        ShowWindow(GetDlgItem(window_, control), handbrake ? SW_SHOW : SW_HIDE);
+    }
+    DialogTheme::setPrimary(window_, IDC_ACCESSORY_TAB_KEYS, !handbrake);
+    DialogTheme::setPrimary(window_, IDC_ACCESSORY_TAB_HANDBRAKE, handbrake);
+    SetDlgItemTextW(window_, IDC_MODAL_INTRO, tr(handbrake ? Text::DlgHandbrakeIntro : Text::DlgAccessoriesIntro));
+    SetDlgItemTextW(window_, IDC_ACCESSORY_INPUT_LABEL,
+        tr(handbrake ? Text::DlgHandbrakeDetectedAxis : Text::DlgAccessoriesCapturedInput));
+    SetDlgItemTextW(window_, IDC_ACCESSORY_PREVIEW_HEADING,
+        tr(handbrake ? Text::DlgHandbrakePreview : Text::DlgAccessoryPreview));
+    clearCapture();
+    RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+}
+
 void AccessoryDialog::setStatus(const wchar_t* text) const
 {
-    SetDlgItemTextW(window_, IDC_ACCESSORY_STATUS, text);
+    SetDlgItemTextW(window_, IDC_ACCESSORY_STATUS,
+        !handbrakePage() && !validCeiling_ && handbrakeBinding() ? tr(Text::DlgHandbrakeInvalidOtherTab) : text);
 }
 
 void AccessoryDialog::refreshDevices()
 {
     const auto* current = selectedDevice();
-    const auto currentId = current ? current->id : std::string{};
+    auto retainedId = current ? current->id : std::string{};
+    if (handbrakePage() && retainedId.empty()) {
+        const auto binding = handbrakeBinding();
+        if (binding)
+            retainedId = bindings_[*binding].deviceId;
+    }
     devices_ = input_.devices();
     send(IDC_ACCESSORY_DEVICE, CB_RESETCONTENT);
-    WPARAM selected = 0;
-    for (std::size_t i = 0; i < devices_.size(); ++i) {
-        const auto& item = devices_[i];
+    for (const auto& item : devices_) {
         auto label = wide(item.name.empty() ? item.id : item.name);
         if (std::ranges::count(devices_, item.name, &DeviceInfo::name) > 1 && item.id.size() == 38)
             label += L" [" + wide(item.id.substr(29, 8)) + L"]";
         send(IDC_ACCESSORY_DEVICE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
-        if (item.id == currentId)
-            selected = i;
     }
-    send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, selected);
+    if (!handbrakePage() && std::ranges::find(devices_, retainedId, &DeviceInfo::id) == devices_.end())
+        retainedId.clear();
+    selectDevice(retainedId);
     clearCapture();
     refreshBindings();
 }
@@ -395,50 +491,69 @@ void AccessoryDialog::clearCapture()
     previous_.reset();
     rest_.reset();
     send(IDC_ACCESSORY_INPUT, CB_RESETCONTENT);
-    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCapture));
+    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(handbrakePage() ? Text::DlgHandbrakeCapture : Text::DlgAccessoriesCapture));
     if (const auto* device = selectedDevice()) {
-        const auto status = tr(Text::DlgAccessoriesAxesCount) + std::to_wstring(std::ranges::count(device->axes, true))
-            + L" · " + tr(Text::DlgAccessoriesButtonsCount) + std::to_wstring(device->buttons.count())
-            + L" · " + tr(Text::DlgAccessoriesDpadsCount) + std::to_wstring(std::ranges::count(device->povs, true))
-            + L"\r\n" + tr(Text::DlgAccessoriesAxisHint);
-        setStatus(status.c_str());
+        if (handbrakePage()) {
+            setStatus(tr(Text::DlgHandbrakeReadyToCapture));
+        } else {
+            const auto status = tr(Text::DlgAccessoriesAxesCount) + std::to_wstring(std::ranges::count(device->axes, true))
+                + L" · " + tr(Text::DlgAccessoriesButtonsCount) + std::to_wstring(device->buttons.count())
+                + L" · " + tr(Text::DlgAccessoriesDpadsCount) + std::to_wstring(std::ranges::count(device->povs, true))
+                + L"\r\n" + tr(Text::DlgAccessoriesAxisHint);
+            setStatus(status.c_str());
+        }
     } else {
-        setStatus(tr(Text::DlgAccessoriesConnectDevice));
+        setStatus(tr(handbrakePage() && !devices_.empty()
+            ? Text::DlgHandbrakeSelectDevice : Text::DlgAccessoriesConnectDevice));
     }
     refreshActions();
 }
 
+void AccessoryDialog::refreshHandbrakeActions(bool idle, bool captured)
+{
+    const auto index = handbrakeBinding();
+    const auto selectedAxis = index
+        ? accessoryInputLabel(bindings_[*index]) + L" · " + deviceLabel(bindings_[*index].deviceId)
+        : std::wstring(tr(Text::DlgHandbrakeUnconfigured));
+    SetDlgItemTextW(window_, IDC_HANDBRAKE_AXIS, selectedAxis.c_str());
+    SetDlgItemTextW(window_, IDC_HANDBRAKE_STATUS, validCeiling_ ? L"" : tr(Text::DlgHandbrakeInvalid));
+    EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_CEILING), idle);
+    EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_APPLY_AXIS), idle && captured && validCeiling_);
+    EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_USE_SPACE),
+        idle && !index && legacyHandbrakeBinding().has_value() && validCeiling_);
+    EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_REMOVE), idle && index.has_value());
+}
+
 void AccessoryDialog::refreshActions()
 {
-    const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
-    const bool selected = row >= 0 && static_cast<std::size_t>(row) < bindings_.size();
-    const auto capture = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
-    const bool selectedCapture = capture >= 0 && static_cast<std::size_t>(capture) < captured_.size();
-    const auto* activationBinding = selected ? &bindings_[static_cast<std::size_t>(row)]
-        : selectedCapture ? &captured_[static_cast<std::size_t>(capture)] : nullptr;
-    const bool progressive = activationBinding && activationBinding->handbrakeCeilingPercent;
-    const bool canChangeActivation = stage_ == CaptureStage::Idle && activationBinding && !progressive;
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ACTIVATION), canChangeActivation);
-    send(IDC_ACCESSORY_ACTIVATION, CB_SETCURSEL, !canChangeActivation ? static_cast<WPARAM>(-1)
-        : activationBinding->activation == AccessoryActivation::pulse ? 1 : 0);
+    const auto row = selectedBinding();
+    const auto capture = selectedCapture();
+    const bool idle = stage_ == CaptureStage::Idle;
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_CAPTURE), selectedDevice() != nullptr);
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_INPUT), !captured_.empty());
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_KEY), stage_ == CaptureStage::Idle && !progressive);
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ADD),
-        stage_ == CaptureStage::Idle && selectedCapture && !progressive && isAccessoryKey(key_));
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_EDIT), stage_ == CaptureStage::Idle && selected && !progressive);
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_THRESHOLDS),
-        stage_ == CaptureStage::Idle && selected && !progressive && activationBinding->kind == AccessoryKind::Axis);
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_HANDBRAKE),
-        stage_ == CaptureStage::Idle && activationBinding && canConfigureHandbrake(*activationBinding));
-    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), selected);
-    EnableWindow(GetDlgItem(window_, IDOK), modified_);
+    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_INPUT), idle && !captured_.empty());
+    EnableWindow(GetDlgItem(window_, IDOK), modified_ && (validCeiling_ || !handbrakeBinding()) && idle);
+    if (handbrakePage()) {
+        refreshHandbrakeActions(idle, capture.has_value());
+    } else {
+        const auto* binding = row ? &bindings_[*row] : capture ? &captured_[*capture] : nullptr;
+        const bool canEdit = idle && binding;
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ACTIVATION), canEdit);
+        send(IDC_ACCESSORY_ACTIVATION, CB_SETCURSEL, !canEdit ? static_cast<WPARAM>(-1)
+            : binding->activation == AccessoryActivation::pulse ? 1 : 0);
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_KEY), idle);
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ADD), idle && capture.has_value() && isAccessoryKey(key_));
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_EDIT), idle && row.has_value());
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_THRESHOLDS),
+            idle && row.has_value() && bindings_[*row].kind == AccessoryKind::Axis);
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), idle && row.has_value());
+    }
     selectPreview();
 }
 
 void AccessoryDialog::selectCapturedInput()
 {
-    send(IDC_ACCESSORY_LIST, LB_SETCURSEL, static_cast<WPARAM>(-1));
+    if (!handbrakePage())
+        send(IDC_ACCESSORY_LIST, LB_SETCURSEL, static_cast<WPARAM>(-1));
     refreshActions();
 }
 
@@ -446,12 +561,15 @@ void AccessoryDialog::selectPreview()
 {
     std::optional<AccessoryBinding> binding;
     if (stage_ == CaptureStage::Idle) {
-        const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
-        const auto capture = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
-        if (row >= 0 && static_cast<std::size_t>(row) < bindings_.size()) {
-            binding = bindings_[static_cast<std::size_t>(row)];
-        } else if (capture >= 0 && static_cast<std::size_t>(capture) < captured_.size()) {
-            binding = captured_[static_cast<std::size_t>(capture)];
+        if (handbrakePage()) {
+            if (const auto capture = selectedCapture())
+                binding = asHandbrake(captured_[*capture], handbrakeCeiling_);
+            else if (const auto row = handbrakeBinding())
+                binding = bindings_[*row];
+        } else if (const auto row = selectedBinding()) {
+            binding = bindings_[*row];
+        } else if (const auto capture = selectedCapture()) {
+            binding = captured_[*capture];
             binding->key = key_;
         }
     }
@@ -612,7 +730,7 @@ void AccessoryDialog::drawPreview(const DRAWITEMSTRUCT& item) const
 
 void AccessoryDialog::chooseKey()
 {
-    if (stage_ != CaptureStage::Idle)
+    if (handbrakePage() || stage_ != CaptureStage::Idle)
         return;
     if (const auto key = chooseAccessoryKey(window_, key_)) {
         key_ = *key;
@@ -627,32 +745,30 @@ void AccessoryDialog::chooseKey()
 
 void AccessoryDialog::changeActivation()
 {
-    if (stage_ != CaptureStage::Idle)
+    if (handbrakePage() || stage_ != CaptureStage::Idle)
         return;
     const auto selected = send(IDC_ACCESSORY_ACTIVATION, CB_GETCURSEL);
     if (selected == CB_ERR)
         return;
     const auto activation = selected == 1 ? AccessoryActivation::pulse : AccessoryActivation::hold;
-    const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
-    if (row >= 0 && static_cast<std::size_t>(row) < bindings_.size()) {
-        auto& binding = bindings_[static_cast<std::size_t>(row)];
-        if (!binding.handbrakeCeilingPercent && binding.activation != activation) {
+    if (const auto row = selectedBinding()) {
+        auto& binding = bindings_[*row];
+        if (binding.activation != activation) {
             binding.activation = activation;
             modified_ = true;
             refreshBindings(row);
             setStatus(tr(Text::DlgAccessoriesActivationEdited));
         }
-        return;
-    }
-    const auto capture = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
-    if (capture >= 0 && static_cast<std::size_t>(capture) < captured_.size()) {
-        captured_[static_cast<std::size_t>(capture)].activation = activation;
+    } else if (const auto capture = selectedCapture()) {
+        captured_[*capture].activation = activation;
         selectPreview();
     }
 }
 
 void AccessoryDialog::shifter()
 {
+    if (handbrakePage())
+        return;
     clearCapture();
     const auto* device = selectedDevice();
     if (editShifter(window_, input_, bindings_, device ? std::string_view(device->id) : std::string_view{})) {
@@ -683,19 +799,21 @@ void AccessoryDialog::capture()
     if (!device)
         return;
     if (stage_ == CaptureStage::AwaitingTravel) {
-        startSampling(CaptureStage::AxisTravel, tr(Text::DlgAccessoriesHoldAtLimit));
+        startSampling(CaptureStage::AxisTravel,
+            tr(handbrakePage() ? Text::DlgHandbrakeHoldAtLimit : Text::DlgAccessoriesHoldAtLimit));
         return;
     }
     const auto wasIdle = stage_ == CaptureStage::Idle;
     clearCapture();
     if (!wasIdle)
         return;
-    if (send(IDC_ACCESSORY_TYPE, CB_GETCURSEL) == 1) {
+    if (handbrakePage() || send(IDC_ACCESSORY_TYPE, CB_GETCURSEL) == 1) {
         if (std::ranges::none_of(device->axes, [](bool present) { return present; })) {
             setStatus(tr(Text::DlgAccessoriesNoAbsoluteAxes));
             return;
         }
-        startSampling(CaptureStage::AxisRest, tr(Text::DlgAccessoriesHoldAtRest));
+        startSampling(CaptureStage::AxisRest,
+            tr(handbrakePage() ? Text::DlgHandbrakeHoldAtRest : Text::DlgAccessoriesHoldAtRest));
     } else {
         input_.beginPoll();
         previous_ = input_.sample(device->id);
@@ -756,8 +874,9 @@ void AccessoryDialog::sample()
         KillTimer(window_, captureTimer);
         rest_ = measured;
         stage_ = CaptureStage::AwaitingTravel;
-        SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesMeasureLimit));
-        setStatus(tr(Text::DlgAccessoriesMeasureLimitHint));
+        SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE,
+            tr(handbrakePage() ? Text::DlgHandbrakeMeasureLimit : Text::DlgAccessoriesMeasureLimit));
+        setStatus(tr(handbrakePage() ? Text::DlgHandbrakeMeasureLimitHint : Text::DlgAccessoriesMeasureLimitHint));
         return;
     }
     for (const auto& candidate : axisCandidates(*rest_, *rest_, *measured, false)) {
@@ -771,7 +890,8 @@ void AccessoryDialog::finishCapture()
 {
     KillTimer(window_, captureTimer);
     stage_ = CaptureStage::Idle;
-    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCapture));
+    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE,
+        tr(handbrakePage() ? Text::DlgHandbrakeCapture : Text::DlgAccessoriesCapture));
     for (const auto& binding : captured_) {
         const auto label = accessoryInputLabel(binding);
         send(IDC_ACCESSORY_INPUT, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
@@ -779,7 +899,7 @@ void AccessoryDialog::finishCapture()
     send(IDC_ACCESSORY_INPUT, CB_SETCURSEL, 0);
     if (captured_.empty()) {
         setStatus(tr(Text::DlgAccessoriesAxisDidNotMove));
-    } else if (captured_.front().kind == AccessoryKind::Axis) {
+    } else if (handbrakePage()) {
         setStatus(tr(captured_.size() == 1 ? Text::DlgHandbrakeCapturedAxis : Text::DlgHandbrakeMultipleAxes));
     } else {
         setStatus(tr(captured_.size() == 1 ? Text::DlgAccessoriesChooseKeyAndAdd : Text::DlgAccessoriesMultipleInputs));
@@ -787,39 +907,37 @@ void AccessoryDialog::finishCapture()
     selectCapturedInput();
 }
 
-void AccessoryDialog::refreshBindings(LRESULT selection)
+void AccessoryDialog::refreshBindings(std::optional<std::size_t> selection)
 {
     const auto top = send(IDC_ACCESSORY_LIST, LB_GETTOPINDEX);
     send(IDC_ACCESSORY_LIST, LB_RESETCONTENT);
-    for (const auto& binding : bindings_) {
-        const auto device = std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id);
-        std::wstring label;
-        if (binding.handbrakeCeilingPercent) {
-            label = tr(Text::DlgHandbrakeHeading) + std::wstring(L" (")
-                + percent(static_cast<int>(binding.handbrakeCeilingPercent)) + L")  ←  " + accessoryInputLabel(binding);
-        } else {
-            label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryBindingInputLabel(binding)
-                + L"  ·  " + accessoryActivationLabel(binding.activation);
-            if (binding.kind == AccessoryKind::Axis) {
-                label += L" · " + std::to_wstring(binding.thresholds.press) + L"% / "
-                    + std::to_wstring(binding.thresholds.release) + L"%";
-            }
+    for (std::size_t i = 0; i < bindings_.size(); ++i) {
+        const auto& binding = bindings_[i];
+        if (binding.handbrakeCeilingPercent)
+            continue;
+        auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryBindingInputLabel(binding)
+            + L"  ·  " + accessoryActivationLabel(binding.activation);
+        if (binding.kind == AccessoryKind::Axis) {
+            label += L" · " + std::to_wstring(binding.thresholds.press) + L"% / "
+                + std::to_wstring(binding.thresholds.release) + L"%";
         }
-        label += L"  ·  " + wide(device == devices_.end() || device->name.empty() ? binding.deviceId : device->name);
-        send(IDC_ACCESSORY_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+        label += L"  ·  " + deviceLabel(binding.deviceId);
+        const auto row = send(IDC_ACCESSORY_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+        if (row >= 0) {
+            send(IDC_ACCESSORY_LIST, LB_SETITEMDATA, static_cast<WPARAM>(row), static_cast<LPARAM>(i));
+            if (selection == i)
+                send(IDC_ACCESSORY_LIST, LB_SETCURSEL, static_cast<WPARAM>(row));
+        }
     }
-    if (selection >= 0) {
-        send(IDC_ACCESSORY_LIST, LB_SETCURSEL, static_cast<WPARAM>(selection));
-        if (top >= 0)
-            send(IDC_ACCESSORY_LIST, LB_SETTOPINDEX, static_cast<WPARAM>(top));
-    }
+    if (selection && top >= 0)
+        send(IDC_ACCESSORY_LIST, LB_SETTOPINDEX, static_cast<WPARAM>(top));
     refreshActions();
 }
 
 void AccessoryDialog::add()
 {
-    const auto input = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
-    if (input < 0 || static_cast<std::size_t>(input) >= captured_.size() || !isAccessoryKey(key_))
+    const auto input = selectedCapture();
+    if (handbrakePage() || stage_ != CaptureStage::Idle || !input || !isAccessoryKey(key_))
         return;
     if (std::ranges::find(bindings_, key_, &AccessoryBinding::key) != bindings_.end()) {
         setStatus(tr(Text::DlgAccessoriesKeyAlreadyAssigned));
@@ -829,7 +947,7 @@ void AccessoryDialog::add()
         setStatus(tr(Text::DlgAccessoriesBindingLimit));
         return;
     }
-    auto binding = captured_[static_cast<std::size_t>(input)];
+    auto binding = captured_[*input];
     if (key_ == VK_SPACE && std::ranges::any_of(bindings_, [&](const auto& saved) {
             return saved.handbrakeCeilingPercent && sameShifterInput(binding, saved);
         })) {
@@ -840,7 +958,7 @@ void AccessoryDialog::add()
     bindings_.push_back(std::move(binding));
     modified_ = true;
     clearCapture();
-    refreshBindings(static_cast<LRESULT>(bindings_.size() - 1));
+    refreshBindings(bindings_.size() - 1);
     setStatus(tr(Text::DlgAccessoriesBindingAdded));
 }
 
@@ -848,14 +966,10 @@ void AccessoryDialog::edit()
 {
     if (stage_ != CaptureStage::Idle)
         return;
-    const auto selection = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
-    if (selection < 0 || static_cast<std::size_t>(selection) >= bindings_.size())
+    const auto selection = selectedBinding();
+    if (!selection)
         return;
-    if (bindings_[static_cast<std::size_t>(selection)].handbrakeCeilingPercent) {
-        configureHandbrake();
-        return;
-    }
-    switch (chooseBindingKey(window_, bindings_, static_cast<std::size_t>(selection))) {
+    switch (chooseBindingKey(window_, bindings_, *selection)) {
     case BindingKeyEdit::unchanged:
         break;
     case BindingKeyEdit::occupied:
@@ -876,11 +990,11 @@ void AccessoryDialog::editThresholds()
 {
     if (stage_ != CaptureStage::Idle)
         return;
-    const auto selection = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
-    if (selection < 0 || static_cast<std::size_t>(selection) >= bindings_.size())
+    const auto selection = selectedBinding();
+    if (!selection)
         return;
-    auto& binding = bindings_[static_cast<std::size_t>(selection)];
-    if (binding.kind != AccessoryKind::Axis || binding.handbrakeCeilingPercent)
+    auto& binding = bindings_[*selection];
+    if (binding.kind != AccessoryKind::Axis)
         return;
     auto values = binding.thresholds;
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORY_THRESHOLDS),
@@ -895,77 +1009,92 @@ void AccessoryDialog::editThresholds()
     }
 }
 
-void AccessoryDialog::configureHandbrake()
+void AccessoryDialog::applyHandbrake(AccessoryBinding binding)
 {
-    if (stage_ != CaptureStage::Idle)
-        return;
-    const auto selection = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
-    const auto capture = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
-    const bool selected = selection >= 0 && static_cast<std::size_t>(selection) < bindings_.size();
-    if (!selected && (capture < 0 || static_cast<std::size_t>(capture) >= captured_.size()))
-        return;
-    auto binding = selected ? bindings_[static_cast<std::size_t>(selection)]
-        : captured_[static_cast<std::size_t>(capture)];
-    if (!canConfigureHandbrake(binding))
-        return;
-
-    const auto target = selected ? bindings_.begin() + selection
-        : std::ranges::find_if(bindings_, [&](const auto& saved) {
-            return canConfigureHandbrake(saved) && sameShifterInput(binding, saved);
-        });
-    for (auto other = bindings_.begin(); other != bindings_.end(); ++other) {
-        if (other == target)
-            continue;
-        if (other->handbrakeCeilingPercent) {
-            setStatus(tr(Text::DlgHandbrakeAlreadyBound));
-            return;
-        }
-        if (other->key == VK_SPACE && sameShifterInput(binding, *other)) {
+    auto target = handbrakeBinding();
+    const auto space = std::ranges::find(bindings_, static_cast<unsigned int>(VK_SPACE), &AccessoryBinding::key);
+    if (space != bindings_.end() && sameShifterInput(binding, *space)) {
+        if (target || !isLegacyHandbrakeAxis(*space)) {
             setStatus(tr(Text::DlgHandbrakeInputConflict));
             return;
         }
+        target = static_cast<std::size_t>(space - bindings_.begin());
     }
-    if (target == bindings_.end() && bindings_.size() >= maxAccessoryBindings) {
+    if (!target && bindings_.size() == maxAccessoryBindings) {
         setStatus(tr(Text::DlgAccessoriesBindingLimit));
         return;
     }
 
-    auto ceiling = target != bindings_.end() && target->handbrakeCeilingPercent
-        ? target->handbrakeCeilingPercent : defaultHandbrakeCeilingPercent;
-    const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORY_HANDBRAKE),
-        window_, handbrakeProc, reinterpret_cast<LPARAM>(&ceiling));
-    if (result == -1) {
-        MessageBoxW(window_, tr(Text::DlgHandbrakeOpenError), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
-        return;
-    }
-    if (result != IDOK)
-        return;
-
-    binding.key = 0;
-    binding.thresholds = {};
-    binding.activation = AccessoryActivation::hold;
-    binding.handbrakeCeilingPercent = ceiling;
-    const auto destination = static_cast<LRESULT>(target - bindings_.begin());
-    if (target == bindings_.end()) {
+    binding = asHandbrake(std::move(binding), handbrakeCeiling_);
+    handbrakeDevice_ = binding.deviceId;
+    if (!target) {
         bindings_.push_back(std::move(binding));
-    } else if (*target != binding) {
-        *target = std::move(binding);
-    } else {
-        return;
+        modified_ = true;
+    } else if (bindings_[*target] != binding) {
+        bindings_[*target] = std::move(binding);
+        modified_ = true;
     }
-    modified_ = true;
-    if (!selected)
-        clearCapture();
-    refreshBindings(destination);
+    selectDevice(handbrakeDevice_);
+    clearCapture();
+    refreshBindings();
     setStatus(tr(Text::DlgHandbrakeChanged));
+}
+
+void AccessoryDialog::useCapturedHandbrake()
+{
+    if (!handbrakePage() || stage_ != CaptureStage::Idle || !validCeiling_)
+        return;
+    if (const auto capture = selectedCapture())
+        applyHandbrake(captured_[*capture]);
+}
+
+void AccessoryDialog::useLegacyHandbrake()
+{
+    if (!handbrakePage() || stage_ != CaptureStage::Idle || !validCeiling_ || handbrakeBinding())
+        return;
+    if (const auto binding = legacyHandbrakeBinding())
+        applyHandbrake(bindings_[*binding]);
+}
+
+void AccessoryDialog::changeHandbrakeCeiling()
+{
+    if (!handbrakePage())
+        return;
+    const auto ceiling = readPercent(window_, IDC_HANDBRAKE_CEILING);
+    validCeiling_ = validHandbrakeCeilingPercent(ceiling);
+    if (validCeiling_) {
+        handbrakeCeiling_ = ceiling;
+        if (const auto binding = handbrakeBinding(); binding && bindings_[*binding].handbrakeCeilingPercent != ceiling) {
+            bindings_[*binding].handbrakeCeilingPercent = ceiling;
+            modified_ = true;
+        }
+    }
+    refreshActions();
+}
+
+void AccessoryDialog::removeHandbrake()
+{
+    if (!handbrakePage() || stage_ != CaptureStage::Idle)
+        return;
+    const auto index = handbrakeBinding();
+    if (!index)
+        return;
+    bindings_.erase(bindings_.begin() + *index);
+    modified_ = true;
+    handbrakeCeiling_ = defaultHandbrakeCeilingPercent;
+    validCeiling_ = true;
+    SetDlgItemInt(window_, IDC_HANDBRAKE_CEILING, handbrakeCeiling_, FALSE);
+    clearCapture();
+    refreshBindings();
+    setStatus(tr(Text::DlgAccessoriesBindingRemoved));
 }
 
 void AccessoryDialog::remove()
 {
-    const auto index = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
-    if (index < 0 || static_cast<std::size_t>(index) >= bindings_.size())
+    const auto index = selectedBinding();
+    if (!index || stage_ != CaptureStage::Idle)
         return;
-    bindings_.erase(bindings_.begin() + index);
+    bindings_.erase(bindings_.begin() + *index);
     modified_ = true;
     refreshBindings();
     setStatus(tr(Text::DlgAccessoriesBindingRemoved));
@@ -973,7 +1102,7 @@ void AccessoryDialog::remove()
 
 void AccessoryDialog::save()
 {
-    if (!modified_)
+    if (!modified_ || stage_ != CaptureStage::Idle || (!validCeiling_ && handbrakeBinding()))
         return;
     if (isTemporaryProfileDirectory(path_.parent_path())) {
         MessageBoxW(window_, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
@@ -1015,7 +1144,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         auto& dialog = *reinterpret_cast<AccessoryDialog*>(lParam);
         SetWindowLongPtrW(window, DWLP_USER, lParam);
         SetWindowTextW(window, tr(Text::DlgAccessoriesTitle));
-        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgAccessoriesIntro));
+        SetDlgItemTextW(window, IDC_ACCESSORY_TAB_KEYS, tr(Text::DlgAccessoriesTabKeys));
+        SetDlgItemTextW(window, IDC_ACCESSORY_TAB_HANDBRAKE, tr(Text::DlgAccessoriesTabHandbrake));
         SetDlgItemTextW(window, IDC_ACCESSORY_SHIFTER, tr(Text::DlgAccessoriesShifter));
         SetDlgItemTextW(window, IDC_MODAL_DEVICE_LABEL, tr(Text::DlgDevice));
         SetDlgItemTextW(window, IDC_ACCESSORY_REFRESH, tr(Text::DlgRefresh));
@@ -1028,13 +1158,17 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_ACCESSORY_ACTIVATION_LABEL, tr(Text::DlgAccessoryActivation));
         SetDlgItemTextW(window, IDC_ACCESSORY_EDIT, tr(Text::DlgBindingEdit));
         SetDlgItemTextW(window, IDC_ACCESSORY_THRESHOLDS, tr(Text::DlgAccessoriesThresholds));
-        SetDlgItemTextW(window, IDC_ACCESSORY_HANDBRAKE, tr(Text::DlgHandbrakeAction));
+        SetDlgItemTextW(window, IDC_HANDBRAKE_USE_SPACE, tr(Text::DlgHandbrakeUseSpace));
+        SetDlgItemTextW(window, IDC_HANDBRAKE_APPLY_AXIS, tr(Text::DlgHandbrakeApplyAxis));
+        SetDlgItemTextW(window, IDC_HANDBRAKE_REMOVE, tr(Text::DlgHandbrakeRemove));
+        SetDlgItemTextW(window, IDC_HANDBRAKE_HEADING, tr(Text::DlgHandbrakeHeading));
+        SetDlgItemTextW(window, IDC_HANDBRAKE_CEILING_LABEL, tr(Text::DlgHandbrakeCeiling));
         SetDlgItemTextW(window, IDC_ACCESSORY_PREVIEW_HEADING, tr(Text::DlgAccessoryPreview));
         SetDlgItemTextW(window, IDC_ACCESSORY_REMOVE, tr(Text::DlgAccessoriesRemove));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
         DialogTheme::attach(window, tr(Text::DlgAccessoriesHeading), IDC_ACCESSORY_STATUS, IDC_ACCESSORY_LIST,
-                            {IDC_ACCESSORY_CAPTURE, IDC_ACCESSORY_ADD, IDOK});
+                            {IDC_ACCESSORY_CAPTURE, IDC_ACCESSORY_ADD, IDC_HANDBRAKE_APPLY_AXIS, IDOK});
         return dialog.initialise(window);
     }
     auto* dialog = reinterpret_cast<AccessoryDialog*>(GetWindowLongPtrW(window, DWLP_USER));
@@ -1107,8 +1241,24 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case IDC_ACCESSORY_THRESHOLDS:
         dialog->editThresholds();
         return TRUE;
-    case IDC_ACCESSORY_HANDBRAKE:
-        dialog->configureHandbrake();
+    case IDC_ACCESSORY_TAB_KEYS:
+        dialog->showPage(AccessoryPage::keys);
+        return TRUE;
+    case IDC_ACCESSORY_TAB_HANDBRAKE:
+        dialog->showPage(AccessoryPage::handbrake);
+        return TRUE;
+    case IDC_HANDBRAKE_APPLY_AXIS:
+        dialog->useCapturedHandbrake();
+        return TRUE;
+    case IDC_HANDBRAKE_USE_SPACE:
+        dialog->useLegacyHandbrake();
+        return TRUE;
+    case IDC_HANDBRAKE_CEILING:
+        if (HIWORD(wParam) == EN_CHANGE)
+            dialog->changeHandbrakeCeiling();
+        return TRUE;
+    case IDC_HANDBRAKE_REMOVE:
+        dialog->removeHandbrake();
         return TRUE;
     case IDC_ACCESSORY_REMOVE:
         dialog->remove();

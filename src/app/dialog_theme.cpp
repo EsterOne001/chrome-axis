@@ -24,6 +24,11 @@ bool classIs(HWND window, const wchar_t* name)
         && lstrcmpiW(className, name) == 0;
 }
 
+bool isHeading(int id)
+{
+    return id == IDC_MODAL_LIST_HEADING || id == IDC_ACCESSORY_PREVIEW_HEADING || id == IDC_HANDBRAKE_HEADING;
+}
+
 RECT controlBounds(HWND dialog, int id)
 {
     RECT bounds{};
@@ -68,6 +73,7 @@ public:
     }
 
     void initialise();
+    void setPrimary(int controlId, bool primary);
     LRESULT handle(HWND window, UINT message, WPARAM wp, LPARAM lp);
     LRESULT handleControl(HWND window, UINT message, WPARAM wp, LPARAM lp);
 
@@ -135,6 +141,20 @@ void ThemeState::initialise()
     updateDpi();
 }
 
+void ThemeState::setPrimary(int controlId, bool primary)
+{
+    const auto button = std::ranges::find(primaryButtons_, controlId);
+    const bool wasPrimary = button != primaryButtons_.end();
+    if (primary == wasPrimary)
+        return;
+    if (primary)
+        primaryButtons_.push_back(controlId);
+    else
+        primaryButtons_.erase(button);
+    if (const auto control = GetDlgItem(dialog_, controlId))
+        InvalidateRect(control, nullptr, FALSE);
+}
+
 void ThemeState::updateDpi()
 {
     if (const auto dpi = GetDpiForWindow(dialog_))
@@ -145,8 +165,7 @@ void ThemeState::updateDpi()
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
         const auto& theme = *reinterpret_cast<const ThemeState*>(data);
         const auto id = GetDlgCtrlID(control);
-        const bool heading = id == IDC_MODAL_LIST_HEADING || id == IDC_ACCESSORY_PREVIEW_HEADING;
-        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(theme.fonts_[heading ? 1 : 0]), FALSE);
+        SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(theme.fonts_[isHeading(id) ? 1 : 0]), FALSE);
         if (classIs(control, L"ComboBox"))
             SendMessageW(control, CB_SETITEMHEIGHT, 0, theme.px(24));
         return TRUE;
@@ -179,7 +198,7 @@ void ThemeState::paintScene(HDC dc) const
         }
     }
     auto outline = controlBounds(dialog_, listId_);
-    if (!IsRectEmpty(&outline)) {
+    if (IsWindowVisible(GetDlgItem(dialog_, listId_)) && !IsRectEmpty(&outline)) {
         InflateRect(&outline, 1, 1);
         FrameRect(dc, &outline, highContrast ? GetSysColorBrush(COLOR_WINDOWTEXT) : edgeBrush_);
     }
@@ -291,7 +310,7 @@ HBRUSH ThemeState::controlColor(HDC dc, HWND control, UINT message) const
         return fieldBrush_;
     }
     const auto id = GetDlgCtrlID(control);
-    SetTextColor(dc, (id == IDC_MODAL_LIST_HEADING || id == IDC_ACCESSORY_PREVIEW_HEADING) ? ui::yellow
+    SetTextColor(dc, isHeading(id) ? ui::yellow
         : id == statusId_ || id == IDC_MODAL_INTRO ? ui::secondary : ui::ink);
     SetBkColor(dc, ui::panel);
     SetBkMode(dc, OPAQUE);
@@ -405,6 +424,13 @@ void DialogTheme::attach(HWND dialog, const wchar_t* subtitle, int statusId, int
     auto theme = std::make_unique<ThemeState>(dialog, subtitle, statusId, listId, primaryButtons);
     if (SetWindowSubclass(dialog, themeProc, dialogSubclassId, reinterpret_cast<DWORD_PTR>(theme.get())))
         theme.release()->initialise();
+}
+
+void DialogTheme::setPrimary(HWND dialog, int controlId, bool primary)
+{
+    DWORD_PTR state{};
+    if (GetWindowSubclass(dialog, themeProc, dialogSubclassId, &state))
+        reinterpret_cast<ThemeState*>(state)->setPrimary(controlId, primary);
 }
 
 } // namespace chrome_axis
