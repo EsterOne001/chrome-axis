@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.38 · 15 novembre 2026
+
+- **Réarmement après Alt+Tab.** La direction se réarme après trois lectures consécutives d’au plus 1,5 % après application de la zone morte. Un volant relâché qui indique environ 1 % peut ainsi reprendre la direction et permettre la reprise du retour de force. La zone morte du profil, y compris 0 %, s’applique à la conduite.
+
+[ZIP Vortex](out/ChromeAxis-0.4.38-Cyberpunk-2.5.zip)
+
 ## Chrome Axis 0.4.37 · 15 novembre 2026
 
 - **Accessoires.** L’onglet **Touches** regroupe les affectations clavier et l’assistant de boîte et palettes. L’onglet **Frein à main** réunit la calibration, le plafond et l’aperçu de la commande progressive.

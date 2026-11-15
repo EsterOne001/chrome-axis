@@ -15,7 +15,8 @@ namespace {
 constexpr std::array<std::string_view, 3> channelNames{"steering", "throttle", "brake"};
 constexpr std::array responses{&Profile::steeringResponse, &Profile::throttleResponse, &Profile::brakeResponse};
 constexpr unsigned int requiredNeutralPolls = 3;
-constexpr double minimumSteeringNeutralTolerance = 0.005;
+// Match the diagnostic reading, which is measured after the configured deadzone.
+constexpr float steeringRearmTolerance = 0.015f;
 
 std::array<const AxisCalibration*, 3> channels(const Profile& profile)
 {
@@ -46,13 +47,11 @@ float applyDeadzone(float travel, float deadzone)
     return std::copysign(value, travel);
 }
 
-bool isNeutral(double position, float deadzone, bool steering, bool combinedPedals)
+bool pedalAtRest(double position, float deadzone, bool combinedPedals)
 {
     // A dedicated pedal can return beyond its measured rest position and still produce zero.
     // Shared pedals must stay near the common center so neither is held during arming.
-    // Keep a small steering arming tolerance even when all steering input is applied.
-    const double tolerance = steering ? std::max<double>(deadzone, minimumSteeringNeutralTolerance) : deadzone;
-    return (steering || combinedPedals ? std::abs(position) : position) <= tolerance;
+    return (combinedPedals ? std::abs(position) : position) <= deadzone;
 }
 
 float applyResponse(float travel, float deadzone, const AxisResponse& response, bool steering) noexcept
@@ -378,7 +377,9 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
             (*readings)[i] = calibrated;
         if (neutralPolls_[i] < requiredNeutralPolls) {
             axisStatuses_[i] = AxisStatus::waitingForNeutral;
-            if (!isNeutral(position, calibration.deadzone, steering, combinedPedals_)) {
+            const bool neutral = steering ? std::abs(calibrated) <= steeringRearmTolerance
+                : pedalAtRest(position, calibration.deadzone, combinedPedals_);
+            if (!neutral) {
                 neutralPolls_[i] = 0;
                 continue;
             }

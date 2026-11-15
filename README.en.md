@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.37** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.38** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -68,7 +68,7 @@ If a profile device appears disconnected after a transfer, connect its replaceme
 
 ### Deadzones and brake response
 
-The **Steering** field in the **Deadzone (%)** column accepts 0–25%. Enter **0** to turn off the steering deadzone. **None** appears next to the field. The wheel still has a 0.5% centering tolerance when it rearms in game. Once armed, small movements reach the game with a 0% deadzone. Pedals keep the 0.5–25% range. Recalibrating the same axis on the same device keeps its deadzone, including 0% for steering.
+The **Steering** field in the **Deadzone (%)** column accepts 0–25%. Enter **0** to turn off the steering deadzone. **None** appears next to the field. When you return to the game, the wheel rearms after three consecutive readings of **1.5% or less** after the deadzone, in either direction. Once armed, small movements reach the game with a 0% deadzone. Pedals keep the 0.5–25% range. Recalibrating the same axis on the same device keeps its deadzone, including 0% for steering.
 
 After calibrating the brake, open **Brake settings…**. Progressivity of **0** gives a linear response. A positive value softens the start of the travel and a negative value makes it more responsive. Set **Travel for full brake** to **50–100%** of calibrated travel. The gauges compare travel before the deadzone with adjusted output. Press the pedal or enter a simulated travel of 0–100%. Click **Apply**, then **Save profile**.
 

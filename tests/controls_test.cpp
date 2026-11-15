@@ -65,6 +65,63 @@ int testTransientRead(const chrome_axis::Profile& profile)
     return 0;
 }
 
+int testSteeringRearm(const chrome_axis::Profile& legacy)
+{
+    using namespace chrome_axis;
+    using Status = DeviceReadStatus;
+    Profile profile{{legacy.steering.deviceId, 0, 0, -10000, 10000, 0.0f}, {}, {}};
+    DeviceSample wheel;
+    wheel.axesPresent[0] = true;
+    const std::array<const DeviceSample*, 3> samples{&wheel, nullptr, nullptr};
+    ControlReader reader(profile);
+    const auto sampleAt = [&](long position, Status status = Status::available) {
+        wheel.axes[0] = position;
+        return reader.update(samples, nullptr, {status});
+    };
+
+    if (sampleAt(100).steeringReady || sampleAt(100).steeringReady)
+        return 50;
+    const auto positive = sampleAt(100);
+    if (!positive.steeringReady || !approximatelyEqual(positive.values.steering, 0.01f))
+        return 51;
+
+    reader.reset();
+    // A held steering input above the window resets the count of consecutive neutral reads.
+    if (sampleAt(-100).steeringReady || sampleAt(-100).steeringReady || sampleAt(-151).steeringReady
+        || sampleAt(-100).steeringReady || sampleAt(-100).steeringReady)
+        return 52;
+    const auto negative = sampleAt(-150);
+    if (!negative.steeringReady || !approximatelyEqual(negative.values.steering, -0.015f))
+        return 53;
+    const auto fineSteering = sampleAt(15);
+    if (!fineSteering.steeringReady || !approximatelyEqual(fineSteering.values.steering, 0.0015f))
+        return 54;
+
+    if (sampleAt(-100, Status::resumed).steeringReady)
+        return 55;
+    if (reader.update({}, nullptr, {Status::pending}).steeringReady
+        || reader.axisStatuses()[0] != AxisStatus::temporarilyUnavailable)
+        return 56;
+    if (sampleAt(-100).steeringReady || sampleAt(-100).steeringReady || !sampleAt(-100).steeringReady)
+        return 57;
+
+    profile.steering.deadzone = 0.10f;
+    profile.steeringResponse = {100, 60};
+    ControlReader tuned(profile);
+    wheel.axes[0] = 1090;
+    for (int i = 0; i < 2; ++i) {
+        if (tuned.update(samples).steeringReady)
+            return 58;
+    }
+    const auto output = tuned.update(samples);
+    const auto expected = previewAxisResponse(ResponseAxis::steering, profile.steering, wheel.axes[0],
+                                              profile.steeringResponse).adjusted;
+    if (!output.steeringReady || !approximatelyEqual(output.calibratedSteering, 0.01f)
+        || !approximatelyEqual(output.values.steering, expected))
+        return 59;
+    return 0;
+}
+
 int testAxisResponses(const chrome_axis::Profile& legacy, const std::filesystem::path& path)
 {
     using namespace chrome_axis;
@@ -442,6 +499,8 @@ int run()
     zeroSteering.steering.deadzone = 0.001f;
     if (!chrome_axis::validateProfile(zeroSteering, error))
         return 34;
+    if (const int rearmResult = testSteeringRearm(*loaded))
+        return rearmResult;
     if (const int responseResult = testAxisResponses(*loaded, path))
         return responseResult;
     return testTransientRead(*loaded);
