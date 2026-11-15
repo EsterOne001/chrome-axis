@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.32** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.33** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -72,11 +72,17 @@ The **Steering** field in the **Deadzone (%)** column accepts 0–25%. Enter **0
 
 After calibrating the brake, open **Brake settings…**. Progressivity of **0** gives a linear response. A positive value softens the start of the travel and a negative value makes it more responsive. Set **Travel for full brake** to **50–100%** of calibrated travel. The gauges compare travel before the deadzone with adjusted output. Press the pedal or enter a simulated travel of 0–100%. Click **Apply**, then **Save profile**.
 
+### Steering and throttle response
+
+After calibration, open the control settings in **Devices**. Positive steering sensitivity makes small movements around the centre more responsive. Negative values soften them. Reduce **Effective travel** to reach full steering earlier in both directions.
+
+For the throttle, leave progressivity at **0** for a linear response or use a positive value for finer control at the start of pedal travel. The full-output point is also adjustable. For both controls, compare the travel and output gauges using the hardware or a simulated value. Click **Apply**, then **Save profile**.
+
 ### Force feedback
 
 Save the steering calibration and open **Force feedback…** from **USB Hardware**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. **Gain** adjusts every effect from 5% to 200%. **Centering** adjusts resistance toward the centre and in corners from 50% to 250%, with 100% for existing profiles. Both sliders move in 5-point steps. Chrome Axis limits the command to DirectInput’s nominal range. You can disable impacts separately or invert the direction if the wheel pushes away from center.
 
-Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. Centering eases in the air. Landings and collisions add distinct jolts that share the **Impacts** setting. Chrome Axis stops its effects when you stop driving, the game loses focus or the wheel stops responding. Steering and pedals still work on supported devices without force feedback.
+Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. Centering eases in the air. Landings and collisions add distinct jolts with a shared **Impact strength** setting from 0% to 200% in 5-point steps. A setting of 100% preserves the previous strength. Use **Impacts** to switch those jolts on or off. Chrome Axis stops its effects when you stop driving, the game loses focus or the wheel stops responding. Steering and pedals still work on supported devices without force feedback.
 
 ## Shifters, paddles and accessories
 

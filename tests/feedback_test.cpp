@@ -81,6 +81,13 @@ int main()
     const float impact = settle(motion);
     if (!(impact < -0.35f && impact >= -1.0f))
         return 4;
+    settings.impactStrength = 150;
+    if (std::abs(settle(motion) - 1.5f * impact) > 0.0001f || settle(straight) != straightForce)
+        return 26;
+    settings.impactStrength = 0;
+    if (settle(motion) != 0.0f || settle(straight) != straightForce)
+        return 27;
+    settings.impactStrength = 100;
     motion.impactSide = 0.35f;
     if (std::abs(settle(motion) + 0.5f * impact) > 0.0001f)
         return 20;
@@ -109,6 +116,13 @@ int main()
     landing.landingSpeed = 6.0f;
     landing.landingAge = 0.045f;
     const float landingForce = settle(landing);
+    settings.impactStrength = 150;
+    if (std::abs(settle(landing) - 1.5f * landingForce) > 0.0001f)
+        return 28;
+    settings.impactStrength = 0;
+    if (settle(landing) != 0.0f)
+        return 29;
+    settings.impactStrength = 100;
     landing.landingAge = 0.135f;
     if (!(landingForce < 0.0f && landingForce > impact) ||
         std::abs(settle(landing) + landingForce) > 0.0001f)
@@ -131,7 +145,8 @@ int main()
     if (settle(hardImpact, &clipped) != -1.0f || !clipped)
         return 11;
     settings.strength = 200;
-    if (settle(hardImpact) != -1.0f)
+    settings.impactStrength = maxFeedbackImpactPercent;
+    if (settle(hardImpact, &clipped) != -1.0f || !clipped)
         return 14;
     settings.invert = false;
     if (settle(hardImpact) != 1.0f)
@@ -146,7 +161,13 @@ int main()
         file << "version=1\nenabled=1\nstrength=35\nimpacts=0\ninvert=1\n";
     }
     const bool legacy = loadFeedbackSettings(path, error) == FeedbackSettings{true, 35, false, true};
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file << "version=1\nenabled=1\nstrength=35\nimpacts=0\ninvert=1\ncentering=165\n";
+    }
+    const bool previous = loadFeedbackSettings(path, error) == FeedbackSettings{true, 35, false, true, 165};
     settings.centering = 165;
+    settings.impactStrength = 135;
     const bool roundTrip = saveFeedbackSettings(path, settings, error) && loadFeedbackSettings(path, error) == settings;
     const FeedbackSettings excessive{true, 201, true, false};
     const bool rejectedSave = !saveFeedbackSettings(path, excessive, error) && !error.empty() &&
@@ -154,11 +175,22 @@ int main()
     const FeedbackSettings excessiveCentering{true, 200, true, false, 251};
     const bool rejectedCentering = !saveFeedbackSettings(path, excessiveCentering, error) && !error.empty() &&
         loadFeedbackSettings(path, error) == settings;
+    const FeedbackSettings excessiveImpact{true, 200, true, false, 100, maxFeedbackImpactPercent + 1};
+    const bool rejectedImpact = !saveFeedbackSettings(path, excessiveImpact, error) && !error.empty() &&
+        loadFeedbackSettings(path, error) == settings;
+    settings.impactStrength = 0;
+    const bool muteRoundTrip = saveFeedbackSettings(path, settings, error) && loadFeedbackSettings(path, error) == settings;
     {
         std::ofstream file(path, std::ios::trunc);
         file << "version=1\nenabled=1\nstrength=100\nimpacts=1\ninvert=0\ncentering=49\n";
     }
     const bool rejected = !loadFeedbackSettings(path, error) && !error.empty();
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file << "version=1\nenabled=1\nstrength=100\nimpacts=1\ninvert=0\nimpact_strength=-1\n";
+    }
+    const bool rejectedNegativeImpact = !loadFeedbackSettings(path, error) && !error.empty();
     std::filesystem::remove(path);
-    return defaults == FeedbackSettings{} && legacy && roundTrip && rejectedSave && rejectedCentering && rejected ? 0 : 9;
+    return defaults == FeedbackSettings{} && legacy && previous && roundTrip && muteRoundTrip && rejectedSave &&
+        rejectedCentering && rejectedImpact && rejected && rejectedNegativeImpact ? 0 : 9;
 }

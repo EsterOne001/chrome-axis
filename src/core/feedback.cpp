@@ -13,14 +13,18 @@
 namespace chrome_axis {
 namespace {
 
-constexpr std::array<std::string_view, 6> keys{"version", "enabled", "strength", "impacts", "invert", "centering"};
+constexpr std::array<std::string_view, 7> keys{
+    "version", "enabled", "strength", "impacts", "invert", "centering", "impact_strength"
+};
 constexpr std::size_t strengthKey = 2;
-constexpr std::size_t centeringKey = keys.size() - 1;
+constexpr std::size_t centeringKey = 5;
+constexpr std::size_t impactStrengthKey = 6;
 
 bool valid(const FeedbackSettings& settings) noexcept
 {
     return settings.strength >= 1 && settings.strength <= maxFeedbackGainPercent &&
-        settings.centering >= minFeedbackCenteringPercent && settings.centering <= maxFeedbackCenteringPercent;
+        settings.centering >= minFeedbackCenteringPercent && settings.centering <= maxFeedbackCenteringPercent &&
+        settings.impactStrength >= 0 && settings.impactStrength <= maxFeedbackImpactPercent;
 }
 
 float normalizedMotion(float value, float fullScale) noexcept
@@ -51,6 +55,7 @@ std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path
     file.seekg(0);
     std::array<int, keys.size()> values{};
     values[centeringKey] = FeedbackSettings{}.centering;
+    values[impactStrengthKey] = FeedbackSettings{}.impactStrength;
     std::array<bool, keys.size()> seen{};
     std::string line;
     while (std::getline(file, line)) {
@@ -66,7 +71,7 @@ std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path
         const auto index = static_cast<std::size_t>(match - keys.begin());
         const char* end = line.data() + line.size();
         const auto parsed = std::from_chars(line.data() + separator + 1, end, values[index]);
-        const bool flag = index != strengthKey && index != centeringKey;
+        const bool flag = index != strengthKey && index < centeringKey;
         if (seen[index] || parsed.ec != std::errc{} || parsed.ptr != end ||
             (flag && (values[index] < 0 || values[index] > 1))) {
             error = "Invalid force feedback settings.";
@@ -75,7 +80,7 @@ std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path
         seen[index] = true;
     }
     const FeedbackSettings settings{values[1] == 1, values[strengthKey], values[3] == 1,
-                                    values[4] == 1, values[centeringKey]};
+                                    values[4] == 1, values[centeringKey], values[impactStrengthKey]};
     const auto requiredEnd = seen.begin() + centeringKey;
     if (file.bad() || values[0] != 1 || !valid(settings) || std::find(seen.begin(), requiredEnd, false) != requiredEnd) {
         error = "Invalid force feedback settings.";
@@ -88,7 +93,7 @@ bool saveFeedbackSettings(const std::filesystem::path& path, const FeedbackSetti
 {
     error.clear();
     if (!valid(settings)) {
-        error = "Force feedback strength or centering is out of range.";
+        error = "Force feedback gain, centering, or impact strength is out of range.";
         return false;
     }
     std::error_code status;
@@ -104,6 +109,8 @@ bool saveFeedbackSettings(const std::filesystem::path& path, const FeedbackSetti
          << "\nimpacts=" << settings.impacts << "\ninvert=" << settings.invert << '\n';
     if (settings.centering != FeedbackSettings{}.centering)
         file << "centering=" << settings.centering << '\n';
+    if (settings.impactStrength != FeedbackSettings{}.impactStrength)
+        file << "impact_strength=" << settings.impactStrength << '\n';
     file.close();
     if (!file || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         std::filesystem::remove(temporary, status);
@@ -163,7 +170,8 @@ float WheelFeedback::update(const FeedbackSettings& settings, const FeedbackSamp
         transient = 0.20f * strength * centeredPulse(sample.landingAge / 0.18f);
     }
     const float gain = static_cast<float>(settings.strength) / 100.0f;
-    const float force = (settings.invert ? -gain : gain) * (smoothedForce_ + transient);
+    const float impactGain = static_cast<float>(settings.impactStrength) / 100.0f;
+    const float force = (settings.invert ? -gain : gain) * (smoothedForce_ + transient * impactGain);
     if (clipped)
         *clipped = std::abs(force) > 1.0f;
     return std::clamp(force, -1.0f, 1.0f);

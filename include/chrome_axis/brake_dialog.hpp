@@ -21,8 +21,8 @@
 
 namespace chrome_axis {
 
-std::optional<BrakeResponse> editBrakeResponse(HWND owner, DirectInput& input,
-    const AxisCalibration& calibration, const BrakeResponse& response);
+std::optional<AxisResponse> editAxisResponse(HWND owner, DirectInput& input, ResponseAxis axis,
+    const AxisCalibration& calibration, const AxisResponse& response);
 
 } // namespace chrome_axis
 #endif

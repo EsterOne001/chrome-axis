@@ -10,6 +10,7 @@ inline constexpr wchar_t feedbackFilename[] = L"force_feedback.ini";
 inline constexpr int maxFeedbackGainPercent = 200;
 inline constexpr int minFeedbackCenteringPercent = 50;
 inline constexpr int maxFeedbackCenteringPercent = 250;
+inline constexpr int maxFeedbackImpactPercent = 200;
 
 struct FeedbackSettings {
     bool enabled{};
@@ -17,6 +18,7 @@ struct FeedbackSettings {
     bool impacts{true};
     bool invert{};
     int centering{100};
+    int impactStrength{100};
 
     bool operator==(const FeedbackSettings&) const = default;
 };

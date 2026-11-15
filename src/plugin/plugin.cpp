@@ -683,7 +683,9 @@ bool sameProfile(const std::optional<chrome_axis::Profile>& first, const std::op
     return values(first->steering) == values(second->steering) &&
            values(first->throttle) == values(second->throttle) &&
            values(first->brake) == values(second->brake) &&
-           first->brakeResponse == second->brakeResponse;
+           first->brakeResponse == second->brakeResponse &&
+           first->steeringResponse == second->steeringResponse &&
+           first->throttleResponse == second->throttleResponse;
 }
 
 struct UsbConfigurationChanges {
@@ -1232,7 +1234,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                         const bool landingHasImpact = usb.feedbackSettings.impacts &&
                             eventSeparation > -80ms && eventSeparation < 80ms;
                         forceSample = chrome_axis::FeedbackSample{
-                            .steering = controls.values.steering,
+                            .steering = controls.calibratedSteering,
                             .forwardSpeed = vehicleMotion.forwardSpeed,
                             .sideSpeed = vehicleMotion.sideSpeed,
                             .mass = vehicleMotion.mass,

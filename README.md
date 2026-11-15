@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.32** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.33** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -80,11 +80,17 @@ Dans la colonne **Zone morte (%)**, la **Direction** accepte de 0 à 25 %. Saisi
 
 Une fois le frein calibré, ouvrez **Réglages frein…**. La progressivité à **0** donne une réponse linéaire. Une valeur positive adoucit le début de course et une valeur négative le rend plus réactif. Réglez la **course pour atteindre 100 %** entre **50 et 100 %** de la course calibrée. Les jauges comparent la course avant zone morte à la sortie réglée. Appuyez sur la pédale ou saisissez une course simulée de 0 à 100 %. Cliquez sur **Appliquer**, puis **Enregistrer le profil**.
 
+### Réponse de la direction et de l’accélérateur
+
+Après la calibration, ouvrez les réglages de la commande dans **Périphériques**. Pour la direction, une sensibilité positive accélère la réponse autour du centre. Une valeur négative l’adoucit. Réduisez la **course utile** pour obtenir le braquage maximal plus tôt, dans les deux sens.
+
+Pour l’accélérateur, réglez la progressivité à **0** pour une réponse linéaire ou utilisez une valeur positive pour mieux doser le début de course. Vous pouvez aussi régler à quel point la pédale atteint 100 %. Pour les deux commandes, comparez les jauges de course et de sortie avec le matériel ou une valeur simulée. Cliquez sur **Appliquer**, puis **Enregistrer le profil**.
+
 ### Retour de force
 
 Après avoir enregistré l’axe de direction, ouvrez **Retour de force…** depuis **Matériel USB**. Le panneau vérifie si le pilote expose un actionneur DirectInput sur cet axe. Activez l’effet pour le profil courant et commencez à faible intensité. **Gain** règle tous les effets de 5 à 200 %. **Rappel** règle la résistance de recentrage et en virage de 50 à 250 %, avec 100 % pour les anciens profils. Les deux curseurs avancent par paliers de 5 %. DirectInput reçoit une consigne limitée à sa plage nominale. Les chocs peuvent être désactivés séparément et le sens peut être inversé si le volant pousse vers la butée au lieu de revenir au centre.
 
-Chrome Axis utilise le mouvement du véhicule, son orientation, le dérapage et la perte de contact avec le sol. Le rappel diminue en vol. Les reprises de contact et les collisions ajoutent des secousses distinctes, réglables ensemble avec **Chocs**. Le mod coupe ses effets quand le joueur quitte la conduite, que le jeu perd le premier plan ou que le volant cesse de répondre. Le profil et les commandes restent utilisables si le pilote ne prend pas en charge l’effet.
+Chrome Axis utilise le mouvement du véhicule, son orientation, le dérapage et la perte de contact avec le sol. Le rappel diminue en vol. Les reprises de contact et les collisions ajoutent des secousses distinctes, réglables ensemble avec **Intensité des chocs**, de 0 à 200 % par paliers de 5 %. La valeur de 100 % conserve l’intensité précédente. **Chocs** active ou désactive ces secousses. Le mod coupe ses effets quand le joueur quitte la conduite, que le jeu perd le premier plan ou que le volant cesse de répondre. Le profil et les commandes restent utilisables si le pilote ne prend pas en charge l’effet.
 
 ## Boîtes de vitesses, palettes et autres accessoires
 

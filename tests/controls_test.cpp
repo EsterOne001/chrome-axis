@@ -65,6 +65,90 @@ int testTransientRead(const chrome_axis::Profile& profile)
     return 0;
 }
 
+int testAxisResponses(const chrome_axis::Profile& legacy, const std::filesystem::path& path)
+{
+    using namespace chrome_axis;
+    Profile tuned = legacy;
+    tuned.steering.positive = 0;
+    tuned.steering.negative = 1000;
+    tuned.steering.deadzone = 0.10f;
+    tuned.steeringResponse = {100, 60};
+    tuned.throttle.deadzone = 0.10f;
+    tuned.throttleResponse = {100, 80};
+    const auto steering = [&](long raw, const AxisResponse& response) {
+        return previewAxisResponse(ResponseAxis::steering, tuned.steering, raw, response);
+    };
+    const auto positive = steering(260, tuned.steeringResponse);
+    const auto negative = steering(610, tuned.steeringResponse);
+    if (!approximatelyEqual(positive.raw, 0.35f) || !approximatelyEqual(positive.adjusted, 0.75f)
+        || !approximatelyEqual(negative.raw, -positive.raw) || !approximatelyEqual(negative.adjusted, -positive.adjusted)
+        || !approximatelyEqual(steering(260, {-100, 60}).adjusted, 0.25f)
+        || steering(160, tuned.steeringResponse).adjusted != 1.0f
+        || steering(760, tuned.steeringResponse).adjusted != -1.0f
+        || steering(360, tuned.steeringResponse).adjusted != 0.0f)
+        return 43;
+
+    const auto throttle = previewAxisResponse(ResponseAxis::throttle, tuned.throttle, 550, tuned.throttleResponse);
+    if (!approximatelyEqual(throttle.raw, 0.45f) || !approximatelyEqual(throttle.adjusted, 0.25f)
+        || previewAxisResponse(ResponseAxis::throttle, tuned.throttle, 200, tuned.throttleResponse).adjusted != 1.0f
+        || !approximatelyEqual(previewAxisResponse(ResponseAxis::throttle, tuned.throttle, 550, {-100, 80}).adjusted, 0.75f)
+        || previewAxisResponse(ResponseAxis::throttle, tuned.throttle, 1100, tuned.throttleResponse).raw != 0.0f)
+        return 44;
+
+    std::string error;
+    const auto saved = saveProfile(path, tuned, error);
+    const auto loaded = saved ? loadProfile(path, error) : std::nullopt;
+    auto invalid = tuned;
+    invalid.steeringResponse.progressivity = 101;
+    const bool rejectsInvalidSteering = !saveProfile(path, invalid, error);
+    invalid = tuned;
+    invalid.throttleResponse.saturation = 49;
+    const bool rejectsInvalidThrottle = !saveProfile(path, invalid, error);
+    const auto unchanged = loadProfile(path, error);
+    const bool savedLegacy = saveProfile(path, legacy, error);
+    const auto restoredLegacy = loadProfile(path, error);
+    {
+        std::ofstream malformed(path, std::ios::app);
+        malformed << "throttle_response.saturation=not-a-number\n";
+    }
+    const bool rejectsMalformed = !loadProfile(path, error);
+    std::filesystem::remove(path);
+    if (!loaded || loaded->steeringResponse != tuned.steeringResponse || loaded->throttleResponse != tuned.throttleResponse
+        || !rejectsInvalidSteering || !rejectsInvalidThrottle || !unchanged
+        || unchanged->steeringResponse != tuned.steeringResponse || unchanged->throttleResponse != tuned.throttleResponse
+        || !savedLegacy || !restoredLegacy || restoredLegacy->steeringResponse != AxisResponse{}
+        || restoredLegacy->throttleResponse != AxisResponse{} || !rejectsMalformed)
+        return 45;
+
+    DeviceSample wheel, pedals;
+    wheel.axesPresent[0] = true;
+    wheel.axes[0] = 260;
+    pedals.axesPresent[1] = pedals.axesPresent[2] = true;
+    pedals.axes[1] = 550;
+    const std::array<const DeviceSample*, 3> samples{&wheel, &pedals, &pedals};
+    ControlReader reader(*loaded);
+    ControlReader::Readings readings;
+    auto state = reader.update(samples, &readings);
+    if (state.steeringReady || state.throttleReady || state.calibratedSteering != 0.0f || !readings[0] || !readings[1]
+        || !approximatelyEqual(*readings[0], 0.25f / 0.9f) || !approximatelyEqual(*readings[1], 0.35f / 0.9f))
+        return 46;
+    wheel.axes[0] = tuned.steering.neutral;
+    pedals.axes[1] = tuned.throttle.neutral;
+    for (int i = 0; i < 3; ++i)
+        state = reader.update(samples);
+    if (!state.steeringReady || !state.throttleReady)
+        return 47;
+    wheel.axes[0] = 610;
+    pedals.axes[1] = 550;
+    state = reader.update(samples, &readings);
+    if (!approximatelyEqual(state.values.steering, negative.adjusted)
+        || !approximatelyEqual(state.values.throttle, throttle.adjusted) || !readings[0]
+        || !approximatelyEqual(state.calibratedSteering, *readings[0])
+        || !approximatelyEqual(state.calibratedSteering, -0.25f / 0.9f))
+        return 48;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -91,7 +175,8 @@ int run()
     std::filesystem::remove(path);
     if (!loaded || !rejectedDuplicate || loaded->throttle.deviceId != pedalId
         || loaded->steering.deviceId != wheelId || loaded->throttle.positive != 0
-        || loaded->brakeResponse != chrome_axis::BrakeResponse{})
+        || loaded->brakeResponse != chrome_axis::BrakeResponse{}
+        || loaded->steeringResponse != chrome_axis::AxisResponse{} || loaded->throttleResponse != chrome_axis::AxisResponse{})
         return 2;
 
     using chrome_axis::AxisStatus;
@@ -304,6 +389,7 @@ int run()
         return 26;
 
     combined.brakeResponse = {100, 70};
+    combined.throttleResponse = {100, 80};
     chrome_axis::ControlReader tunedCombinedReader(combined);
     pedals.axes[1] = combined.brake.neutral;
     for (int i = 0; i < 3; ++i)
@@ -317,6 +403,12 @@ int run()
     if (state.values.throttle != 0.0f || !approximatelyEqual(state.values.brake,
             previewBrake(combined.brake, 250, combined.brakeResponse).adjusted))
         return 28;
+    pedals.axes[1] = 750;
+    state = tunedCombinedReader.update(connected);
+    if (state.values.brake != 0.0f || !approximatelyEqual(state.values.throttle,
+            chrome_axis::previewAxisResponse(chrome_axis::ResponseAxis::throttle, combined.throttle, 750,
+                                             combined.throttleResponse).adjusted))
+        return 49;
 
     auto zeroSteering = *loaded;
     zeroSteering.steering.deadzone = 0.0f;
@@ -350,6 +442,8 @@ int run()
     zeroSteering.steering.deadzone = 0.001f;
     if (!chrome_axis::validateProfile(zeroSteering, error))
         return 34;
+    if (const int responseResult = testAxisResponses(*loaded, path))
+        return responseResult;
     return testTransientRead(*loaded);
 }
 

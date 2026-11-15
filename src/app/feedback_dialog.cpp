@@ -26,6 +26,8 @@ struct GainSlider {
 constexpr GainSlider overall{IDC_FEEDBACK_STRENGTH, IDC_FEEDBACK_STRENGTH_VALUE, gainStep, maxFeedbackGainPercent};
 constexpr GainSlider centering{IDC_FEEDBACK_CENTERING, IDC_FEEDBACK_CENTERING_VALUE,
                                minFeedbackCenteringPercent, maxFeedbackCenteringPercent};
+constexpr GainSlider impactStrength{IDC_FEEDBACK_IMPACT_STRENGTH, IDC_FEEDBACK_IMPACT_STRENGTH_VALUE,
+                                    0, maxFeedbackImpactPercent};
 
 enum class Compatibility { noCalibration, disconnected, unsupported, supported };
 
@@ -127,6 +129,7 @@ struct FeedbackDialog {
     Compatibility state;
     int gain{};
     int centeringGain{};
+    int impactGain{};
 
     void initialise(HWND window);
     void updateControls(HWND window) const;
@@ -158,8 +161,10 @@ void FeedbackDialog::initialise(HWND window)
     }
     gain = settings.strength;
     centeringGain = settings.centering;
+    impactGain = settings.impactStrength;
     initialiseGain(window, overall, gain);
     initialiseGain(window, centering, centeringGain);
+    initialiseGain(window, impactStrength, impactGain);
     addToggle(window, IDC_FEEDBACK_IMPACTS, tr(Text::DlgFeedbackImpactsDisabled), tr(Text::DlgFeedbackImpactsEnabled), settings.impacts);
     addToggle(window, IDC_FEEDBACK_DIRECTION, tr(Text::DlgFeedbackNormal), tr(Text::DlgFeedbackInverted), settings.invert);
     updateControls(window);
@@ -171,6 +176,8 @@ void FeedbackDialog::updateControls(HWND window) const
         && SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_GETCURSEL, 0, 0) == 1;
     for (const int id : {overall.control, centering.control, IDC_FEEDBACK_IMPACTS, IDC_FEEDBACK_DIRECTION})
         EnableWindow(GetDlgItem(window, id), enabled);
+    const bool impactsEnabled = enabled && SendDlgItemMessageW(window, IDC_FEEDBACK_IMPACTS, CB_GETCURSEL, 0, 0) == 1;
+    EnableWindow(GetDlgItem(window, impactStrength.control), impactsEnabled);
 }
 
 void FeedbackDialog::save(HWND window) const
@@ -187,6 +194,7 @@ void FeedbackDialog::save(HWND window) const
         selected(IDC_FEEDBACK_IMPACTS) == 1,
         selected(IDC_FEEDBACK_DIRECTION) == 1,
         centeringGain,
+        impactGain,
     };
     std::string error;
     const std::array checks{ProfileFileCheck{profileFilename, calibrationRevision},
@@ -215,6 +223,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_FEEDBACK_CENTERING_LABEL, tr(Text::DlgFeedbackCentering));
         SetDlgItemTextW(window, IDC_FEEDBACK_CENTERING, tr(Text::DlgFeedbackCenteringSlider));
         SetDlgItemTextW(window, IDC_FEEDBACK_IMPACTS_LABEL, tr(Text::DlgFeedbackImpacts));
+        SetDlgItemTextW(window, IDC_FEEDBACK_IMPACT_STRENGTH_LABEL, tr(Text::DlgFeedbackImpactStrength));
+        SetDlgItemTextW(window, IDC_FEEDBACK_IMPACT_STRENGTH, tr(Text::DlgFeedbackImpactStrengthSlider));
         SetDlgItemTextW(window, IDC_FEEDBACK_DIRECTION_LABEL, tr(Text::DlgFeedbackDirection));
         SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgFeedbackIntro));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
@@ -228,7 +238,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return FALSE;
     if (message == WM_NOTIFY && lParam && !ui::isHighContrast()) {
         const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
-        if ((notification.idFrom == overall.control || notification.idFrom == centering.control) &&
+        if ((notification.idFrom == overall.control || notification.idFrom == centering.control ||
+             notification.idFrom == impactStrength.control) &&
             notification.code == NM_CUSTOMDRAW) {
             const auto& draw = *reinterpret_cast<const NMCUSTOMDRAW*>(lParam);
             if (draw.dwDrawStage == CDDS_PREPAINT) {
@@ -248,11 +259,16 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             dialog->centeringGain = selectGain(window, centering);
             return TRUE;
         }
+        if (control == impactStrength.control) {
+            dialog->impactGain = selectGain(window, impactStrength);
+            return TRUE;
+        }
     }
     if (message != WM_COMMAND)
         return FALSE;
     switch (LOWORD(wParam)) {
     case IDC_FEEDBACK_ENABLE:
+    case IDC_FEEDBACK_IMPACTS:
         if (HIWORD(wParam) == CBN_SELCHANGE)
             dialog->updateControls(window);
         return TRUE;

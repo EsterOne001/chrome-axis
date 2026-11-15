@@ -21,23 +21,37 @@ struct AxisCalibration {
     float deadzone{};
 };
 
-inline constexpr int minimumBrakeProgressivity = -100;
-inline constexpr int maximumBrakeProgressivity = 100;
-inline constexpr int minimumBrakeSaturation = 50;
-inline constexpr int maximumBrakeSaturation = 100;
+inline constexpr int minimumResponseProgressivity = -100;
+inline constexpr int maximumResponseProgressivity = 100;
+inline constexpr int minimumResponseSaturation = 50;
+inline constexpr int maximumResponseSaturation = 100;
+inline constexpr int minimumBrakeProgressivity = minimumResponseProgressivity;
+inline constexpr int maximumBrakeProgressivity = maximumResponseProgressivity;
+inline constexpr int minimumBrakeSaturation = minimumResponseSaturation;
+inline constexpr int maximumBrakeSaturation = maximumResponseSaturation;
 
-struct BrakeResponse {
+enum class ResponseAxis { steering, throttle, brake };
+
+struct AxisResponse {
     int progressivity{};
-    int saturation{maximumBrakeSaturation};
+    int saturation{maximumResponseSaturation};
 
-    bool operator==(const BrakeResponse&) const = default;
+    bool operator==(const AxisResponse&) const = default;
 };
 
-struct BrakePreview {
+using BrakeResponse = AxisResponse;
+
+struct AxisPreview {
     float raw{};
     float adjusted{};
 };
 
+using BrakePreview = AxisPreview;
+
+bool validateAxisResponse(const AxisResponse& response) noexcept;
+// Signed for steering. Saturation is defined on the calibrated travel before deadzone.
+AxisPreview previewAxisResponse(ResponseAxis axis, const AxisCalibration& calibration, long raw,
+                               const AxisResponse& response) noexcept;
 bool validateBrakeResponse(const BrakeResponse& response) noexcept;
 // A valid calibration and response produce fractions of calibrated travel and brake output.
 BrakePreview previewBrake(const AxisCalibration& calibration, long raw, const BrakeResponse& response) noexcept;
@@ -47,6 +61,8 @@ struct Profile {
     AxisCalibration throttle;
     AxisCalibration brake;
     BrakeResponse brakeResponse;
+    AxisResponse steeringResponse{};
+    AxisResponse throttleResponse{};
 };
 
 struct Controls {
@@ -60,6 +76,8 @@ struct ControlState {
     bool steeringReady{};
     bool throttleReady{};
     bool brakeReady{};
+    // The calibrated position after deadzone, before curve and useful-travel adjustments.
+    float calibratedSteering{};
 };
 
 enum class AxisStatus {

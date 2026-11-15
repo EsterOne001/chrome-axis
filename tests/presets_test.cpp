@@ -212,11 +212,11 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     const std::wstring name = L"Pédales été";
     const auto named = root / L"Profils" / name;
     const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
-    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f}, {},
-        {wheel, 2, 0, 0, 1000, 0.03f}, {-40, 75}};
+    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f}, {wheel, 1, 0, 0, 1000, 0.03f},
+        {wheel, 2, 0, 0, 1000, 0.03f}, {-40, 75}, {-30, 80}, {60, 90}};
     const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD, {}, ShifterRole::Upshift},
         {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}}};
-    const FeedbackSettings feedback{true, 17, false, true, 165};
+    const FeedbackSettings feedback{true, 17, false, true, 165, 75};
     std::string error;
     ProfileBackupError backupError{};
     if (!check(std::filesystem::create_directory(root), "Could not set up a profile folder")
@@ -303,6 +303,8 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     if (!check(activePreset(root).name == name && listPresets(root) == std::vector{name}
                && axes && axes->steering.deadzone == calibration.steering.deadzone
                && axes->brakeResponse == calibration.brakeResponse
+               && axes->steeringResponse == calibration.steeringResponse
+               && axes->throttleResponse == calibration.throttleResponse
                && loadAccessoryProfile(root / accessoryFilename, error) == bindings
                && loadAccessoryProfile(named / accessoryFilename, error) == bindings
                && loadFeedbackSettings(named / feedbackFilename, error) == feedback

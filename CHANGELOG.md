@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.33 · 15 novembre 2026
+
+- **Direction.** Réglez la sensibilité autour du centre et la course utile de 50 à 100 % de la course calibrée. Les jauges comparent les deux sens de rotation avant et après réglage.
+- **Accélérateur.** Réglez la progressivité et la course nécessaire pour atteindre 100 %. Les jauges réagissent au pédalier ou à une valeur simulée. Les réglages d’axes sont enregistrés dans le profil et repris lors de sa sauvegarde ou de sa restauration.
+- **Retour de force.** Le curseur **Intensité des chocs** règle de 0 à 200 % les secousses des collisions et des réceptions de saut. Les anciens profils prennent la valeur de 100 % et le pilote reçoit une consigne limitée à sa plage nominale.
+
+[ZIP Vortex](out/ChromeAxis-0.4.33-Cyberpunk-2.5.zip)
+
 ## Chrome Axis 0.4.32 · 15 novembre 2026
 
 - **Comportement en conduite.** Le retour de force tient compte de la charge latérale, de la rotation du véhicule, du dérapage et de la perte de contact avec le sol. Les reprises de contact et la direction des chocs produisent des réactions distinctes.
