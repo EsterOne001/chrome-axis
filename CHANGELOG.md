@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.31 · 15 novembre 2026
+
+- **Gain du retour de force.** Le curseur va de 5 à 200 % par paliers de 5 %. Au-delà de 100 %, le gain amplifie l’effort calculé dans la limite de la force nominale DirectInput. Les profils existants conservent leur gain jusqu’au premier déplacement du curseur. La valeur par défaut reste à 12 %, avec le retour de force désactivé.
+
+[ZIP Vortex](out/ChromeAxis-0.4.31-Cyberpunk-2.5.zip)
+
 ## Chrome Axis 0.4.30 · 15 novembre 2026
 
 - **Reprise de conduite.** Au retour au siège conducteur ou après l’expiration du signal du contexte de conduite, le plugin rouvre les périphériques USB pour la nouvelle session et attend le retour des commandes au neutre. Une lecture DirectInput durablement en attente déclenche aussi une réouverture de l’appareil concerné.

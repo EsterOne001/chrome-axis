@@ -17,7 +17,7 @@ constexpr std::array<std::string_view, 5> keys{"version", "enabled", "strength",
 
 bool valid(const FeedbackSettings& settings) noexcept
 {
-    return settings.strength >= 1 && settings.strength <= maxFeedbackPercent;
+    return settings.strength >= 1 && settings.strength <= maxFeedbackGainPercent;
 }
 
 } // namespace
@@ -126,7 +126,8 @@ float WheelFeedback::update(const FeedbackSettings& settings, const FeedbackSamp
             * std::cos(phase * 4.0f * std::numbers::pi_v<float>);
     }
     const float gain = static_cast<float>(settings.strength) / 100.0f;
-    return (settings.invert ? -gain : gain) * std::clamp(smoothedForce_ + impact, -1.0f, 1.0f);
+    const float force = (settings.invert ? -gain : gain) * std::clamp(smoothedForce_ + impact, -1.0f, 1.0f);
+    return std::clamp(force, -1.0f, 1.0f);
 }
 
 void WheelFeedback::reset() noexcept

@@ -7,7 +7,7 @@
 namespace chrome_axis {
 
 inline constexpr wchar_t feedbackFilename[] = L"force_feedback.ini";
-inline constexpr int maxFeedbackPercent = 35;
+inline constexpr int maxFeedbackGainPercent = 200;
 
 struct FeedbackSettings {
     bool enabled{};

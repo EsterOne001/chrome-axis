@@ -1,7 +1,6 @@
 #define DIRECTINPUT_VERSION 0x0800
 
 #include <chrome_axis/input.hpp>
-#include <chrome_axis/feedback.hpp>
 
 #include <dinput.h>
 #include <objbase.h>
@@ -483,8 +482,7 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
         wheel.retryAfter = {};
         wheel.lastStage = {};
     }
-    constexpr float limit = static_cast<float>(maxFeedbackPercent) / 100.0f;
-    const auto magnitude = std::lround(std::clamp(force, -limit, limit) * DI_FFNOMINALMAX);
+    const auto magnitude = std::lround(std::clamp(force, -1.0f, 1.0f) * DI_FFNOMINALMAX);
     const auto fail = [&](std::string_view stage, HRESULT result) {
         wheel.close();
         wheel.retryAfter = Clock::now() + std::chrono::seconds(2);
