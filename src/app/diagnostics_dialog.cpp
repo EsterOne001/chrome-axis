@@ -85,7 +85,9 @@ constexpr std::array performanceControls{
     PerformanceControls{Text::DlgDiagnosticsPerformanceFeedback, IDC_DIAGNOSTICS_PERFORMANCE_FEEDBACK_LABEL,
         IDC_DIAGNOSTICS_PERFORMANCE_FEEDBACK, &PerformanceReport::feedback},
     PerformanceControls{Text::DlgDiagnosticsPerformanceAge, IDC_DIAGNOSTICS_PERFORMANCE_AGE_LABEL,
-        IDC_DIAGNOSTICS_PERFORMANCE_AGE, &PerformanceReport::inputAge}
+        IDC_DIAGNOSTICS_PERFORMANCE_AGE, &PerformanceReport::inputAge},
+    PerformanceControls{Text::DlgDiagnosticsPerformanceMotion, IDC_DIAGNOSTICS_PERFORMANCE_MOTION_LABEL,
+        IDC_DIAGNOSTICS_PERFORMANCE_MOTION, &PerformanceReport::motionAge}
 };
 
 const wchar_t* connectionText(DiagnosticConnection connection)
@@ -155,6 +157,8 @@ const wchar_t* feedbackText(DiagnosticFeedbackState state)
     case DiagnosticFeedbackState::active: return tr(Text::DlgDiagnosticsFeedbackActive);
     case DiagnosticFeedbackState::unavailable: return tr(Text::DlgDiagnosticsFeedbackUnavailable);
     case DiagnosticFeedbackState::inactive: return tr(Text::DlgDiagnosticsInactive);
+    case DiagnosticFeedbackState::neutral: return tr(Text::DlgDiagnosticsFeedbackNeutral);
+    case DiagnosticFeedbackState::waitingForMotion: return tr(Text::DlgDiagnosticsFeedbackWaitingMotion);
     }
     return unavailableValue;
 }
@@ -175,12 +179,12 @@ std::wstring eventAge(std::uint64_t at, std::uint64_t now)
     return tr(Text::DlgDiagnosticsAgePrefix) + age + tr(Text::DlgDiagnosticsAgeSuffix);
 }
 
-std::wstring percentText(float value)
+std::wstring percentText(float value, bool showSign = false)
 {
     if (!std::isfinite(value))
         return unavailableValue;
     const auto percent = std::lround(std::clamp(value, -1.0f, 1.0f) * 100.0f);
-    return std::to_wstring(percent) + tr(Text::mainPercentSuffix);
+    return (showSign && percent > 0 ? L"+" : L"") + std::to_wstring(percent) + tr(Text::mainPercentSuffix);
 }
 
 std::wstring appliedValue(const DiagnosticAxis& axis, std::uint64_t now)
@@ -305,6 +309,51 @@ std::wstring milliseconds(double micros)
     return formatted + L" ms";
 }
 
+std::wstring feedbackStatus(const DiagnosticSnapshot& snapshot)
+{
+    std::wstring status = feedbackText(snapshot.feedback);
+    const auto& data = snapshot.feedbackData;
+    if (data.motionAvailable && data.airborne)
+        status += L" · " + std::wstring(tr(Text::DlgDiagnosticsFeedbackAirborne));
+    else if (data.motionAvailable && data.skidding)
+        status += L" · " + std::wstring(tr(Text::DlgDiagnosticsFeedbackSkidding));
+    return status;
+}
+
+std::wstring feedbackMotionAge(const DiagnosticFeedbackTelemetry& data)
+{
+    return data.motionAvailable ? milliseconds(static_cast<double>(data.motionAgeMicros)) : unavailableValue;
+}
+
+std::wstring feedbackRequested(const DiagnosticFeedbackTelemetry& data)
+{
+    if (!data.requestAvailable)
+        return unavailableValue;
+    auto text = percentText(data.requested, true);
+    if (data.clipped)
+        text += L" (" + std::wstring(tr(Text::DlgDiagnosticsFeedbackClipped)) + L")";
+    return text;
+}
+
+std::wstring feedbackSubmitted(const DiagnosticFeedbackTelemetry& data)
+{
+    return data.submittedAt ? percentText(data.submitted, true) : unavailableValue;
+}
+
+bool hasFeedbackTelemetry(const DiagnosticFeedbackTelemetry& data)
+{
+    return data.motionAvailable || data.requestAvailable || data.submittedAt;
+}
+
+std::wstring feedbackTelemetry(const DiagnosticFeedbackTelemetry& data)
+{
+    if (!hasFeedbackTelemetry(data))
+        return {};
+    return std::wstring(tr(Text::DlgDiagnosticsFeedbackRequested)) + L" " + feedbackRequested(data) + L" · " +
+        tr(Text::DlgDiagnosticsFeedbackSubmitted) + L" " + feedbackSubmitted(data) + L" · " +
+        tr(Text::DlgDiagnosticsFeedbackMotionAge) + L" " + feedbackMotionAge(data);
+}
+
 std::wstring performanceTiming(const PerformanceTiming& timing)
 {
     if (!timing.samples)
@@ -315,9 +364,19 @@ std::wstring performanceTiming(const PerformanceTiming& timing)
         L" " + tr(timing.samples == 1 ? Text::DlgDiagnosticsPerformanceSample : Text::DlgDiagnosticsPerformanceSamples);
 }
 
+std::wstring clippedCount(const PerformanceReport& report)
+{
+    if (!report.forceSamples)
+        return unavailableValue;
+    const auto fraction = static_cast<float>(static_cast<double>(report.clippedSamples) /
+                                              static_cast<double>(report.forceSamples));
+    return std::to_wstring(report.clippedSamples) + L"/" + std::to_wstring(report.forceSamples) +
+        L" (" + percentText(fraction) + L")";
+}
+
 bool hasPerformanceData(const PerformanceReport& report)
 {
-    return report.expiredReads || report.transientReads ||
+    return report.expiredReads || report.transientReads || report.forceSamples || report.submittedEffects ||
         std::ranges::any_of(performanceControls, [&](const auto& control) {
             return (report.*control.timing).samples != 0;
         });
@@ -408,7 +467,16 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         }
         line(Text::DlgDiagnosticsAccessories, accessoryStatus(snapshot));
         line(Text::DlgDiagnosticsLastKey, lastAccessoryKey(snapshot, now));
-        line(Text::DlgDiagnosticsFeedback, feedbackText(snapshot.feedback));
+        line(Text::DlgDiagnosticsFeedback, feedbackStatus(snapshot));
+        const auto& feedback = snapshot.feedbackData;
+        if (hasFeedbackTelemetry(feedback)) {
+            line(Text::DlgDiagnosticsFeedbackMotionAge, feedbackMotionAge(feedback));
+            line(Text::DlgDiagnosticsFeedbackRequested, feedbackRequested(feedback));
+            auto submitted = feedbackSubmitted(feedback);
+            if (feedback.submittedAt)
+                submitted += L" · " + eventAge(feedback.submittedAt, now);
+            line(Text::DlgDiagnosticsFeedbackSubmitted, submitted);
+        }
     }
     const auto events = std::span(read.events).first(std::min<std::size_t>(read.eventCount, read.events.size()));
     if (!events.empty()) {
@@ -440,6 +508,12 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
             line(control.label, performanceTiming(read.performance.*control.timing));
         line(Text::DlgDiagnosticsPerformanceExpired, std::to_wstring(read.performance.expiredReads));
         line(Text::DlgDiagnosticsPerformanceTransient, std::to_wstring(read.performance.transientReads));
+        line(Text::DlgDiagnosticsPerformanceAccepted, std::to_wstring(read.performance.submittedEffects));
+        line(Text::DlgDiagnosticsPerformanceClipped, clippedCount(read.performance));
+        line(Text::DlgDiagnosticsPerformancePeakRequested,
+             read.performance.forceSamples ? percentText(read.performance.peakRequestedForce) : unavailableValue);
+        line(Text::DlgDiagnosticsPerformancePeakSubmitted,
+             read.performance.submittedEffects ? percentText(read.performance.peakSubmittedForce) : unavailableValue);
         report += tr(Text::DlgDiagnosticsPerformanceReadingGuide);
         report += L"\r\n";
     }
@@ -512,6 +586,11 @@ void refreshPerformance(HWND window, DialogState& state, const DiagnosticRead& r
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceExpired)) + L" · " + std::to_wstring(performance.expiredReads) +
             L"    " + tr(Text::DlgDiagnosticsPerformanceTransient) + L" · " + std::to_wstring(performance.transientReads)
         : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_FORCE_COUNTS, showResults
+        ? std::wstring(tr(Text::DlgDiagnosticsPerformanceAccepted)) + L" · " +
+            std::to_wstring(performance.submittedEffects) + L"    " +
+            tr(Text::DlgDiagnosticsPerformanceClipped) + L" · " + clippedCount(performance)
+        : L"");
 }
 
 void refresh(HWND window, DialogState& state)
@@ -541,7 +620,8 @@ void refresh(HWND window, DialogState& state)
 
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORIES, showControls ? accessoryStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORY, showControls ? lastAccessoryKey(snapshot, now) : unavailableValue);
-    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackText(snapshot.feedback) : unavailableValue);
+    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
+    setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
     refreshPerformance(window, state, read, now);
 }
 

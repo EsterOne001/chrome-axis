@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.31** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.32** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -74,9 +74,9 @@ After calibrating the brake, open **Brake settings…**. Progressivity of **0** 
 
 ### Force feedback
 
-Save the steering calibration and open **Force feedback…** from **USB Hardware**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. The slider sets the gain from 5% to 200% in 5% steps. Above 100%, Chrome Axis amplifies the calculated force up to the nominal DirectInput limit. You can disable impacts separately or invert the direction if the wheel pushes away from center.
+Save the steering calibration and open **Force feedback…** from **USB Hardware**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. **Gain** adjusts every effect from 5% to 200%. **Centering** adjusts resistance toward the centre and in corners from 50% to 250%, with 100% for existing profiles. Both sliders move in 5-point steps. Chrome Axis limits the command to DirectInput’s nominal range. You can disable impacts separately or invert the direction if the wheel pushes away from center.
 
-Steering effort varies with the vehicle’s speed, mass and sideways motion. Collisions reported by the game add a short impulse whose strength depends on the impact. Chrome Axis stops its effects when you stop driving, the game loses focus or the wheel stops responding. Steering and pedals still work on supported devices without force feedback.
+Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. Centering eases in the air. Landings and collisions add distinct jolts that share the **Impacts** setting. Chrome Axis stops its effects when you stop driving, the game loses focus or the wheel stops responding. Steering and pedals still work on supported devices without force feedback.
 
 ## Shifters, paddles and accessories
 
@@ -146,7 +146,7 @@ When the game directory is recognized, the panel names a missing DLL or script a
 
 After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it pairs the calibrated reading with the requested command when they come from the same sample. The last value actually written appears separately with its age. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
 
-To measure delays, click **Measure performance** in **Diagnostics…**, switch to Cyberpunk, and drive with USB enabled. Switch back, click **Stop measurement**, and choose **Copy diagnostics**. The report summarizes USB read and force feedback call durations, the age of input when it was applied in game, and the number of expired reads. These measurements cover the mod’s input path. Use the manual validation procedure to measure frame time.
+To measure delays, click **Measure performance** in **Diagnostics…**, switch to Cyberpunk, and drive with USB enabled. Switch back, click **Stop measurement**, and choose **Copy diagnostics**. The report summarizes USB read and force feedback call durations, the age of input when it was applied in game, and the number of expired reads. The capture also reports vehicle data age, the number of effects accepted by the driver, and the fraction of force commands that were clipped. Force percentages represent DirectInput commands. These measurements cover the mod’s input path. Use the manual validation procedure to measure frame time.
 
 ## Project folders
 

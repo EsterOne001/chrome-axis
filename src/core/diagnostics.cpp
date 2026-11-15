@@ -17,7 +17,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 3;
+constexpr LONG64 protocolVersion = 4;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 static_assert(std::is_trivially_copyable_v<DiagnosticFrame>);
@@ -28,7 +28,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v3.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v4.";
 
 void recordTransition(DiagnosticRead& report) noexcept
 {

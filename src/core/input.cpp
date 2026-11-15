@@ -238,6 +238,7 @@ struct WheelOutput {
             effect.reset();
         }
         playing = false;
+        neutral = false;
         if (device) {
             device->Unacquire();
             if (autocenter) {
@@ -268,6 +269,7 @@ struct WheelOutput {
     HRESULT lastResult{};
     long magnitude{};
     bool playing{};
+    bool neutral{};
 };
 
 } // namespace
@@ -464,15 +466,15 @@ std::optional<DeviceSample> DirectInput::sample(const std::string& id, const std
     return opened.cachedSample;
 }
 
-void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float force,
-                                bool (*stillCurrent)(const void*) noexcept, const void* context) {
+std::optional<float> DirectInput::setWheelForce(const std::string& id, std::size_t axis, float force,
+    bool (*stillCurrent)(const void*) noexcept, const void* context) {
     const auto started = Clock::now();
     const auto allowed = [&] {
         return GetForegroundWindow() == impl_->window && (!stillCurrent || stillCurrent(context));
     };
     if (!ready() || id.empty() || axis >= axisCount || !std::isfinite(force) || !allowed()) {
         stopWheelForce();
-        return;
+        return std::nullopt;
     }
     auto& wheel = impl_->wheel;
     if (wheel.id != id || wheel.axis != axis) {
@@ -483,6 +485,7 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
         wheel.lastStage = {};
     }
     const auto magnitude = std::lround(std::clamp(force, -1.0f, 1.0f) * DI_FFNOMINALMAX);
+    wheel.neutral = false;
     const auto fail = [&](std::string_view stage, HRESULT result) {
         wheel.close();
         wheel.retryAfter = Clock::now() + std::chrono::seconds(2);
@@ -493,14 +496,15 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
             const auto result = wheel.effect->Stop();
             if (FAILED(result)) {
                 fail("force feedback Stop", result);
-                return;
+                return std::nullopt;
             }
             wheel.playing = false;
         }
-        return;
+        wheel.neutral = true;
+        return std::nullopt;
     }
     if (wheel.playing && wheel.magnitude == magnitude && started - wheel.submitted < forceRefresh)
-        return;
+        return std::nullopt;
 
     DICONSTANTFORCE constant{magnitude};
     DIEFFECT parameters{};
@@ -509,27 +513,27 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
     parameters.lpvTypeSpecificParams = &constant;
     if (!wheel.effect) {
         if (Clock::now() < wheel.retryAfter)
-            return;
+            return std::nullopt;
         GUID guid{};
         auto result = parseDeviceId(id, guid);
         if (FAILED(result)) {
             fail("force feedback GUID", result);
-            return;
+            return std::nullopt;
         }
         wheel.device = createDevice(*impl_->input, guid, &result);
         if (!wheel.device) {
             fail("force feedback CreateDevice", result);
-            return;
+            return std::nullopt;
         }
         result = wheel.device->SetDataFormat(&c_dfDIJoystick2);
         if (FAILED(result) || !supportsConstantForce(*wheel.device) || !forceActuator(*wheel.device, axis)) {
             fail("force feedback actuator", FAILED(result) ? result : DIERR_UNSUPPORTED);
-            return;
+            return std::nullopt;
         }
         result = wheel.device->SetCooperativeLevel(impl_->window, DISCL_EXCLUSIVE | DISCL_FOREGROUND);
         if (FAILED(result)) {
             fail("force feedback SetCooperativeLevel", result);
-            return;
+            return std::nullopt;
         }
         DIPROPDWORD property{{sizeof(DIPROPDWORD), sizeof(DIPROPHEADER), 0, DIPH_DEVICE}, 0};
         if (SUCCEEDED(wheel.device->GetProperty(DIPROP_AUTOCENTER, &property.diph))) {
@@ -541,7 +545,7 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
         result = wheel.device->Acquire();
         if (FAILED(result)) {
             fail("force feedback Acquire", result);
-            return;
+            return std::nullopt;
         }
 
         DWORD offset = axisOffsets[axis];
@@ -558,33 +562,34 @@ void DirectInput::setWheelForce(const std::string& id, std::size_t axis, float f
         result = wheel.device->CreateEffect(GUID_ConstantForce, &parameters, &effect, nullptr);
         if (FAILED(result) || !effect) {
             fail("force feedback CreateEffect", FAILED(result) ? result : E_FAIL);
-            return;
+            return std::nullopt;
         }
         wheel.effect.reset(effect);
     }
 
     if (Clock::now() - started > std::chrono::milliseconds(70)) {
         fail("force feedback driver timeout", HRESULT_FROM_WIN32(ERROR_TIMEOUT));
-        return;
+        return std::nullopt;
     }
     if (!allowed()) {
         stopWheelForce();
-        return;
+        return std::nullopt;
     }
     const auto submitted = Clock::now();
     const auto result = wheel.effect->SetParameters(&parameters, DIEP_TYPESPECIFICPARAMS | DIEP_START);
     if (FAILED(result) || result == DI_DOWNLOADSKIPPED) {
         fail("force feedback SetParameters", result);
-        return;
+        return std::nullopt;
     }
     if (!allowed()) {
         stopWheelForce();
-        return;
+        return std::nullopt;
     }
     wheel.playing = true;
     wheel.magnitude = magnitude;
     wheel.submitted = submitted;
     wheel.report(impl_->diagnostic, "force feedback active", DI_OK, true);
+    return static_cast<float>(magnitude) / DI_FFNOMINALMAX;
 }
 
 WheelForceState DirectInput::wheelForceState() const noexcept {
@@ -596,7 +601,7 @@ WheelForceState DirectInput::wheelForceState() const noexcept {
         return WheelForceState::active;
     if (wheel.retryAfter > now)
         return WheelForceState::unavailable;
-    return WheelForceState::waiting;
+    return wheel.neutral ? WheelForceState::neutral : WheelForceState::waiting;
 }
 
 void DirectInput::stopWheelForce() noexcept {

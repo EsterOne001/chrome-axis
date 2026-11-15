@@ -216,7 +216,7 @@ bool testProfileBackups(const std::filesystem::path& fixture)
         {wheel, 2, 0, 0, 1000, 0.03f}, {-40, 75}};
     const AccessoryProfile bindings{{wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD, {}, ShifterRole::Upshift},
         {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}}};
-    const FeedbackSettings feedback{true, 17, false, true};
+    const FeedbackSettings feedback{true, 17, false, true, 165};
     std::string error;
     ProfileBackupError backupError{};
     if (!check(std::filesystem::create_directory(root), "Could not set up a profile folder")

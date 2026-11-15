@@ -24,7 +24,7 @@ enum class DiagnosticAccessoryState : std::uint32_t {
     temporarilyUnavailable
 };
 
-enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive };
+enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive, neutral, waitingForMotion };
 
 enum class DiagnosticDelivery : std::uint32_t { unavailable, applied, gameKept };
 
@@ -39,6 +39,18 @@ struct DiagnosticAxis {
     DiagnosticDelivery delivery{DiagnosticDelivery::unavailable};
 };
 
+struct DiagnosticFeedbackTelemetry {
+    std::uint64_t motionAgeMicros{};
+    std::uint64_t submittedAt{}; // GetTickCount64() when the driver accepted the effect.
+    float requested{}; // Signed force after limiting, relative to the DirectInput nominal force.
+    float submitted{}; // Last accepted signed effect in the same units.
+    std::uint8_t motionAvailable{};
+    std::uint8_t requestAvailable{};
+    std::uint8_t clipped{};
+    std::uint8_t airborne{};
+    std::uint8_t skidding{};
+};
+
 struct DiagnosticSnapshot {
     DiagnosticMode mode{DiagnosticMode::waitingForDriver};
     std::array<DiagnosticAxis, 3> axes{}; // Steering, throttle, brake.
@@ -50,6 +62,7 @@ struct DiagnosticSnapshot {
     std::uint64_t accessorySentAt{};
     DiagnosticAccessoryState accessories{DiagnosticAccessoryState::inactive};
     DiagnosticFeedbackState feedback{DiagnosticFeedbackState::disabled};
+    DiagnosticFeedbackTelemetry feedbackData{};
 };
 
 enum class DiagnosticConnection { unavailable, disconnected, stale, connected };
@@ -80,8 +93,14 @@ struct PerformanceReport {
     PerformanceTiming usbRead;
     PerformanceTiming feedback;
     PerformanceTiming inputAge;
+    PerformanceTiming motionAge;
     std::uint64_t expiredReads{};
     std::uint64_t transientReads{};
+    std::uint64_t forceSamples{};
+    std::uint64_t clippedSamples{};
+    std::uint64_t submittedEffects{};
+    float peakRequestedForce{}; // Absolute normalized peak, including clipping.
+    float peakSubmittedForce{}; // Absolute normalized peak of the effects accepted by the driver.
 };
 
 struct PerformanceRequest {

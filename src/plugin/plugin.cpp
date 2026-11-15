@@ -59,7 +59,8 @@ constexpr auto simulationPollInterval = 20ms;
 constexpr auto idlePollInterval = 25ms;
 constexpr auto hudSignalDuration = 2s;
 constexpr auto feedbackInterval = 20ms;
-constexpr auto motionLifetime = 250ms;
+constexpr auto motionLifetime = 150ms;
+constexpr auto minimumAirTime = 80ms;
 constexpr auto diagnosticInterval = 150ms;
 constexpr auto diagnosticIssueDuration = 1s;
 constexpr auto performanceLimit = 5min;
@@ -82,10 +83,20 @@ struct DrivingContext {
 };
 
 struct VehicleMotion {
+    RED4ext::Vector4 velocity{};
+    RED4ext::Vector4 forward{};
+    float simTime{};
     float forwardSpeed{};
     float sideSpeed{};
     float mass{};
+    float lateralAcceleration{};
+    float yawRate{};
+    bool skidding{};
+    bool airborne{};
     Clock::time_point sampled{};
+    Clock::time_point airborneSince{};
+    float landingSpeed{};
+    Clock::time_point landed{};
     float impactSpeed{};
     float impactSide{};
     Clock::time_point impacted{};
@@ -307,6 +318,17 @@ struct OutputContext {
     }
 };
 
+struct ForceOutputContext {
+    const OutputContext& input;
+    Clock::time_point motionSampled;
+    Clock::time_point vehicleUpdated;
+
+    bool current() const noexcept {
+        const auto now = Clock::now();
+        return input.current() && now - motionSampled <= motionLifetime && now - vehicleUpdated <= inputLifetime;
+    }
+};
+
 struct AccessoryDelivery {
     unsigned int key{};
     bool blocked{};
@@ -458,25 +480,87 @@ void feedbackEnabled(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* o
     }
 }
 
+bool finiteSpatial(const RED4ext::Vector4& vector) noexcept {
+    return std::isfinite(vector.X) && std::isfinite(vector.Y) && std::isfinite(vector.Z);
+}
+
+float dotSpatial(const RED4ext::Vector4& first, const RED4ext::Vector4& second) noexcept {
+    return first.X * second.X + first.Y * second.Y + first.Z * second.Z;
+}
+
 void receiveMotion(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, std::int64_t) {
     RED4ext::Handle<RED4ext::ISerializable> vehicle;
-    float forward{}, side{}, mass{};
+    RED4ext::Vector4 velocity, forward, right;
+    float mass{}, simTime{};
+    bool skidding{}, airborne{};
     RED4ext::GetParameter(frame, &vehicle);
+    RED4ext::GetParameter(frame, &velocity);
     RED4ext::GetParameter(frame, &forward);
-    RED4ext::GetParameter(frame, &side);
+    RED4ext::GetParameter(frame, &right);
     RED4ext::GetParameter(frame, &mass);
+    RED4ext::GetParameter(frame, &simTime);
+    RED4ext::GetParameter(frame, &skidding);
+    RED4ext::GetParameter(frame, &airborne);
     ++frame->code;
     if (!vehicle.instance || !feedbackRequested.load(std::memory_order_relaxed) ||
-        !std::isfinite(forward) || !std::isfinite(side)) {
+        !foregroundGameWindow() || !finiteSpatial(velocity) || !finiteSpatial(forward) ||
+        !finiteSpatial(right) || !std::isfinite(simTime) || dotSpatial(velocity, velocity) > 22500.0f) {
         return;
     }
     std::scoped_lock lock(stateMutex);
-    if (static_cast<Vehicle*>(vehicle.instance) == context.vehicle) {
-        vehicleMotion.forwardSpeed = std::clamp(forward, -150.0f, 150.0f);
-        vehicleMotion.sideSpeed = std::clamp(side, -150.0f, 150.0f);
-        vehicleMotion.mass = std::isfinite(mass) && mass > 0.0f ? mass : 1500.0f;
-        vehicleMotion.sampled = Clock::now();
+    const auto now = Clock::now();
+    if (static_cast<Vehicle*>(vehicle.instance) != context.vehicle || now - context.refreshed > contextLifetime ||
+        context.vehicleUpdated == Clock::time_point{} || now - context.vehicleUpdated > inputLifetime) {
+        return;
     }
+
+    auto& motion = vehicleMotion;
+    const float seconds = simTime - motion.simTime;
+    // A duplicate (or nearly duplicate) simulation tick is not a newer measurement.
+    if (motion.sampled != Clock::time_point{} && seconds >= 0.f && seconds < 0.005f)
+        return;
+    const bool continuous = motion.sampled != Clock::time_point{} && now - motion.sampled <= motionLifetime &&
+        seconds >= 0.005f && seconds <= 0.16f;
+    // Velocity differences must be taken in world space before projection onto the car's axes.
+    const auto deltaVelocity = velocity - motion.velocity;
+    if (continuous && dotSpatial(deltaVelocity, deltaVelocity) <= 400.0f) {
+        const float blend = std::min(seconds / 0.12f, 1.0f);
+        const float lateralAcceleration = std::clamp(dotSpatial(deltaVelocity, right) / seconds, -25.0f, 25.0f);
+        motion.lateralAcceleration = std::lerp(motion.lateralAcceleration, lateralAcceleration, blend);
+
+        const float side = forward.X * right.Y - forward.Y * right.X;
+        const float crossing = motion.forward.X * forward.Y - motion.forward.Y * forward.X;
+        const float alignment = motion.forward.X * forward.X + motion.forward.Y * forward.Y;
+        if (std::abs(side) > 0.1f && crossing * crossing + alignment * alignment > 0.01f) {
+            const float yaw = (side > 0.f ? 1.f : -1.f) * std::atan2(crossing, alignment) / seconds;
+            motion.yawRate = std::abs(yaw) <= 6.f ? std::lerp(motion.yawRate, yaw, blend) : 0.f;
+        } else {
+            motion.yawRate = 0.f;
+        }
+    } else {
+        motion.lateralAcceleration = 0.f;
+        motion.yawRate = 0.f;
+    }
+
+    if (airborne) {
+        if (!motion.airborne || !continuous) {
+            motion.airborneSince = now;
+            motion.landed = {};
+            motion.landingSpeed = 0.f;
+        }
+    } else if (continuous && motion.airborne && now - motion.airborneSince >= minimumAirTime && motion.velocity.Z < -1.5f) {
+        motion.landed = now;
+        motion.landingSpeed = std::min(-motion.velocity.Z, 20.f);
+    }
+    motion.velocity = velocity;
+    motion.forward = forward;
+    motion.simTime = simTime;
+    motion.forwardSpeed = std::clamp(dotSpatial(velocity, forward), -150.f, 150.f);
+    motion.sideSpeed = std::clamp(dotSpatial(velocity, right), -150.f, 150.f);
+    motion.mass = std::isfinite(mass) && mass > 0.f ? mass : 1500.f;
+    motion.skidding = skidding;
+    motion.airborne = airborne;
+    motion.sampled = now;
 }
 
 void receiveImpact(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, std::int64_t) {
@@ -568,12 +652,16 @@ void registerNative() {
     enabled->SetReturnType("Bool");
     rtti->RegisterFunction(enabled);
 
-    auto* motion = RED4ext::CGlobalFunction::Create("ChromeAxis_VehicleMotion", "ChromeAxis_VehicleMotion", &receiveMotion);
+    auto* motion = RED4ext::CGlobalFunction::Create("ChromeAxis_FeedbackMotion", "ChromeAxis_FeedbackMotion", &receiveMotion);
     motion->flags = {.isNative = true, .isStatic = true};
     motion->AddParam("handle:vehicleBaseObject", "vehicle");
-    motion->AddParam("Float", "forwardSpeed");
-    motion->AddParam("Float", "sideSpeed");
+    motion->AddParam("Vector4", "velocity");
+    motion->AddParam("Vector4", "forward");
+    motion->AddParam("Vector4", "right");
     motion->AddParam("Float", "mass");
+    motion->AddParam("Float", "simTime");
+    motion->AddParam("Bool", "skidding");
+    motion->AddParam("Bool", "airborne");
     rtti->RegisterFunction(motion);
 
     auto* impact = RED4ext::CGlobalFunction::Create("ChromeAxis_VehicleImpact", "ChromeAxis_VehicleImpact", &receiveImpact);
@@ -780,13 +868,17 @@ DiagnosticAccessoryState diagnosticAccessoryState(chrome_axis::AccessoryReadines
     return ready ? DiagnosticAccessoryState::ready : DiagnosticAccessoryState::waiting;
 }
 
-DiagnosticFeedbackState diagnosticFeedbackState(const chrome_axis::DirectInput* input) noexcept {
-    if (!input)
+DiagnosticFeedbackState diagnosticFeedbackState(const chrome_axis::DirectInput* input, bool steeringReady,
+                                                bool motionAvailable) noexcept {
+    if (!input || !steeringReady)
         return DiagnosticFeedbackState::waiting;
+    if (!motionAvailable)
+        return DiagnosticFeedbackState::waitingForMotion;
     switch (input->wheelForceState()) {
     case chrome_axis::WheelForceState::waiting: return DiagnosticFeedbackState::waiting;
     case chrome_axis::WheelForceState::active: return DiagnosticFeedbackState::active;
     case chrome_axis::WheelForceState::unavailable: return DiagnosticFeedbackState::unavailable;
+    case chrome_axis::WheelForceState::neutral: return DiagnosticFeedbackState::neutral;
     }
     return DiagnosticFeedbackState::waiting;
 }
@@ -874,6 +966,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 diagnostic.accessorySentAt = 0;
                 snapshot.lastAccessoryKey = 0;
                 snapshot.accessorySentAt = 0;
+                snapshot.feedbackData = {};
+                diagnostic.feedbackData = {};
             }
             const bool hasDelivery = drivingSession && vehicleDelivery.sampled != Clock::time_point{} &&
                 now - vehicleDelivery.sampled <= inputLifetime;
@@ -903,6 +997,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             snapshot.accessoryArmed = 0;
             if (snapshot.feedback != DiagnosticFeedbackState::disabled)
                 snapshot.feedback = DiagnosticFeedbackState::inactive;
+            snapshot.feedbackData = {};
         }
         diagnostics->publish(snapshot, drivingSession, performance);
     };
@@ -935,6 +1030,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             diagnosticSession = current.session;
             diagnostic.lastAccessoryKey = 0;
             diagnostic.accessorySentAt = 0;
+            diagnostic.feedbackData = {};
         }
         if (!foreground) {
             feedbackRequested.store(false, std::memory_order_relaxed);
@@ -947,6 +1043,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 }
                 wheelFeedback.reset();
                 lastFeedbackUpdate = {};
+                diagnostic.feedbackData = {};
                 usb.resetReaders();
                 std::scoped_lock lock(stateMutex);
                 if (context.generation == current.generation) {
@@ -987,6 +1084,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             wheelFeedback.reset();
             lastFeedbackUpdate = {};
+            diagnostic.feedbackData = {};
             usb.resetReaders();
             std::scoped_lock lock(stateMutex);
             if (context.generation == current.generation) {
@@ -1040,6 +1138,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             wheelFeedback.reset();
             lastFeedbackUpdate = {};
+            diagnostic.feedbackData = {};
             std::scoped_lock lock(stateMutex);
             if (context.generation == current.generation) {
                 vehicleMotion = {};
@@ -1103,6 +1202,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         const bool hasRequestedKeys = requestedKeys.any();
         const OutputContext output{current.vehicle, current.generation, sampledAt};
+        ForceOutputContext forceOutput{output, {}, {}};
         bool accessoryContextLive = false;
         std::optional<chrome_axis::FeedbackSample> forceSample;
         {
@@ -1126,9 +1226,26 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     if (context.vehicleUpdated != Clock::time_point{} && vehicleMotion.sampled != Clock::time_point{} &&
                         now - context.vehicleUpdated <= inputLifetime && now - context.refreshed <= contextLifetime &&
                         now - sampledAt <= inputLifetime && now - vehicleMotion.sampled <= motionLifetime) {
-                        forceSample = chrome_axis::FeedbackSample{controls.values.steering, vehicleMotion.forwardSpeed,
-                            vehicleMotion.sideSpeed, vehicleMotion.mass, vehicleMotion.impactSpeed, vehicleMotion.impactSide,
-                            std::chrono::duration<float>(now - vehicleMotion.impacted).count()};
+                        forceOutput.motionSampled = vehicleMotion.sampled;
+                        forceOutput.vehicleUpdated = context.vehicleUpdated;
+                        const auto eventSeparation = vehicleMotion.impacted - vehicleMotion.landed;
+                        const bool landingHasImpact = usb.feedbackSettings.impacts &&
+                            eventSeparation > -80ms && eventSeparation < 80ms;
+                        forceSample = chrome_axis::FeedbackSample{
+                            .steering = controls.values.steering,
+                            .forwardSpeed = vehicleMotion.forwardSpeed,
+                            .sideSpeed = vehicleMotion.sideSpeed,
+                            .mass = vehicleMotion.mass,
+                            .impactSpeed = vehicleMotion.impactSpeed,
+                            .impactSide = vehicleMotion.impactSide,
+                            .impactAge = std::chrono::duration<float>(now - vehicleMotion.impacted).count(),
+                            .lateralAcceleration = vehicleMotion.lateralAcceleration,
+                            .yawRate = vehicleMotion.yawRate,
+                            .landingSpeed = landingHasImpact ? 0.f : vehicleMotion.landingSpeed,
+                            .landingAge = std::chrono::duration<float>(now - vehicleMotion.landed).count(),
+                            .skidding = vehicleMotion.skidding,
+                            .airborne = vehicleMotion.airborne,
+                        };
                     }
                 }
             }
@@ -1153,26 +1270,51 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 }
             }
         }
-        if (!forceSample || stop.stop_requested() || !output.current()) {
+        auto& forceDiagnostic = diagnostic.feedbackData;
+        if (!forceSample || stop.stop_requested() || !forceOutput.current()) {
             if (lastFeedbackUpdate != Clock::time_point{} && input) {
                 input->stopWheelForce();
             }
             wheelFeedback.reset();
             lastFeedbackUpdate = {};
+            forceDiagnostic.requestAvailable = 0;
+            forceDiagnostic.motionAvailable = 0;
+            forceDiagnostic.clipped = 0;
         } else if (lastFeedbackUpdate == Clock::time_point{} || start - lastFeedbackUpdate >= feedbackInterval) {
             const float seconds = lastFeedbackUpdate == Clock::time_point{} ? 0.020f
                 : std::chrono::duration<float>(start - lastFeedbackUpdate).count();
             lastFeedbackUpdate = start;
             const auto& steering = usb.profile->steering;
             const float direction = steering.positive > steering.neutral ? 1.0f : -1.0f;
-            const float force = direction * wheelFeedback.update(usb.feedbackSettings, *forceSample, seconds);
+            forceDiagnostic.motionAgeMicros = elapsedMicros(Clock::now() - forceOutput.motionSampled);
+            forceDiagnostic.motionAvailable = 1;
+            forceDiagnostic.airborne = forceSample->airborne;
+            forceDiagnostic.skidding = forceSample->skidding;
+            bool clipped{};
+            const float force = direction * wheelFeedback.update(usb.feedbackSettings, *forceSample, seconds, &clipped);
+            forceDiagnostic.requested = force;
+            forceDiagnostic.requestAvailable = 1;
+            forceDiagnostic.clipped = clipped;
             const auto feedbackStarted = measuring ? Clock::now() : Clock::time_point{};
-            input->setWheelForce(steering.deviceId, steering.axis, force,
-                                 [](const void* value) noexcept {
-                                     return static_cast<const OutputContext*>(value)->current();
-                                 }, &output);
-            if (measuring)
+            const auto accepted = input->setWheelForce(steering.deviceId, steering.axis, force,
+                                                      [](const void* value) noexcept {
+                                                          return static_cast<const ForceOutputContext*>(value)->current();
+                                                      }, &forceOutput);
+            if (measuring) {
                 performance.feedback.add(elapsedMicros(Clock::now() - feedbackStarted));
+                performance.motionAge.add(forceDiagnostic.motionAgeMicros);
+                ++performance.forceSamples;
+                performance.clippedSamples += clipped;
+                performance.peakRequestedForce = std::max(performance.peakRequestedForce, std::abs(force));
+            }
+            if (accepted) {
+                forceDiagnostic.submittedAt = GetTickCount64();
+                forceDiagnostic.submitted = *accepted;
+                if (measuring) {
+                    ++performance.submittedEffects;
+                    performance.peakSubmittedForce = std::max(performance.peakSubmittedForce, std::abs(*accepted));
+                }
+            }
         }
         if (!simulated && usb.reader && input && input->ready()) {
             const auto& statuses = usb.reader->axisStatuses();
@@ -1238,7 +1380,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             diagnostic.feedback = simulated && usb.feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
                 : !usb.feedbackSettings.enabled ? DiagnosticFeedbackState::disabled
                 : !wantFeedback ? DiagnosticFeedbackState::unavailable
-                : diagnosticFeedbackState(input.get());
+                : diagnosticFeedbackState(input.get(), controls.steeringReady, forceDiagnostic.motionAvailable != 0);
             publishDiagnostics(foreground, current);
         }
         const auto interval = physical ? physicalPollInterval : simulated ? simulationPollInterval : idlePollInterval;

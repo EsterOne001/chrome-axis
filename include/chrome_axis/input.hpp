@@ -48,7 +48,7 @@ bool isDeviceId(std::string_view id) noexcept;
 using DirectInputDiagnostic = void (*)(std::string_view deviceId, std::string_view stage,
     HRESULT result, bool available);
 
-enum class WheelForceState { waiting, active, unavailable };
+enum class WheelForceState { waiting, active, unavailable, neutral };
 // Only available and resumed carry fresh data. Resumed starts a new neutral check.
 enum class DeviceReadStatus { unavailable, pending, available, resumed };
 
@@ -82,8 +82,9 @@ public:
                                        DeviceReadStatus* status = nullptr);
     // Output is limited to the calibrated actuator and expires if calls stop.
     // The optional guard is called synchronously to recheck context around driver calls.
-    void setWheelForce(const std::string& id, std::size_t axis, float force,
-                       bool (*stillCurrent)(const void*) noexcept = nullptr, const void* context = nullptr);
+    // Only a newly submitted effect returns an accepted signed fraction of nominal force.
+    std::optional<float> setWheelForce(const std::string& id, std::size_t axis, float force,
+                                      bool (*stillCurrent)(const void*) noexcept = nullptr, const void* context = nullptr);
     WheelForceState wheelForceState() const noexcept;
     void stopWheelForce() noexcept;
     void close();

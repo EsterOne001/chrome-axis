@@ -52,15 +52,26 @@ int testPerformanceCapture(const std::filesystem::path& root)
         performance.usbRead.add(500);
         performance.feedback.add(200);
         performance.inputAge.add(1500);
+        performance.motionAge.add(4500);
+        performance.motionAge.add(18500);
         performance.expiredReads = 2;
         performance.transientReads = 3;
+        performance.forceSamples = 20;
+        performance.clippedSamples = 2;
+        performance.submittedEffects = 13;
+        performance.peakRequestedForce = 1.0f;
+        performance.peakSubmittedForce = 0.875f;
         publisher.publish(snapshot, 1, performance);
         const auto live = observer.read();
         if (observer.ownsPerformanceCapture() || live.performance.state != PerformanceState::capturing ||
             live.performance.requestId != start || live.performance.usbRead.samples != 2 ||
             live.performance.usbRead.totalMicros != 800 || live.performance.usbRead.maxMicros != 500 ||
             live.performance.feedback.totalMicros != 200 || live.performance.inputAge.maxMicros != 1500 ||
-            live.performance.expiredReads != 2 || live.performance.transientReads != 3)
+            live.performance.expiredReads != 2 || live.performance.transientReads != 3 ||
+            live.performance.motionAge.samples != 2 || live.performance.motionAge.totalMicros != 23000 ||
+            live.performance.motionAge.maxMicros != 18500 || live.performance.forceSamples != 20 ||
+            live.performance.clippedSamples != 2 || live.performance.submittedEffects != 13 ||
+            live.performance.peakRequestedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f)
             return 15;
 
         const auto stop = owner.requestPerformanceCapture(false);
@@ -75,7 +86,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
         const auto finished = owner.read().performance;
         if (finished.state != PerformanceState::complete || finished.requestId != stop ||
             finished.startedAt != performance.startedAt || finished.endedAt != performance.endedAt ||
-            finished.usbRead.totalMicros != 800)
+            finished.usbRead.totalMicros != 800 || finished.motionAge.totalMicros != 23000 ||
+            finished.clippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
 
         {
@@ -134,6 +146,7 @@ int run()
     snapshot.lastAccessoryKey = VK_SPACE;
     snapshot.accessorySentAt = snapshot.axes[0].appliedAt;
     snapshot.feedback = DiagnosticFeedbackState::active;
+    snapshot.feedbackData = {16500, snapshot.axes[0].appliedAt, 1.0f, -0.625f, 1, 1, 1, 0, 1};
     {
         DiagnosticPublisher publisher(root);
         publisher.publish(snapshot, 1);
@@ -151,6 +164,12 @@ int run()
             received.snapshot.lastAccessoryKey != snapshot.lastAccessoryKey ||
             received.snapshot.accessorySentAt != snapshot.accessorySentAt ||
             received.snapshot.feedback != snapshot.feedback ||
+            received.snapshot.feedbackData.motionAgeMicros != 16500 ||
+            received.snapshot.feedbackData.submittedAt != snapshot.feedbackData.submittedAt ||
+            received.snapshot.feedbackData.requested != 1.0f || received.snapshot.feedbackData.submitted != -0.625f ||
+            !received.snapshot.feedbackData.motionAvailable || !received.snapshot.feedbackData.requestAvailable ||
+            !received.snapshot.feedbackData.clipped || received.snapshot.feedbackData.airborne ||
+            !received.snapshot.feedbackData.skidding ||
             !received.lastDriveAt || received.lastDrive.axes[0].inputAvailable != 1 ||
             received.lastDrive.axes[0].inputValue != 0.0f || received.lastDrive.axes[1].inputAvailable ||
             received.lastDrive.axes[0].requestedAvailable != 1 || received.lastDrive.axes[0].requestedValue != 0.0f ||
@@ -168,6 +187,9 @@ int run()
 
         auto focused = snapshot;
         focused.axes[0].inputValue = 0.5f;
+        focused.feedbackData.motionAgeMicros = 24000;
+        focused.feedbackData.airborne = 1;
+        focused.feedbackData.skidding = 0;
         publisher.publish(focused, 1);
         if (reader.read().eventCount != 1)
             return 8;
@@ -175,6 +197,8 @@ int run()
         auto idle = snapshot;
         idle.mode = DiagnosticMode::gameNotForeground;
         idle.axes = {};
+        idle.feedback = DiagnosticFeedbackState::inactive;
+        idle.feedbackData = {};
         publisher.publish(idle);
         DiagnosticReader openedAfterAltTab(root);
         const auto retained = openedAfterAltTab.read();
@@ -182,6 +206,8 @@ int run()
             retained.snapshot.mode != DiagnosticMode::gameNotForeground ||
             retained.lastDrive.mode != DiagnosticMode::usb ||
             retained.lastDrive.axes[0].inputValue != 0.5f || retained.eventCount != 2 ||
+            retained.snapshot.feedbackData.motionAvailable || retained.snapshot.feedbackData.submittedAt ||
+            retained.lastDrive.feedbackData.motionAgeMicros != 24000 || !retained.lastDrive.feedbackData.airborne ||
             retained.events[1].mode != DiagnosticMode::gameNotForeground)
             return 9;
 
@@ -203,11 +229,15 @@ int run()
         pending.axes[0].state = DiagnosticAxisState::temporarilyUnavailable;
         pending.axes[0].inputAvailable = 0;
         pending.accessories = DiagnosticAccessoryState::temporarilyUnavailable;
+        pending.feedback = DiagnosticFeedbackState::waitingForMotion;
+        pending.feedbackData.motionAvailable = 0;
+        pending.feedbackData.requestAvailable = 0;
         publisher.publish(pending, 2);
         publisher.publish(snapshot, 2);
         const auto resumed = reader.read();
         if (resumed.eventCount != 3 || resumed.events[1].axes[0] != DiagnosticAxisState::temporarilyUnavailable ||
             resumed.events[1].accessories != DiagnosticAccessoryState::temporarilyUnavailable ||
+            resumed.events[1].feedback != DiagnosticFeedbackState::waitingForMotion ||
             resumed.snapshot.axes[0].state != DiagnosticAxisState::armed)
             return 12;
 

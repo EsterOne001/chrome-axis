@@ -11,10 +11,21 @@
 #include <commctrl.h>
 #include <algorithm>
 #include <array>
-constexpr int gainStep = 5;
 namespace chrome_axis {
 namespace {
 
+constexpr int gainStep = 5;
+
+struct GainSlider {
+    int control;
+    int label;
+    int minimum;
+    int maximum;
+};
+
+constexpr GainSlider overall{IDC_FEEDBACK_STRENGTH, IDC_FEEDBACK_STRENGTH_VALUE, gainStep, maxFeedbackGainPercent};
+constexpr GainSlider centering{IDC_FEEDBACK_CENTERING, IDC_FEEDBACK_CENTERING_VALUE,
+                               minFeedbackCenteringPercent, maxFeedbackCenteringPercent};
 
 enum class Compatibility { noCalibration, disconnected, unsupported, supported };
 
@@ -54,9 +65,35 @@ void addToggle(HWND window, int control, const wchar_t* disabled, const wchar_t*
     SendDlgItemMessageW(window, control, CB_SETCURSEL, selection ? 1 : 0, 0);
 }
 
-int snapGain(int percent)
+int snapGain(const GainSlider& slider, int percent)
 {
-    return std::clamp((percent + gainStep / 2) / gainStep * gainStep, gainStep, maxFeedbackGainPercent);
+    return std::clamp((percent + gainStep / 2) / gainStep * gainStep, slider.minimum, slider.maximum);
+}
+
+void showGain(HWND window, const GainSlider& slider, int gain)
+{
+    const auto value = std::to_wstring(gain) + tr(Text::mainPercentSuffix);
+    SetDlgItemTextW(window, slider.label, value.c_str());
+}
+
+void initialiseGain(HWND window, const GainSlider& slider, int gain)
+{
+    SendDlgItemMessageW(window, slider.control, TBM_SETRANGE, TRUE, MAKELONG(slider.minimum, slider.maximum));
+    SendDlgItemMessageW(window, slider.control, TBM_SETLINESIZE, 0, gainStep);
+    SendDlgItemMessageW(window, slider.control, TBM_SETPAGESIZE, 0, gainStep * 4);
+    // Preserve existing values between steps until the user moves the slider.
+    SendDlgItemMessageW(window, slider.control, TBM_SETPOS, TRUE, snapGain(slider, gain));
+    showGain(window, slider, gain);
+}
+
+int selectGain(HWND window, const GainSlider& slider)
+{
+    const auto position = static_cast<int>(SendDlgItemMessageW(window, slider.control, TBM_GETPOS, 0, 0));
+    const int gain = snapGain(slider, position);
+    if (gain != position)
+        SendDlgItemMessageW(window, slider.control, TBM_SETPOS, TRUE, gain);
+    showGain(window, slider, gain);
+    return gain;
 }
 
 void paintGainSlider(const NMCUSTOMDRAW& draw)
@@ -89,11 +126,10 @@ struct FeedbackDialog {
     std::optional<ProfileFileRevision> revision;
     Compatibility state;
     int gain{};
+    int centeringGain{};
 
     void initialise(HWND window);
     void updateControls(HWND window) const;
-    void displayGain(HWND window) const;
-    void selectGain(HWND window);
     void save(HWND window) const;
 };
 
@@ -121,12 +157,9 @@ void FeedbackDialog::initialise(HWND window)
         EnableWindow(GetDlgItem(window, IDC_FEEDBACK_ENABLE), FALSE);
     }
     gain = settings.strength;
-    SendDlgItemMessageW(window, IDC_FEEDBACK_STRENGTH, TBM_SETRANGE, TRUE, MAKELONG(gainStep, maxFeedbackGainPercent));
-    SendDlgItemMessageW(window, IDC_FEEDBACK_STRENGTH, TBM_SETLINESIZE, 0, gainStep);
-    SendDlgItemMessageW(window, IDC_FEEDBACK_STRENGTH, TBM_SETPAGESIZE, 0, gainStep * 4);
-    // Preserve an existing value between steps until the user moves the slider.
-    SendDlgItemMessageW(window, IDC_FEEDBACK_STRENGTH, TBM_SETPOS, TRUE, snapGain(gain));
-    displayGain(window);
+    centeringGain = settings.centering;
+    initialiseGain(window, overall, gain);
+    initialiseGain(window, centering, centeringGain);
     addToggle(window, IDC_FEEDBACK_IMPACTS, tr(Text::DlgFeedbackImpactsDisabled), tr(Text::DlgFeedbackImpactsEnabled), settings.impacts);
     addToggle(window, IDC_FEEDBACK_DIRECTION, tr(Text::DlgFeedbackNormal), tr(Text::DlgFeedbackInverted), settings.invert);
     updateControls(window);
@@ -136,23 +169,8 @@ void FeedbackDialog::updateControls(HWND window) const
 {
     const bool enabled = state == Compatibility::supported
         && SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_GETCURSEL, 0, 0) == 1;
-    for (const int id : {IDC_FEEDBACK_STRENGTH, IDC_FEEDBACK_IMPACTS, IDC_FEEDBACK_DIRECTION})
+    for (const int id : {overall.control, centering.control, IDC_FEEDBACK_IMPACTS, IDC_FEEDBACK_DIRECTION})
         EnableWindow(GetDlgItem(window, id), enabled);
-}
-
-void FeedbackDialog::displayGain(HWND window) const
-{
-    const auto value = std::to_wstring(gain) + tr(Text::mainPercentSuffix);
-    SetDlgItemTextW(window, IDC_FEEDBACK_STRENGTH_VALUE, value.c_str());
-}
-
-void FeedbackDialog::selectGain(HWND window)
-{
-    const auto position = static_cast<int>(SendDlgItemMessageW(window, IDC_FEEDBACK_STRENGTH, TBM_GETPOS, 0, 0));
-    gain = snapGain(position);
-    if (gain != position)
-        SendDlgItemMessageW(window, IDC_FEEDBACK_STRENGTH, TBM_SETPOS, TRUE, gain);
-    displayGain(window);
 }
 
 void FeedbackDialog::save(HWND window) const
@@ -168,6 +186,7 @@ void FeedbackDialog::save(HWND window) const
         gain,
         selected(IDC_FEEDBACK_IMPACTS) == 1,
         selected(IDC_FEEDBACK_DIRECTION) == 1,
+        centeringGain,
     };
     std::string error;
     const std::array checks{ProfileFileCheck{profileFilename, calibrationRevision},
@@ -193,6 +212,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_FEEDBACK_ENABLE_LABEL, tr(Text::DlgFeedbackEnable));
         SetDlgItemTextW(window, IDC_FEEDBACK_STRENGTH_LABEL, tr(Text::DlgFeedbackStrength));
         SetDlgItemTextW(window, IDC_FEEDBACK_STRENGTH, tr(Text::DlgFeedbackGainSlider));
+        SetDlgItemTextW(window, IDC_FEEDBACK_CENTERING_LABEL, tr(Text::DlgFeedbackCentering));
+        SetDlgItemTextW(window, IDC_FEEDBACK_CENTERING, tr(Text::DlgFeedbackCenteringSlider));
         SetDlgItemTextW(window, IDC_FEEDBACK_IMPACTS_LABEL, tr(Text::DlgFeedbackImpacts));
         SetDlgItemTextW(window, IDC_FEEDBACK_DIRECTION_LABEL, tr(Text::DlgFeedbackDirection));
         SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgFeedbackIntro));
@@ -207,7 +228,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return FALSE;
     if (message == WM_NOTIFY && lParam && !ui::isHighContrast()) {
         const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
-        if (notification.idFrom == IDC_FEEDBACK_STRENGTH && notification.code == NM_CUSTOMDRAW) {
+        if ((notification.idFrom == overall.control || notification.idFrom == centering.control) &&
+            notification.code == NM_CUSTOMDRAW) {
             const auto& draw = *reinterpret_cast<const NMCUSTOMDRAW*>(lParam);
             if (draw.dwDrawStage == CDDS_PREPAINT) {
                 paintGainSlider(draw);
@@ -216,10 +238,16 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
         }
     }
-    if (message == WM_HSCROLL && reinterpret_cast<HWND>(lParam) == GetDlgItem(window, IDC_FEEDBACK_STRENGTH)) {
-        if (LOWORD(wParam) != TB_ENDTRACK)
-            dialog->selectGain(window);
-        return TRUE;
+    if (message == WM_HSCROLL && lParam && LOWORD(wParam) != TB_ENDTRACK) {
+        const int control = GetDlgCtrlID(reinterpret_cast<HWND>(lParam));
+        if (control == overall.control) {
+            dialog->gain = selectGain(window, overall);
+            return TRUE;
+        }
+        if (control == centering.control) {
+            dialog->centeringGain = selectGain(window, centering);
+            return TRUE;
+        }
     }
     if (message != WM_COMMAND)
         return FALSE;
