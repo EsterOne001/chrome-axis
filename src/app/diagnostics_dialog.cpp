@@ -207,6 +207,21 @@ std::wstring percentText(float value)
     return std::to_wstring(percent) + tr(Text::mainPercentSuffix);
 }
 
+std::wstring precisePercentText(float value, bool showSign = true)
+{
+    if (!std::isfinite(value))
+        return unavailableValue;
+    const auto percent = std::round(static_cast<double>(value) * 1000.0) / 10.0;
+    if (percent == 0.0)
+        return percentText(0.0f);
+    auto text = std::format(L"{:.1f}", percent);
+    if (text.ends_with(L".0"))
+        text.resize(text.size() - 2);
+    else
+        text[text.find(L'.')] = tr(Text::mainDecimalSeparator)[0];
+    return (showSign && percent > 0.0 ? L"+" : L"") + text + tr(Text::mainPercentSuffix);
+}
+
 std::wstring appliedValue(const DiagnosticAxis& axis, std::uint64_t now)
 {
     if (!axis.appliedAt || !std::isfinite(axis.value))
@@ -370,8 +385,8 @@ std::wstring commandOutput(const DiagnosticAccessoryCommand& command)
             !std::isfinite(command.handbrakeFinal)) {
             return unavailableValue;
         }
-        return std::wstring(tr(Text::DlgDiagnosticsHandbrakeRequested)) + L" " + percentText(command.handbrakeRequested)
-            + L" · " + tr(Text::DlgDiagnosticsHandbrakeFinal) + L" " + percentText(command.handbrakeFinal);
+        return std::wstring(tr(Text::DlgDiagnosticsHandbrakeRequested)) + L" " + precisePercentText(command.handbrakeRequested, false)
+            + L" · " + tr(Text::DlgDiagnosticsHandbrakeFinal) + L" " + precisePercentText(command.handbrakeFinal, false);
     }
     switch (command.output) {
     case DiagnosticCommandOutput::none: return tr(Text::DlgDiagnosticsCommandOutputIdle);
@@ -461,21 +476,6 @@ std::wstring feedbackMotionAge(const DiagnosticFeedbackTelemetry& data)
     return data.motionAvailable ? milliseconds(static_cast<double>(data.motionAgeMicros)) : unavailableValue;
 }
 
-std::wstring feedbackPercent(float value, bool showSign = true)
-{
-    if (!std::isfinite(value))
-        return unavailableValue;
-    const auto percent = std::round(static_cast<double>(value) * 1000.0) / 10.0;
-    if (percent == 0.0)
-        return percentText(0.0f);
-    auto text = std::format(L"{:.1f}", percent);
-    if (text.ends_with(L".0"))
-        text.resize(text.size() - 2);
-    else
-        text[text.find(L'.')] = tr(Text::mainDecimalSeparator)[0];
-    return (showSign && percent > 0.0 ? L"+" : L"") + text + tr(Text::mainPercentSuffix);
-}
-
 const wchar_t* feedbackClipping(const DiagnosticFeedbackTelemetry& data)
 {
     if (!data.requestAvailable)
@@ -487,7 +487,7 @@ const wchar_t* feedbackClipping(const DiagnosticFeedbackTelemetry& data)
 
 std::wstring feedbackSubmitted(const DiagnosticFeedbackTelemetry& data)
 {
-    return data.submittedAt ? feedbackPercent(data.submitted) : unavailableValue;
+    return data.submittedAt ? precisePercentText(data.submitted) : unavailableValue;
 }
 
 bool hasFeedbackTelemetry(const DiagnosticFeedbackTelemetry& data)
@@ -500,9 +500,9 @@ std::wstring feedbackTelemetry(const DiagnosticFeedbackTelemetry& data)
     if (!hasFeedbackTelemetry(data))
         return {};
     return std::wstring(tr(Text::DlgDiagnosticsFeedbackCalculatedShort)) + L" " +
-        (data.requestAvailable ? feedbackPercent(data.rawRequested) : unavailableValue) + L" · " +
+        (data.requestAvailable ? precisePercentText(data.rawRequested) : unavailableValue) + L" · " +
         tr(Text::DlgDiagnosticsFeedbackLimitedShort) + L" " +
-        (data.requestAvailable ? feedbackPercent(data.requested) : unavailableValue) + L" · " +
+        (data.requestAvailable ? precisePercentText(data.requested) : unavailableValue) + L" · " +
         tr(Text::DlgDiagnosticsFeedbackSubmittedShort) + L" " + feedbackSubmitted(data);
 }
 
@@ -531,7 +531,7 @@ std::wstring clippedCount(const PerformanceReport& report)
     const auto fraction = static_cast<float>(static_cast<double>(report.clippedSamples) /
                                               static_cast<double>(report.forceSamples));
     return std::to_wstring(report.clippedSamples) + L"/" + std::to_wstring(report.forceSamples) +
-        L" (" + feedbackPercent(fraction, false) + L")";
+        L" (" + precisePercentText(fraction, false) + L")";
 }
 
 std::uint64_t continuousClippedSamples(const PerformanceReport& report)
@@ -648,9 +648,9 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         if (hasFeedbackTelemetry(feedback)) {
             line(Text::DlgDiagnosticsFeedbackMotionAge, feedbackMotionAge(feedback));
             line(Text::DlgDiagnosticsFeedbackCalculated,
-                 feedback.requestAvailable ? feedbackPercent(feedback.rawRequested) : unavailableValue);
+                 feedback.requestAvailable ? precisePercentText(feedback.rawRequested) : unavailableValue);
             line(Text::DlgDiagnosticsFeedbackLimited,
-                 feedback.requestAvailable ? feedbackPercent(feedback.requested) : unavailableValue);
+                 feedback.requestAvailable ? precisePercentText(feedback.requested) : unavailableValue);
             line(Text::DlgDiagnosticsFeedbackClipping, feedbackClipping(feedback));
             auto submitted = feedbackSubmitted(feedback);
             if (feedback.submittedAt)
@@ -709,11 +709,11 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         line(Text::DlgDiagnosticsPerformanceClippedImpact,
              capture.forceSamples ? std::to_wstring(capture.impactClippedSamples) : unavailableValue);
         line(Text::DlgDiagnosticsPerformancePeakRequested,
-             capture.forceSamples ? feedbackPercent(capture.peakRequestedForce, false) : unavailableValue);
+             capture.forceSamples ? precisePercentText(capture.peakRequestedForce, false) : unavailableValue);
         line(Text::DlgDiagnosticsPerformancePeakLimited,
-             capture.forceSamples ? feedbackPercent(capture.peakLimitedForce, false) : unavailableValue);
+             capture.forceSamples ? precisePercentText(capture.peakLimitedForce, false) : unavailableValue);
         line(Text::DlgDiagnosticsPerformancePeakSubmitted,
-             capture.submittedEffects ? feedbackPercent(capture.peakSubmittedForce, false) : unavailableValue);
+             capture.submittedEffects ? precisePercentText(capture.peakSubmittedForce, false) : unavailableValue);
         report += tr(Text::DlgDiagnosticsPerformanceReadingGuide);
         report += L"\r\n";
     }

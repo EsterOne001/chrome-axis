@@ -92,6 +92,7 @@ public:
                          std::bitset<256>* pulses = nullptr,
                          std::optional<float>* progressiveHandbrake = nullptr);
     void reset() noexcept;
+    void resetKeyboardBindings() noexcept;
     // All bindings have a usable sample and passed the neutral check.
     bool ready() const noexcept;
     AccessoryReadiness readiness() const noexcept;

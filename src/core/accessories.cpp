@@ -356,6 +356,14 @@ void AccessoryReader::reset() noexcept
     states_.fill({});
 }
 
+void AccessoryReader::resetKeyboardBindings() noexcept
+{
+    for (std::size_t i = 0; i < profile_.size(); ++i) {
+        if (profile_[i].handbrakeCeilingPercent == 0)
+            states_[i] = {};
+    }
+}
+
 bool AccessoryReader::ready() const noexcept
 {
     for (const auto& state : std::span(states_).first(profile_.size())) {

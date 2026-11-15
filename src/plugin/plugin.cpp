@@ -87,6 +87,10 @@ struct DrivingContext {
     Clock::time_point vehicleUpdated{};
 };
 
+bool vehicleInputFresh(const DrivingContext& driving, Clock::time_point now) noexcept {
+    return driving.vehicleUpdated != Clock::time_point{} && now - driving.vehicleUpdated <= inputLifetime;
+}
+
 struct VehicleMotion {
     RED4ext::Vector4 velocity{};
     RED4ext::Vector4 forward{};
@@ -1257,8 +1261,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (input && input->ready()) {
                 sampledAt = Clock::now();
                 input->beginPoll();
-                readAccessories = usb.accessories && current.vehicleUpdated != Clock::time_point{} &&
-                    sampledAt - current.vehicleUpdated <= inputLifetime;
+                readAccessories = usb.accessories && vehicleInputFresh(current, sampledAt);
                 if (usb.reader) {
                     controls = usb.reader->poll(*input, diagnostics ? &readings : nullptr);
                 }
@@ -1309,7 +1312,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             hudStatus = usbReady ? HudStatus::usbReady : HudStatus::usbWaiting;
         }
         const bool hasRequestedKeys = requestedKeys.any() || pulseKeys.any();
-        const bool accessoryOutputPending = hasRequestedKeys || accessoryKeys.hasInjectedKeys();
+        const bool keyboardOutputPending = hasRequestedKeys || accessoryKeys.hasInjectedKeys();
+        const bool accessoryContextRequired = keyboardOutputPending || handbrake.has_value();
         const OutputContext output{current.vehicle, current.generation, sampledAt};
         ForceOutputContext forceOutput{output, {}, {}};
         bool accessoryContextLive = false;
@@ -1322,15 +1326,18 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     lastUsbSignal = {};
                 }
                 hudFrame = {hudStatus, current.generation, sampledAt};
+                if (accessoryContextRequired) {
+                    const auto now = Clock::now();
+                    accessoryContextLive = context.vehicle == current.vehicle && vehicleInputFresh(context, now) &&
+                        now - context.refreshed <= contextLifetime && now - sampledAt <= inputLifetime &&
+                        !stop.stop_requested();
+                    if (!accessoryContextLive)
+                        handbrake.reset();
+                }
                 if (simulated || usb.reader || handbrake) {
                     inputFrame = {controls, readings, current.generation, sampledAt, simulated, handbrake};
                 } else {
                     inputFrame = {};
-                }
-                if (accessoryOutputPending) {
-                    const auto now = Clock::now();
-                    accessoryContextLive = context.vehicle && context.vehicleUpdated != Clock::time_point{} &&
-                        now - context.refreshed <= contextLifetime && now - context.vehicleUpdated <= inputLifetime;
                 }
                 if (wantFeedback && controls.steeringReady) {
                     const auto now = Clock::now();
@@ -1361,12 +1368,16 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 }
             }
         }
-        const bool accessoryBlocked = accessoryOutputPending &&
-            (!accessoryContextLive || stop.stop_requested() || modifierDown());
-        if (accessoryBlocked) {
-            if (usb.accessories)
+        const bool accessoryContextLost = accessoryContextRequired && !accessoryContextLive;
+        const bool accessoryBlocked = keyboardOutputPending && (accessoryContextLost || modifierDown());
+        if (usb.accessories && (accessoryContextLost || accessoryBlocked)) {
+            if (accessoryContextLost) {
                 usb.accessories->reset();
-            readiness = {};
+                readAccessories = false;
+            } else {
+                usb.accessories->resetKeyboardBindings();
+            }
+            readiness = usb.accessories->readiness();
         }
         AccessoryDelivery delivery;
         if (usb.accessories || accessoryKeys.hasInjectedKeys()) {
@@ -1588,8 +1599,15 @@ void updateVehicle(Vehicle* vehicle) {
         vehicleDelivery = {};
         return;
     }
-    // Accessories can run without an analog profile, but only while the game is updating the vehicle.
+    // A report can arrive just before the game hook resumes after a vehicle-input gap.
+    // Invalidate it so the worker waits for neutral before using the lever again.
+    const bool resumedWithHandbrake = inputFrame.handbrake && !vehicleInputFresh(context, now);
     context.vehicleUpdated = now;
+    if (resumedWithHandbrake) {
+        advanceDrivingGeneration();
+        invalidateFrames();
+        return;
+    }
     if (inputFrame.generation != context.generation || now - inputFrame.sampled > inputLifetime) {
         resetSimulator();
         vehicleDelivery = {};

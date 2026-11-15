@@ -371,6 +371,22 @@ int testProgressiveHandbrake(const std::filesystem::path& path, const std::strin
     sample.axes[7] = -100;
     if (update(connected).any() || pulses.any() || command != 0.15f)
         return 81;
+
+    // A suppressed key injection rearms keyboard bindings independently of the held lever,
+    // even when the key and the lever share a DirectInput device.
+    reader.resetKeyboardBindings();
+    if (update(connected).any() || pulses.any() || command != 0.15f
+        || observations[0].status != AccessoryStatus::armed
+        || observations[1].status != AccessoryStatus::waitingForNeutral
+        || reader.readiness().armed != 1)
+        return 86;
+    sample.buttons.reset(0);
+    for (int i = 0; i < 3; ++i)
+        update(connected);
+    sample.buttons.set(0);
+    if (update(connected).any() || pulses.count() != 1 || !pulses.test(VK_SPACE) || command != 0.15f)
+        return 87;
+
     if (update(lost, pending).any() || command || observations[0].status != AccessoryStatus::temporarilyUnavailable
         || update(connected).any() || command || observations[0].status != AccessoryStatus::waitingForNeutral
         || update(connected, resumed).any() || command)

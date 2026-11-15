@@ -243,7 +243,7 @@ public:
     void clearCapture();
     void refreshActions();
     void selectPreview();
-    void setPreviewFocus(bool focused);
+    void activationChanged(bool active);
     void pollPreview();
     void drawPreview(const DRAWITEMSTRUCT& item) const;
     void selectCapturedInput();
@@ -275,8 +275,12 @@ private:
     std::optional<std::size_t> legacyHandbrakeBinding() const;
     std::wstring deviceLabel(std::string_view id) const;
     void selectDevice(std::string_view id);
+    void rememberSelectedDevice();
+    void restoreDeviceSelection();
     void setStatus(const wchar_t* text) const;
     void startSampling(CaptureStage stage, const wchar_t* text);
+    void interruptCapture();
+    void setPreviewFocus(bool focused);
     void finishCapture();
     void refreshBindings(std::optional<std::size_t> selection = {});
     void refreshHandbrakeActions(bool idle, bool captured);
@@ -407,27 +411,39 @@ void AccessoryDialog::selectDevice(std::string_view id)
     send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, chooseFirst ? 0 : static_cast<WPARAM>(CB_ERR));
 }
 
+void AccessoryDialog::rememberSelectedDevice()
+{
+    if (const auto* device = selectedDevice()) {
+        auto& selection = handbrakePage() ? handbrakeDevice_ : keysDevice_;
+        selection = device->id;
+    }
+}
+
+void AccessoryDialog::restoreDeviceSelection()
+{
+    if (!handbrakePage()) {
+        selectDevice(keysDevice_);
+        return;
+    }
+
+    if (!handbrakeDevice_.empty()) {
+        selectDevice(handbrakeDevice_);
+        return;
+    }
+
+    const auto configured = handbrakeBinding();
+    const auto axis = configured ? configured : legacyHandbrakeBinding();
+    selectDevice(axis ? std::string_view(bindings_[*axis].deviceId) : std::string_view{});
+}
+
 void AccessoryDialog::showPage(AccessoryPage page, bool initialise)
 {
     if (!initialise && page == page_)
         return;
     if (!initialise) {
-        if (const auto* device = selectedDevice()) {
-            auto& selection = handbrakePage() ? handbrakeDevice_ : keysDevice_;
-            selection = device->id;
-        }
+        rememberSelectedDevice();
         page_ = page;
-        if (handbrakePage()) {
-            if (handbrakeDevice_.empty()) {
-                const auto configured = handbrakeBinding();
-                const auto axis = configured ? configured : legacyHandbrakeBinding();
-                if (axis)
-                    handbrakeDevice_ = bindings_[*axis].deviceId;
-            }
-            selectDevice(handbrakeDevice_);
-        } else {
-            selectDevice(keysDevice_);
-        }
+        restoreDeviceSelection();
     }
     const bool handbrake = handbrakePage();
     for (const auto control : {IDC_ACCESSORY_SHIFTER, IDC_ACCESSORY_TYPE_LABEL, IDC_ACCESSORY_TYPE,
@@ -461,13 +477,7 @@ void AccessoryDialog::setStatus(const wchar_t* text) const
 
 void AccessoryDialog::refreshDevices()
 {
-    const auto* current = selectedDevice();
-    auto retainedId = current ? current->id : std::string{};
-    if (handbrakePage() && retainedId.empty()) {
-        const auto binding = handbrakeBinding();
-        if (binding)
-            retainedId = bindings_[*binding].deviceId;
-    }
+    rememberSelectedDevice();
     devices_ = input_.devices();
     send(IDC_ACCESSORY_DEVICE, CB_RESETCONTENT);
     for (const auto& item : devices_) {
@@ -476,9 +486,7 @@ void AccessoryDialog::refreshDevices()
             label += L" [" + wide(item.id.substr(29, 8)) + L"]";
         send(IDC_ACCESSORY_DEVICE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
     }
-    if (!handbrakePage() && std::ranges::find(devices_, retainedId, &DeviceInfo::id) == devices_.end())
-        retainedId.clear();
-    selectDevice(retainedId);
+    restoreDeviceSelection();
     clearCapture();
     refreshBindings();
 }
@@ -512,9 +520,14 @@ void AccessoryDialog::clearCapture()
 void AccessoryDialog::refreshHandbrakeActions(bool idle, bool captured)
 {
     const auto index = handbrakeBinding();
-    const auto selectedAxis = index
-        ? accessoryInputLabel(bindings_[*index]) + L" · " + deviceLabel(bindings_[*index].deviceId)
-        : std::wstring(tr(Text::DlgHandbrakeUnconfigured));
+    std::wstring selectedAxis = tr(Text::DlgHandbrakeUnconfigured);
+    if (index) {
+        const auto& binding = bindings_[*index];
+        const auto device = std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id);
+        selectedAxis = accessoryInputLabel(binding) + L" · ";
+        selectedAxis += device == devices_.end() ? tr(Text::DlgAccessoryPreviewDevice)
+            : wide(device->name.empty() ? binding.deviceId : device->name);
+    }
     SetDlgItemTextW(window_, IDC_HANDBRAKE_AXIS, selectedAxis.c_str());
     SetDlgItemTextW(window_, IDC_HANDBRAKE_STATUS, validCeiling_ ? L"" : tr(Text::DlgHandbrakeInvalid));
     EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_CEILING), idle);
@@ -605,6 +618,13 @@ void AccessoryDialog::selectPreview()
         renderPreview(tr(Text::DlgAccessoryPreviewPaused), std::nullopt);
     }
     setPreviewFocus(GetForegroundWindow() == window_);
+}
+
+void AccessoryDialog::activationChanged(bool active)
+{
+    if (!active)
+        interruptCapture();
+    setPreviewFocus(active);
 }
 
 void AccessoryDialog::setPreviewFocus(bool focused)
@@ -825,13 +845,21 @@ void AccessoryDialog::capture()
     }
 }
 
+void AccessoryDialog::interruptCapture()
+{
+    if (stage_ == CaptureStage::Idle)
+        return;
+    clearCapture();
+    setStatus(tr(Text::DlgAccessoriesCaptureInterrupted));
+}
+
 void AccessoryDialog::sample()
 {
-    if (!IsWindowEnabled(window_) || stage_ == CaptureStage::Idle || stage_ == CaptureStage::AwaitingTravel)
+    if (stage_ == CaptureStage::Idle || stage_ == CaptureStage::AwaitingTravel)
         return;
-    if (GetForegroundWindow() != window_) {
-        clearCapture();
-        setStatus(tr(Text::DlgAccessoriesCaptureInterrupted));
+    const auto focused = [&] { return IsWindowEnabled(window_) && GetForegroundWindow() == window_; };
+    if (!focused()) {
+        interruptCapture();
         return;
     }
     if (GetTickCount64() >= deadline_) {
@@ -842,6 +870,10 @@ void AccessoryDialog::sample()
     const auto* device = selectedDevice();
     input_.beginPoll();
     const auto state = device ? input_.sample(device->id) : std::nullopt;
+    if (!focused()) {
+        interruptCapture();
+        return;
+    }
     if (!state || GetTickCount64() >= deadline_) {
         clearCapture();
         setStatus(tr(state ? Text::DlgAccessoriesCaptureExpired : Text::DlgAccessoriesInputUnavailable));
@@ -1186,7 +1218,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     if (message == WM_ACTIVATE || message == WM_ENABLE) {
         const bool focused = message == WM_ACTIVATE ? LOWORD(wParam) != WA_INACTIVE : wParam != 0;
-        dialog->setPreviewFocus(focused);
+        dialog->activationChanged(focused);
         return FALSE;
     }
     if (message == WM_DRAWITEM && wParam == IDC_ACCESSORY_PREVIEW_METER) {

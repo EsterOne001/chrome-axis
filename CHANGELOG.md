@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.37 · 15 novembre 2026
+
+- **Accessoires.** L’onglet **Touches** regroupe les affectations clavier et l’assistant de boîte et palettes. L’onglet **Frein à main** réunit la calibration, le plafond et l’aperçu de la commande progressive.
+- **Profils.** L’onglet affiche le levier et le plafond enregistrés. **Reprendre l’axe Espace** réutilise une calibration existante. Les deux onglets enregistrent leurs réglages dans le profil actif.
+
+- **Reprise et diagnostic.** La calibration s’interrompt si la fenêtre perd le premier plan. Le levier garde son signal lorsqu’une touche d’accessoire est bloquée, et la consigne est invalidée si les données du véhicule expirent. Le diagnostic du frein à main affiche les valeurs au dixième de point.
+
+[ZIP Vortex](out/ChromeAxis-0.4.37-Cyberpunk-2.5.zip)
+
 ## Chrome Axis 0.4.36 · 15 novembre 2026
 
 - **Frein à main progressif.** Dans **Accessoires…**, calibrez un axe au repos et en fin de course, puis définissez sa sortie progressive. Le plafond est réglable de 1 à 100 % et commence à 15 %. Le profil conserve la calibration et le plafond.
