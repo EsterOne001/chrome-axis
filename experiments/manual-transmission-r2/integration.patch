@@ -1,0 +1,57 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -78,6 +78,8 @@
+ 
+   add_library(ChromeAxis SHARED
+     src/plugin/plugin.cpp
++    src/manual/manual_probe.cpp
++    src/manual/backend.cpp
+     assets/windows/product_version.rc
+   )
+   target_compile_options(ChromeAxis PRIVATE /W4 /utf-8)
+@@ -94,6 +96,9 @@
+ include(CTest)
+ if(BUILD_TESTING)
+   add_subdirectory(tests)
++  add_executable(ManualShiftRequestTests src/manual/shift_request_test.cpp)
++  target_compile_options(ManualShiftRequestTests PRIVATE /W4 /utf-8)
++  add_test(NAME ManualShiftRequest COMMAND ManualShiftRequestTests)
+ endif()
+ 
+ # Only a build with both binaries can produce the Vortex package.
+diff --git a/src/plugin/plugin.cpp b/src/plugin/plugin.cpp
+--- a/src/plugin/plugin.cpp
++++ b/src/plugin/plugin.cpp
+@@ -6,6 +6,7 @@
+ #include "chrome_axis/input.hpp"
+ #include "chrome_axis/presets.hpp"
+ #include "chrome_axis/simulation.hpp"
++#include "../manual/manual_probe.hpp"
+ 
+ #include <RED4ext/RED4ext.hpp>
+ #include <RED4ext/Scripting/Natives/vehicleBaseObject.hpp>
+@@ -681,6 +682,7 @@
+         }
+     }
+     accessoryKeys.releaseStale(now, invalidated || !current);
++    manual_probe::heartbeat(current, foreground);
+     if (out) {
+         *out = static_cast<std::int32_t>(status);
+     }
+@@ -1718,6 +1720,7 @@
+ }
+ 
+ void stopPlugin() {
++    manual_probe::shutdown();
+     active.store(false, std::memory_order_release);
+     feedbackRequested.store(false, std::memory_order_relaxed);
+     drivingVehicle.store(nullptr, std::memory_order_release);
+@@ -1794,6 +1797,7 @@
+         return false;
+     }
+     rtti->AddPostRegisterCallback(&registerNative);
++    manual_probe::initialize(directory, plugin, sdk);
+     active.store(true, std::memory_order_release);
+     info("Vehicle input hook attached for Cyberpunk 2077 2.5. Waiting for the local driver context.");
+     return true;
