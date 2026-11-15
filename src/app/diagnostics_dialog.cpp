@@ -363,9 +363,17 @@ const wchar_t* commandState(DiagnosticCommandState state)
     return unavailableValue;
 }
 
-const wchar_t* commandOutput(DiagnosticCommandOutput output)
+std::wstring commandOutput(const DiagnosticAccessoryCommand& command)
 {
-    switch (output) {
+    if (command.handbrakeCeilingPercent) {
+        if (!command.handbrakeAvailable || !std::isfinite(command.handbrakeRequested) ||
+            !std::isfinite(command.handbrakeFinal)) {
+            return unavailableValue;
+        }
+        return std::wstring(tr(Text::DlgDiagnosticsHandbrakeRequested)) + L" " + percentText(command.handbrakeRequested)
+            + L" · " + tr(Text::DlgDiagnosticsHandbrakeFinal) + L" " + percentText(command.handbrakeFinal);
+    }
+    switch (command.output) {
     case DiagnosticCommandOutput::none: return tr(Text::DlgDiagnosticsCommandOutputIdle);
     case DiagnosticCommandOutput::held: return tr(Text::DlgDiagnosticsCommandOutputHeld);
     case DiagnosticCommandOutput::pulsing: return tr(Text::DlgDiagnosticsCommandOutputPulsing);
@@ -399,6 +407,10 @@ std::wstring commandName(const DiagnosticAccessoryCommand& command)
         .role = command.role <= ShifterRole::Downshift && command.role >= ShifterRole::None ? command.role : ShifterRole::None,
     };
     const auto input = validInput ? accessoryBindingInputLabel(binding) : unavailableValue;
+    if (command.handbrakeCeilingPercent) {
+        return input + L" → " + tr(Text::DlgDiagnosticsHandbrake) + L" · "
+            + tr(Text::DlgDiagnosticsHandbrakeCeiling) + L" " + std::to_wstring(command.handbrakeCeilingPercent) + L" %";
+    }
     const auto key = isAccessoryKey(command.key) ? accessoryKeyLabel(command.key) : unavailableValue;
     return input + L" → " + key + L" · " + accessoryActivationLabel(command.activation);
 }
@@ -653,8 +665,10 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         for (const auto& command : accessories.commands()) {
             report += L"- " + commandName(command) +
                 L" · " + tr(Text::DlgDiagnosticsCommandInput) + L" " + commandSignal(command) +
-                L" · " + tr(Text::DlgDiagnosticsCommandOutput) + L" " + commandOutput(command.output) +
-                L" · " + tr(Text::DlgDiagnosticsCommandLastSent) + L" " + commandSent(command, now) + L"\r\n";
+                L" · " + tr(Text::DlgDiagnosticsCommandOutput) + L" " + commandOutput(command);
+            if (!command.handbrakeCeilingPercent)
+                report += L" · " + std::wstring(tr(Text::DlgDiagnosticsCommandLastSent)) + L" " + commandSent(command, now);
+            report += L"\r\n";
         }
     }
     const auto events = std::span(read.events).first(std::min<std::size_t>(read.eventCount, read.events.size()));
@@ -779,8 +793,11 @@ void refreshAccessoryDetails(HWND window, AccessoryDialogState& state)
     }
     const auto& command = commands[static_cast<std::size_t>(selected)];
     detail(IDC_DIAGNOSTICS_COMMAND_INPUT, Text::DlgDiagnosticsCommandInput, commandSignal(command));
-    detail(IDC_DIAGNOSTICS_COMMAND_OUTPUT, Text::DlgDiagnosticsCommandOutput, commandOutput(command.output));
-    detail(IDC_DIAGNOSTICS_COMMAND_SENT, Text::DlgDiagnosticsCommandLastSent, commandSent(command, now));
+    detail(IDC_DIAGNOSTICS_COMMAND_OUTPUT, Text::DlgDiagnosticsCommandOutput, commandOutput(command));
+    if (command.handbrakeCeilingPercent)
+        setChangedText(window, IDC_DIAGNOSTICS_COMMAND_SENT, L"");
+    else
+        detail(IDC_DIAGNOSTICS_COMMAND_SENT, Text::DlgDiagnosticsCommandLastSent, commandSent(command, now));
 }
 
 INT_PTR CALLBACK accessoryDetailsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)

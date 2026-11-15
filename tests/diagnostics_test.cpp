@@ -154,8 +154,8 @@ int run()
     snapshot.axes[2].delivery = DiagnosticDelivery::gameKept;
     snapshot.pedalSampledAt = snapshot.axes[0].appliedAt;
     snapshot.profileLoaded = 1;
-    snapshot.accessoryCount = 2;
-    snapshot.accessoryArmed = 1;
+    snapshot.accessoryCount = 3;
+    snapshot.accessoryArmed = 2;
     snapshot.accessories = DiagnosticAccessoryState::deviceUnavailable;
     snapshot.lastAccessoryKey = VK_SPACE;
     snapshot.accessorySentAt = snapshot.axes[0].appliedAt;
@@ -185,6 +185,21 @@ int run()
         .travel = 0.75f,
         .lastSentAt = snapshot.accessorySentAt,
     };
+    snapshot.accessoryCommands[2] = {
+        .kind = AccessoryKind::Axis,
+        .index = 4,
+        .rest = 300,
+        .engaged = 1000,
+        .state = DiagnosticCommandState::ready,
+        .active = 1,
+        .activeAvailable = 1,
+        .travelAvailable = 1,
+        .travel = 0.5f,
+        .handbrakeCeilingPercent = 15,
+        .handbrakeRequested = 0.075f,
+        .handbrakeFinal = 1.0f,
+        .handbrakeAvailable = 1,
+    };
     snapshot.feedback = DiagnosticFeedbackState::active;
     snapshot.feedbackData = {
         .motionAgeMicros = 16500,
@@ -204,6 +219,7 @@ int run()
         const auto received = reader.read();
         const auto& paddle = received.snapshot.accessoryCommands[0];
         const auto& lever = received.snapshot.accessoryCommands[1];
+        const auto& handbrake = received.snapshot.accessoryCommands[2];
         if (received.connection != DiagnosticConnection::connected || !received.sampledAt ||
             received.snapshot.mode != snapshot.mode || std::string_view(received.snapshot.profile.data()) != "A" ||
             received.snapshot.axes[0].state != snapshot.axes[0].state ||
@@ -223,6 +239,8 @@ int run()
             lever.kind != AccessoryKind::Axis || lever.activation != AccessoryActivation::hold ||
             lever.rest != 1000 || lever.engaged != 500 || lever.output != DiagnosticCommandOutput::held ||
             !lever.travelAvailable || lever.travel != 0.75f || lever.lastSentAt != snapshot.accessorySentAt ||
+            handbrake.key || handbrake.lastSentAt || handbrake.handbrakeCeilingPercent != 15 ||
+            !handbrake.handbrakeAvailable || handbrake.handbrakeRequested != 0.075f || handbrake.handbrakeFinal != 1.0f ||
             received.snapshot.feedback != snapshot.feedback ||
             received.snapshot.feedbackData.motionAgeMicros != 16500 ||
             received.snapshot.feedbackData.submittedAt != snapshot.feedbackData.submittedAt ||
@@ -275,6 +293,9 @@ int run()
             retained.lastDrive.mode != DiagnosticMode::usb ||
             retained.snapshot.accessoryCommands[1].lastSentAt ||
             retained.lastDrive.accessoryCommands[1].lastSentAt != snapshot.accessorySentAt ||
+            retained.snapshot.accessoryCommands[2].handbrakeAvailable ||
+            !retained.lastDrive.accessoryCommands[2].handbrakeAvailable ||
+            retained.lastDrive.accessoryCommands[2].handbrakeFinal != 1.0f ||
             retained.lastDrive.axes[0].inputValue != 0.5f || retained.eventCount != 2 ||
             retained.snapshot.feedbackData.motionAvailable || retained.snapshot.feedbackData.submittedAt ||
             retained.lastDrive.feedbackData.motionAgeMicros != 24000 || !retained.lastDrive.feedbackData.airborne ||

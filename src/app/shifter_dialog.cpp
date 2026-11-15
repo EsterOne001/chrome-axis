@@ -212,7 +212,7 @@ void ShifterDialog::showSavedBindings(LRESULT selection)
         return;
     for (std::size_t i = 0; i < edited_.size(); ++i) {
         const auto& binding = edited_[i];
-        if (binding.deviceId != device->id)
+        if (binding.deviceId != device->id || binding.handbrakeCeilingPercent)
             continue;
         const auto label = bindingSummary(binding);
         if (send(IDC_SHIFTER_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())) >= 0)
@@ -359,6 +359,9 @@ void ShifterDialog::editSavedKey()
         break;
     case BindingKeyEdit::occupied:
         status(tr(Text::DlgAccessoriesKeyAlreadyAssigned));
+        break;
+    case BindingKeyEdit::handbrakeInputConflict:
+        status(tr(Text::DlgHandbrakeInputConflict));
         break;
     case BindingKeyEdit::changed:
         showSavedBindings(selection);

@@ -29,7 +29,12 @@
 #define IDC_ACCESSORY_PREVIEW_LIMITS 2127
 #define IDC_ACCESSORY_ACTIVATION_LABEL 2128
 #define IDC_ACCESSORY_ACTIVATION 2129
+#define IDC_ACCESSORY_HANDBRAKE 2130
+#define IDC_HANDBRAKE_CEILING 2131
+#define IDC_HANDBRAKE_CEILING_LABEL 2132
+#define IDC_HANDBRAKE_STATUS 2133
 #define IDD_ACCESSORY_THRESHOLDS 211
+#define IDD_ACCESSORY_HANDBRAKE 215
 #define IDD_SHIFTER 202
 #define IDC_SHIFTER_DEVICE 2201
 #define IDC_SHIFTER_MODE 2202
@@ -71,7 +76,7 @@ std::wstring shifterRoleLabel(ShifterRole role);
 std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding);
 const wchar_t* accessoryActivationLabel(AccessoryActivation activation);
 void populateAccessoryActivation(HWND window, int control);
-enum class BindingKeyEdit { unchanged, changed, occupied };
+enum class BindingKeyEdit { unchanged, changed, occupied, handbrakeInputConflict };
 BindingKeyEdit chooseBindingKey(HWND owner, AccessoryProfile& bindings, std::size_t row);
 
 } // namespace chrome_axis

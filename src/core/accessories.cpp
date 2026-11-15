@@ -14,6 +14,7 @@ namespace {
 
 constexpr auto requiredNeutralPolls = 3u;
 constexpr double neutralThreshold = 0.15;
+constexpr double handbrakeDeadZone = 0.03;
 constexpr AccessoryThresholds defaultThresholds{};
 constexpr std::array<std::string_view, 3> kindNames{"button", "pov", "axis"};
 constexpr std::string_view pulseSuffix = ",pulse";
@@ -93,6 +94,15 @@ bool parseBinding(std::string_view value, AccessoryBinding& binding, int version
         && parseNumber(fields[5], binding.key);
 }
 
+bool parseProgressiveHandbrake(std::string_view value, AccessoryBinding& binding)
+{
+    const auto capSeparator = value.rfind(',');
+    return capSeparator != std::string_view::npos
+        && parseBinding(value.substr(0, capSeparator), binding, 1)
+        && parseNumber(trim(value.substr(capSeparator + 1)), binding.handbrakeCeilingPercent)
+        && validHandbrakeCeilingPercent(binding.handbrakeCeilingPercent);
+}
+
 double travel(const AccessoryBinding& binding)
 {
     return static_cast<double>(binding.engaged) - binding.rest;
@@ -124,11 +134,25 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
         return false;
     }
     std::bitset<256> keys;
+    bool hasProgressiveHandbrake = false;
     for (const auto& binding : profile) {
-        if (!validInput(binding) || !isAccessoryKey(binding.key)
-            || static_cast<std::size_t>(binding.role) >= roleNames.size()
+        if (!validInput(binding) || static_cast<std::size_t>(binding.role) >= roleNames.size()
             || (binding.activation != AccessoryActivation::hold && binding.activation != AccessoryActivation::pulse)) {
-            error = "Invalid accessory input or keyboard key";
+            error = "Invalid accessory input";
+            return false;
+        }
+        if (binding.handbrakeCeilingPercent != 0) {
+            if (hasProgressiveHandbrake || !validHandbrakeCeilingPercent(binding.handbrakeCeilingPercent)
+                || binding.kind != AccessoryKind::Axis || binding.key != 0 || binding.role != ShifterRole::None
+                || binding.activation != AccessoryActivation::hold || binding.thresholds != defaultThresholds) {
+                error = "Invalid or duplicate progressive handbrake";
+                return false;
+            }
+            hasProgressiveHandbrake = true;
+            continue;
+        }
+        if (!isAccessoryKey(binding.key)) {
+            error = "Invalid accessory keyboard key";
             return false;
         }
         if (keys.test(binding.key)) {
@@ -144,6 +168,7 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
 struct InputLevel {
     bool neutral{};
     bool engaged{};
+    float progressiveHandbrake{};
 };
 
 std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const DeviceSample& sample, bool active,
@@ -170,6 +195,11 @@ std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const Devic
         const double fraction = (static_cast<double>(sample.axes[binding.index]) - binding.rest) / travel(binding);
         if (travelReading)
             *travelReading = fraction;
+        if (binding.handbrakeCeilingPercent != 0) {
+            const auto adjusted = std::clamp((fraction - handbrakeDeadZone) / (1.0 - handbrakeDeadZone), 0.0, 1.0);
+            const auto command = static_cast<float>(adjusted * (binding.handbrakeCeilingPercent / 100.0));
+            return InputLevel{std::abs(fraction) <= handbrakeDeadZone, command > 0.0f, command};
+        }
         const double releaseThreshold = binding.thresholds.release / 100.0;
         const double pressThreshold = binding.thresholds.press / 100.0;
         // A low release setting also narrows the neutral gate.
@@ -209,6 +239,17 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
     std::string line;
     while (std::getline(file, line)) {
         const auto entry = trim(line);
+        if (entry.starts_with(progressiveHandbrakePrefix)) {
+            AccessoryBinding binding;
+            if (!version || profile.size() == maxAccessoryBindings
+                || !parseProgressiveHandbrake(entry.substr(progressiveHandbrakePrefix.size()), binding)) {
+                error = "Invalid progressive handbrake profile entry";
+                return std::nullopt;
+            }
+            profile.push_back(std::move(binding));
+            role = ShifterRole::None;
+            continue;
+        }
         if (entry.empty() || entry.starts_with('#')) {
             role = parseRole(entry);
             continue;
@@ -258,8 +299,13 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
         // Accessory versions 1 and 2 already ignore comment lines.
         if (binding.role != ShifterRole::None)
             file << rolePrefix << roleNames[static_cast<std::size_t>(binding.role)] << '\n';
-        file << "binding=" << binding.deviceId << ',' << kindNames[static_cast<std::size_t>(binding.kind)]
+        // Older versions skip the analog row and still read the keyboard bindings.
+        const bool progressive = binding.handbrakeCeilingPercent != 0;
+        file << (progressive ? progressiveHandbrakePrefix : "binding=")
+             << binding.deviceId << ',' << kindNames[static_cast<std::size_t>(binding.kind)]
              << ',' << binding.index << ',' << binding.rest << ',' << binding.engaged << ',' << binding.key;
+        if (progressive)
+            file << ',' << binding.handbrakeCeilingPercent;
         if (binding.thresholds != defaultThresholds)
             file << ',' << binding.thresholds.press << ',' << binding.thresholds.release;
         if (binding.activation == AccessoryActivation::pulse)
@@ -284,7 +330,7 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
         return first.has_value() == second.has_value();
     const auto mapping = [](const AccessoryBinding& binding) {
         return std::tie(binding.deviceId, binding.kind, binding.index, binding.rest, binding.engaged, binding.key,
-                        binding.thresholds, binding.activation);
+                        binding.thresholds, binding.activation, binding.handbrakeCeilingPercent);
     };
     return std::ranges::equal(*first, *second, std::ranges::equal_to{}, mapping, mapping);
 }
@@ -332,7 +378,7 @@ AccessoryReadiness AccessoryReader::readiness() const noexcept
 }
 
 std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryObservation> observations,
-                                      std::bitset<256>* pulses)
+                                      std::bitset<256>* pulses, std::optional<float>* progressiveHandbrake)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
@@ -346,10 +392,11 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryOb
         if (storage[owner])
             samples[i] = &*storage[owner];
     }
-    return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()), observations, pulses);
+    return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()),
+                  observations, pulses, progressiveHandbrake);
 }
 
-void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
+float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
                               DeviceReadStatus status, AccessoryObservation* observation)
 {
     if (!sample && status == DeviceReadStatus::pending) {
@@ -359,7 +406,7 @@ void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& sta
             state.waitForRelease = true;
         state.active = false;
         state.status = AccessoryStatus::temporarilyUnavailable;
-        return;
+        return 0.0f;
     }
     if (status == DeviceReadStatus::resumed)
         state = {};
@@ -368,7 +415,7 @@ void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& sta
     if (!level) {
         state = {};
         state.status = sample ? AccessoryStatus::inputUnavailable : AccessoryStatus::deviceUnavailable;
-        return;
+        return 0.0f;
     }
     if (observation)
         observation->engaged = level->engaged;
@@ -376,24 +423,28 @@ void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& sta
         state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
         state.status = state.neutralPolls == requiredNeutralPolls
             ? AccessoryStatus::armed : AccessoryStatus::waitingForNeutral;
-        return;
+        return 0.0f;
     }
     if (state.waitForRelease) {
         state.waitForRelease = !level->neutral;
         state.status = state.waitForRelease ? AccessoryStatus::waitingForNeutral : AccessoryStatus::armed;
-        return;
+        return 0.0f;
     }
     state.status = AccessoryStatus::armed;
     state.active = level->engaged;
+    return level->progressiveHandbrake;
 }
 
 std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> samples,
                                        std::span<const DeviceReadStatus> statuses,
-                                       std::span<AccessoryObservation> observations, std::bitset<256>* pulses)
+                                       std::span<AccessoryObservation> observations, std::bitset<256>* pulses,
+                                       std::optional<float>* progressiveHandbrake)
 {
     std::bitset<256> keys;
     if (pulses)
         pulses->reset();
+    if (progressiveHandbrake)
+        progressiveHandbrake->reset();
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto& binding = profile_[i];
         auto& state = states_[i];
@@ -403,11 +454,16 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         if (observation)
             *observation = {};
         const bool wasActive = state.active;
-        advance(binding, state, sample, status, observation);
+        const auto handbrake = advance(binding, state, sample, status, observation);
         if (observation) {
             observation->status = state.status;
             observation->active = state.active;
             observation->key = binding.key;
+        }
+        if (binding.handbrakeCeilingPercent != 0) {
+            if (progressiveHandbrake && state.status == AccessoryStatus::armed)
+                *progressiveHandbrake = handbrake;
+            continue;
         }
         if (!state.active)
             continue;

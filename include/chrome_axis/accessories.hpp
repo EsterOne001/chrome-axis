@@ -8,6 +8,14 @@
 namespace chrome_axis {
 
 inline constexpr wchar_t accessoryFilename[] = L"accessories.ini";
+inline constexpr std::string_view progressiveHandbrakePrefix = "# progressive-handbrake=";
+inline constexpr unsigned int defaultHandbrakeCeilingPercent = 15;
+inline constexpr unsigned int maxHandbrakeCeilingPercent = 100;
+
+constexpr bool validHandbrakeCeilingPercent(unsigned int ceiling) noexcept
+{
+    return ceiling >= 1 && ceiling <= maxHandbrakeCeilingPercent;
+}
 inline constexpr std::size_t maxAccessoryBindings = 32;
 inline constexpr int povDirectionStep = 4500;
 inline constexpr int povFullTurn = 36000;
@@ -46,6 +54,7 @@ struct AccessoryBinding {
     AccessoryThresholds thresholds{};
     ShifterRole role{};
     AccessoryActivation activation{AccessoryActivation::hold};
+    unsigned int handbrakeCeilingPercent{}; // A nonzero value makes this an analog output.
 
     bool operator==(const AccessoryBinding&) const = default;
 };
@@ -78,9 +87,10 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
 class AccessoryReader {
 public:
     explicit AccessoryReader(const AccessoryProfile& profile);
-    // Returns held keys. If provided, pulses receives the single-press requests from this sample.
+    // Returns held keys, with optional pulse requests and a fresh, armed handbrake command.
     std::bitset<256> poll(DirectInput& input, std::span<AccessoryObservation> observations = {},
-                         std::bitset<256>* pulses = nullptr);
+                         std::bitset<256>* pulses = nullptr,
+                         std::optional<float>* progressiveHandbrake = nullptr);
     void reset() noexcept;
     // All bindings have a usable sample and passed the neutral check.
     bool ready() const noexcept;
@@ -88,7 +98,8 @@ public:
 
     // Samples follow binding order. Bindings on the same device share a sample.
     std::bitset<256> update(std::span<const DeviceSample* const> samples, std::span<const DeviceReadStatus> statuses = {},
-                            std::span<AccessoryObservation> observations = {}, std::bitset<256>* pulses = nullptr);
+                            std::span<AccessoryObservation> observations = {}, std::bitset<256>* pulses = nullptr,
+                            std::optional<float>* progressiveHandbrake = nullptr);
 
 private:
     struct BindingState {
@@ -98,7 +109,7 @@ private:
         AccessoryStatus status{AccessoryStatus::waitingForNeutral};
     };
 
-    static void advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
+    static float advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
                         DeviceReadStatus status, AccessoryObservation* observation);
 
     AccessoryProfile profile_;

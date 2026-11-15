@@ -115,7 +115,8 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
         {oldWheel, AccessoryKind::Button, 3, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
         {oldWheel, AccessoryKind::Pov, 0, povCentered, 0, VK_SUBTRACT, {}, ShifterRole::Downshift},
         {newWheel, AccessoryKind::Pov, 0, povCentered, 18000, VK_SPACE},
-        {oldWheel, AccessoryKind::Axis, 3, 0, 1000, VK_F8, {65, 30}, ShifterRole::Gear3}};
+        {oldWheel, AccessoryKind::Axis, 3, 0, 1000, VK_F8, {65, 30}, ShifterRole::Gear3},
+        {oldWheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 19}};
     const FeedbackSettings feedback{true, 19, false, true};
     std::string details;
     if (!check(saveProfile(root / profileFilename, calibration, details)
@@ -169,6 +170,7 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
     replaceAfter(expectedDigital, "binding=");
     replaceAfter(expectedDigital, "binding=");
     replaceAfter(expectedDigital, "binding=");
+    replaceAfter(expectedDigital, progressiveHandbrakePrefix);
     if (!check(replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery)
                && error == Error::none && recovery.empty() && readBytes(analog) == expectedAnalog
                && readBytes(digital) == expectedDigital && readBytes(note) == "preserve\r\n"
@@ -196,7 +198,7 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
 
     std::filesystem::remove(analog);
     std::filesystem::remove(digital);
-    conflictingDigital = {{oldWheel, AccessoryKind::Button, 5, 0, 1, VK_ADD}};
+    conflictingDigital = {{oldWheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 19}};
     if (!check(saveAccessoryProfile(digital, conflictingDigital, details)
                && replacePresetDevice(root, selected, oldWheel, newWheel, error)
                && !std::filesystem::exists(analog), "Accessory-only presets must stay accessory-only"))
@@ -217,7 +219,8 @@ bool testProfileBackups(const std::filesystem::path& fixture)
         {wheel, 2, 0, 0, 1000, 0.03f}, {-40, 75}, {-30, 80}, {60, 90}};
     const AccessoryProfile bindings{
         {wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
-        {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}}};
+        {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}},
+        {wheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 18}};
     const FeedbackSettings feedback{true, 17, false, true, 165, 75};
     std::string error;
     ProfileBackupError backupError{};

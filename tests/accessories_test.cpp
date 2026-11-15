@@ -1,6 +1,8 @@
 #include "chrome_axis/accessories.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <sstream>
 #include <fstream>
 #include <iostream>
 #include <utility>
@@ -291,6 +293,104 @@ int testPulseBindings(const std::filesystem::path& path, const std::string& devi
     return 0;
 }
 
+int testProgressiveHandbrake(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    const AccessoryBinding handbrake{deviceId, AccessoryKind::Axis, 7, 1000, 0, 0, {}, ShifterRole::None,
+                                    AccessoryActivation::hold, defaultHandbrakeCeilingPercent};
+    const AccessoryBinding key{deviceId, AccessoryKind::Button, 0, 0, 1, VK_SPACE, {},
+                               ShifterRole::None, AccessoryActivation::pulse};
+    const AccessoryProfile profile{handbrake, key};
+    std::string error;
+    if (!saveAccessoryProfile(path, profile, error) || loadAccessoryProfile(path, error) != profile)
+        return 72;
+    std::ostringstream legacyContents;
+    {
+        std::ifstream current(path);
+        std::string line;
+        while (std::getline(current, line)) {
+            if (!line.starts_with(progressiveHandbrakePrefix))
+                legacyContents << line << '\n';
+        }
+    }
+    // This is the legacy reader's view after it skips the unknown comment.
+    if (legacyContents.str().find("version=3\n") == std::string::npos)
+        return 73;
+    std::ofstream(path, std::ios::trunc) << legacyContents.str();
+    if (loadAccessoryProfile(path, error) != AccessoryProfile{key})
+        return 74;
+
+    auto changed = profile;
+    changed.front().handbrakeCeilingPercent = 22;
+    if (sameAccessoryInputProfile(profile, changed) || !saveAccessoryProfile(path, changed, error)
+        || loadAccessoryProfile(path, error) != changed)
+        return 75;
+    auto invalid = profile;
+    invalid.front().key = VK_F8;
+    if (saveAccessoryProfile(path, invalid, error) || saveAccessoryProfile(path, {handbrake, handbrake}, error))
+        return 76;
+    for (const auto cap : {"0", "101", "15,pulse", "15,"}) {
+        std::ofstream(path, std::ios::trunc) << "version=3\n" << progressiveHandbrakePrefix
+            << deviceId << ",axis,7,1000,0,0," << cap << '\n';
+        if (loadAccessoryProfile(path, error))
+            return 77;
+    }
+
+    AccessoryReader reader(profile);
+    DeviceSample sample;
+    sample.axesPresent[7] = true;
+    sample.buttonsPresent.set(0);
+    const std::array<const DeviceSample*, 2> connected{&sample, &sample};
+    const std::array<const DeviceSample*, 2> lost{nullptr, &sample};
+    const std::array pending{DeviceReadStatus::pending, DeviceReadStatus::available};
+    const std::array resumed{DeviceReadStatus::resumed, DeviceReadStatus::available};
+    std::optional<float> command;
+    std::bitset<256> pulses;
+    std::array<AccessoryObservation, 2> observations;
+    const auto update = [&](std::span<const DeviceSample* const> samples,
+                            std::span<const DeviceReadStatus> statuses = {}) {
+        return reader.update(samples, statuses, observations, &pulses, &command);
+    };
+    sample.axes[7] = 950;
+    for (int i = 0; i < 4; ++i) {
+        if (update(connected).any() || command || observations[0].status != AccessoryStatus::waitingForNeutral)
+            return 78;
+    }
+    sample.axes[7] = 990;
+    for (int i = 0; i < 3; ++i)
+        update(connected);
+    if (!reader.ready() || command != 0.0f)
+        return 79;
+
+    sample.axes[7] = 500;
+    sample.buttons.set(0);
+    if (update(connected).any() || pulses.count() != 1 || !pulses.test(VK_SPACE)
+        || !command || std::abs(*command - 0.15f * 0.47f / 0.97f) > 0.0001f
+        || !observations[0].active || observations[0].travel != 0.5)
+        return 80;
+    sample.axes[7] = -100;
+    if (update(connected).any() || pulses.any() || command != 0.15f)
+        return 81;
+    if (update(lost, pending).any() || command || observations[0].status != AccessoryStatus::temporarilyUnavailable
+        || update(connected).any() || command || observations[0].status != AccessoryStatus::waitingForNeutral
+        || update(connected, resumed).any() || command)
+        return 82;
+    sample.axes[7] = 1000;
+    for (int i = 0; i < 3; ++i)
+        update(connected);
+    if (!reader.ready() || command != 0.0f)
+        return 83;
+    sample.axes[7] = 0;
+    if (update(connected).any() || pulses.any() || command != 0.15f
+        || update(lost).any() || command || observations[0].status != AccessoryStatus::deviceUnavailable
+        || update(connected).any() || command)
+        return 84;
+    sample.axesPresent[7] = false;
+    if (update(connected).any() || command || observations[0].status != AccessoryStatus::inputUnavailable)
+        return 85;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -324,6 +424,7 @@ int run()
     const auto thresholdResult = testThresholds(path, handbrakeId);
     const auto roleResult = testShifterRoles(path, wheelId);
     const auto pulseResult = testPulseBindings(path, wheelId);
+    const auto handbrakeResult = testProgressiveHandbrake(path, handbrakeId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
@@ -334,6 +435,8 @@ int run()
         return roleResult;
     if (pulseResult != 0)
         return pulseResult;
+    if (handbrakeResult != 0)
+        return handbrakeResult;
     if (const auto result = testPreviewReadings(wheelId); result != 0)
         return result;
 

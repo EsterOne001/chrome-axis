@@ -48,6 +48,10 @@ struct DiagnosticAccessoryCommand {
     std::uint8_t travelAvailable{};
     float travel{};
     std::uint64_t lastSentAt{}; // GetTickCount64() when Windows accepted the key-down.
+    std::uint32_t handbrakeCeilingPercent{};
+    float handbrakeRequested{};
+    float handbrakeFinal{}; // Vehicle command after arbitration with the native handbrake.
+    std::uint8_t handbrakeAvailable{};
 };
 
 enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive, neutral, waitingForMotion };

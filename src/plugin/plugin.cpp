@@ -50,6 +50,8 @@ using UpdateVehicleInput = void (*)(Vehicle*);
 // Layout and address hash identified for this hook in Direct Wheel 3.4.1.
 // The pinned 2.5 SDK supplies the named acceleration/deceleration fields.
 constexpr std::uint32_t updateVehicleInputHash = 501486464u;
+// Confirmed on the supported 2.5 runtime by the in-game handbrake probe.
+constexpr std::size_t handbrakeOffset = 0x26C;
 constexpr std::size_t steeringOffset = 0x278;
 constexpr std::size_t driveOffset = 0x270;
 constexpr std::size_t secondaryDriveOffset = 0x280;
@@ -111,6 +113,7 @@ struct InputFrame {
     std::uint64_t generation{};
     Clock::time_point sampled{};
     bool simulated{};
+    std::optional<float> handbrake;
 };
 
 struct HudFrame {
@@ -130,11 +133,17 @@ struct AxisDelivery {
     DiagnosticDelivery outcome{DiagnosticDelivery::unavailable};
 };
 
+struct HandbrakeDelivery {
+    float requested{};
+    float finalValue{};
+};
+
 struct VehicleDelivery {
     std::array<AxisDelivery, 3> axes{};
     Clock::time_point sampled{};
     std::array<float, 2> finalPedals{};
     std::uint64_t pedalTick{};
+    std::optional<HandbrakeDelivery> handbrake;
 };
 
 struct InputAgeCapture {
@@ -1032,6 +1041,15 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 snapshot.profileLoaded && vehicleDelivery.pedalTick;
             if (hasPedalDelivery)
                 snapshot.pedalSampledAt = vehicleDelivery.pedalTick;
+            if (hasDelivery && snapshot.mode == DiagnosticMode::usb && inputFrame.handbrake && vehicleDelivery.handbrake) {
+                for (auto& command : std::span(snapshot.accessoryCommands).first(snapshot.accessoryCount)) {
+                    if (command.handbrakeCeilingPercent && command.state == DiagnosticCommandState::ready) {
+                        command.handbrakeRequested = vehicleDelivery.handbrake->requested;
+                        command.handbrakeFinal = vehicleDelivery.handbrake->finalValue;
+                        command.handbrakeAvailable = 1;
+                    }
+                }
+            }
             for (std::size_t i = 0; i < appliedAxes.size(); ++i) {
                 auto& axis = snapshot.axes[i];
                 axis.value = appliedAxes[i].value;
@@ -1209,6 +1227,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         bool sampleExpired = false;
         std::bitset<256> requestedKeys;
         std::bitset<256> pulseKeys;
+        std::optional<float> handbrake;
         std::array<chrome_axis::AccessoryObservation, chrome_axis::maxAccessoryBindings> accessoryObservations{};
         bool readAccessories = false;
         const bool measuring = performance.state == chrome_axis::PerformanceState::capturing;
@@ -1247,7 +1266,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     requestedKeys = usb.accessories->poll(*input,
                         diagnostics ? std::span<chrome_axis::AccessoryObservation>{accessoryObservations}
                                     : std::span<chrome_axis::AccessoryObservation>{},
-                        &pulseKeys);
+                        &pulseKeys, &handbrake);
                 } else if (usb.accessories) {
                     usb.accessories->reset();
                 }
@@ -1262,6 +1281,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 readings = {};
                 requestedKeys.reset();
                 pulseKeys.reset();
+                handbrake.reset();
             }
         }
         const bool axesReady = usb.reader && std::ranges::all_of(usb.reader->axisStatuses(), [](chrome_axis::AxisStatus status) {
@@ -1302,8 +1322,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     lastUsbSignal = {};
                 }
                 hudFrame = {hudStatus, current.generation, sampledAt};
-                if (simulated || usb.reader) {
-                    inputFrame = {controls, readings, current.generation, sampledAt, simulated};
+                if (simulated || usb.reader || handbrake) {
+                    inputFrame = {controls, readings, current.generation, sampledAt, simulated, handbrake};
+                } else {
+                    inputFrame = {};
                 }
                 if (accessoryOutputPending) {
                     const auto now = Clock::now();
@@ -1358,6 +1380,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     const auto now = Clock::now();
                     if (usb.accessoryProfile) {
                         for (const auto& binding : *usb.accessoryProfile) {
+                            if (binding.handbrakeCeilingPercent)
+                                continue;
                             const auto key = binding.key;
                             auto& history = accessoryHistory[key];
                             if (delivery.pressed.test(key)) {
@@ -1495,34 +1519,37 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             for (std::size_t i = 0; i < diagnostic.accessoryCount; ++i) {
                 const auto& binding = (*usb.accessoryProfile)[i];
                 const auto key = binding.key;
-                const auto& history = accessoryHistory[key];
                 auto& row = diagnostic.accessoryCommands[i];
                 row = {.kind = binding.kind, .role = binding.role, .activation = binding.activation,
                        .index = static_cast<std::uint32_t>(binding.index), .key = key,
-                       .rest = binding.rest, .engaged = binding.engaged, .lastSentAt = history.sentAt};
-                if (start < history.issueUntil)
-                    row.output = history.issue;
-                else if (delivery.pulsing.test(key))
-                    row.output = DiagnosticCommandOutput::pulsing;
-                else if (delivery.held.test(key))
-                    row.output = DiagnosticCommandOutput::held;
+                       .rest = binding.rest, .engaged = binding.engaged,
+                       .handbrakeCeilingPercent = binding.handbrakeCeilingPercent};
+                const bool keyboard = !binding.handbrakeCeilingPercent;
+                if (keyboard) {
+                    const auto& history = accessoryHistory[key];
+                    row.lastSentAt = history.sentAt;
+                    if (start < history.issueUntil)
+                        row.output = history.issue;
+                    else if (delivery.pulsing.test(key))
+                        row.output = DiagnosticCommandOutput::pulsing;
+                    else if (delivery.held.test(key))
+                        row.output = DiagnosticCommandOutput::held;
+                }
                 if (sampleExpired) {
                     row.state = DiagnosticCommandState::sampleExpired;
                 } else if (!input || !input->ready()) {
                     row.state = DiagnosticCommandState::deviceUnavailable;
-                } else if (!readAccessories || (accessoryBlocked && !accessoryContextLive)) {
+                } else if (!readAccessories || (keyboard && accessoryBlocked && !accessoryContextLive)) {
                     row.state = DiagnosticCommandState::waitingForVehicle;
                 } else {
-                    const auto observation = std::ranges::find(accessoryObservations, key, &chrome_axis::AccessoryObservation::key);
-                    if (observation != accessoryObservations.end()) {
-                        row.state = diagnosticCommandState(observation->status);
-                        if (accessoryBlocked && row.state == DiagnosticCommandState::ready)
-                            row.state = DiagnosticCommandState::waitingForNeutral;
-                        row.active = observation->engaged.value_or(false);
-                        row.activeAvailable = observation->engaged.has_value();
-                        row.travel = static_cast<float>(observation->travel.value_or(0.0));
-                        row.travelAvailable = observation->travel.has_value();
-                    }
+                    const auto& observation = accessoryObservations[i];
+                    row.state = diagnosticCommandState(observation.status);
+                    if (keyboard && accessoryBlocked && row.state == DiagnosticCommandState::ready)
+                        row.state = DiagnosticCommandState::waitingForNeutral;
+                    row.active = observation.engaged.value_or(false);
+                    row.activeAvailable = observation.engaged.has_value();
+                    row.travel = static_cast<float>(observation.travel.value_or(0.0));
+                    row.travelAvailable = observation.travel.has_value();
                 }
             }
             diagnostic.feedback = simulated && usb.feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
@@ -1590,16 +1617,33 @@ void updateVehicle(Vehicle* vehicle) {
         const auto values = simulator.update(chrome_axis::simulationKeys(), seconds);
         controls = {values, values.steering != 0.0f, values.throttle > 0.0f, values.brake > 0.0f};
     }
-    if (!controls.steeringReady && !controls.throttleReady && !controls.brakeReady) {
-        vehicleDelivery = {};
-        return;
+    const auto requestedHandbrake = inputFrame.handbrake;
+    std::optional<HandbrakeDelivery> handbrake;
+    bool handbrakeWritten = false;
+    if (requestedHandbrake) {
+        const float native = readField(*vehicle, handbrakeOffset);
+        if (std::isfinite(native) && native >= 0.0f && native <= 1.0f &&
+            std::isfinite(*requestedHandbrake) && *requestedHandbrake >= 0.0f && *requestedHandbrake <= 1.0f) {
+            const float combined = std::max(native, *requestedHandbrake);
+            handbrake = HandbrakeDelivery{*requestedHandbrake, combined};
+            handbrakeWritten = combined > native;
+            if (handbrakeWritten)
+                writeField(*vehicle, handbrakeOffset, combined);
+        }
     }
-    const float gameSteering = readField(*vehicle, steeringOffset);
-    const float gameThrottle = vehicle->acceleration;
-    const float gameBrake = vehicle->deceleration;
-    if (!std::isfinite(gameSteering) || !std::isfinite(gameThrottle) || !std::isfinite(gameBrake)) {
-        vehicleDelivery = {};
-        return;
+
+    const bool axesRequested = controls.steeringReady || controls.throttleReady || controls.brakeReady;
+    const float gameSteering = axesRequested ? readField(*vehicle, steeringOffset) : 0.0f;
+    const float gameThrottle = axesRequested ? vehicle->acceleration : 0.0f;
+    const float gameBrake = axesRequested ? vehicle->deceleration : 0.0f;
+    const bool axesAvailable = axesRequested && std::isfinite(gameSteering) && std::isfinite(gameThrottle) &&
+        std::isfinite(gameBrake);
+    if (!axesAvailable) {
+        if (!handbrake) {
+            vehicleDelivery = {};
+            return;
+        }
+        controls = {};
     }
 
     const float steering = std::clamp(controls.values.steering, -1.0f, 1.0f);
@@ -1608,16 +1652,18 @@ void updateVehicle(Vehicle* vehicle) {
     const bool steer = controls.steeringReady && std::abs(compensated) > std::abs(gameSteering);
     const float throttle = controls.throttleReady ? std::max(gameThrottle, controls.values.throttle) : gameThrottle;
     const float brake = controls.brakeReady ? std::max(gameBrake, controls.values.brake) : gameBrake;
-    const bool pedals = throttle != gameThrottle || brake != gameBrake;
+    const bool throttleWritten = controls.throttleReady && throttle != gameThrottle;
+    const bool brakeWritten = controls.brakeReady && brake != gameBrake;
+    const bool pedals = throttleWritten || brakeWritten;
     const auto delivery = [&](std::size_t axis, float value, bool ready, bool applied) {
         return AxisDelivery{inputFrame.readings[axis], value, !ready ? DiagnosticDelivery::unavailable
             : applied ? DiagnosticDelivery::applied : DiagnosticDelivery::gameKept};
     };
     const auto tick = GetTickCount64();
     vehicleDelivery = {{delivery(0, compensated, controls.steeringReady, steer),
-                         delivery(1, controls.values.throttle, controls.throttleReady, throttle != gameThrottle),
-                         delivery(2, controls.values.brake, controls.brakeReady, brake != gameBrake)}, inputFrame.sampled,
-                         {throttle, brake}, simulated ? 0 : tick};
+                         delivery(1, controls.values.throttle, controls.throttleReady, throttleWritten),
+                         delivery(2, controls.values.brake, controls.brakeReady, brakeWritten)}, inputFrame.sampled,
+                         {throttle, brake}, simulated || !axesAvailable ? 0 : tick, handbrake};
     if (steer) {
         writeField(*vehicle, steeringOffset, compensated);
     }
@@ -1627,23 +1673,24 @@ void updateVehicle(Vehicle* vehicle) {
         writeField(*vehicle, driveOffset, throttle - brake);
         writeField(*vehicle, secondaryDriveOffset, throttle - brake);
     }
-    if (steer || pedals) {
+    const bool applied = steer || pedals || handbrakeWritten;
+    if (applied) {
         if (!simulated && inputAgeCapture.started != Clock::time_point{} && now < inputAgeCapture.deadline &&
             inputFrame.sampled >= inputAgeCapture.started) {
             inputAgeCapture.timing.add(elapsedMicros(Clock::now() - inputFrame.sampled));
         }
         if (steer)
             appliedAxes[0] = {compensated, tick};
-        if (throttle != gameThrottle)
+        if (throttleWritten)
             appliedAxes[1] = {throttle, tick};
-        if (brake != gameBrake)
+        if (brakeWritten)
             appliedAxes[2] = {brake, tick};
         if (!simulated && usbHudStatus(hudFrame.status))
             lastUsbSignal = now;
     }
     lock.unlock();
 
-    if (steer || pedals) {
+    if (applied) {
         auto& logged = simulated ? appliedSimulation : appliedInput;
         if (!logged.exchange(true, std::memory_order_relaxed)) {
             info(simulated ? "First simulated analog input applied to the player's vehicle."

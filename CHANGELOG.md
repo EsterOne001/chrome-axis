@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.36 · 15 novembre 2026
+
+- **Frein à main progressif.** Dans **Accessoires…**, calibrez un axe au repos et en fin de course, puis définissez sa sortie progressive. Le plafond est réglable de 1 à 100 % et commence à 15 %. Le profil conserve la calibration et le plafond.
+- **Aperçu et diagnostic.** L’aperçu montre la course du levier et la commande calculée. En conduite USB, le plugin transmet cette commande au jeu et conserve la priorité de la commande native lorsqu’elle est plus forte.
+
+[ZIP Vortex](out/ChromeAxis-0.4.36-Cyberpunk-2.5.zip)
+
 ## Chrome Axis 0.4.35 · 15 novembre 2026
 
 - **Accessoires et palettes.** Choisissez **Maintien** ou **Impulsion unique** pour chaque affectation. Un nouvel appui déclenche une touche brève en mode impulsion. Le maintien reste le comportement des affectations existantes.
