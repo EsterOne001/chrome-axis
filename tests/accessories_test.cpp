@@ -5,6 +5,8 @@
 #include <sstream>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -183,6 +185,45 @@ int testPreviewReadings(const std::string& deviceId)
     if (observations[0].status != AccessoryStatus::deviceUnavailable || observations[0].active
         || observations[0].travel || observations[1].active)
         return 57;
+    return 0;
+}
+
+int testProfileReplacement(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    const AccessoryProfile original{{deviceId, AccessoryKind::Button, 0, 0, 1, VK_ADD}};
+    auto updated = original;
+    updated.front().activation = AccessoryActivation::pulse;
+    std::string error;
+    if (!saveAccessoryProfile(path, original, error))
+        return 88;
+
+    const auto openWithoutDeleteSharing = [&] {
+        const auto handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        return std::unique_ptr<void, decltype(&CloseHandle)>(handle == INVALID_HANDLE_VALUE ? nullptr : handle,
+                                                            &CloseHandle);
+    };
+    auto reader = openWithoutDeleteSharing();
+    if (!reader)
+        return 89;
+    {
+        std::jthread closeReader([heldFile = std::move(reader)]() mutable {
+            Sleep(50);
+            heldFile.reset();
+        });
+        if (!saveAccessoryProfile(path, updated, error) || loadAccessoryProfile(path, error) != updated)
+            return 90;
+    }
+
+    reader = openWithoutDeleteSharing();
+    if (!reader)
+        return 91;
+    if (saveAccessoryProfile(path, original, error) || loadAccessoryProfile(path, error) != updated)
+        return 92;
+    reader.reset();
+    if (!saveAccessoryProfile(path, original, error) || loadAccessoryProfile(path, error) != original)
+        return 93;
     return 0;
 }
 
@@ -441,6 +482,7 @@ int run()
     const auto roleResult = testShifterRoles(path, wheelId);
     const auto pulseResult = testPulseBindings(path, wheelId);
     const auto handbrakeResult = testProgressiveHandbrake(path, handbrakeId);
+    const auto replacementResult = testProfileReplacement(path, wheelId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
@@ -453,6 +495,8 @@ int run()
         return pulseResult;
     if (handbrakeResult != 0)
         return handbrakeResult;
+    if (replacementResult != 0)
+        return replacementResult;
     if (const auto result = testPreviewReadings(wheelId); result != 0)
         return result;
 

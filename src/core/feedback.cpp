@@ -1,5 +1,7 @@
 #include "chrome_axis/feedback.hpp"
 
+#include "settings_replace.hpp"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -102,8 +104,7 @@ bool saveFeedbackSettings(const std::filesystem::path& path, const FeedbackSetti
         error = "Could not open the force feedback settings directory.";
         return false;
     }
-    auto temporary = path;
-    temporary += L".tmp-" + std::to_wstring(GetCurrentProcessId());
+    const auto temporary = detail::stagedSettingsPath(path);
     std::ofstream file(temporary, std::ios::trunc);
     file << "version=1\nenabled=" << settings.enabled << "\nstrength=" << settings.strength
          << "\nimpacts=" << settings.impacts << "\ninvert=" << settings.invert << '\n';
@@ -112,7 +113,7 @@ bool saveFeedbackSettings(const std::filesystem::path& path, const FeedbackSetti
     if (settings.impactStrength != FeedbackSettings{}.impactStrength)
         file << "impact_strength=" << settings.impactStrength << '\n';
     file.close();
-    if (!file || !MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!file || !detail::replaceSettingsFile(temporary, path)) {
         std::filesystem::remove(temporary, status);
         error = "Could not save the force feedback settings.";
         return false;

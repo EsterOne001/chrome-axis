@@ -1,5 +1,7 @@
 #include "chrome_axis/controls.hpp"
 
+#include "settings_replace.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -239,8 +241,7 @@ bool saveProfile(const std::filesystem::path& path, const Profile& profile, std:
     if (!validateProfile(profile, error))
         return false;
 
-    auto temporary = path;
-    temporary += L".tmp." + std::to_wstring(GetCurrentProcessId());
+    const auto temporary = detail::stagedSettingsPath(path);
     std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
     file.imbue(std::locale::classic());
     file << "# Chrome Axis calibration\nversion=1\n";
@@ -266,8 +267,7 @@ bool saveProfile(const std::filesystem::path& path, const Profile& profile, std:
     }
     file.close();
 
-    if (file && MoveFileExW(temporary.c_str(), path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (file && detail::replaceSettingsFile(temporary, path)) {
         return true;
     }
 

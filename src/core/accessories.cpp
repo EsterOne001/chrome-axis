@@ -1,5 +1,7 @@
 #include "chrome_axis/accessories.hpp"
 
+#include "settings_replace.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -283,8 +285,7 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     if (!validateAccessories(profile, error))
         return false;
 
-    auto temporary = path;
-    temporary += L".tmp." + std::to_wstring(GetCurrentProcessId());
+    const auto temporary = detail::stagedSettingsPath(path);
     std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
     file.imbue(std::locale::classic());
     const bool hasCustomThresholds = std::ranges::any_of(profile, [](const AccessoryBinding& binding) {
@@ -314,7 +315,7 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     }
     file.close();
 
-    if (file && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    if (file && detail::replaceSettingsFile(temporary, path))
         return true;
 
     std::error_code ignored;
