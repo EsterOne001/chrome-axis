@@ -401,13 +401,14 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     const auto result = opened.read(state, stage);
     if (result == E_PENDING) {
         const auto now = Clock::now();
-        opened.readStatus = opened.continuity.pending(now);
-        if (diagnostic) {
-            if (opened.pendingSince == Clock::time_point{})
-                opened.pendingSince = now;
-            if (now - opened.pendingSince >= reconnectDelay)
-                opened.report(diagnostic, id, stage, result, false);
+        if (opened.pendingSince == Clock::time_point{})
+            opened.pendingSince = now;
+        if (now - opened.pendingSince >= reconnectDelay) {
+            // A device that never supplies a fresh report needs a new DirectInput handle.
+            opened.release();
+            return retry(stage, result);
         }
+        opened.readStatus = opened.continuity.pending(now);
         return std::nullopt;
     }
     if (FAILED(result)) {

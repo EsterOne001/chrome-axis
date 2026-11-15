@@ -6,7 +6,6 @@ public static native func ChromeAxis_VehicleImpact(vehicle: ref<VehicleObject>, 
 public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let player: wref<PlayerPuppet>;
   private let generation: Int32;
-  private let hudRoot: wref<inkCompoundWidget>;
   private let hudBadge: wref<inkCanvas>;
   private let hudLogo: wref<inkImage>;
   private let hudLogoReady: Bool;
@@ -36,10 +35,12 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.player = null;
     this.generation += 1;
     ChromeAxis_DriverHeartbeat(null);
-    if IsDefined(this.hudBadge) && IsDefined(this.hudRoot) {
-      this.hudRoot.RemoveChild(this.hudBadge);
+    if IsDefined(this.hudBadge) {
+      let parent = this.hudBadge.GetParentWidget() as inkCompoundWidget;
+      if IsDefined(parent) {
+        parent.RemoveChild(this.hudBadge);
+      }
     }
-    this.hudRoot = null;
     this.hudBadge = null;
     this.hudLogo = null;
     this.hudLogoReady = false;
@@ -51,9 +52,25 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudFrench = false;
   }
 
-  public func AttachHud(root: ref<inkCompoundWidget>) -> Void {
-    if !IsDefined(root) || IsDefined(this.hudBadge) || this.hudStatus == 0 {
-      return;
+  public func AttachHud(root: ref<inkCompoundWidget>, generation: Int32) -> Bool {
+    if generation != this.generation || this.hudStatus == 0 || !IsDefined(root) {
+      return false;
+    }
+    let rootWidget: wref<inkWidget> = root;
+    let ancestor = rootWidget;
+    while IsDefined(ancestor) {
+      if !ancestor.IsVisible() {
+        return false;
+      }
+      ancestor = ancestor.GetParentWidget();
+    }
+
+    if IsDefined(this.hudBadge) {
+      if NotEquals(this.hudBadge.GetParentWidget(), rootWidget) {
+        this.hudBadge.Reparent(root);
+        this.ApplyHudStatus();
+      }
+      return true;
     }
 
     let badge = new inkCanvas();
@@ -75,7 +92,6 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     shadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
     let label = this.CreateHudLabel(badge, 0.0);
 
-    this.hudRoot = root;
     this.hudBadge = badge;
     this.hudLogo = logo;
     this.hudLogoRetry = 30;
@@ -83,6 +99,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudLabelShadow = shadow;
     this.ApplyHudStatus();
     this.TryShowHudLogo();
+    return true;
   }
 
   private func TryShowHudLogo() -> Void {
@@ -131,18 +148,18 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
         }
       }
       this.TryShowHudLogo();
-      return;
     }
     if this.hudRetry > 0 {
       this.hudRetry -= 1;
       return;
     }
-    // The HUD may still be initializing when loading into a vehicle.
+    // The game may replace the HUD root while the previous badge is still alive.
     this.hudRetry = 9;
     let ui = GameInstance.GetUISystem(game);
     if IsDefined(ui) {
       let event = new ChromeAxisAttachHudEvent();
       event.context = this;
+      event.generation = this.generation;
       ui.QueueEvent(event);
     }
   }
@@ -229,7 +246,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     if !canDrive {
       vehicle = null;
     }
-    this.UpdateHud(game, ChromeAxis_DriverHeartbeat(vehicle));
+    let status = ChromeAxis_DriverHeartbeat(vehicle);
     if canDrive && ChromeAxis_FeedbackEnabled() {
       let velocity: Vector4 = vehicle.GetLinearVelocity();
       let forwardSpeed: Float = Vector4.Dot(velocity, vehicle.GetWorldForward());
@@ -241,6 +258,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     next.context = this;
     next.generation = generation;
     GameInstance.GetDelaySystem(game).DelayCallback(next, 0.10, false);
+    this.UpdateHud(game, status);
   }
 }
 
@@ -257,12 +275,14 @@ public class ChromeAxisDrivingTick extends DelayCallback {
 
 public class ChromeAxisAttachHudEvent extends Event {
   public let context: wref<ChromeAxisDrivingContext>;
+  public let generation: Int32;
+  public let attached: Bool;
 }
 
 @addMethod(inkGameController)
 protected cb func OnChromeAxisAttachHudEvent(evt: ref<ChromeAxisAttachHudEvent>) -> Bool {
-  if this.IsA(n"gameuiRootHudGameController") && IsDefined(evt.context) {
-    evt.context.AttachHud(this.GetRootCompoundWidget());
+  if this.IsA(n"gameuiRootHudGameController") && !evt.attached && IsDefined(evt.context) {
+    evt.attached = evt.context.AttachHud(this.GetRootCompoundWidget(), evt.generation);
   }
   return false;
 }

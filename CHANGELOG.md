@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.30 · 15 novembre 2026
+
+- **Reprise de conduite.** Au retour au siège conducteur ou après l’expiration du signal du contexte de conduite, le plugin rouvre les périphériques USB pour la nouvelle session et attend le retour des commandes au neutre. Une lecture DirectInput durablement en attente déclenche aussi une réouverture de l’appareil concerné.
+- **HUD.** Le badge se rattache de nouveau au HUD actif lorsque le jeu remplace son interface pendant une transition.
+- **Essai en jeu.** Rejouez la cinématique qui interrompait les commandes, puis centrez le volant et relâchez les pédales et palettes une fois la conduite rendue à V. Vérifiez que le badge et les commandes reviennent sans toucher au bouton USB.
+
+[ZIP Vortex](out/ChromeAxis-0.4.30-Cyberpunk-2.5.zip)
+
 ## Chrome Axis 0.4.29 · 14 novembre 2026
 
 - **Aperçu des accessoires hors jeu.** Le panneau **Accessoires…** montre en direct si la touche liée à un bouton, une direction de croix ou un axe serait maintenue ou relâchée. Pour un axe, la jauge affiche la course et les deux seuils. L’aperçu efface la dernière lecture lorsque le périphérique devient indisponible.

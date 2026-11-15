@@ -76,7 +76,7 @@ bool usbHudStatus(HudStatus status) noexcept {
 struct DrivingContext {
     Vehicle* vehicle{};
     std::uint64_t generation{};
-    std::uint64_t diagnosticSession{};
+    std::uint64_t session{};
     Clock::time_point refreshed{};
     Clock::time_point vehicleUpdated{};
 };
@@ -521,8 +521,8 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
             context.vehicleUpdated = {};
             invalidateFrames();
         }
-        if (current && context.vehicle != current) {
-            ++context.diagnosticSession;
+        if (current && invalidated) {
+            ++context.session;
             appliedAxes = {};
         }
         context.vehicle = current;
@@ -862,14 +862,14 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             } else if (!foreground) {
                 snapshot.mode = DiagnosticMode::waitingForDriver;
             } else {
-                drivingSession = context.diagnosticSession;
+                drivingSession = context.session;
                 if ((snapshot.mode == DiagnosticMode::usb || snapshot.mode == DiagnosticMode::simulation) &&
                     (context.vehicleUpdated == Clock::time_point{} || now - context.vehicleUpdated > inputLifetime)) {
                     snapshot.mode = DiagnosticMode::waitingForVehicleInput;
                 }
             }
-            if (context.diagnosticSession != diagnosticSession) {
-                diagnosticSession = context.diagnosticSession;
+            if (context.session != diagnosticSession) {
+                diagnosticSession = context.session;
                 diagnostic.lastAccessoryKey = 0;
                 diagnostic.accessorySentAt = 0;
                 snapshot.lastAccessoryKey = 0;
@@ -915,6 +915,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     Clock::time_point retryInitialization{};
     Clock::time_point nextConfigurationPoll{};
     std::uint64_t lastGeneration{};
+    std::uint64_t lastDrivingSession{};
     bool wasDriving{};
     bool wasSimulated{};
     bool reportedDriver{};
@@ -930,8 +931,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         const HWND foreground = current.vehicle && start - current.refreshed <= contextLifetime
             ? foregroundGameWindow() : nullptr;
-        if (current.diagnosticSession != diagnosticSession) {
-            diagnosticSession = current.diagnosticSession;
+        if (current.session != diagnosticSession) {
+            diagnosticSession = current.session;
             diagnostic.lastAccessoryKey = 0;
             diagnostic.accessorySentAt = 0;
         }
@@ -971,6 +972,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool simulated = session != chrome_axis::SimulationSession::inactive;
         const bool modeChanged = simulated != wasSimulated;
         const bool windowChanged = foreground != window;
+        const bool drivingSessionChanged = current.session != lastDrivingSession;
         UsbConfigurationChanges changes;
         if (!simulated && (!wasDriving || modeChanged || start >= nextConfigurationPoll)) {
             nextConfigurationPoll = start + configurationPollInterval;
@@ -1002,10 +1004,15 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             nextPendingReport = {};
             lastGeneration = current.generation;
         }
-        if (modeChanged || windowChanged || changes.preset || changes.calibration || changes.accessories) {
+        if (drivingSessionChanged || modeChanged || windowChanged || changes.preset || changes.calibration || changes.accessories) {
+            // A cinematic or another driver transition can leave the USB devices acquired but stale.
+            if (drivingSessionChanged && input) {
+                info("Driver context resumed. Reopening USB devices and waiting for neutral.");
+            }
             input.reset();
             window = foreground;
             retryInitialization = {};
+            lastDrivingSession = current.session;
         }
         if (modeChanged) {
             if (simulated) {
