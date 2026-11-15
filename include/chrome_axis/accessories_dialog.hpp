@@ -27,6 +27,8 @@
 #define IDC_ACCESSORY_PREVIEW_METER 2125
 #define IDC_ACCESSORY_PREVIEW_LEVEL 2126
 #define IDC_ACCESSORY_PREVIEW_LIMITS 2127
+#define IDC_ACCESSORY_ACTIVATION_LABEL 2128
+#define IDC_ACCESSORY_ACTIVATION 2129
 #define IDD_ACCESSORY_THRESHOLDS 211
 #define IDD_SHIFTER 202
 #define IDC_SHIFTER_DEVICE 2201
@@ -43,6 +45,8 @@
 #define IDC_SHIFTER_SIGNAL_LABEL 2212
 #define IDC_SHIFTER_EDIT 2213
 #define IDC_SHIFTER_NUMLOCK_HINT 2214
+#define IDC_SHIFTER_ACTIVATION_LABEL 2215
+#define IDC_SHIFTER_ACTIVATION 2216
 #define IDC_MODAL_FORM 2301
 #define IDC_MODAL_RESULTS 2302
 #define IDC_MODAL_LIST_HEADING 2303
@@ -65,6 +69,8 @@ std::wstring accessoryKeyLabel(unsigned int key);
 std::wstring accessoryInputLabel(const AccessoryBinding& binding);
 std::wstring shifterRoleLabel(ShifterRole role);
 std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding);
+const wchar_t* accessoryActivationLabel(AccessoryActivation activation);
+void populateAccessoryActivation(HWND window, int control);
 enum class BindingKeyEdit { unchanged, changed, occupied };
 BindingKeyEdit chooseBindingKey(HWND owner, AccessoryProfile& bindings, std::size_t row);
 

@@ -19,6 +19,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace chrome_axis {
@@ -57,6 +58,25 @@ struct DialogState {
     std::wstring versionMismatch{};
     PerformanceCommand performanceCommand{};
     bool performanceCommandFailed{};
+};
+
+struct AccessoryDialogState {
+    DiagnosticReader& reader;
+    std::vector<std::wstring> rowLabels;
+};
+
+struct AccessoryView {
+    const DiagnosticSnapshot& snapshot;
+    std::uint64_t sampledAt;
+    bool historical;
+
+    std::span<const DiagnosticAccessoryCommand> commands() const noexcept
+    {
+        if (!sampledAt)
+            return {};
+        return std::span(snapshot.accessoryCommands).first(
+            std::min<std::size_t>(snapshot.accessoryCount, snapshot.accessoryCommands.size()));
+    }
 };
 
 struct AxisControls {
@@ -301,6 +321,110 @@ std::wstring lastAccessoryKey(const DiagnosticSnapshot& snapshot, std::uint64_t 
         : unavailableValue;
 }
 
+AccessoryView accessoryView(const DiagnosticRead& read)
+{
+    const bool connected = read.connection == DiagnosticConnection::connected;
+    const auto mode = read.snapshot.mode;
+    if (read.lastDriveAt && (!connected || mode == DiagnosticMode::gameNotForeground || mode == DiagnosticMode::waitingForDriver))
+        return {read.lastDrive, read.lastDriveAt, true};
+    return {read.snapshot, connected ? read.sampledAt : 0, false};
+}
+
+std::wstring accessoryViewContext(const AccessoryView& view, std::uint64_t now)
+{
+    const auto commands = view.commands();
+    if (commands.empty()) {
+        if (view.sampledAt && view.snapshot.accessories == DiagnosticAccessoryState::unconfigured)
+            return tr(Text::DlgDiagnosticsAccessoriesUnconfigured);
+        if (view.sampledAt && view.snapshot.accessories == DiagnosticAccessoryState::profileError)
+            return tr(Text::DlgDiagnosticsAccessoriesError);
+        return tr(Text::DlgDiagnosticsCommandNoData);
+    }
+    std::wstring text = tr(view.historical ? Text::DlgDiagnosticsCommandHistory : Text::DlgDiagnosticsCommandCurrent);
+    if (view.historical)
+        text += L" · " + eventAge(view.sampledAt, now);
+    if (view.snapshot.profileLoaded)
+        text += L" · " + reportLabel(profileText(view.snapshot));
+    return text;
+}
+
+const wchar_t* commandState(DiagnosticCommandState state)
+{
+    switch (state) {
+    case DiagnosticCommandState::inactive: return tr(Text::DlgDiagnosticsInactive);
+    case DiagnosticCommandState::waitingForVehicle: return tr(Text::DlgDiagnosticsWaitingVehicle);
+    case DiagnosticCommandState::waitingForNeutral: return tr(Text::DlgDiagnosticsWaitingNeutral);
+    case DiagnosticCommandState::ready: return tr(Text::DlgDiagnosticsArmed);
+    case DiagnosticCommandState::deviceUnavailable: return tr(Text::DlgDiagnosticsDeviceUnavailable);
+    case DiagnosticCommandState::inputUnavailable: return tr(Text::DlgDiagnosticsAccessoryInputUnavailable);
+    case DiagnosticCommandState::temporarilyUnavailable: return tr(Text::DlgDiagnosticsTemporaryRead);
+    case DiagnosticCommandState::sampleExpired: return tr(Text::DlgDiagnosticsSampleExpired);
+    }
+    return unavailableValue;
+}
+
+const wchar_t* commandOutput(DiagnosticCommandOutput output)
+{
+    switch (output) {
+    case DiagnosticCommandOutput::none: return tr(Text::DlgDiagnosticsCommandOutputIdle);
+    case DiagnosticCommandOutput::held: return tr(Text::DlgDiagnosticsCommandOutputHeld);
+    case DiagnosticCommandOutput::pulsing: return tr(Text::DlgDiagnosticsCommandOutputPulsing);
+    case DiagnosticCommandOutput::blocked: return tr(Text::DlgDiagnosticsCommandOutputBlocked);
+    case DiagnosticCommandOutput::failed: return tr(Text::DlgDiagnosticsCommandOutputFailed);
+    }
+    return unavailableValue;
+}
+
+std::wstring commandName(const DiagnosticAccessoryCommand& command)
+{
+    bool validInput = false;
+    switch (command.kind) {
+    case AccessoryKind::Button:
+        validInput = command.index < buttonCount;
+        break;
+    case AccessoryKind::Pov:
+        validInput = command.index < povCount && command.engaged >= 0 &&
+            command.engaged < povFullTurn && command.engaged % povDirectionStep == 0;
+        break;
+    case AccessoryKind::Axis:
+        validInput = command.index < axisCount;
+        break;
+    }
+    const AccessoryBinding binding{
+        .deviceId = {},
+        .kind = command.kind,
+        .index = command.index,
+        .rest = command.rest,
+        .engaged = command.engaged,
+        .role = command.role <= ShifterRole::Downshift && command.role >= ShifterRole::None ? command.role : ShifterRole::None,
+    };
+    const auto input = validInput ? accessoryBindingInputLabel(binding) : unavailableValue;
+    const auto key = isAccessoryKey(command.key) ? accessoryKeyLabel(command.key) : unavailableValue;
+    return input + L" → " + key + L" · " + accessoryActivationLabel(command.activation);
+}
+
+std::wstring commandStateWithActivity(const DiagnosticAccessoryCommand& command)
+{
+    std::wstring text = commandState(command.state);
+    if (command.activeAvailable)
+        text += L" · " + std::wstring(tr(command.active ? Text::DlgDiagnosticsCommandPressed : Text::DlgDiagnosticsCommandReleased));
+    return text;
+}
+
+std::wstring commandSignal(const DiagnosticAccessoryCommand& command)
+{
+    auto text = commandStateWithActivity(command);
+    if (command.travelAvailable && std::isfinite(command.travel)) {
+        text += L" · " + std::wstring(tr(Text::DlgDiagnosticsCommandTravel)) + L" " + percentText(command.travel);
+    }
+    return text;
+}
+
+std::wstring commandSent(const DiagnosticAccessoryCommand& command, std::uint64_t now)
+{
+    return command.lastSentAt ? eventAge(command.lastSentAt, now) : unavailableValue;
+}
+
 std::wstring milliseconds(double micros)
 {
     auto formatted = std::format(L"{:.3f}", micros / 1000.0);
@@ -522,6 +646,17 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
             line(Text::DlgDiagnosticsFeedbackSubmitted, submitted);
         }
     }
+    const auto accessories = accessoryView(read);
+    if (!accessories.commands().empty()) {
+        report += L"\r\n";
+        line(Text::DlgDiagnosticsCommandHeading, accessoryViewContext(accessories, now));
+        for (const auto& command : accessories.commands()) {
+            report += L"- " + commandName(command) +
+                L" · " + tr(Text::DlgDiagnosticsCommandInput) + L" " + commandSignal(command) +
+                L" · " + tr(Text::DlgDiagnosticsCommandOutput) + L" " + commandOutput(command.output) +
+                L" · " + tr(Text::DlgDiagnosticsCommandLastSent) + L" " + commandSent(command, now) + L"\r\n";
+        }
+    }
     const auto events = std::span(read.events).first(std::min<std::size_t>(read.eventCount, read.events.size()));
     if (!events.empty()) {
         report += L"\r\n";
@@ -600,6 +735,90 @@ void setChangedText(HWND window, int id, std::wstring_view text)
     const auto count = GetDlgItemTextW(window, id, current, static_cast<int>(std::size(current)));
     if (std::wstring_view(current, count) != text)
         SetDlgItemTextW(window, id, text.data());
+}
+
+void refreshAccessoryDetails(HWND window, AccessoryDialogState& state)
+{
+    const auto now = GetTickCount64();
+    const auto read = state.reader.read();
+    const auto view = accessoryView(read);
+    const auto commands = view.commands();
+    setChangedText(window, IDC_DIAGNOSTICS_COMMAND_CONTEXT, accessoryViewContext(view, now));
+
+    const auto list = GetDlgItem(window, IDC_DIAGNOSTICS_COMMAND_LIST);
+    std::vector<std::wstring> labels;
+    labels.reserve(commands.size());
+    for (const auto& command : commands)
+        labels.push_back(commandName(command) + L" · " + commandStateWithActivity(command));
+
+    const auto selection = SendMessageW(list, LB_GETCURSEL, 0, 0);
+    const auto selected = commands.empty() ? LB_ERR :
+        static_cast<int>(std::clamp<LRESULT>(selection, 0, static_cast<LRESULT>(commands.size()) - 1));
+    if (labels != state.rowLabels) {
+        const auto top = SendMessageW(list, LB_GETTOPINDEX, 0, 0);
+        SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+        SendMessageW(list, LB_RESETCONTENT, 0, 0);
+        for (const auto& label : labels)
+            SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+        if (selected != LB_ERR) {
+            SendMessageW(list, LB_SETCURSEL, selected, 0);
+            SendMessageW(list, LB_SETTOPINDEX, std::min(top, static_cast<LRESULT>(commands.size()) - 1), 0);
+        }
+        SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(list, nullptr, TRUE);
+        state.rowLabels = std::move(labels);
+    }
+
+    const auto detail = [window](int id, Text label, std::wstring_view value) {
+        setChangedText(window, id, std::wstring(tr(label)) + L" — " + std::wstring(value));
+    };
+    if (selected == LB_ERR) {
+        for (const auto id : {IDC_DIAGNOSTICS_COMMAND_INPUT, IDC_DIAGNOSTICS_COMMAND_OUTPUT, IDC_DIAGNOSTICS_COMMAND_SENT})
+            setChangedText(window, id, L"");
+        return;
+    }
+    const auto& command = commands[static_cast<std::size_t>(selected)];
+    detail(IDC_DIAGNOSTICS_COMMAND_INPUT, Text::DlgDiagnosticsCommandInput, commandSignal(command));
+    detail(IDC_DIAGNOSTICS_COMMAND_OUTPUT, Text::DlgDiagnosticsCommandOutput, commandOutput(command.output));
+    detail(IDC_DIAGNOSTICS_COMMAND_SENT, Text::DlgDiagnosticsCommandLastSent, commandSent(command, now));
+}
+
+INT_PTR CALLBACK accessoryDetailsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    const auto state = reinterpret_cast<AccessoryDialogState*>(GetWindowLongPtrW(window, DWLP_USER));
+    switch (message) {
+    case WM_INITDIALOG:
+        SetWindowLongPtrW(window, DWLP_USER, lParam);
+        SetWindowTextW(window, tr(Text::DlgDiagnosticsCommandTitle));
+        SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgDiagnosticsCommandList));
+        SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgDiagnosticsClose));
+        DialogTheme::attach(window, tr(Text::DlgDiagnosticsCommandHeading), IDC_DIAGNOSTICS_COMMAND_CONTEXT,
+                            IDC_DIAGNOSTICS_COMMAND_LIST, {IDCANCEL});
+        refreshAccessoryDetails(window, *reinterpret_cast<AccessoryDialogState*>(lParam));
+        SetTimer(window, refreshTimer, refreshIntervalMs, nullptr);
+        return TRUE;
+    case WM_TIMER:
+        if (wParam == refreshTimer && state) {
+            refreshAccessoryDetails(window, *state);
+            return TRUE;
+        }
+        break;
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_DIAGNOSTICS_COMMAND_LIST && HIWORD(wParam) == LBN_SELCHANGE && state) {
+            refreshAccessoryDetails(window, *state);
+            return TRUE;
+        }
+        if (LOWORD(wParam) != IDCANCEL)
+            break;
+        [[fallthrough]];
+    case WM_CLOSE:
+        EndDialog(window, IDCANCEL);
+        return TRUE;
+    case WM_DESTROY:
+        KillTimer(window, refreshTimer);
+        break;
+    }
+    return FALSE;
 }
 
 void refreshPerformance(HWND window, DialogState& state, const DiagnosticRead& read, ULONGLONG now)
@@ -697,6 +916,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetDlgItemTextW(window, axis.labelId, tr(axis.label));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORIES_LABEL, tr(Text::DlgDiagnosticsAccessories));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORY_LABEL, tr(Text::DlgDiagnosticsLastKey));
+        SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORY_DETAILS, tr(Text::DlgDiagnosticsAccessoryDetails));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_FEEDBACK_LABEL, tr(Text::DlgDiagnosticsFeedback));
         for (const auto& control : performanceControls)
             SetDlgItemTextW(window, control.labelId, tr(control.label));
@@ -720,6 +940,14 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         break;
     case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_DIAGNOSTICS_ACCESSORY_DETAILS && state) {
+            AccessoryDialogState details{state->reader, {}};
+            const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIAGNOSTICS_ACCESSORIES),
+                                               window, accessoryDetailsProc, reinterpret_cast<LPARAM>(&details));
+            if (result == -1)
+                MessageBoxW(window, tr(Text::DlgDiagnosticsOpenError), tr(Text::DlgDiagnosticsCommandTitle), MB_OK | MB_ICONERROR);
+            return TRUE;
+        }
         if (LOWORD(wParam) == IDC_DIAGNOSTICS_COPY && state) {
             const auto read = state->reader.read();
             const bool copied = copyToClipboard(window, diagnosticReport(read, *state, GetTickCount64()));

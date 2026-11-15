@@ -1,5 +1,7 @@
 #pragma once
 
+#include "chrome_axis/accessories.hpp"
+
 #include <windows.h>
 
 #include <array>
@@ -22,6 +24,30 @@ enum class DiagnosticAxisState : std::uint32_t {
 enum class DiagnosticAccessoryState : std::uint32_t {
     unconfigured, waiting, ready, profileError, inactive, blocked, deviceUnavailable, inputUnavailable, sampleExpired,
     temporarilyUnavailable
+};
+
+enum class DiagnosticCommandState : std::uint8_t {
+    inactive, waitingForVehicle, waitingForNeutral, ready, deviceUnavailable, inputUnavailable,
+    temporarilyUnavailable, sampleExpired
+};
+
+enum class DiagnosticCommandOutput : std::uint8_t { none, held, pulsing, blocked, failed };
+
+struct DiagnosticAccessoryCommand {
+    AccessoryKind kind{};
+    ShifterRole role{};
+    AccessoryActivation activation{};
+    std::uint32_t index{};
+    std::uint32_t key{};
+    std::int32_t rest{};
+    std::int32_t engaged{};
+    DiagnosticCommandState state{};
+    DiagnosticCommandOutput output{};
+    std::uint8_t active{};
+    std::uint8_t activeAvailable{};
+    std::uint8_t travelAvailable{};
+    float travel{};
+    std::uint64_t lastSentAt{}; // GetTickCount64() when Windows accepted the key-down.
 };
 
 enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive, neutral, waitingForMotion };
@@ -62,6 +88,7 @@ struct DiagnosticSnapshot {
     std::array<char, 257> profile{}; // UTF-8 profile name. Empty for the default profile.
     std::uint32_t profileLoaded{};
     std::uint32_t accessoryCount{};
+    std::array<DiagnosticAccessoryCommand, maxAccessoryBindings> accessoryCommands{};
     std::uint32_t accessoryArmed{};
     std::uint32_t lastAccessoryKey{};
     std::uint64_t accessorySentAt{};

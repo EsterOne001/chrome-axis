@@ -16,6 +16,7 @@ constexpr auto requiredNeutralPolls = 3u;
 constexpr double neutralThreshold = 0.15;
 constexpr AccessoryThresholds defaultThresholds{};
 constexpr std::array<std::string_view, 3> kindNames{"button", "pov", "axis"};
+constexpr std::string_view pulseSuffix = ",pulse";
 constexpr std::string_view rolePrefix = "# shifter-role=";
 constexpr std::array<std::string_view, 12> roleNames{
     "", "gear-1", "gear-2", "gear-3", "gear-4", "gear-5", "gear-6", "gear-7", "gear-8",
@@ -50,8 +51,12 @@ bool parseNumber(std::string_view value, T& result)
     return parsed.ec == std::errc{} && parsed.ptr == end;
 }
 
-bool parseBinding(std::string_view value, AccessoryBinding& binding, bool allowsThresholds)
+bool parseBinding(std::string_view value, AccessoryBinding& binding, int version)
 {
+    if (version == 3 && value.ends_with(pulseSuffix)) {
+        binding.activation = AccessoryActivation::pulse;
+        value.remove_suffix(pulseSuffix.size());
+    }
     std::array<std::string_view, 6> fields;
     for (std::size_t i = 0; i < fields.size(); ++i) {
         const auto comma = value.find(',');
@@ -76,7 +81,7 @@ bool parseBinding(std::string_view value, AccessoryBinding& binding, bool allows
     binding.kind = static_cast<AccessoryKind>(kind);
     if (!value.empty()) {
         const auto comma = value.find(',');
-        if (!allowsThresholds || binding.kind != AccessoryKind::Axis || comma == std::string_view::npos
+        if (version < 2 || binding.kind != AccessoryKind::Axis || comma == std::string_view::npos
             || !parseNumber(trim(value.substr(0, comma)), binding.thresholds.press)
             || !parseNumber(trim(value.substr(comma + 1)), binding.thresholds.release)) {
             return false;
@@ -121,7 +126,8 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
     std::bitset<256> keys;
     for (const auto& binding : profile) {
         if (!validInput(binding) || !isAccessoryKey(binding.key)
-            || static_cast<std::size_t>(binding.role) >= roleNames.size()) {
+            || static_cast<std::size_t>(binding.role) >= roleNames.size()
+            || (binding.activation != AccessoryActivation::hold && binding.activation != AccessoryActivation::pulse)) {
             error = "Invalid accessory input or keyboard key";
             return false;
         }
@@ -207,7 +213,7 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
             role = parseRole(entry);
             continue;
         }
-        if (!version && (entry == "version=1" || entry == "version=2")) {
+        if (!version && (entry == "version=1" || entry == "version=2" || entry == "version=3")) {
             version = entry.back() - '0';
             role = ShifterRole::None;
             continue;
@@ -216,7 +222,7 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
         AccessoryBinding binding;
         binding.role = std::exchange(role, ShifterRole::None);
         if (!version || !entry.starts_with(prefix) || profile.size() == maxAccessoryBindings
-            || !parseBinding(entry.substr(prefix.size()), binding, version == 2)) {
+            || !parseBinding(entry.substr(prefix.size()), binding, version)) {
             error = "Invalid accessory profile entry";
             return std::nullopt;
         }
@@ -243,7 +249,11 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     const bool hasCustomThresholds = std::ranges::any_of(profile, [](const AccessoryBinding& binding) {
         return binding.thresholds != defaultThresholds;
     });
-    file << "# Chrome Axis accessories\nversion=" << (hasCustomThresholds ? 2 : 1) << '\n';
+    const bool hasPulses = std::ranges::any_of(profile, [](const AccessoryBinding& binding) {
+        return binding.activation == AccessoryActivation::pulse;
+    });
+    const int version = hasPulses ? 3 : (hasCustomThresholds ? 2 : 1);
+    file << "# Chrome Axis accessories\nversion=" << version << '\n';
     for (const auto& binding : profile) {
         // Accessory versions 1 and 2 already ignore comment lines.
         if (binding.role != ShifterRole::None)
@@ -252,6 +262,8 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
              << ',' << binding.index << ',' << binding.rest << ',' << binding.engaged << ',' << binding.key;
         if (binding.thresholds != defaultThresholds)
             file << ',' << binding.thresholds.press << ',' << binding.thresholds.release;
+        if (binding.activation == AccessoryActivation::pulse)
+            file << pulseSuffix;
         file << '\n';
     }
     file.close();
@@ -272,7 +284,7 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
         return first.has_value() == second.has_value();
     const auto mapping = [](const AccessoryBinding& binding) {
         return std::tie(binding.deviceId, binding.kind, binding.index, binding.rest, binding.engaged, binding.key,
-                        binding.thresholds);
+                        binding.thresholds, binding.activation);
     };
     return std::ranges::equal(*first, *second, std::ranges::equal_to{}, mapping, mapping);
 }
@@ -319,7 +331,8 @@ AccessoryReadiness AccessoryReader::readiness() const noexcept
     return result;
 }
 
-std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryObservation> observations)
+std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryObservation> observations,
+                                      std::bitset<256>* pulses)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
@@ -333,11 +346,11 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryOb
         if (storage[owner])
             samples[i] = &*storage[owner];
     }
-    return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()), observations);
+    return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()), observations, pulses);
 }
 
 void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
-                              DeviceReadStatus status, std::optional<double>* travelReading)
+                              DeviceReadStatus status, AccessoryObservation* observation)
 {
     if (!sample && status == DeviceReadStatus::pending) {
         if (state.neutralPolls < requiredNeutralPolls)
@@ -350,12 +363,15 @@ void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& sta
     }
     if (status == DeviceReadStatus::resumed)
         state = {};
-    const auto level = sample ? readLevel(binding, *sample, state.active, travelReading) : std::nullopt;
+    const auto level = sample ? readLevel(binding, *sample, state.active, observation ? &observation->travel : nullptr)
+                              : std::nullopt;
     if (!level) {
         state = {};
         state.status = sample ? AccessoryStatus::inputUnavailable : AccessoryStatus::deviceUnavailable;
         return;
     }
+    if (observation)
+        observation->engaged = level->engaged;
     if (state.neutralPolls < requiredNeutralPolls) {
         state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
         state.status = state.neutralPolls == requiredNeutralPolls
@@ -373,9 +389,11 @@ void AccessoryReader::advance(const AccessoryBinding& binding, BindingState& sta
 
 std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> samples,
                                        std::span<const DeviceReadStatus> statuses,
-                                       std::span<AccessoryObservation> observations)
+                                       std::span<AccessoryObservation> observations, std::bitset<256>* pulses)
 {
     std::bitset<256> keys;
+    if (pulses)
+        pulses->reset();
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto& binding = profile_[i];
         auto& state = states_[i];
@@ -383,14 +401,20 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         const auto status = i < statuses.size() ? statuses[i] : DeviceReadStatus::unavailable;
         auto* observation = i < observations.size() ? &observations[i] : nullptr;
         if (observation)
-            observation->travel.reset();
-        advance(binding, state, sample, status, observation ? &observation->travel : nullptr);
+            *observation = {};
+        const bool wasActive = state.active;
+        advance(binding, state, sample, status, observation);
         if (observation) {
             observation->status = state.status;
             observation->active = state.active;
+            observation->key = binding.key;
         }
-        if (state.active)
+        if (!state.active)
+            continue;
+        if (binding.activation == AccessoryActivation::hold)
             keys.set(binding.key);
+        else if (!wasActive && pulses)
+            pulses->set(binding.key);
     }
     return keys;
 }

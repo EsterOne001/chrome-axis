@@ -21,6 +21,12 @@ bool isNumpadDigit(unsigned int key)
     return key >= VK_NUMPAD0 && key <= VK_NUMPAD9;
 }
 
+std::wstring bindingSummary(const AccessoryBinding& binding)
+{
+    return accessoryBindingInputLabel(binding) + L"  →  " + accessoryKeyLabel(binding.key)
+        + L"  ·  " + accessoryActivationLabel(binding.activation);
+}
+
 enum class Stage { Setup, Neutral, Position, Paused, AnalogReady, AnalogMeasure, Captured, Done };
 
 class ShifterDialog {
@@ -37,6 +43,7 @@ public:
     void selectDevice();
     void chooseKey();
     void editSavedKey();
+    void changeActivation();
     void apply();
     void cancel();
 
@@ -125,6 +132,7 @@ void ShifterDialog::initialise(HWND window)
         send(IDC_SHIFTER_MODE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(mode)));
     for (const auto* signal : {tr(Text::DlgDigital), tr(Text::DlgAnalog)})
         send(IDC_SHIFTER_SIGNAL, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(signal));
+    populateAccessoryActivation(window_, IDC_SHIFTER_ACTIVATION);
     send(IDC_SHIFTER_DEVICE, CB_SETCURSEL, selection);
     send(IDC_SHIFTER_MODE, CB_SETCURSEL, 0);
     send(IDC_SHIFTER_SIGNAL, CB_SETCURSEL, 0);
@@ -157,7 +165,14 @@ void ShifterDialog::updateControls()
         (stage_ == Stage::Position || stage_ == Stage::Paused || stage_ == Stage::Captured));
     ShowWindow(GetDlgItem(window_, IDC_SHIFTER_SKIP), setup ? SW_HIDE : SW_SHOW);
     ShowWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), setup ? SW_SHOW : SW_HIDE);
-    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), setup && send(IDC_SHIFTER_LIST, LB_GETCURSEL) >= 0);
+    const auto row = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
+    const bool selected = setup && row >= 0 && static_cast<std::size_t>(row) < savedRows_.size();
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), selected);
+    const auto* activationBinding = selected ? &edited_[savedRows_[static_cast<std::size_t>(row)]]
+        : stage_ == Stage::Captured && pending_ ? &*pending_ : nullptr;
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_ACTIVATION), activationBinding != nullptr);
+    send(IDC_SHIFTER_ACTIVATION, CB_SETCURSEL, !activationBinding ? static_cast<WPARAM>(-1)
+        : activationBinding->activation == AccessoryActivation::pulse ? 1 : 0);
     EnableWindow(GetDlgItem(window_, IDOK), (setup && edited_ != bindings_) ||
         (stage_ == Stage::Done && (!draft_.empty() || edited_ != bindings_)));
     SetDlgItemTextW(window_, IDC_SHIFTER_START, setup ? tr(Text::DlgShifterStart) : tr(Text::DlgShifterRestart));
@@ -199,7 +214,7 @@ void ShifterDialog::showSavedBindings(LRESULT selection)
         const auto& binding = edited_[i];
         if (binding.deviceId != device->id)
             continue;
-        const auto label = accessoryBindingInputLabel(binding) + L"  →  " + accessoryKeyLabel(binding.key);
+        const auto label = bindingSummary(binding);
         if (send(IDC_SHIFTER_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())) >= 0)
             savedRows_.push_back(i);
     }
@@ -353,6 +368,30 @@ void ShifterDialog::editSavedKey()
     }
 }
 
+void ShifterDialog::changeActivation()
+{
+    const auto selected = send(IDC_SHIFTER_ACTIVATION, CB_GETCURSEL);
+    if (selected == CB_ERR)
+        return;
+    const auto activation = selected == 1 ? AccessoryActivation::pulse : AccessoryActivation::hold;
+    if (stage_ == Stage::Captured && pending_) {
+        pending_->activation = activation;
+        return;
+    }
+    if (stage_ != Stage::Setup)
+        return;
+    const auto row = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
+    if (row < 0 || static_cast<std::size_t>(row) >= savedRows_.size())
+        return;
+    auto& binding = edited_[savedRows_[static_cast<std::size_t>(row)]];
+    if (binding.activation != activation) {
+        binding.activation = activation;
+        showSavedBindings(row);
+        status(tr(setupStatus()));
+        updateControls();
+    }
+}
+
 void ShifterDialog::position()
 {
     KillTimer(window_, captureTimer);
@@ -380,6 +419,11 @@ void ShifterDialog::position()
 
 void ShifterDialog::captured(AccessoryBinding binding)
 {
+    const auto existing = std::ranges::find_if(edited_, [&](const auto& other) {
+        return sameShifterInput(binding, other);
+    });
+    if (existing != edited_.end())
+        binding.activation = existing->activation;
     pending_ = std::move(binding);
     stage_ = Stage::Captured;
     KillTimer(window_, captureTimer);
@@ -507,7 +551,7 @@ void ShifterDialog::advance()
     }
     pending_->key = key;
     pending_->role = role();
-    const auto summary = accessoryBindingInputLabel(*pending_) + L"  →  " + accessoryKeyLabel(key);
+    const auto summary = bindingSummary(*pending_);
     send(IDC_SHIFTER_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(summary.c_str()));
     draft_.push_back(std::move(*pending_));
     ++step_;
@@ -576,6 +620,7 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(window, IDC_SHIFTER_KEY, tr(Text::DlgChooseKey));
         SetDlgItemTextW(window, IDC_SHIFTER_NUMLOCK_HINT, tr(Text::DlgKeypadNumLockHint));
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterDeviceBindings));
+        SetDlgItemTextW(window, IDC_SHIFTER_ACTIVATION_LABEL, tr(Text::DlgAccessoryActivation));
         SetDlgItemTextW(window, IDC_SHIFTER_SKIP, tr(Text::DlgShifterSkip));
         SetDlgItemTextW(window, IDC_SHIFTER_EDIT, tr(Text::DlgBindingEdit));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgShifterApply));
@@ -606,6 +651,10 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
     case IDC_SHIFTER_MODE:
         if (HIWORD(wp) == CBN_SELCHANGE)
             dialog->updateControls();
+        return TRUE;
+    case IDC_SHIFTER_ACTIVATION:
+        if (HIWORD(wp) == CBN_SELCHANGE)
+            dialog->changeActivation();
         return TRUE;
     case IDC_SHIFTER_LIST:
         if (HIWORD(wp) == LBN_DBLCLK)

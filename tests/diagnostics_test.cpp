@@ -159,6 +159,32 @@ int run()
     snapshot.accessories = DiagnosticAccessoryState::deviceUnavailable;
     snapshot.lastAccessoryKey = VK_SPACE;
     snapshot.accessorySentAt = snapshot.axes[0].appliedAt;
+    snapshot.accessoryCommands[0] = {
+        .kind = AccessoryKind::Button,
+        .role = ShifterRole::Upshift,
+        .activation = AccessoryActivation::pulse,
+        .index = 7,
+        .key = VK_ADD,
+        .engaged = 1,
+        .state = DiagnosticCommandState::waitingForNeutral,
+        .output = DiagnosticCommandOutput::blocked,
+        .active = 1,
+        .activeAvailable = 1,
+    };
+    snapshot.accessoryCommands[1] = {
+        .kind = AccessoryKind::Axis,
+        .index = 2,
+        .key = VK_SPACE,
+        .rest = 1000,
+        .engaged = 500,
+        .state = DiagnosticCommandState::ready,
+        .output = DiagnosticCommandOutput::held,
+        .active = 1,
+        .activeAvailable = 1,
+        .travelAvailable = 1,
+        .travel = 0.75f,
+        .lastSentAt = snapshot.accessorySentAt,
+    };
     snapshot.feedback = DiagnosticFeedbackState::active;
     snapshot.feedbackData = {
         .motionAgeMicros = 16500,
@@ -176,6 +202,8 @@ int run()
         DiagnosticPublisher publisher(root);
         publisher.publish(snapshot, 1);
         const auto received = reader.read();
+        const auto& paddle = received.snapshot.accessoryCommands[0];
+        const auto& lever = received.snapshot.accessoryCommands[1];
         if (received.connection != DiagnosticConnection::connected || !received.sampledAt ||
             received.snapshot.mode != snapshot.mode || std::string_view(received.snapshot.profile.data()) != "A" ||
             received.snapshot.axes[0].state != snapshot.axes[0].state ||
@@ -188,6 +216,13 @@ int run()
             received.snapshot.accessories != snapshot.accessories ||
             received.snapshot.lastAccessoryKey != snapshot.lastAccessoryKey ||
             received.snapshot.accessorySentAt != snapshot.accessorySentAt ||
+            paddle.role != ShifterRole::Upshift || paddle.activation != AccessoryActivation::pulse ||
+            paddle.index != 7 || paddle.key != VK_ADD || paddle.state != DiagnosticCommandState::waitingForNeutral ||
+            paddle.output != DiagnosticCommandOutput::blocked || !paddle.activeAvailable || !paddle.active ||
+            paddle.travelAvailable || paddle.lastSentAt ||
+            lever.kind != AccessoryKind::Axis || lever.activation != AccessoryActivation::hold ||
+            lever.rest != 1000 || lever.engaged != 500 || lever.output != DiagnosticCommandOutput::held ||
+            !lever.travelAvailable || lever.travel != 0.75f || lever.lastSentAt != snapshot.accessorySentAt ||
             received.snapshot.feedback != snapshot.feedback ||
             received.snapshot.feedbackData.motionAgeMicros != 16500 ||
             received.snapshot.feedbackData.submittedAt != snapshot.feedbackData.submittedAt ||
@@ -229,6 +264,7 @@ int run()
         auto idle = snapshot;
         idle.mode = DiagnosticMode::gameNotForeground;
         idle.axes = {};
+        idle.accessoryCommands = {};
         idle.feedback = DiagnosticFeedbackState::inactive;
         idle.feedbackData = {};
         publisher.publish(idle);
@@ -237,6 +273,8 @@ int run()
         if (retained.connection != DiagnosticConnection::connected ||
             retained.snapshot.mode != DiagnosticMode::gameNotForeground ||
             retained.lastDrive.mode != DiagnosticMode::usb ||
+            retained.snapshot.accessoryCommands[1].lastSentAt ||
+            retained.lastDrive.accessoryCommands[1].lastSentAt != snapshot.accessorySentAt ||
             retained.lastDrive.axes[0].inputValue != 0.5f || retained.eventCount != 2 ||
             retained.snapshot.feedbackData.motionAvailable || retained.snapshot.feedbackData.submittedAt ||
             retained.lastDrive.feedbackData.motionAgeMicros != 24000 || !retained.lastDrive.feedbackData.airborne ||

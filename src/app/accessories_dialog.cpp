@@ -113,6 +113,19 @@ std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding)
     return input;
 }
 
+const wchar_t* accessoryActivationLabel(AccessoryActivation activation)
+{
+    return tr(activation == AccessoryActivation::pulse ? Text::DlgAccessoryActivationPulse : Text::DlgAccessoryActivationHold);
+}
+
+void populateAccessoryActivation(HWND window, int control)
+{
+    for (const auto activation : {AccessoryActivation::hold, AccessoryActivation::pulse}) {
+        SendDlgItemMessageW(window, control, CB_ADDSTRING, 0,
+            reinterpret_cast<LPARAM>(accessoryActivationLabel(activation)));
+    }
+}
+
 namespace {
 
 std::optional<AccessoryThresholds> readThresholds(HWND window)
@@ -209,6 +222,7 @@ public:
     void drawPreview(const DRAWITEMSTRUCT& item) const;
     void selectCapturedInput();
     void chooseKey();
+    void changeActivation();
     void shifter();
     void add();
     void edit();
@@ -273,6 +287,7 @@ bool AccessoryDialog::initialise(HWND window)
     send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgDigital)));
     send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgAnalog)));
     send(IDC_ACCESSORY_TYPE, CB_SETCURSEL, 0);
+    populateAccessoryActivation(window_, IDC_ACCESSORY_ACTIVATION);
     refreshDevices();
     SetFocus(GetDlgItem(window_, selectedDevice() ? IDC_ACCESSORY_DEVICE : IDC_ACCESSORY_REFRESH));
     return false;
@@ -336,6 +351,14 @@ void AccessoryDialog::refreshActions()
 {
     const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
     const bool selected = row >= 0 && static_cast<std::size_t>(row) < bindings_.size();
+    const auto capture = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
+    const bool selectedCapture = capture >= 0 && static_cast<std::size_t>(capture) < captured_.size();
+    const auto* activationBinding = selected ? &bindings_[static_cast<std::size_t>(row)]
+        : selectedCapture ? &captured_[static_cast<std::size_t>(capture)] : nullptr;
+    const bool canChangeActivation = stage_ == CaptureStage::Idle && activationBinding;
+    EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ACTIVATION), canChangeActivation);
+    send(IDC_ACCESSORY_ACTIVATION, CB_SETCURSEL, !canChangeActivation ? static_cast<WPARAM>(-1)
+        : activationBinding->activation == AccessoryActivation::pulse ? 1 : 0);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_CAPTURE), selectedDevice() != nullptr);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_INPUT), !captured_.empty());
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_KEY), stage_ == CaptureStage::Idle);
@@ -443,8 +466,11 @@ void AccessoryDialog::pollPreview()
         case AccessoryStatus::temporarilyUnavailable: return Text::DlgAccessoryPreviewPending;
         case AccessoryStatus::waitingForNeutral: return Text::DlgAccessoryPreviewNeutral;
         case AccessoryStatus::armed:
-            return !isAccessoryKey(previewBinding_->key) ? Text::DlgAccessoryPreviewUnassigned
-                : observation.active ? Text::DlgAccessoryPreviewPressed : Text::DlgAccessoryPreviewReleased;
+            if (!isAccessoryKey(previewBinding_->key))
+                return Text::DlgAccessoryPreviewUnassigned;
+            if (previewBinding_->activation == AccessoryActivation::pulse)
+                return observation.active ? Text::DlgAccessoryPreviewPulseActive : Text::DlgAccessoryPreviewPulseReady;
+            return observation.active ? Text::DlgAccessoryPreviewPressed : Text::DlgAccessoryPreviewReleased;
         }
         return Text::DlgAccessoryPreviewInput;
     }();
@@ -501,6 +527,32 @@ void AccessoryDialog::chooseKey()
             selectCapturedInput();
         else
             refreshActions();
+    }
+}
+
+void AccessoryDialog::changeActivation()
+{
+    if (stage_ != CaptureStage::Idle)
+        return;
+    const auto selected = send(IDC_ACCESSORY_ACTIVATION, CB_GETCURSEL);
+    if (selected == CB_ERR)
+        return;
+    const auto activation = selected == 1 ? AccessoryActivation::pulse : AccessoryActivation::hold;
+    const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
+    if (row >= 0 && static_cast<std::size_t>(row) < bindings_.size()) {
+        auto& binding = bindings_[static_cast<std::size_t>(row)];
+        if (binding.activation != activation) {
+            binding.activation = activation;
+            modified_ = true;
+            refreshBindings(row);
+            setStatus(tr(Text::DlgAccessoriesActivationEdited));
+        }
+        return;
+    }
+    const auto capture = send(IDC_ACCESSORY_INPUT, CB_GETCURSEL);
+    if (capture >= 0 && static_cast<std::size_t>(capture) < captured_.size()) {
+        captured_[static_cast<std::size_t>(capture)].activation = activation;
+        selectPreview();
     }
 }
 
@@ -642,7 +694,8 @@ void AccessoryDialog::refreshBindings(LRESULT selection)
     send(IDC_ACCESSORY_LIST, LB_RESETCONTENT);
     for (const auto& binding : bindings_) {
         const auto device = std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id);
-        auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryBindingInputLabel(binding);
+        auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryBindingInputLabel(binding)
+            + L"  ·  " + accessoryActivationLabel(binding.activation);
         if (binding.kind == AccessoryKind::Axis) {
             label += L" · " + std::to_wstring(binding.thresholds.press) + L"% / "
                 + std::to_wstring(binding.thresholds.release) + L"%";
@@ -789,6 +842,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_ACCESSORY_KEY, tr(Text::DlgChooseKey));
         SetDlgItemTextW(window, IDC_ACCESSORY_ADD, tr(Text::DlgAccessoriesAdd));
         SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgAccessoriesSavedList));
+        SetDlgItemTextW(window, IDC_ACCESSORY_ACTIVATION_LABEL, tr(Text::DlgAccessoryActivation));
         SetDlgItemTextW(window, IDC_ACCESSORY_EDIT, tr(Text::DlgBindingEdit));
         SetDlgItemTextW(window, IDC_ACCESSORY_THRESHOLDS, tr(Text::DlgAccessoriesThresholds));
         SetDlgItemTextW(window, IDC_ACCESSORY_PREVIEW_HEADING, tr(Text::DlgAccessoryPreview));
@@ -836,6 +890,10 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case IDC_ACCESSORY_INPUT:
         if (HIWORD(wParam) == CBN_SELCHANGE)
             dialog->selectCapturedInput();
+        return TRUE;
+    case IDC_ACCESSORY_ACTIVATION:
+        if (HIWORD(wParam) == CBN_SELCHANGE)
+            dialog->changeActivation();
         return TRUE;
     case IDC_ACCESSORY_LIST:
         if (HIWORD(wParam) == LBN_DBLCLK)

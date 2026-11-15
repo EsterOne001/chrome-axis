@@ -184,6 +184,113 @@ int testPreviewReadings(const std::string& deviceId)
     return 0;
 }
 
+int testPulseBindings(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    using Status = DeviceReadStatus;
+    constexpr auto pulse = AccessoryActivation::pulse;
+    const AccessoryProfile profile{
+        {deviceId, AccessoryKind::Button, 0, 0, 1, VK_ADD, {}, ShifterRole::Upshift, pulse},
+        {deviceId, AccessoryKind::Axis, 2, 0, 100, VK_SUBTRACT, {60, 25}, ShifterRole::Downshift, pulse},
+        {deviceId, AccessoryKind::Button, 1, 0, 1, VK_SPACE},
+    };
+    std::string error;
+    if (!saveAccessoryProfile(path, profile, error) || loadAccessoryProfile(path, error) != profile)
+        return 58;
+    {
+        std::ifstream file(path);
+        std::string line;
+        std::getline(file, line);
+        std::getline(file, line);
+        if (line != "version=3")
+            return 59;
+    }
+    auto legacy = profile;
+    for (auto& binding : legacy)
+        binding.activation = AccessoryActivation::hold;
+    if (sameAccessoryInputProfile(profile, legacy) || !saveAccessoryProfile(path, legacy, error)
+        || loadAccessoryProfile(path, error) != legacy)
+        return 60;
+    auto invalid = profile;
+    invalid[0].activation = static_cast<AccessoryActivation>(99);
+    if (saveAccessoryProfile(path, invalid, error))
+        return 61;
+    for (const auto& [number, mode] : std::array<std::pair<int, const char*>, 3>{{
+             {1, "pulse"}, {2, "pulse"}, {3, "toggle"},
+         }}) {
+        std::ofstream file(path, std::ios::trunc);
+        file << "version=" << number << "\nbinding=" << deviceId << ",button,0,0,1," << VK_ADD << ',' << mode << '\n';
+        file.close();
+        if (loadAccessoryProfile(path, error))
+            return 62;
+    }
+
+    AccessoryReader reader(profile);
+    DeviceSample sample;
+    sample.buttonsPresent.set(0).set(1);
+    sample.axesPresent[2] = true;
+    const std::array<const DeviceSample*, 3> connected{&sample, &sample, &sample};
+    const std::array<const DeviceSample*, 3> disconnected{};
+    const std::array pending{Status::pending, Status::pending, Status::pending};
+    const std::array resumed{Status::resumed, Status::resumed, Status::resumed};
+    std::array<AccessoryObservation, 3> observations;
+    std::bitset<256> impulses;
+    auto update = [&](std::span<const DeviceSample* const> samples, std::span<const DeviceReadStatus> statuses = {}) {
+        return reader.update(samples, statuses, observations, &impulses);
+    };
+    sample.buttons.set(0);
+    sample.axes[2] = 60;
+    impulses.set(VK_ADD); // Each update replaces the prior outputs.
+    if (update(connected).any() || impulses.any() || observations[0].engaged != true
+        || observations[1].engaged != true || observations[0].active || observations[1].active
+        || observations[0].status != AccessoryStatus::waitingForNeutral || observations[0].key != VK_ADD
+        || observations[1].key != VK_SUBTRACT || observations[2].key != VK_SPACE)
+        return 63;
+    const auto release = [&] {
+        sample.buttons.reset();
+        sample.axes[2] = 0;
+        for (int i = 0; i < 3; ++i) {
+            if (update(connected).any() || impulses.any())
+                return false;
+        }
+        return reader.ready();
+    };
+    if (!release())
+        return 64;
+    const auto press = [&] {
+        sample.buttons.set(0).set(1);
+        sample.axes[2] = 60;
+        const auto held = update(connected);
+        return held.count() == 1 && held.test(VK_SPACE) && impulses.count() == 2
+            && impulses.test(VK_ADD) && impulses.test(VK_SUBTRACT) && observations[0].active && observations[1].active;
+    };
+    if (!press() || !update(connected).test(VK_SPACE) || impulses.any())
+        return 65;
+
+    sample.axes[2] = 25;
+    if (!update(connected).test(VK_SPACE) || impulses.any() || observations[1].engaged != true)
+        return 66;
+    sample.axes[2] = 24;
+    if (!update(connected).test(VK_SPACE) || impulses.any() || observations[1].engaged != false)
+        return 67;
+    sample.axes[2] = 60;
+    if (!update(connected).test(VK_SPACE) || impulses.count() != 1 || !impulses.test(VK_SUBTRACT))
+        return 68;
+
+    if (update(disconnected, pending).any() || impulses.any() || observations[0].engaged
+        || observations[0].status != AccessoryStatus::temporarilyUnavailable
+        || update(connected).any() || impulses.any())
+        return 69;
+    if (update(connected, resumed).any() || impulses.any() || !release() || !press()
+        || update(disconnected).any() || impulses.any() || update(connected).any() || impulses.any())
+        return 70;
+
+    reader.reset();
+    if (update(connected).any() || impulses.any() || !release() || !press())
+        return 71;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -216,6 +323,7 @@ int run()
     const auto empty = chrome_axis::loadAccessoryProfile(path, error);
     const auto thresholdResult = testThresholds(path, handbrakeId);
     const auto roleResult = testShifterRoles(path, wheelId);
+    const auto pulseResult = testPulseBindings(path, wheelId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
@@ -224,6 +332,8 @@ int run()
         return thresholdResult;
     if (roleResult != 0)
         return roleResult;
+    if (pulseResult != 0)
+        return pulseResult;
     if (const auto result = testPreviewReadings(wheelId); result != 0)
         return result;
 

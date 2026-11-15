@@ -39,6 +39,8 @@ using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 using chrome_axis::DiagnosticAccessoryState;
 using chrome_axis::DiagnosticAxisState;
+using chrome_axis::DiagnosticCommandOutput;
+using chrome_axis::DiagnosticCommandState;
 using chrome_axis::DiagnosticDelivery;
 using chrome_axis::DiagnosticFeedbackState;
 using chrome_axis::DiagnosticMode;
@@ -63,6 +65,7 @@ constexpr auto motionLifetime = 150ms;
 constexpr auto minimumAirTime = 80ms;
 constexpr auto diagnosticInterval = 150ms;
 constexpr auto diagnosticIssueDuration = 1s;
+constexpr auto accessoryPulseDuration = 50ms;
 constexpr auto performanceLimit = 5min;
 
 // Values returned to the HUD in driving_context.reds.
@@ -333,28 +336,49 @@ struct ForceOutputContext {
 
 struct AccessoryDelivery {
     unsigned int key{};
-    bool blocked{};
+    std::bitset<256> pressed;
+    std::bitset<256> held;
+    std::bitset<256> pulsing;
+    std::bitset<256> blocked;
+    std::bitset<256> failed;
 };
 
 class AccessoryKeys {
 public:
     bool hasInjectedKeys() const noexcept { return pending_.load(std::memory_order_acquire); }
 
-    AccessoryDelivery apply(const std::bitset<256>& requested, HWND window = nullptr, OutputContext output = {}) noexcept {
+    AccessoryDelivery apply(const std::bitset<256>& requested, const std::bitset<256>& pulses = {},
+                            HWND window = nullptr, OutputContext output = {}) noexcept {
         std::scoped_lock lock(mutex_);
-        if (requested.any() && (!window || !output.current())) {
+        AccessoryDelivery delivery;
+        const auto finish = [&] {
+            delivery.held = held_ & ~pulsing_;
+            delivery.pulsing = pulsing_;
+            return delivery;
+        };
+        const auto intents = requested | pulses;
+        if (!window || !output.current()) {
             abandon(requested);
-            return {0, true};
+            delivery.blocked = intents;
+            return finish();
         }
         lastSample_ = output.sampled;
         blocked_ &= requested;
-        AccessoryDelivery delivery{0, blocked_.any()};
+        delivery.blocked = blocked_;
         const auto allowed = requested & ~blocked_;
-        release(held_ & ~allowed);
-        const auto press = allowed & ~held_;
-        if (!window || press.none()) {
-            return delivery;
+        auto due = held_ & ~allowed & ~pulsing_;
+        if (pulsing_.any()) {
+            const auto now = Clock::now();
+            for (std::size_t key = 0; key < pulsing_.size(); ++key) {
+                if (pulsing_.test(key) && now >= pulseUntil_[key])
+                    due.set(key);
+            }
         }
+        release(due);
+        delivery.blocked |= pulses & held_;
+        const auto press = (allowed | pulses) & ~held_;
+        if (press.none())
+            return finish();
         const auto layout = GetKeyboardLayout(GetWindowThreadProcessId(window, nullptr));
         for (std::size_t key = 0; key < press.size(); ++key) {
             if (!press.test(key)) {
@@ -366,38 +390,44 @@ public:
                 scan = (scan & 0xff) | 0xe000;
             }
             if (scan == 0) {
-                delivery.blocked = true;
+                delivery.failed.set(key);
                 continue;
             }
             if (!output.current() || foregroundGameWindow() != window || modifierDown()) {
                 abandon(requested);
-                delivery.blocked = true;
-                return delivery;
+                delivery.blocked |= intents & ~delivery.pressed;
+                return finish();
             }
             // Avoid taking ownership of a key that the player already holds.
             if (keyDown(static_cast<int>(key))) {
-                blocked_.set(key);
-                delivery.blocked = true;
+                if (requested.test(key))
+                    blocked_.set(key);
+                delivery.blocked.set(key);
                 continue;
             }
             if (send(static_cast<WORD>(scan), 0)) {
                 delivery.key = static_cast<unsigned int>(key);
+                delivery.pressed.set(key);
                 scans_[key] = static_cast<WORD>(scan);
                 held_.set(key);
+                if (pulses.test(key)) {
+                    pulsing_.set(key);
+                    pulseUntil_[key] = Clock::now() + accessoryPulseDuration;
+                }
                 pending_.store(true, std::memory_order_release);
                 if (!loggedPress_) {
                     info("First USB accessory key sent to Windows with the game in the foreground.");
                     loggedPress_ = true;
                 }
             } else {
-                delivery.blocked = true;
+                delivery.failed.set(key);
                 if (!loggedFailure_) {
                     warn("Windows did not accept a USB accessory key event (SendInput failed).");
                     loggedFailure_ = true;
                 }
             }
         }
-        return delivery;
+        return finish();
     }
 
     void releaseStale(Clock::time_point now, bool invalidated) noexcept {
@@ -426,6 +456,7 @@ private:
         for (std::size_t key = 0; key < keys.size(); ++key) {
             if (keys.test(key) && send(scans_[key], KEYEVENTF_KEYUP)) {
                 held_.reset(key);
+                pulsing_.reset(key);
             }
         }
         pending_.store(held_.any(), std::memory_order_release);
@@ -444,6 +475,8 @@ private:
 
     std::array<WORD, 256> scans_{};
     std::bitset<256> held_;
+    std::bitset<256> pulsing_;
+    std::array<Clock::time_point, 256> pulseUntil_{};
     std::bitset<256> blocked_;
     Clock::time_point lastSample_{};
     std::mutex mutex_;
@@ -872,6 +905,24 @@ DiagnosticAccessoryState diagnosticAccessoryState(chrome_axis::AccessoryReadines
     return ready ? DiagnosticAccessoryState::ready : DiagnosticAccessoryState::waiting;
 }
 
+DiagnosticCommandState diagnosticCommandState(chrome_axis::AccessoryStatus status) noexcept {
+    using chrome_axis::AccessoryStatus;
+    switch (status) {
+    case AccessoryStatus::waitingForNeutral: return DiagnosticCommandState::waitingForNeutral;
+    case AccessoryStatus::deviceUnavailable: return DiagnosticCommandState::deviceUnavailable;
+    case AccessoryStatus::inputUnavailable: return DiagnosticCommandState::inputUnavailable;
+    case AccessoryStatus::armed: return DiagnosticCommandState::ready;
+    case AccessoryStatus::temporarilyUnavailable: return DiagnosticCommandState::temporarilyUnavailable;
+    }
+    return DiagnosticCommandState::inactive;
+}
+
+struct AccessoryOutputHistory {
+    std::uint64_t sentAt{};
+    Clock::time_point issueUntil{};
+    DiagnosticCommandOutput issue{};
+};
+
 DiagnosticFeedbackState diagnosticFeedbackState(const chrome_axis::DirectInput* input, bool steeringReady,
                                                 bool motionAvailable) noexcept {
     if (!input || !steeringReady)
@@ -937,6 +988,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     Clock::time_point nextTimeoutReport{};
     Clock::time_point nextPendingReport{};
     std::uint64_t diagnosticSession{};
+    std::array<AccessoryOutputHistory, 256> accessoryHistory{};
     const auto publishDiagnostics = [&](HWND foreground, const DrivingContext& polled) {
         const auto now = Clock::now();
         nextDiagnostic = now + diagnosticInterval;
@@ -968,6 +1020,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 diagnosticSession = context.session;
                 diagnostic.lastAccessoryKey = 0;
                 diagnostic.accessorySentAt = 0;
+                accessoryHistory = {};
                 snapshot.lastAccessoryKey = 0;
                 snapshot.accessorySentAt = 0;
                 snapshot.feedbackData = {};
@@ -1005,6 +1058,17 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                         axis.delivery = delivered.outcome;
                     }
                 }
+            }
+        }
+        if (!drivingSession || snapshot.mode != DiagnosticMode::usb) {
+            for (std::size_t i = 0; i < snapshot.accessoryCount; ++i) {
+                auto& row = snapshot.accessoryCommands[i];
+                row.state = snapshot.mode == DiagnosticMode::waitingForVehicleInput
+                    ? DiagnosticCommandState::waitingForVehicle : DiagnosticCommandState::inactive;
+                row.output = DiagnosticCommandOutput::none;
+                row.activeAvailable = 0;
+                row.travelAvailable = 0;
+                row.lastSentAt = 0;
             }
         }
         if (!drivingSession) {
@@ -1045,6 +1109,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             diagnosticSession = current.session;
             diagnostic.lastAccessoryKey = 0;
             diagnostic.accessorySentAt = 0;
+            accessoryHistory = {};
             diagnostic.feedbackData = {};
         }
         if (!foreground) {
@@ -1111,6 +1176,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 diagnostic.lastAccessoryKey = 0;
                 diagnostic.accessorySentAt = 0;
                 accessoryBlockedUntil = {};
+                accessoryHistory = {};
             }
             if (sourceChanged || changes.calibration)
                 nextTimeoutReport = {};
@@ -1142,6 +1208,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         auto sampledAt = start;
         bool sampleExpired = false;
         std::bitset<256> requestedKeys;
+        std::bitset<256> pulseKeys;
+        std::array<chrome_axis::AccessoryObservation, chrome_axis::maxAccessoryBindings> accessoryObservations{};
+        bool readAccessories = false;
         const bool measuring = performance.state == chrome_axis::PerformanceState::capturing;
         const bool physical = !simulated && (usb.reader || usb.accessories);
         const bool wantFeedback = physical && usb.feedbackSettings.enabled && usb.profile &&
@@ -1169,13 +1238,16 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (input && input->ready()) {
                 sampledAt = Clock::now();
                 input->beginPoll();
-                const bool readAccessories = usb.accessories && current.vehicleUpdated != Clock::time_point{} &&
+                readAccessories = usb.accessories && current.vehicleUpdated != Clock::time_point{} &&
                     sampledAt - current.vehicleUpdated <= inputLifetime;
                 if (usb.reader) {
                     controls = usb.reader->poll(*input, diagnostics ? &readings : nullptr);
                 }
                 if (readAccessories) {
-                    requestedKeys = usb.accessories->poll(*input);
+                    requestedKeys = usb.accessories->poll(*input,
+                        diagnostics ? std::span<chrome_axis::AccessoryObservation>{accessoryObservations}
+                                    : std::span<chrome_axis::AccessoryObservation>{},
+                        &pulseKeys);
                 } else if (usb.accessories) {
                     usb.accessories->reset();
                 }
@@ -1189,6 +1261,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 controls = {};
                 readings = {};
                 requestedKeys.reset();
+                pulseKeys.reset();
             }
         }
         const bool axesReady = usb.reader && std::ranges::all_of(usb.reader->axisStatuses(), [](chrome_axis::AxisStatus status) {
@@ -1215,7 +1288,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         } else if (usb.enabled) {
             hudStatus = usbReady ? HudStatus::usbReady : HudStatus::usbWaiting;
         }
-        const bool hasRequestedKeys = requestedKeys.any();
+        const bool hasRequestedKeys = requestedKeys.any() || pulseKeys.any();
+        const bool accessoryOutputPending = hasRequestedKeys || accessoryKeys.hasInjectedKeys();
         const OutputContext output{current.vehicle, current.generation, sampledAt};
         ForceOutputContext forceOutput{output, {}, {}};
         bool accessoryContextLive = false;
@@ -1231,7 +1305,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 if (simulated || usb.reader) {
                     inputFrame = {controls, readings, current.generation, sampledAt, simulated};
                 }
-                if (hasRequestedKeys) {
+                if (accessoryOutputPending) {
                     const auto now = Clock::now();
                     accessoryContextLive = context.vehicle && context.vehicleUpdated != Clock::time_point{} &&
                         now - context.refreshed <= contextLifetime && now - context.vehicleUpdated <= inputLifetime;
@@ -1265,23 +1339,42 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 }
             }
         }
-        const bool accessoryBlocked = hasRequestedKeys &&
+        const bool accessoryBlocked = accessoryOutputPending &&
             (!accessoryContextLive || stop.stop_requested() || modifierDown());
         if (accessoryBlocked) {
-            requestedKeys.reset();
-            usb.accessories->reset();
+            if (usb.accessories)
+                usb.accessories->reset();
             readiness = {};
         }
         AccessoryDelivery delivery;
         if (usb.accessories || accessoryKeys.hasInjectedKeys()) {
-            delivery = accessoryKeys.apply(requestedKeys, foreground, output);
-            if (delivery.key) {
+            delivery = accessoryKeys.apply(requestedKeys, pulseKeys,
+                accessoryBlocked || sampleExpired ? nullptr : foreground, output);
+            const auto events = delivery.pressed | delivery.blocked | delivery.failed;
+            if (events.any()) {
                 std::scoped_lock lock(stateMutex);
                 if (context.generation == current.generation) {
-                    diagnostic.lastAccessoryKey = delivery.key;
-                    diagnostic.accessorySentAt = GetTickCount64();
-                    if (usbHudStatus(hudFrame.status))
-                        lastUsbSignal = Clock::now();
+                    const auto sentAt = delivery.key ? GetTickCount64() : 0;
+                    const auto now = Clock::now();
+                    if (usb.accessoryProfile) {
+                        for (const auto& binding : *usb.accessoryProfile) {
+                            const auto key = binding.key;
+                            auto& history = accessoryHistory[key];
+                            if (delivery.pressed.test(key)) {
+                                history = {sentAt};
+                            } else if (delivery.failed.test(key) || delivery.blocked.test(key)) {
+                                history.issue = delivery.failed.test(key)
+                                    ? DiagnosticCommandOutput::failed : DiagnosticCommandOutput::blocked;
+                                history.issueUntil = now + diagnosticIssueDuration;
+                            }
+                        }
+                    }
+                    if (delivery.key) {
+                        diagnostic.lastAccessoryKey = delivery.key;
+                        diagnostic.accessorySentAt = sentAt;
+                        if (usbHudStatus(hudFrame.status))
+                            lastUsbSignal = now;
+                    }
                 }
             }
         }
@@ -1363,7 +1456,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         if (diagnostics) {
             const auto now = Clock::now();
-            if (accessoryBlocked || delivery.blocked)
+            if (accessoryBlocked || delivery.blocked.any() || delivery.failed.any())
                 accessoryBlockedUntil = now + diagnosticIssueDuration;
         }
         // Capture brief interruptions that fall between regular diagnostic snapshots.
@@ -1398,6 +1491,39 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 diagnostic.accessoryArmed = static_cast<std::uint32_t>(readiness.armed);
                 diagnostic.accessories = diagnosticAccessoryState(readiness, accessoriesReady, input && input->ready(),
                                                                    sampleExpired, start < accessoryBlockedUntil);
+            }
+            for (std::size_t i = 0; i < diagnostic.accessoryCount; ++i) {
+                const auto& binding = (*usb.accessoryProfile)[i];
+                const auto key = binding.key;
+                const auto& history = accessoryHistory[key];
+                auto& row = diagnostic.accessoryCommands[i];
+                row = {.kind = binding.kind, .role = binding.role, .activation = binding.activation,
+                       .index = static_cast<std::uint32_t>(binding.index), .key = key,
+                       .rest = binding.rest, .engaged = binding.engaged, .lastSentAt = history.sentAt};
+                if (start < history.issueUntil)
+                    row.output = history.issue;
+                else if (delivery.pulsing.test(key))
+                    row.output = DiagnosticCommandOutput::pulsing;
+                else if (delivery.held.test(key))
+                    row.output = DiagnosticCommandOutput::held;
+                if (sampleExpired) {
+                    row.state = DiagnosticCommandState::sampleExpired;
+                } else if (!input || !input->ready()) {
+                    row.state = DiagnosticCommandState::deviceUnavailable;
+                } else if (!readAccessories || (accessoryBlocked && !accessoryContextLive)) {
+                    row.state = DiagnosticCommandState::waitingForVehicle;
+                } else {
+                    const auto observation = std::ranges::find(accessoryObservations, key, &chrome_axis::AccessoryObservation::key);
+                    if (observation != accessoryObservations.end()) {
+                        row.state = diagnosticCommandState(observation->status);
+                        if (accessoryBlocked && row.state == DiagnosticCommandState::ready)
+                            row.state = DiagnosticCommandState::waitingForNeutral;
+                        row.active = observation->engaged.value_or(false);
+                        row.activeAvailable = observation->engaged.has_value();
+                        row.travel = static_cast<float>(observation->travel.value_or(0.0));
+                        row.travelAvailable = observation->travel.has_value();
+                    }
+                }
             }
             diagnostic.feedback = simulated && usb.feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
                 : !usb.feedbackSettings.enabled ? DiagnosticFeedbackState::disabled

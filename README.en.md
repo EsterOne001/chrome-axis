@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.34** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.35** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -92,7 +92,7 @@ Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. C
 
 In **Accessories…** and **Shifter / paddles…**, click the key button to open the visual keyboard and choose a key. Number row and numpad keys are separate.
 
-Select a binding in **Accessories…** to see its live state. For an axis, the gauge shows travel and the press and release thresholds. The preview shows whether the mapped key would be held or released and works with Cyberpunk closed.
+Select a binding in **Accessories…** to see its live state. For an axis, the gauge shows travel and the press and release thresholds. The preview shows the physical input state and keyboard output mode. It works with Cyberpunk closed.
 
 To change the key for an already captured input, select the binding and click **Change key…**. In **Shifter / paddles…**, select the device first, then click **Apply** after making changes. Finish by clicking **Save** in **Accessories…**.
 
@@ -103,7 +103,9 @@ To change the key for an already captured input, select the binding and click **
 
 **Manual Transmission V10 4.3** offers rebindable sequential shift commands. Chrome Axis suggests **Numpad + / Numpad −** to avoid the **↑ / ↓** keys used by Cyberpunk for throttle and brake. Set the same keys in V10. To use a clutch pedal, capture it as an accessory axis, assign a key without modifiers, and set the same key in V10. Testing the two mods together is still pending. [V10 controls](https://www.nexusmods.com/cyberpunk2077/mods/28342) · [V10 discussion about sequential and H-pattern shifting](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts)
 
-You can also bind an individual button, D-pad direction or axis in **Accessories…**. **Space** is the default handbrake key. Chrome Axis holds the assigned key as long as the input is active. By default, an axis presses the key at **55%** of its measured travel and releases it below **35%**. For a handbrake or clutch captured as an axis, select the binding, open **Axis thresholds…** and keep the release threshold below the press threshold. Click **Apply**, then **Save**. The accessory outputs a keyboard key.
+You can also bind an individual button, D-pad direction or axis in **Accessories…**. **Space** is the default handbrake key. In **Hold** mode, Chrome Axis keeps the assigned key down while the input is active. By default, an axis presses the key at **55%** of its measured travel and releases it below **35%**. For a handbrake or clutch captured as an axis, select the binding, open **Axis thresholds…** and keep the release threshold below the press threshold. Click **Apply**, then **Save**. The accessory outputs a keyboard key.
+
+Select a binding in **Accessories…** or **Shifter / paddles…** and choose **Hold** or **Single pulse** in **Output**. Hold keeps the assigned key down while the input is active. A pulse lasts about 50 ms and triggers on a new press, which suits paddles and buttons. Release the input to trigger another pulse. Existing bindings use Hold. Save the changes in **Accessories…**.
 
 ### PC connections
 
@@ -147,7 +149,7 @@ To uninstall, close the game and app, then disable or remove the mod in Vortex a
 Open **Diagnostics…** in **USB Hardware** or the **Help** menu. This panel shows the status reported by the plugin for your Cyberpunk installation. Launch the game, put V in the driver’s seat, enable USB input, and move your controls. Switch back to Chrome Axis to see the last applied values and how long ago they were applied.
 
 - **Steering, throttle and brake.** The panel distinguishes an unavailable device, a missing axis and a control waiting to return to neutral. An armed control is ready. The applied value appears when Chrome Axis has actually changed the control in the game.
-- **Accessories.** See how many bindings are armed and the last key Windows accepted. Your transmission mod determines which gear the game selects.
+- **Accessories.** See how many bindings are armed and the last key Windows accepted. **Details…** and the copied report show each binding’s input, mode, status and last accepted key-down. Your transmission mod determines which gear the game selects.
 - **Force feedback.** See whether an effect is active, waiting or unavailable, based on the driver's response.
 
 The panel indicates when Cyberpunk is out of focus or its plugin data is stale. The last applied value helps diagnose an input after Alt-Tab. You can keep the app open during this USB test.

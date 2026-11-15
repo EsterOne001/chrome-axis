@@ -21,6 +21,7 @@ constexpr std::uint16_t quantizePov(std::uint16_t angle) noexcept
 }
 
 enum class AccessoryKind { Button, Pov, Axis };
+enum class AccessoryActivation { hold, pulse };
 enum class ShifterRole { None, Gear1, Gear2, Gear3, Gear4, Gear5, Gear6, Gear7, Gear8, Reverse, Upshift, Downshift };
 
 struct AccessoryThresholds {
@@ -44,6 +45,7 @@ struct AccessoryBinding {
     unsigned int key{};
     AccessoryThresholds thresholds{};
     ShifterRole role{};
+    AccessoryActivation activation{AccessoryActivation::hold};
 
     bool operator==(const AccessoryBinding&) const = default;
 };
@@ -63,6 +65,8 @@ struct AccessoryObservation {
     AccessoryStatus status{AccessoryStatus::waitingForNeutral};
     std::optional<double> travel;
     bool active{};
+    std::optional<bool> engaged; // Physical binding state before neutral gating.
+    unsigned int key{};
 };
 
 bool isAccessoryKey(unsigned int key) noexcept;
@@ -74,7 +78,9 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
 class AccessoryReader {
 public:
     explicit AccessoryReader(const AccessoryProfile& profile);
-    std::bitset<256> poll(DirectInput& input, std::span<AccessoryObservation> observations = {});
+    // Returns held keys. If provided, pulses receives the single-press requests from this sample.
+    std::bitset<256> poll(DirectInput& input, std::span<AccessoryObservation> observations = {},
+                         std::bitset<256>* pulses = nullptr);
     void reset() noexcept;
     // All bindings have a usable sample and passed the neutral check.
     bool ready() const noexcept;
@@ -82,7 +88,7 @@ public:
 
     // Samples follow binding order. Bindings on the same device share a sample.
     std::bitset<256> update(std::span<const DeviceSample* const> samples, std::span<const DeviceReadStatus> statuses = {},
-                            std::span<AccessoryObservation> observations = {});
+                            std::span<AccessoryObservation> observations = {}, std::bitset<256>* pulses = nullptr);
 
 private:
     struct BindingState {
@@ -93,7 +99,7 @@ private:
     };
 
     static void advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
-                        DeviceReadStatus status, std::optional<double>* travel);
+                        DeviceReadStatus status, AccessoryObservation* observation);
 
     AccessoryProfile profile_;
     std::array<std::size_t, maxAccessoryBindings> sampleOwners_{};

@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.34** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.35** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -98,7 +98,7 @@ Chrome Axis utilise le mouvement du véhicule, son orientation, le dérapage et 
 
 ## Boîtes de vitesses, palettes et autres accessoires
 
-Sélectionnez une affectation dans **Accessoires…** pour voir son état en direct. Pour un axe, la jauge montre la course et les seuils d’appui et de relâchement. L’aperçu indique la touche qui serait tenue ou relâchée et fonctionne sans lancer Cyberpunk.
+Sélectionnez une affectation dans **Accessoires…** pour voir son état en direct. Pour un axe, la jauge montre la course et les seuils d’appui et de relâchement. L’aperçu indique l’état de l’entrée et le type d’envoi de la touche. Il fonctionne sans lancer Cyberpunk.
 
 Dans **Accessoires…** et **Boîte / palettes…**, cliquez sur le bouton de touche pour ouvrir le clavier visuel, puis sur la touche à attribuer. La rangée de chiffres et le pavé numérique sont distincts. Vous pouvez fermer le clavier sans modifier la sélection.
 
@@ -111,7 +111,9 @@ Pour changer la touche d’une entrée déjà capturée, sélectionnez l’affec
 
 **Manual Transmission V10 4.3** propose des commandes séquentielles de montée et de descente, réaffectables dans son menu. L’assistant propose **Pavé + / Pavé −** pour éviter les flèches **↑ / ↓**, déjà utilisées par Cyberpunk pour l’accélération et le freinage. Réglez les mêmes touches dans V10. Pour l’embrayage, capturez la pédale comme un axe d’accessoire et choisissez une touche sans modificateur, puis reportez-la dans V10. L’essai des deux mods ensemble reste à faire. [Commandes de V10](https://www.nexusmods.com/cyberpunk2077/mods/28342), [FAQ sur le séquentiel et la grille en H](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts).
 
-Le panneau **Accessoires…** permet aussi d’associer individuellement un bouton, une direction de croix ou un axe. **Espace** commande le frein à main numérique par défaut. La touche reste enfoncée tant que la commande est active. Un axe déclenche par défaut la touche à **55 %** de sa course mesurée et la relâche en dessous de **35 %**. Pour un frein à main ou un embrayage capturé sur un axe, sélectionnez l’association, ouvrez **Seuils de l’axe…** et gardez le seuil de relâchement inférieur au seuil d’appui. Cliquez sur **Appliquer**, puis **Enregistrer**. La sortie de l’accessoire est une touche clavier.
+Le panneau **Accessoires…** permet aussi d’associer individuellement un bouton, une direction de croix ou un axe. **Espace** commande le frein à main numérique par défaut. En mode **Maintien**, la touche reste enfoncée tant que la commande est active. Un axe déclenche par défaut la touche à **55 %** de sa course mesurée et la relâche en dessous de **35 %**. Pour un frein à main ou un embrayage capturé sur un axe, sélectionnez l’association, ouvrez **Seuils de l’axe…** et gardez le seuil de relâchement inférieur au seuil d’appui. Cliquez sur **Appliquer**, puis **Enregistrer**. La sortie de l’accessoire est une touche clavier.
+
+Sélectionnez une affectation dans **Accessoires…** ou **Boîte / palettes…**, puis choisissez **Maintien** ou **Impulsion unique** dans **Envoi**. Le maintien conserve la touche enfoncée tant que la commande est active. Une impulsion dure environ 50 ms et se déclenche sur un nouvel appui, ce qui convient aux palettes et aux boutons. Une commande maintenue doit être relâchée pour déclencher une autre impulsion. Les affectations existantes restent en mode maintien. Enregistrez les changements dans **Accessoires…**.
 
 ### Branchement sur PC
 
@@ -159,7 +161,7 @@ Pour retirer Chrome Axis, fermez le jeu et Chrome Axis, puis désactivez ou reti
 Ouvrez **Diagnostic…** dans **Matériel USB** ou dans le menu **Aide**. Le panneau affiche l’état envoyé par le plugin de cette installation de Cyberpunk. Lancez le jeu, installez V au volant, activez l’USB et actionnez vos commandes. En revenant dans Chrome Axis, consultez les dernières valeurs appliquées et leur ancienneté.
 
 - **Direction, accélérateur et frein.** Le panneau distingue un périphérique introuvable, un axe absent et une commande qui attend de revenir au neutre. Une commande armée est prête. La valeur appliquée apparaît quand Chrome Axis a effectivement modifié cette commande dans le jeu.
-- **Accessoires.** Le panneau montre combien d’affectations sont armées et la dernière touche que Windows a acceptée. Le rapport engagé dépend du mod de transmission.
+- **Accessoires.** Le panneau montre combien d’affectations sont armées et la dernière touche que Windows a acceptée. **Détails…** et le rapport copié indiquent l’entrée, le mode, l’état et le dernier envoi accepté pour chaque commande. Le rapport engagé dépend du mod de transmission.
 - **Retour de force.** Le panneau indique si un effet est actif, en attente ou indisponible selon le résultat des appels au pilote.
 
 Le panneau indique quand Cyberpunk n’est plus au premier plan ou quand les données du plugin ne sont plus récentes. La dernière valeur appliquée aide à diagnostiquer un essai après Alt-Tab. Pour l’USB, l’application peut rester ouverte pendant cet essai.
