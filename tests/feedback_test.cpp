@@ -12,20 +12,21 @@ int main()
     FeedbackSettings settings;
     WheelFeedback feedback;
     FeedbackSample motion{0.8f, 20.0f, 0.0f, 1600.0f};
-    bool clipped = true;
-    if (feedback.update(settings, motion, 0.02f, &clipped) != 0.0f || clipped)
+    const auto disabled = feedback.update(settings, motion, 0.02f);
+    if (disabled.force != 0.0f || disabled.requestedForce != 0.0f || disabled.saturation != FeedbackSaturation::none)
         return 1;
     settings.enabled = true;
     settings.strength = 35;
 
-    const auto settle = [&](const FeedbackSample& sample, bool* saturated = nullptr) {
+    const auto settleOutput = [&](const FeedbackSample& sample) {
         feedback.reset();
-        float value{};
+        FeedbackOutput value{};
         for (int i = 0; i < 30; ++i) {
-            value = feedback.update(settings, sample, 0.02f, saturated);
+            value = feedback.update(settings, sample, 0.02f);
         }
         return value;
     };
+    const auto settle = [&](const FeedbackSample& sample) { return settleOutput(sample).force; };
     const float legacyMoving = settle(motion);
     settings.strength = 100;
     const float moving = settle(motion);
@@ -53,18 +54,48 @@ int main()
     if (!(turnForce < straightForce - 0.02f))
         return 15;
     turn.skidding = true;
+    const float firstSkidForce = feedback.update(settings, turn, 0.02f).force;
     const float skidForce = settle(turn);
-    if (!(skidForce > turnForce && skidForce < 0.0f))
+    if (!(turnForce < firstSkidForce && firstSkidForce < skidForce && skidForce < 0.0f))
         return 16;
     turn.skidding = false;
+    const float firstRecovered = feedback.update(settings, turn, 0.02f).force;
+    for (int i = 0; i < 15; ++i)
+        feedback.update(settings, turn, 0.02f);
+    const float laterRecovered = feedback.update(settings, turn, 0.02f).force;
+    if (!(turnForce < laterRecovered && laterRecovered < firstRecovered && firstRecovered < skidForce) ||
+        !(skidForce - firstRecovered < firstSkidForce - turnForce))
+        return 30;
+
+    // Lateral motion alone gives a graded reduction. The game skid flag adds to that reduction.
+    auto drifting = turn;
+    drifting.sideSpeed = 5.0f;
+    const float mildSlipForce = settle(drifting);
+    drifting.sideSpeed = 14.0f;
+    const float heavySlipForce = settle(drifting);
+    drifting.skidding = true;
+    const float heavySkidForce = settle(drifting);
+    if (!(turnForce < mildSlipForce && mildSlipForce < heavySlipForce && heavySlipForce < heavySkidForce &&
+          heavySkidForce < 0.0f))
+        return 31;
+
+    auto invalidTurn = turn;
+    invalidTurn.sideSpeed = std::numeric_limits<float>::quiet_NaN();
+    const auto invalid = feedback.update(settings, invalidTurn, 0.02f);
+    const float freshForce = WheelFeedback{}.update(settings, turn, 0.02f).force;
+    if (invalid.force != 0.0f || invalid.requestedForce != 0.0f || invalid.saturation != FeedbackSaturation::none ||
+        feedback.update(settings, turn, 0.02f).force != freshForce)
+        return 32;
+
     settle(turn);
     turn.airborne = true;
-    const float firstAirborne = feedback.update(settings, turn, 0.02f);
+    const float firstAirborne = feedback.update(settings, turn, 0.02f).force;
     const float airborneForce = settle(turn);
     if (!(turnForce < firstAirborne && firstAirborne < airborneForce && airborneForce < 0.0f))
         return 17;
     settings.centering = 150;
-    if (std::abs(settle(straight, &clipped) - 1.5f * straightForce) > 0.0001f || clipped)
+    const auto stronger = settleOutput(straight);
+    if (std::abs(stronger.force - 1.5f * straightForce) > 0.0001f || stronger.saturation != FeedbackSaturation::none)
         return 18;
     settings.centering = 100;
     turn.airborne = false;
@@ -137,20 +168,43 @@ int main()
         return 25;
 
     motion.forwardSpeed = std::numeric_limits<float>::infinity();
-    if (feedback.update(settings, motion, 0.02f) != 0.0f)
+    if (feedback.update(settings, motion, 0.02f).force != 0.0f)
         return 8;
 
     // Centering and impact can add up to more than the nominal force.
     const FeedbackSample hardImpact{-1.0f, 120.0f, 0.0f, 3000.0f, 22.0f, 1.0f};
-    if (settle(hardImpact, &clipped) != -1.0f || !clipped)
+    auto strongCollision = hardImpact;
+    strongCollision.steering = -0.85f;
+    const auto impactPushedOverLimit = settleOutput(strongCollision);
+    if (impactPushedOverLimit.force != -1.0f || impactPushedOverLimit.requestedForce >= -1.0f ||
+        impactPushedOverLimit.saturation != FeedbackSaturation::transient)
         return 11;
     settings.strength = 200;
     settings.impactStrength = maxFeedbackImpactPercent;
-    if (settle(hardImpact, &clipped) != -1.0f || !clipped)
+    const auto both = settleOutput(hardImpact);
+    if (both.force != -1.0f || both.requestedForce >= -1.0f || both.saturation != FeedbackSaturation::continuous)
         return 14;
     settings.invert = false;
-    if (settle(hardImpact) != 1.0f)
+    const auto reverse = settleOutput(hardImpact);
+    if (reverse.force != 1.0f || reverse.requestedForce != -both.requestedForce ||
+        reverse.saturation != both.saturation)
         return 12;
+    auto opposingImpact = hardImpact;
+    opposingImpact.impactSide = -1.0f;
+    const auto cancelled = settleOutput(opposingImpact);
+    if (cancelled.saturation != FeedbackSaturation::none || cancelled.requestedForce != cancelled.force)
+        return 33;
+    opposingImpact.steering = -0.75f;
+    const auto clippedOpposite = settleOutput(opposingImpact);
+    if (clippedOpposite.force != -1.0f || clippedOpposite.saturation != FeedbackSaturation::transient)
+        return 34;
+    FeedbackSample hardLanding{0.7f, 40.0f, 0.0f, 1700.0f};
+    hardLanding.landingSpeed = 9.0f;
+    hardLanding.landingAge = 0.135f;
+    const auto landingPushedOverLimit = settleOutput(hardLanding);
+    if (landingPushedOverLimit.force != -1.0f || landingPushedOverLimit.requestedForce >= -1.0f ||
+        landingPushedOverLimit.saturation != FeedbackSaturation::transient)
+        return 35;
 
     const auto path = std::filesystem::current_path()
         / (L"feedback-test-" + std::to_wstring(GetCurrentProcessId()) + L".ini");

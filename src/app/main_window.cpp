@@ -947,7 +947,8 @@ private:
     bool reviewingCalibration() const { return calibrating_ && step_ == stepCount_; }
     bool canConfigureAxis(std::size_t channel) const
     {
-        return !simulation_ && !calibrating_ && draft_[channel] && readDeadzone(zones_[channel], channel == 0);
+        return !simulation_ && !calibrating_ && (draft_[channel]
+            ? readDeadzone(zones_[channel], channel == 0).has_value() : channel != 0);
     }
     bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || accessoriesSaved_)); }
     bool clearAnalogProfile() const
@@ -1555,7 +1556,17 @@ void App::configureAxisResponse(std::size_t channel)
     if (!canConfigureAxis(channel))
         return;
     auto& current = axisResponses_[channel];
-    const auto response = chrome_axis::editAxisResponse(window_, *input_, axisSettingsOptions[channel].axis, *draft_[channel], current);
+    const auto other = channel == 1 ? 2u : 1u;
+    const auto activeName = std::filesystem::path(preset_.name).u8string();
+    const auto* calibration = draft_[channel] ? &*draft_[channel] : nullptr;
+    const chrome_axis::PedalGraphContext pedals{
+        .otherCalibration = draft_[other] && canConfigureAxis(other) ? &*draft_[other] : nullptr,
+        .otherResponse = axisResponses_[other],
+        .diagnostics = simulationDiagnostics_,
+        .profileName = activeName,
+    };
+    const auto response = chrome_axis::editAxisResponse(window_, *input_, axisSettingsOptions[channel].axis, calibration,
+        current, channel == 0 ? nullptr : &pedals);
     if (response && *response != current) {
         current = *response;
         dirty_ = true;

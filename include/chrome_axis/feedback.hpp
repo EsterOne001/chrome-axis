@@ -42,16 +42,25 @@ struct FeedbackSample {
     bool airborne{};
 };
 
+// A transient is a collision or landing needed to push the summed force past the limit.
+enum class FeedbackSaturation { none, continuous, transient };
+
+struct FeedbackOutput {
+    // Signed relative to DirectInput's nominal force, in calibrated steering coordinates.
+    float requestedForce{};
+    float force{};
+    FeedbackSaturation saturation{};
+};
+
 class WheelFeedback {
 public:
-    // Returns a signed fraction of DirectInput's nominal force, in calibrated steering coordinates.
-    float update(const FeedbackSettings& settings, const FeedbackSample& sample, float seconds,
-                 bool* clipped = nullptr) noexcept;
+    FeedbackOutput update(const FeedbackSettings& settings, const FeedbackSample& sample, float seconds) noexcept;
     void reset() noexcept;
 
 private:
     float previousSteering_{};
     float smoothedForce_{};
+    float grip_{1.0f};
     bool initialized_{};
 };
 

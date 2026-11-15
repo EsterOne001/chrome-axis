@@ -120,16 +120,14 @@ bool saveFeedbackSettings(const std::filesystem::path& path, const FeedbackSetti
     return true;
 }
 
-float WheelFeedback::update(const FeedbackSettings& settings, const FeedbackSample& sample, float seconds,
-                            bool* clipped) noexcept
+FeedbackOutput WheelFeedback::update(const FeedbackSettings& settings, const FeedbackSample& sample,
+                                     float seconds) noexcept
 {
-    if (clipped)
-        *clipped = false;
     if (!settings.enabled || !valid(settings) || !std::isfinite(seconds) || seconds <= 0.0f ||
         !std::isfinite(sample.steering) || !std::isfinite(sample.forwardSpeed) ||
         !std::isfinite(sample.sideSpeed) || !std::isfinite(sample.mass)) {
         reset();
-        return 0.0f;
+        return {};
     }
     seconds = std::clamp(seconds, 0.010f, 0.055f);
     const float steering = std::clamp(sample.steering, -1.0f, 1.0f);
@@ -141,17 +139,27 @@ float WheelFeedback::update(const FeedbackSettings& settings, const FeedbackSamp
     previousSteering_ = steering;
     initialized_ = true;
 
+    // Body slip and the game's skid flag estimate overall grip. Airborne motion
+    // doesn't tell us about tire grip, so keep the last estimate until contact.
+    if (!sample.airborne) {
+        constexpr float slipStart = 0.04f;
+        constexpr float fullSlip = 0.65f;
+        const float slipLevel = std::clamp((std::abs(slip) - slipStart) / (fullSlip - slipStart), 0.0f, 1.0f);
+        const float slipLoss = 0.65f * slipLevel * slipLevel * (3.0f - 2.0f * slipLevel);
+        const float targetGrip = (1.0f - slipLoss) * (sample.skidding ? 0.60f : 1.0f);
+        // Ease loss of grip and bring back the load more slowly as traction returns.
+        const float timeConstant = targetGrip < grip_ ? 0.10f : 0.25f;
+        grip_ = std::lerp(grip_, targetGrip, 1.0f - std::exp(-seconds / timeConstant));
+    }
     const float contact = sample.airborne ? 0.16f : 1.0f;
-    const float tireGrip = sample.skidding ? 0.60f : 1.0f;
     const float centeringGain = static_cast<float>(settings.centering) / 100.0f;
     const float turnLoad = 0.24f * normalizedMotion(sample.lateralAcceleration, 8.0f) +
         0.045f * normalizedMotion(sample.yawRate, 1.25f);
     const float steeringLoad = (0.10f + 0.72f * speedFactor) * steering;
     const float corneringLoad = sample.forwardSpeed > 0.0f ? speedFactor * turnLoad : 0.0f;
-    const float centering = -(steeringLoad + corneringLoad) * weight * centeringGain * contact * tireGrip *
-        (1.0f - 0.65f * std::abs(slip));
+    const float centering = -(steeringLoad + corneringLoad) * weight * centeringGain * contact * grip_;
     const float damping = -(0.015f + 0.035f * speedFactor) * wheelRate;
-    const float lateral = -0.11f * slip * speedFactor * contact * tireGrip;
+    const float lateral = -0.11f * slip * speedFactor * contact * grip_;
     smoothedForce_ += std::min(seconds * 12.0f, 1.0f) * (centering + damping + lateral - smoothedForce_);
 
     float transient = 0.0f;
@@ -170,17 +178,24 @@ float WheelFeedback::update(const FeedbackSettings& settings, const FeedbackSamp
         transient = 0.20f * strength * centeredPulse(sample.landingAge / 0.18f);
     }
     const float gain = static_cast<float>(settings.strength) / 100.0f;
+    const float signedGain = settings.invert ? -gain : gain;
     const float impactGain = static_cast<float>(settings.impactStrength) / 100.0f;
-    const float force = (settings.invert ? -gain : gain) * (smoothedForce_ + transient * impactGain);
-    if (clipped)
-        *clipped = std::abs(force) > 1.0f;
-    return std::clamp(force, -1.0f, 1.0f);
+    const float continuousForce = signedGain * smoothedForce_;
+    const float requestedForce = continuousForce + signedGain * transient * impactGain;
+    const float force = std::clamp(requestedForce, -1.0f, 1.0f);
+    auto saturation = FeedbackSaturation::none;
+    if (requestedForce != force) {
+        // Attribute the excess to the steady load if it would already clip in this direction.
+        saturation = continuousForce * force > 1.0f ? FeedbackSaturation::continuous : FeedbackSaturation::transient;
+    }
+    return {requestedForce, force, saturation};
 }
 
 void WheelFeedback::reset() noexcept
 {
     previousSteering_ = 0.0f;
     smoothedForce_ = 0.0f;
+    grip_ = 1.0f;
     initialized_ = false;
 }
 

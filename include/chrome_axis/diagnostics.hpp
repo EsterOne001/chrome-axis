@@ -37,16 +37,20 @@ struct DiagnosticAxis {
     std::uint32_t inputAvailable{};
     std::uint32_t requestedAvailable{};
     DiagnosticDelivery delivery{DiagnosticDelivery::unavailable};
+    float finalValue{}; // Pedal command after USB and native input arbitration in the game hook.
+    std::uint32_t finalAvailable{};
 };
 
 struct DiagnosticFeedbackTelemetry {
     std::uint64_t motionAgeMicros{};
     std::uint64_t submittedAt{}; // GetTickCount64() when the driver accepted the effect.
+    float rawRequested{}; // Signed force before limiting, in the same nominal units.
     float requested{}; // Signed force after limiting, relative to the DirectInput nominal force.
     float submitted{}; // Last accepted signed effect in the same units.
     std::uint8_t motionAvailable{};
     std::uint8_t requestAvailable{};
     std::uint8_t clipped{};
+    std::uint8_t impactClipped{}; // This saturation was caused by a collision or landing effect.
     std::uint8_t airborne{};
     std::uint8_t skidding{};
 };
@@ -54,6 +58,7 @@ struct DiagnosticFeedbackTelemetry {
 struct DiagnosticSnapshot {
     DiagnosticMode mode{DiagnosticMode::waitingForDriver};
     std::array<DiagnosticAxis, 3> axes{}; // Steering, throttle, brake.
+    std::uint64_t pedalSampledAt{}; // GetTickCount64() of the two contemporaneous final pedal commands.
     std::array<char, 257> profile{}; // UTF-8 profile name. Empty for the default profile.
     std::uint32_t profileLoaded{};
     std::uint32_t accessoryCount{};
@@ -98,8 +103,10 @@ struct PerformanceReport {
     std::uint64_t transientReads{};
     std::uint64_t forceSamples{};
     std::uint64_t clippedSamples{};
+    std::uint64_t impactClippedSamples{};
     std::uint64_t submittedEffects{};
-    float peakRequestedForce{}; // Absolute normalized peak, including clipping.
+    float peakRequestedForce{}; // Absolute normalized peak before limiting.
+    float peakLimitedForce{}; // Absolute normalized peak after limiting.
     float peakSubmittedForce{}; // Absolute normalized peak of the effects accepted by the driver.
 };
 

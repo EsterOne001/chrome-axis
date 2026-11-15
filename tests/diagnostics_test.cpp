@@ -57,9 +57,11 @@ int testPerformanceCapture(const std::filesystem::path& root)
         performance.expiredReads = 2;
         performance.transientReads = 3;
         performance.forceSamples = 20;
-        performance.clippedSamples = 2;
+        performance.clippedSamples = 3;
+        performance.impactClippedSamples = 2;
         performance.submittedEffects = 13;
-        performance.peakRequestedForce = 1.0f;
+        performance.peakRequestedForce = 1.625f;
+        performance.peakLimitedForce = 1.0f;
         performance.peakSubmittedForce = 0.875f;
         publisher.publish(snapshot, 1, performance);
         const auto live = observer.read();
@@ -70,8 +72,9 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.performance.expiredReads != 2 || live.performance.transientReads != 3 ||
             live.performance.motionAge.samples != 2 || live.performance.motionAge.totalMicros != 23000 ||
             live.performance.motionAge.maxMicros != 18500 || live.performance.forceSamples != 20 ||
-            live.performance.clippedSamples != 2 || live.performance.submittedEffects != 13 ||
-            live.performance.peakRequestedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f)
+            live.performance.clippedSamples != 3 || live.performance.impactClippedSamples != 2 ||
+            live.performance.submittedEffects != 13 || live.performance.peakRequestedForce != 1.625f ||
+            live.performance.peakLimitedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f)
             return 15;
 
         const auto stop = owner.requestPerformanceCapture(false);
@@ -87,7 +90,7 @@ int testPerformanceCapture(const std::filesystem::path& root)
         if (finished.state != PerformanceState::complete || finished.requestId != stop ||
             finished.startedAt != performance.startedAt || finished.endedAt != performance.endedAt ||
             finished.usbRead.totalMicros != 800 || finished.motionAge.totalMicros != 23000 ||
-            finished.clippedSamples != 2 || finished.submittedEffects != 13)
+            finished.clippedSamples != 3 || finished.impactClippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
 
         {
@@ -139,6 +142,17 @@ int run()
     snapshot.axes[0].requestedValue = 0.0f;
     snapshot.axes[0].delivery = DiagnosticDelivery::gameKept;
     snapshot.axes[1].state = DiagnosticAxisState::waitingForNeutral;
+    snapshot.axes[1].finalValue = 0.0f;
+    snapshot.axes[1].finalAvailable = 1;
+    snapshot.axes[2].state = DiagnosticAxisState::armed;
+    snapshot.axes[2].inputValue = 0.25f;
+    snapshot.axes[2].inputAvailable = 1;
+    snapshot.axes[2].requestedValue = 0.125f;
+    snapshot.axes[2].requestedAvailable = 1;
+    snapshot.axes[2].finalValue = 0.5f;
+    snapshot.axes[2].finalAvailable = 1;
+    snapshot.axes[2].delivery = DiagnosticDelivery::gameKept;
+    snapshot.pedalSampledAt = snapshot.axes[0].appliedAt;
     snapshot.profileLoaded = 1;
     snapshot.accessoryCount = 2;
     snapshot.accessoryArmed = 1;
@@ -146,7 +160,18 @@ int run()
     snapshot.lastAccessoryKey = VK_SPACE;
     snapshot.accessorySentAt = snapshot.axes[0].appliedAt;
     snapshot.feedback = DiagnosticFeedbackState::active;
-    snapshot.feedbackData = {16500, snapshot.axes[0].appliedAt, 1.0f, -0.625f, 1, 1, 1, 0, 1};
+    snapshot.feedbackData = {
+        .motionAgeMicros = 16500,
+        .submittedAt = snapshot.axes[0].appliedAt,
+        .rawRequested = 1.25f,
+        .requested = 1.0f,
+        .submitted = -0.625f,
+        .motionAvailable = 1,
+        .requestAvailable = 1,
+        .clipped = 1,
+        .impactClipped = 1,
+        .skidding = 1,
+    };
     {
         DiagnosticPublisher publisher(root);
         publisher.publish(snapshot, 1);
@@ -166,14 +191,21 @@ int run()
             received.snapshot.feedback != snapshot.feedback ||
             received.snapshot.feedbackData.motionAgeMicros != 16500 ||
             received.snapshot.feedbackData.submittedAt != snapshot.feedbackData.submittedAt ||
+            received.snapshot.feedbackData.rawRequested != 1.25f ||
             received.snapshot.feedbackData.requested != 1.0f || received.snapshot.feedbackData.submitted != -0.625f ||
             !received.snapshot.feedbackData.motionAvailable || !received.snapshot.feedbackData.requestAvailable ||
-            !received.snapshot.feedbackData.clipped || received.snapshot.feedbackData.airborne ||
+            !received.snapshot.feedbackData.clipped || !received.snapshot.feedbackData.impactClipped ||
+            received.snapshot.feedbackData.airborne ||
             !received.snapshot.feedbackData.skidding ||
             !received.lastDriveAt || received.lastDrive.axes[0].inputAvailable != 1 ||
             received.lastDrive.axes[0].inputValue != 0.0f || received.lastDrive.axes[1].inputAvailable ||
             received.lastDrive.axes[0].requestedAvailable != 1 || received.lastDrive.axes[0].requestedValue != 0.0f ||
             received.lastDrive.axes[0].delivery != DiagnosticDelivery::gameKept ||
+            received.lastDrive.pedalSampledAt != snapshot.pedalSampledAt ||
+            !received.lastDrive.axes[1].finalAvailable || received.lastDrive.axes[1].finalValue != 0.0f ||
+            received.lastDrive.axes[1].requestedAvailable || !received.lastDrive.axes[2].finalAvailable ||
+            received.lastDrive.axes[2].inputValue != 0.25f || received.lastDrive.axes[2].requestedValue != 0.125f ||
+            received.lastDrive.axes[2].finalValue != 0.5f ||
             received.eventCount != 1 || received.events[0].mode != DiagnosticMode::usb ||
             other.read().connection != DiagnosticConnection::disconnected)
             return 2;

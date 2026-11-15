@@ -130,6 +130,8 @@ struct AxisDelivery {
 struct VehicleDelivery {
     std::array<AxisDelivery, 3> axes{};
     Clock::time_point sampled{};
+    std::array<float, 2> finalPedals{};
+    std::uint64_t pedalTick{};
 };
 
 struct InputAgeCapture {
@@ -973,6 +975,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             const bool hasDelivery = drivingSession && vehicleDelivery.sampled != Clock::time_point{} &&
                 now - vehicleDelivery.sampled <= inputLifetime;
+            const bool hasPedalDelivery = hasDelivery && snapshot.mode == DiagnosticMode::usb &&
+                snapshot.profileLoaded && vehicleDelivery.pedalTick;
+            if (hasPedalDelivery)
+                snapshot.pedalSampledAt = vehicleDelivery.pedalTick;
             for (std::size_t i = 0; i < appliedAxes.size(); ++i) {
                 auto& axis = snapshot.axes[i];
                 axis.value = appliedAxes[i].value;
@@ -981,7 +987,14 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     axis.state = DiagnosticAxisState::inactive;
                     axis.inputAvailable = 0;
                 }
-                if (hasDelivery && (axis.state == DiagnosticAxisState::armed ||
+                if (hasPedalDelivery && i > 0) {
+                    axis.finalValue = vehicleDelivery.finalPedals[i - 1];
+                    axis.finalAvailable = 1;
+                    const auto& reading = vehicleDelivery.axes[i].reading;
+                    axis.inputValue = reading.value_or(0.0f);
+                    axis.inputAvailable = reading.has_value();
+                }
+                if (hasDelivery && ((hasPedalDelivery && i > 0) || axis.state == DiagnosticAxisState::armed ||
                                     axis.state == DiagnosticAxisState::simulated)) {
                     const auto& delivered = vehicleDelivery.axes[i];
                     if (delivered.outcome != DiagnosticDelivery::unavailable) {
@@ -1282,6 +1295,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             forceDiagnostic.requestAvailable = 0;
             forceDiagnostic.motionAvailable = 0;
             forceDiagnostic.clipped = 0;
+            forceDiagnostic.impactClipped = 0;
         } else if (lastFeedbackUpdate == Clock::time_point{} || start - lastFeedbackUpdate >= feedbackInterval) {
             const float seconds = lastFeedbackUpdate == Clock::time_point{} ? 0.020f
                 : std::chrono::duration<float>(start - lastFeedbackUpdate).count();
@@ -1292,11 +1306,15 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             forceDiagnostic.motionAvailable = 1;
             forceDiagnostic.airborne = forceSample->airborne;
             forceDiagnostic.skidding = forceSample->skidding;
-            bool clipped{};
-            const float force = direction * wheelFeedback.update(usb.feedbackSettings, *forceSample, seconds, &clipped);
+            const auto effect = wheelFeedback.update(usb.feedbackSettings, *forceSample, seconds);
+            const float force = direction * effect.force;
+            const bool clipped = effect.saturation != chrome_axis::FeedbackSaturation::none;
+            const bool impactClipped = effect.saturation == chrome_axis::FeedbackSaturation::transient;
+            forceDiagnostic.rawRequested = direction * effect.requestedForce;
             forceDiagnostic.requested = force;
             forceDiagnostic.requestAvailable = 1;
             forceDiagnostic.clipped = clipped;
+            forceDiagnostic.impactClipped = impactClipped;
             const auto feedbackStarted = measuring ? Clock::now() : Clock::time_point{};
             const auto accepted = input->setWheelForce(steering.deviceId, steering.axis, force,
                                                       [](const void* value) noexcept {
@@ -1307,7 +1325,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 performance.motionAge.add(forceDiagnostic.motionAgeMicros);
                 ++performance.forceSamples;
                 performance.clippedSamples += clipped;
-                performance.peakRequestedForce = std::max(performance.peakRequestedForce, std::abs(force));
+                performance.impactClippedSamples += impactClipped;
+                performance.peakRequestedForce = std::max(performance.peakRequestedForce, std::abs(effect.requestedForce));
+                performance.peakLimitedForce = std::max(performance.peakLimitedForce, std::abs(force));
             }
             if (accepted) {
                 forceDiagnostic.submittedAt = GetTickCount64();
@@ -1467,9 +1487,11 @@ void updateVehicle(Vehicle* vehicle) {
         return AxisDelivery{inputFrame.readings[axis], value, !ready ? DiagnosticDelivery::unavailable
             : applied ? DiagnosticDelivery::applied : DiagnosticDelivery::gameKept};
     };
+    const auto tick = GetTickCount64();
     vehicleDelivery = {{delivery(0, compensated, controls.steeringReady, steer),
-                        delivery(1, controls.values.throttle, controls.throttleReady, throttle != gameThrottle),
-                        delivery(2, controls.values.brake, controls.brakeReady, brake != gameBrake)}, inputFrame.sampled};
+                         delivery(1, controls.values.throttle, controls.throttleReady, throttle != gameThrottle),
+                         delivery(2, controls.values.brake, controls.brakeReady, brake != gameBrake)}, inputFrame.sampled,
+                         {throttle, brake}, simulated ? 0 : tick};
     if (steer) {
         writeField(*vehicle, steeringOffset, compensated);
     }
@@ -1480,7 +1502,6 @@ void updateVehicle(Vehicle* vehicle) {
         writeField(*vehicle, secondaryDriveOffset, throttle - brake);
     }
     if (steer || pedals) {
-        const auto tick = GetTickCount64();
         if (!simulated && inputAgeCapture.started != Clock::time_point{} && now < inputAgeCapture.deadline &&
             inputFrame.sampled >= inputAgeCapture.started) {
             inputAgeCapture.timing.add(elapsedMicros(Clock::now() - inputFrame.sampled));

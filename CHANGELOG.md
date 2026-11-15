@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.34 · 15 novembre 2026
+
+- **Pédalier.** Un graphique montre ensemble l’accélérateur et le frein, avec la course lue, la sortie de la courbe et, pendant la conduite USB, les commandes retenues par le jeu. Le frein propose un réglage progressif pour les pédales mesurant la course et un réglage linéaire pour les capteurs de pression. Ces préréglages conservent la course utile et la zone morte existantes.
+- **Retour de force.** La résistance évolue plus progressivement lors d’un dérapage et à la reprise d’adhérence. Le diagnostic compare l’effort calculé, la consigne plafonnée et l’effet accepté par le pilote. La mesure distingue la saturation de l’effort continu de celle provoquée par un choc ou une réception.
+
+[ZIP Vortex](out/ChromeAxis-0.4.34-Cyberpunk-2.5.zip)
+
 ## Chrome Axis 0.4.33 · 15 novembre 2026
 
 - **Direction.** Réglez la sensibilité autour du centre et la course utile de 50 à 100 % de la course calibrée. Les jauges comparent les deux sens de rotation avant et après réglage.

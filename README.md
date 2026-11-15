@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-Le prototype **0.4.33** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Le prototype **0.4.34** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -79,6 +79,10 @@ Si un périphérique du profil apparaît déconnecté après un transfert, branc
 Dans la colonne **Zone morte (%)**, la **Direction** accepte de 0 à 25 %. Saisissez **0** pour désactiver la zone morte. Le texte **Aucune** s’affiche à côté. Au retour en jeu, une tolérance de 0,5 % autour du centre permet toujours de réarmer le volant. Une fois armé, le volant transmet les petits mouvements avec une zone morte de 0 %. Les pédales gardent une plage de 0,5 à 25 %. Une nouvelle mesure du même axe sur le même périphérique conserve sa zone morte, y compris 0 % pour la direction.
 
 Une fois le frein calibré, ouvrez **Réglages frein…**. La progressivité à **0** donne une réponse linéaire. Une valeur positive adoucit le début de course et une valeur négative le rend plus réactif. Réglez la **course pour atteindre 100 %** entre **50 et 100 %** de la course calibrée. Les jauges comparent la course avant zone morte à la sortie réglée. Appuyez sur la pédale ou saisissez une course simulée de 0 à 100 %. Cliquez sur **Appliquer**, puis **Enregistrer le profil**.
+
+Dans **Réglages frein…**, **Pédale à course · progressive** adoucit le début du freinage et **Capteur de pression · linéaire** donne une réponse proportionnelle après la zone morte. Le choix modifie la progressivité et conserve la course utile et la zone morte. Cliquez sur **Appliquer**, puis **Enregistrer le profil**.
+
+Le graphique commun dans **Réglages frein…** et **Réglages accélérateur…** compare les deux pédales sur les huit dernières secondes. Il montre la course lue et la sortie de la courbe, avec le matériel ou les valeurs de simulation. Pendant la conduite USB avec le même profil enregistré, il indique aussi les valeurs retenues par le plugin après combinaison avec les commandes du jeu.
 
 ### Réponse de la direction et de l’accélérateur
 
@@ -164,7 +168,7 @@ Si le dossier du jeu est reconnu, le panneau signale une DLL ou un script absent
 
 Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rapport dans le presse-papiers inclut le profil actif, les modèles détectés par l’application, les versions installées et jusqu’à huit changements d’état récents. Il distingue l’état actuel du dernier état en conduite. Pour chaque axe, il associe la valeur calibrée lue à la commande demandée lorsqu’elles proviennent de la même mesure. La dernière valeur effectivement écrite apparaît séparément, avec son ancienneté. Le rapport se copie localement et omet les chemins d’installation et les identifiants de périphériques. Déployez ensemble l’application et le plugin du même ZIP pour que le panneau puisse lire les données du jeu.
 
-Pour mesurer les délais, cliquez sur **Mesurer les performances** dans **Diagnostic…**, revenez dans Cyberpunk et conduisez avec l’USB activé. Revenez dans l’application, cliquez sur **Arrêter la mesure**, puis sur **Copier le diagnostic**. Le rapport résume la durée des lectures USB et des appels de retour de force, l’âge des données à leur application en jeu et le nombre de lectures expirées. La mesure inclut aussi l’âge des données de la voiture, le nombre d’effets transmis au pilote et la part des consignes de force écrêtées. Les pourcentages de force désignent des consignes DirectInput. Ces mesures décrivent le chemin des commandes du mod. Pour mesurer le temps de trame, suivez le protocole d’essai manuel.
+Pour mesurer les délais, cliquez sur **Mesurer les performances** dans **Diagnostic…**, revenez dans Cyberpunk et conduisez avec l’USB activé. Revenez dans l’application, cliquez sur **Arrêter la mesure**, puis sur **Copier le diagnostic**. Le rapport résume la durée des lectures USB et des appels de retour de force, l’âge des données à leur application en jeu et le nombre de lectures expirées. La mesure inclut aussi l’âge des données de la voiture, le nombre d’effets transmis au pilote et la part des consignes de force écrêtées. Le rapport sépare les saturations de l’effort continu de celles causées par un choc ou une réception, avec les pics calculé, plafonné et accepté par le pilote. Les pourcentages de force désignent des consignes DirectInput. Ces mesures décrivent le chemin des commandes du mod. Pour mesurer le temps de trame, suivez le protocole d’essai manuel.
 
 ## Dossiers du projet
 
