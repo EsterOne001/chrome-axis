@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.48
+
+- **HUD Painter.** La section Chrome Axis permet de régler séparément le contour du badge et le texte de la boîte. Le bouton Appliquer enregistre ces couleurs dans un fichier dédié à Chrome Axis. Elles sont indépendantes de la palette et des préréglages du jeu.
+
+[ZIP Vortex](out/Chromaxis-0.4.48.zip)
+
 ## Chrome Axis 0.4.47
 
 - **HUD de conduite.** Le cadre passe au cyan. Le mode de boîte et le rapport engagé apparaissent en rouge, avec un séparateur rouge discret entre les deux colonnes. Le logo et le libellé gardent les couleurs des états USB.
