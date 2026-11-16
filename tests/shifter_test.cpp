@@ -1,4 +1,5 @@
 #include "../src/app/shifter_capture_key.hpp"
+#include "../src/app/shifter_setup.hpp"
 #include "chrome_axis/calibration.hpp"
 #include "chrome_axis/shifter.hpp"
 
@@ -272,6 +273,104 @@ bool keepsSequentialKeyThroughRestRecapture()
     return roundTrip && !cleanup;
 }
 
+bool roundTripShifterProfile(const AccessoryProfile& profile)
+{
+    using namespace chrome_axis;
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path()
+        / ("chrome-axis-shifter-setup-" + std::to_string(nonce) + ".ini");
+    std::string error;
+    const bool roundTrip = saveAccessoryProfile(path, profile, error) && loadAccessoryProfile(path, error) == profile;
+    std::error_code cleanup;
+    std::filesystem::remove(path, cleanup);
+    return roundTrip && !cleanup;
+}
+
+bool migratesKeyboardHPattern()
+{
+    using namespace chrome_axis;
+    using enum ShifterRole;
+
+    AccessoryBinding oldFirst{shifterId, AccessoryKind::Button, 0, 0, 1, VK_NUMPAD1};
+    oldFirst.role = Gear1;
+    AccessoryBinding oldSecond{shifterId, AccessoryKind::Button, 1, 0, 1, VK_NUMPAD2};
+    oldSecond.role = Gear2;
+    AccessoryBinding oldOther{wheelId, AccessoryKind::Button, 0, 0, 1, VK_NUMPAD3};
+    oldOther.role = Gear3;
+    AccessoryBinding oldPaddle{shifterId, AccessoryKind::Button, 2, 0, 1, VK_ADD};
+    oldPaddle.role = Upshift;
+    AccessoryBinding accessory{shifterId, AccessoryKind::Button, 3, 0, 1, 'A'};
+    AccessoryBinding clutch{shifterId, AccessoryKind::Axis, 0, 0, 65535, 0};
+    clutch.clutchMode = ClutchMode::assist;
+    AccessoryBinding handbrake{shifterId, AccessoryKind::Axis, 1, 0, 65535, 0};
+    handbrake.handbrakeCeilingPercent = defaultHandbrakeCeilingPercent;
+    const AccessoryProfile saved{oldFirst, oldSecond, oldOther, oldPaddle, accessory, clutch, handbrake};
+    const ShifterSetup setup{shifterId, 6, true};
+    if (!setup.replaces(oldFirst) || !setup.replaces(oldSecond) || setup.replaces(oldOther) ||
+        setup.replaces(oldPaddle) || setup.replaces(accessory) || setup.replaces(clutch) || setup.replaces(handbrake))
+        return false;
+
+    auto first = oldFirst;
+    first.key = 0;
+    first.nativeShifter = true;
+    auto second = oldSecond;
+    second.key = 0;
+    second.nativeShifter = true;
+    const AccessoryProfile draft{first, second};
+    const auto present = nativeShifterPositionBit(Gear1) | nativeShifterPositionBit(Gear2);
+    const unsigned int absent = ((1u << 7) - 1u) & ~present;
+    if (setup.withCapture(saved, draft, 0) ||
+        setup.withCapture(saved, {first}, absent) ||
+        setup.withCapture(saved, draft, absent | present))
+        return false;
+
+    first.nativeShifterPositions = second.nativeShifterPositions = present;
+    const auto migrated = setup.withCapture(saved, draft, absent);
+    return migrated == AccessoryProfile{oldOther, oldPaddle, accessory, clutch, handbrake, first, second}
+        && roundTripShifterProfile(*migrated);
+}
+
+bool savesNativePaddlesFromDifferentDevices()
+{
+    using namespace chrome_axis;
+    using enum ShifterRole;
+
+    const auto capture = [](const char* deviceId, std::size_t button, ShifterRole role) -> std::optional<AccessoryBinding> {
+        DeviceSample sample;
+        ShifterCapture shifter(deviceId);
+        shifter.captureNeutral(sample);
+        shifter.captureNeutral(sample);
+        if (!shifter.captureNeutral(sample))
+            return std::nullopt;
+        sample.buttons.set(button);
+        shifter.sample(sample);
+        shifter.sample(sample);
+        auto result = shifter.sample(sample);
+        if (result.binding) {
+            result.binding->role = role;
+            result.binding->nativeSequential = true;
+        }
+        return result.binding;
+    };
+    const auto up = capture(wheelId, 0, Upshift);
+    const auto down = capture(shifterId, 0, Downshift);
+    const auto sameDeviceDown = capture(wheelId, 2, Downshift);
+    if (!up || !down || !sameDeviceDown || sameShifterInput(*up, *down))
+        return false;
+    const AccessoryBinding accessory{wheelId, AccessoryKind::Button, 1, 0, 1, 'A'};
+    const auto saved = AccessoryProfile{accessory};
+    const ShifterSetup setup{wheelId, 0, true};
+    if (setup.withCapture(saved, {*up}, 0))
+        return false;
+    const auto pair = setup.withCapture(saved, {*up, *down}, 0);
+    if (!pair || *pair != AccessoryProfile{accessory, *up, *down})
+        return false;
+
+    const auto sameDevice = setup.withCapture(saved, {*up, *sameDeviceDown}, 0);
+    return sameDevice == AccessoryProfile{accessory, *up, *sameDeviceDown} &&
+        roundTripShifterProfile(*pair) && roundTripShifterProfile(*sameDevice);
+}
+
 } // namespace
 
 int main()
@@ -299,6 +398,14 @@ int main()
     if (!keepsSequentialKeyThroughRestRecapture()) {
         std::cerr << "Sequential capture lost the assignment after USB rest recapture\n";
         return 6;
+    }
+    if (!migratesKeyboardHPattern()) {
+        std::cerr << "Native shifter migration did not preserve unrelated or incomplete assignments\n";
+        return 7;
+    }
+    if (!savesNativePaddlesFromDifferentDevices()) {
+        std::cerr << "Native paddle capture did not save and reload a pair using two USB devices\n";
+        return 8;
     }
     return 0;
 }

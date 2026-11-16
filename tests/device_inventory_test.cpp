@@ -1,3 +1,4 @@
+#include "app_input.hpp"
 #include "device_capture.hpp"
 #include "device_inventory.hpp"
 #include "transmission_shortcut.hpp"
@@ -107,6 +108,103 @@ bool testInventory()
     const bool closedWhileBlocked = !gate->finished.load();
     gate->unblock();
     return closedWhileBlocked && waitFor([&] { return gate->finished.load(); });
+}
+
+bool testPendingLayout()
+{
+    auto scans = std::make_shared<std::atomic<unsigned int>>();
+    DeviceInventory inventory([scans] {
+        const auto count = scans->fetch_add(1) + 1;
+        DeviceInfo device;
+        device.id = "wheel";
+        if (count == 1) {
+            device.axes[0] = true;
+            device.forceFeedbackAxes[0] = true;
+        } else if (count == 2) {
+            device.layoutPending.axes.set(0).set(1);
+        } else {
+            device.axes[1] = true;
+        }
+        return DeviceInventoryResult{{std::move(device)}, true};
+    });
+    inventory.refresh();
+    if (!waitFor([&] { return static_cast<bool>(inventory.current()); }))
+        return false;
+    const auto known = inventory.current();
+    inventory.refresh();
+    if (!waitFor([&] { return static_cast<bool>(inventory.current()); }))
+        return false;
+    const auto pending = inventory.current();
+    if (!known || !pending || pending->devices.size() != 1 || pending->revision <= known->revision)
+        return false;
+    const auto& held = pending->devices.front();
+    if (!held.axes[0] || !held.forceFeedbackAxes[0] || held.axes[1] ||
+        !held.layoutPending.axes[0] || !held.layoutPending.axes[1])
+        return false;
+    return waitFor([&] {
+        const auto result = inventory.current();
+        return result && result->revision > pending->revision && result->devices.size() == 1 &&
+            !result->devices.front().axes[0] && result->devices.front().axes[1] &&
+            result->devices.front().layoutPending.axes.none();
+    });
+}
+
+struct SampleGate {
+    std::atomic<unsigned int> sampleCount{};
+    std::atomic<bool> released{}, extraReleased{}, stoppingStarted{}, stoppingReleased{}, stoppingFinished{};
+
+    static void release(std::atomic<bool>& flag)
+    {
+        flag.store(true);
+        flag.notify_one();
+    }
+};
+
+bool testAsynchronousCapture()
+{
+    auto gate = std::make_shared<SampleGate>();
+    auto input = std::make_unique<AppInput>([gate](const std::string& id, const auto&) {
+        DeviceSample sample;
+        sample.axesPresent[0] = true;
+        if (id == "wheel") {
+            const auto read = gate->sampleCount.fetch_add(1) + 1;
+            if (read == 1)
+                gate->released.wait(false);
+            if (read > 2)
+                gate->extraReleased.wait(false);
+            sample.axes[0] = read == 1 ? 100 : 200;
+        } else {
+            gate->stoppingStarted.store(true);
+            gate->stoppingReleased.wait(false);
+            gate->stoppingFinished.store(true);
+        }
+        return CaptureDeviceRead{sample, DeviceReadStatus::available};
+    });
+
+    const auto first = input->capture("wheel");
+    const bool started = waitFor([&] { return gate->sampleCount.load() == 1; });
+    input->invalidate();
+    const auto duringOld = input->capture("wheel");
+    SampleGate::release(gate->released);
+
+    CaptureDeviceRead newDevice;
+    const bool freshAfterReset = waitFor([&] {
+        newDevice = input->capture("wheel");
+        return newDevice.sample.has_value();
+    }) && newDevice.updated && newDevice.sample->axes[0] == 200 && newDevice.sample->sequence;
+    const auto repeated = input->capture("wheel");
+    input->invalidate();
+    SampleGate::release(gate->extraReleased);
+
+    input->capture("hold");
+    const bool closing = waitFor([&] { return gate->stoppingStarted.load(); });
+    const auto stillWaiting = input->capture("hold");
+    input.reset();
+    const bool closedBeforeDriver = !gate->stoppingFinished.load();
+    SampleGate::release(gate->stoppingReleased);
+    return started && !first.updated && !duringOld.updated && freshAfterReset && !repeated.updated &&
+        closing && !stillWaiting.updated && closedBeforeDriver &&
+        waitFor([&] { return gate->stoppingFinished.load(); });
 }
 
 bool testCaptureDuringUnrelatedScan()
@@ -225,14 +323,17 @@ int main()
     const auto root = std::filesystem::temp_directory_path() /
         ("chrome-axis-app-state-" + std::to_string(GetCurrentProcessId()));
     const bool inventory = testInventory();
+    const bool pendingLayout = testPendingLayout();
+    const bool asyncCapture = testAsynchronousCapture();
     const bool capture = testCaptureDuringUnrelatedScan();
     const bool shortcut = testShortcut(root);
     const bool usbStatus = testUsbStatus();
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
-    if (!inventory || !capture || !shortcut || !usbStatus)
-        std::cerr << "inventory=" << inventory << " capture=" << capture << " shortcut=" << shortcut
+    if (!inventory || !pendingLayout || !asyncCapture || !capture || !shortcut || !usbStatus)
+        std::cerr << "inventory=" << inventory << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
+                  << " capture=" << capture << " shortcut=" << shortcut
                   << " usb_state=" << usbStatus << '\n';
-    return inventory && capture && shortcut && usbStatus ? 0 : 1;
+    return inventory && pendingLayout && asyncCapture && capture && shortcut && usbStatus ? 0 : 1;
 }

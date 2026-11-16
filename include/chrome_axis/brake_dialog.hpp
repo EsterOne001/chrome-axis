@@ -51,6 +51,8 @@
 
 namespace chrome_axis {
 
+class AppInput;
+
 class DiagnosticReader;
 
 struct PedalGraphContext {
@@ -60,7 +62,7 @@ struct PedalGraphContext {
     std::u8string_view profileName;
 };
 
-std::optional<AxisResponse> editAxisResponse(HWND owner, DirectInput& input, ResponseAxis axis,
+std::optional<AxisResponse> editAxisResponse(HWND owner, AppInput& input, ResponseAxis axis,
     const AxisCalibration* calibration, const AxisResponse& response, const PedalGraphContext* pedals = nullptr);
 
 } // namespace chrome_axis

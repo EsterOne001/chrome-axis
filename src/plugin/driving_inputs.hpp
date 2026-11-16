@@ -84,7 +84,9 @@ public:
     DrivingInputs(Clock::duration interval, Clock::duration lifetime, DirectInputDiagnostic logger = nullptr)
         : interval_(interval), lifetime_(lifetime), logger_(logger) {}
 
-    ~DrivingInputs() override {
+    ~DrivingInputs() override { requestStop(); }
+
+    void requestStop() noexcept {
         for (auto& [id, entry] : active_)
             entry.worker->stop();
         for (auto& worker : retired_)
@@ -406,7 +408,7 @@ private:
             }
         }
 
-        void stop() { thread_.request_stop(); }
+        void stop() noexcept { thread_.request_stop(); }
         bool finished() const noexcept { return finished_.load(std::memory_order_acquire); }
 
         void discardAccessorySamples() {

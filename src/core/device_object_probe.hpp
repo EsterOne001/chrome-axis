@@ -8,6 +8,16 @@
 
 namespace chrome_axis {
 
+// A refused acquisition must not skip a fresh metadata probe. Some drivers
+// briefly return E_PENDING even when the next GetObjectInfo works unacquired.
+template <class Acquire, class Refresh, class Release>
+void probeDeviceLayout(bool& needsAcquisition, Acquire&& acquire, Refresh&& refresh, Release&& release) {
+    const bool acquired = needsAcquisition && acquire();
+    needsAcquisition |= refresh();
+    if (acquired)
+        release();
+}
+
 template <std::size_t Count>
 class DeviceObjectProbe {
 public:

@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.65** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.66** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -115,7 +115,7 @@ Select a binding in **Accessories…** to see its live state. For an axis, the g
 To change the key for an already captured input, select the binding and click **Change key…**. In **Shifter and paddles…**, select the device first. Use **Remove** to delete the selected key binding or the entire native transmission configuration. Click **Save** in the window where you made the change.
 
 1. Open **USB Hardware → Transmission… → Shifter and paddles…** and select the DirectInput device. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
-2. In **Sequential / paddles**, capture **Shift up** and **Shift down**. Select **Button or D-pad** for digital inputs. For an analog axis, capture neutral and full travel in each direction. Bind the same keys in your transmission mod.
+2. In **Native sequential / paddles**, capture the shift-up input. Release both paddles, select the shift-down device and signal, then click **Next**. The paddles can share one device or use separate USB devices. In **Sequential via keys**, bind the same keys in your transmission mod. Both modes accept buttons, D-pad directions and axes. For an axis, capture the resting position and full travel of each input.
 3. To control Cyberpunk’s transmission directly, choose **Native H · 6 + R** or **Native H · 7 + R** to match your shifter. Existing eighth-gear bindings stay in the profile. The native gearbox supports up to seven forward gears. Start in neutral, capture all usable positions, and return to neutral between them. Confirm **Missing** only for a position the lever physically lacks. Recalibrate native patterns created before 0.4.40 to confirm their layout. The wizard records the physical position without assigning a key. Applying a new pattern replaces the profile’s native pattern and any key-based gear bindings for that lever. Paddle and other accessory settings are kept.
 4. Click **Save** in **Shifter and paddles…**, then **Enable USB in game** in the main header. The pattern is saved in the active profile’s `accessories.ini` and works with the app closed. Take the driver’s seat with the shifter in neutral to arm it. The HUD displays **N**, **R**, or the engaged gear alongside **AUTO** or **MANUAL**. Press **F8** to toggle the mode by default, including when stopped. Use **AUTO / MANUAL key…** in **Shifter and paddles…** to choose another key. It applies to all profiles for that installation and takes effect without restarting the game.
 
@@ -204,6 +204,8 @@ Recording continues when you close **Diagnostics**. Leave Chrome Axis open, then
 - `build/` contains local build outputs. `out/` contains distribution ZIPs.
 
 ## Build
+
+The [development guide](docs/development.md) covers the x64 Release build, Vortex ZIP checks and REDscript compilation.
 
 Use PowerShell with Visual Studio Build Tools, the Windows SDK, and CMake. The commands below use Visual Studio 2026 in x64 mode. CMake fetches the compatible RED4ext SDK commit pinned in `CMakeLists.txt`. Pass `-DCHROME_AXIS_BUILD_PLUGIN=OFF` to build only the app.
 

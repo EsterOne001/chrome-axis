@@ -7,6 +7,7 @@ namespace chrome_axis {
 struct CaptureDeviceRead {
     std::optional<DeviceSample> sample;
     DeviceReadStatus status{DeviceReadStatus::unavailable};
+    bool updated{true};
 
     bool needsRest() const noexcept {
         return status == DeviceReadStatus::unavailable || status == DeviceReadStatus::resumed;

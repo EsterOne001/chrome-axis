@@ -100,28 +100,28 @@ bool hasObject(IDirectInputDevice8W& device, DWORD offset, DWORD type, HRESULT* 
     return SUCCEEDED(result) && (object.dwType & type) != 0;
 }
 
-std::array<bool, axisCount> availableAxes(IDirectInputDevice8W& device) {
-    std::array<bool, axisCount> axes{};
-    for (std::size_t index = 0; index < axes.size(); ++index) {
-        axes[index] = hasObject(device, axisOffsets[index], DIDFT_ABSAXIS);
+void probeInventoryLayout(IDirectInputDevice8W& device, DeviceInfo& info) {
+    for (std::size_t index = 0; index < axisCount; ++index) {
+        if (!info.layoutPending.axes[index])
+            continue;
+        HRESULT result{};
+        info.axes[index] = hasObject(device, axisOffsets[index], DIDFT_ABSAXIS, &result);
+        info.layoutPending.axes[index] = result == E_PENDING;
     }
-    return axes;
-}
-
-std::bitset<buttonCount> availableButtons(IDirectInputDevice8W& device) {
-    std::bitset<buttonCount> buttons;
     for (DWORD index = 0; index < buttonCount; ++index) {
-        buttons[index] = hasObject(device, DIJOFS_BUTTON(index), DIDFT_BUTTON);
+        if (!info.layoutPending.buttons[index])
+            continue;
+        HRESULT result{};
+        info.buttons[index] = hasObject(device, DIJOFS_BUTTON(index), DIDFT_BUTTON, &result);
+        info.layoutPending.buttons[index] = result == E_PENDING;
     }
-    return buttons;
-}
-
-std::array<bool, povCount> availablePovs(IDirectInputDevice8W& device) {
-    std::array<bool, povCount> povs{};
-    for (DWORD index = 0; index < povs.size(); ++index) {
-        povs[index] = hasObject(device, DIJOFS_POV(index), DIDFT_POV);
+    for (DWORD index = 0; index < povCount; ++index) {
+        if (!info.layoutPending.povs[index])
+            continue;
+        HRESULT result{};
+        info.povs[index] = hasObject(device, DIJOFS_POV(index), DIDFT_POV, &result);
+        info.layoutPending.povs[index] = result == E_PENDING;
     }
-    return povs;
 }
 
 bool forceActuator(IDirectInputDevice8W& device, std::size_t axis) {
@@ -151,20 +151,42 @@ std::array<bool, axisCount> availableForceAxes(IDirectInputDevice8W& device) {
 
 struct Enumeration {
     IDirectInput8W& input;
+    HWND window;
     std::vector<DeviceInfo> devices;
 };
 
 BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
     auto& enumeration = *static_cast<Enumeration*>(context);
-    const auto device = createDevice(enumeration.input, instance->guidInstance);
-    if (device && SUCCEEDED(device->SetDataFormat(&c_dfDIJoystick2))) {
-        enumeration.devices.push_back({
-            deviceId(instance->guidInstance),
-            utf8(instance->tszInstanceName[0] ? instance->tszInstanceName : instance->tszProductName),
-            availableAxes(*device), availableButtons(*device), availablePovs(*device), availableForceAxes(*device),
-            utf8(instance->tszProductName)
-        });
+    HRESULT result{};
+    const auto device = createDevice(enumeration.input, instance->guidInstance, &result);
+    if (device)
+        result = device->SetDataFormat(&c_dfDIJoystick2);
+    if (FAILED(result) && result != E_PENDING)
+        return DIENUM_CONTINUE;
+
+    DeviceInfo info{
+        .id = deviceId(instance->guidInstance),
+        .name = utf8(instance->tszInstanceName[0] ? instance->tszInstanceName : instance->tszProductName),
+        .productName = utf8(instance->tszProductName),
+    };
+    info.layoutPending.axes.set();
+    info.layoutPending.buttons.set();
+    info.layoutPending.povs.set();
+    if (device && SUCCEEDED(result)) {
+        probeInventoryLayout(*device, info);
+        const auto& pending = info.layoutPending;
+        bool acquired = false;
+        if (enumeration.window && (pending.axes.any() || pending.buttons.any() || pending.povs.any()) &&
+            SUCCEEDED(device->SetCooperativeLevel(enumeration.window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND))) {
+            acquired = SUCCEEDED(device->Acquire());
+            // A refused acquisition can coincide with successful metadata on the next call.
+            probeInventoryLayout(*device, info);
+        }
+        info.forceFeedbackAxes = availableForceAxes(*device);
+        if (acquired)
+            device->Unacquire();
     }
+    enumeration.devices.push_back(std::move(info));
     return DIENUM_CONTINUE;
 }
 
@@ -330,24 +352,25 @@ public:
         if (!opened.device && !open(observer))
             return snapshot(request.wanted);
 
-        if (needsAcquisition_) {
-            const auto result = observer.measure("Probe Acquire", [&] { return opened.device->Acquire(); });
-            // A transient metadata error can clear while acquisition is still refused.
-            opened.acquired = SUCCEEDED(result);
-        }
         const auto& wanted = request.wanted;
-        needsAcquisition_ |= refreshObjects(opened.axes, wanted.axes, *opened.device, observer,
-            "GetObjectInfo axis", DIDFT_ABSAXIS, [](std::size_t index) { return axisOffsets[index]; });
-        needsAcquisition_ |= refreshObjects(opened.povs, wanted.povs, *opened.device, observer,
-            "GetObjectInfo POV", DIDFT_POV, [](std::size_t index) { return static_cast<DWORD>(DIJOFS_POV(index)); });
-        needsAcquisition_ |= refreshObjects(opened.buttons, wanted.buttons, *opened.device, observer,
-            "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); });
-        if (opened.acquired) {
+        probeDeviceLayout(needsAcquisition_, [&] {
+            const auto result = observer.measure("Probe Acquire", [&] { return opened.device->Acquire(); });
+            opened.acquired = SUCCEEDED(result);
+            return opened.acquired;
+        }, [&] {
+            bool deferred = refreshObjects(opened.axes, wanted.axes, *opened.device, observer,
+                "GetObjectInfo axis", DIDFT_ABSAXIS, [](std::size_t index) { return axisOffsets[index]; });
+            deferred |= refreshObjects(opened.povs, wanted.povs, *opened.device, observer,
+                "GetObjectInfo POV", DIDFT_POV, [](std::size_t index) { return static_cast<DWORD>(DIJOFS_POV(index)); });
+            deferred |= refreshObjects(opened.buttons, wanted.buttons, *opened.device, observer,
+                "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); });
+            return deferred;
+        }, [&] {
             const auto result = observer.measure("Probe Unacquire", [&] { return opened.device->Unacquire(); });
             opened.acquired = false;
             if (FAILED(result))
                 opened.device.reset();
-        }
+        });
         return snapshot(wanted);
     }
 
@@ -535,7 +558,7 @@ std::vector<DeviceInfo> DirectInput::devices() const {
     if (!ready()) {
         return {};
     }
-    Enumeration enumeration{*impl_->input, {}};
+    Enumeration enumeration{*impl_->input, impl_->window, {}};
     impl_->input->EnumDevices(DI8DEVCLASS_GAMECTRL, addDevice, &enumeration, DIEDFL_ATTACHEDONLY);
     return std::move(enumeration.devices);
 }

@@ -170,6 +170,72 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
     return 0;
 }
 
+int testStopWhileForceDriverIsBlocked()
+{
+    FakeForceDriver::State state;
+    FakeForceDriver::testState = &state;
+    ForceOutputWorker<TestForceContext, FakeForceDriver> worker;
+    const auto releaseDriver = [&](std::stop_token stop) {
+        // Give the stop request time to invalidate the command while the driver
+        // remains blocked. Release it on every path, including a test failure.
+        waitFor([&] { return stop.stop_requested(); });
+        state.resume.store(true);
+        state.resume.notify_one();
+    };
+    std::jthread release(releaseDriver);
+    const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
+    if (!worker.submit(GetDesktopWindow(), wheel, 0, 0.75f, {TestClock::now() + 5s}) ||
+        !waitFor([&] { return state.entered.load(); }))
+        return 75;
+
+    const auto previousGeneration = worker.generation();
+    worker.requestStop();
+    const bool stoppedBeforeDriverReturned = !state.resume.load() && worker.generation() != previousGeneration;
+    release.request_stop();
+    if (!stoppedBeforeDriverReturned || !waitFor([&] { return state.stops.load() > 0; }) ||
+        state.started.load() != 0 || state.setupCompleted.load() != 0)
+        return 76;
+    return 0;
+}
+
+int testProbeAfterAcquisitionIsRefused()
+{
+    DeviceObjectProbe<1> axes;
+    DeviceObjectProbe<1> buttons;
+    std::bitset<1> wanted{1};
+    auto now = TestClock::time_point{} + 1s;
+    bool needsAcquisition = false;
+    unsigned int axisReads{}, buttonReads{}, acquisitions{}, releases{};
+    HRESULT acquisitionResult = DIERR_OTHERAPPHASPRIO;
+    const auto acquire = [&] { ++acquisitions; return SUCCEEDED(acquisitionResult); };
+    const auto release = [&] { ++releases; };
+    const auto refresh = [&] {
+        axes.refresh(wanted, now, [&](std::size_t) {
+            ++axisReads;
+            return std::tuple{S_OK, true, now};
+        });
+        bool deferred = false;
+        buttons.refresh(wanted, now, [&](std::size_t) {
+            deferred = ++buttonReads == 1;
+            return std::tuple{deferred ? E_PENDING : S_OK, !deferred, now};
+        });
+        return deferred;
+    };
+
+    probeDeviceLayout(needsAcquisition, acquire, refresh, release);
+    if (!needsAcquisition || acquisitions || releases || !axes.present().test(0) || !buttons.pending().test(0))
+        return 77;
+    now += 500ms;
+    probeDeviceLayout(needsAcquisition, acquire, refresh, release);
+    if (acquisitions != 1 || releases || axisReads != 1 || buttonReads != 2 ||
+        !axes.present().test(0) || !buttons.present().test(0) || buttons.pending().test(0))
+        return 78;
+
+    acquisitionResult = S_OK;
+    probeDeviceLayout(needsAcquisition, acquire, refresh, release);
+    return acquisitions == 2 && releases == 1 && axisReads == 1 && buttonReads == 2 ? 0 : 79;
+}
+
 int testWheelForceRecoveryBackoff()
 {
     WheelForceRetry retry;
@@ -463,6 +529,10 @@ int main()
     if (const auto result = testLayoutSelectionKeepsConfirmedControls())
         return result;
     if (const auto result = testProvisionalInputLayout())
+        return result;
+    if (const auto result = testProbeAfterAcquisitionIsRefused())
+        return result;
+    if (const auto result = testStopWhileForceDriverIsBlocked())
         return result;
     if (const auto result = testSlowForceDuringIndependentInput(false))
         return result;

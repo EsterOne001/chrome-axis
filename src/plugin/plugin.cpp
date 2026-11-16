@@ -1813,6 +1813,19 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     };
     chrome_axis::SimulationReceiver simulation(gameRoot);
     std::unique_ptr<chrome_axis::DrivingInputs<>> input;
+    struct StopWorkers {
+        decltype(feedbackOutput)& force;
+        decltype(input)& readers;
+
+        ~StopWorkers() {
+            feedbackRequested.store(false, std::memory_order_relaxed);
+            // Signal both worker families before either destructor can join.
+            force.requestStop();
+            if (readers)
+                readers->requestStop();
+            accessoryKeys.apply({});
+        }
+    } stopWorkers{feedbackOutput, input};
     std::vector<chrome_axis::DrivingInputDevice> inputDevices;
     bool inputConfigured{};
     bool inputActive{};
@@ -2546,9 +2559,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const auto interval = physical ? physicalPollInterval : simulated ? simulationPollInterval : idlePollInterval;
         std::this_thread::sleep_until(start + interval);
     }
-    feedbackRequested.store(false, std::memory_order_relaxed);
-    accessoryKeys.apply({});
-    feedbackOutput.cancel();
 }
 
 float readField(const Vehicle& vehicle, std::size_t offset) {
@@ -2776,6 +2786,8 @@ void stopPlugin() {
     accessoryKeys.apply({});
     if (readerThread.joinable()) {
         readerThread.request_stop();
+        if (WaitForSingleObject(readerThread.native_handle(), 1000) == WAIT_TIMEOUT)
+            warn("Waiting for USB workers to finish. A DirectInput call may still be pending.");
         readerThread.join();
     }
     transmissionAvailable = false;

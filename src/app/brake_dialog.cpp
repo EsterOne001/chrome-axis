@@ -1,4 +1,5 @@
 #include "chrome_axis/brake_dialog.hpp"
+#include "app_input.hpp"
 
 #include "chrome_axis/accessories_dialog.hpp"
 #include "chrome_axis/diagnostics.hpp"
@@ -102,7 +103,7 @@ void setChangedLabel(HWND window, int id, const std::wstring_view next)
 }
 
 struct AxisResponseDialog {
-    DirectInput& input;
+    AppInput& input;
     ResponseAxis axis;
     const AxisCalibration* calibration;
     AxisResponse initial;
@@ -209,7 +210,6 @@ void AxisResponseDialog::updatePreview(HWND window)
             status = text().invalidTest;
         }
     } else if (GetForegroundWindow() == window && !IsIconic(GetWindow(window, GW_OWNER))) {
-        input.beginPoll();
         const auto sample = input.sample(calibration->deviceId);
         if (sample && sample->axesPresent[calibration->axis]) {
             raw = sample->axes[calibration->axis];
@@ -358,15 +358,14 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
     PedalFrame local{now};
     bool invalidTest = false;
     const bool canRead = !simulated && GetForegroundWindow() == window && !IsIconic(GetWindow(window, GW_OWNER));
-    if (canRead)
-        input.beginPoll();
-    const auto sampledAt = PedalStabilizer::Clock::now();
+    const auto nowSampled = PedalStabilizer::Clock::now();
     const AxisCalibration simulatedCalibration{.deviceId = {}, .positive = 100};
     for (std::size_t pedal = 0; pedal < pedalAxes.size(); ++pedal) {
         const bool editing = pedalAxes[pedal] == axis;
         const auto response = editing ? settings : std::optional{pedals->otherResponse};
         const auto* binding = editing ? calibration : pedals->otherCalibration;
         std::optional<long> raw;
+        auto sampledAt = nowSampled;
         if (simulated) {
             const auto id = pedalTestIds[pedal];
             if (hasTest(id)) {
@@ -381,8 +380,10 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
                 }
             }
         } else if (canRead && binding) {
-            if (const auto sample = input.sample(binding->deviceId); sample && sample->axesPresent[binding->axis])
+            if (const auto sample = input.sample(binding->deviceId); sample && sample->axesPresent[binding->axis]) {
                 raw = sample->axes[binding->axis];
+                sampledAt = sample->sampledAt;
+            }
         }
         if (raw && response) {
             const auto preview = previewAxisResponse(pedalAxes[pedal], *binding, *raw, *response);
@@ -524,6 +525,10 @@ INT_PTR CALLBACK axisResponseDialogProc(HWND window, UINT message, WPARAM wp, LP
             return TRUE;
         }
     }
+    if (message == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) {
+        dialog->input.invalidate();
+        return FALSE;
+    }
     if (message == WM_DESTROY) {
         KillTimer(window, previewTimer);
         return FALSE;
@@ -572,7 +577,7 @@ INT_PTR CALLBACK axisResponseDialogProc(HWND window, UINT message, WPARAM wp, LP
 
 } // namespace
 
-std::optional<AxisResponse> editAxisResponse(HWND owner, DirectInput& input, ResponseAxis axis,
+std::optional<AxisResponse> editAxisResponse(HWND owner, AppInput& input, ResponseAxis axis,
     const AxisCalibration* calibration, const AxisResponse& response, const PedalGraphContext* pedals)
 {
     AxisResponseDialog dialog{

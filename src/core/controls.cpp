@@ -338,7 +338,7 @@ ControlState ControlReader::poll(DeviceSampleSource& input, Readings* readings)
     return poll(input, readings, nullptr);
 }
 
-ControlReader::CalibrationReadings ControlReader::review(DirectInput& input)
+ControlReader::CalibrationReadings ControlReader::review(DeviceSampleSource& input)
 {
     CalibrationReadings readings;
     poll(input, nullptr, &readings);

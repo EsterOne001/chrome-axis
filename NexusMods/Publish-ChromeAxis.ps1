@@ -6,6 +6,8 @@ param(
     [string] $Archive
 )
 
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'tools/Release-Package.ps1')
+
 $apiBase = 'https://api.nexusmods.com/v3'
 $modUrl = 'https://www.nexusmods.com/cyberpunk2077/mods/38104'
 $versionsPath = '/mod-files/9ka2kySGT/versions'
@@ -51,34 +53,21 @@ if ($file -isnot [System.IO.FileInfo]) {
 }
 
 $archiveName = [regex]::Match(
-    $file.Name, '^ChromeAxis-(?<version>[0-9]+\.[0-9]+\.[0-9]+)-Cyberpunk-(?<game>[0-9]+\.[0-9]+)\.zip$'
+    $file.Name, '^(?:Chromaxis|ChromeAxis)-(?<version>[0-9]+\.[0-9]+\.[0-9]+)(?:-Cyberpunk-(?<game>[0-9]+\.[0-9]+))?\.zip$'
 )
 if (-not $archiveName.Success) {
-    throw 'Use the release name ChromeAxis-X.Y.Z-Cyberpunk-A.B.zip.'
+    throw 'Use the release name Chromaxis-X.Y.Z.zip or ChromeAxis-X.Y.Z-Cyberpunk-A.B.zip.'
 }
 if ($file.Length -gt 100MB) {
     throw 'The ZIP exceeds the Nexus Mods single-part upload limit of 100 MiB.'
 }
 
-$zip = [System.IO.Compression.ZipFile]::OpenRead($file.FullName)
-try {
-    $entries = $zip.Entries | Where-Object Length -gt 0 | ForEach-Object { $_.FullName.Replace('\', '/') }
-    foreach ($entry in @(
-        'red4ext/plugins/chrome_axis/ChromeAxis.exe'
-        'red4ext/plugins/chrome_axis/ChromeAxis.dll'
-        'red4ext/plugins/chrome_axis/scripts/driving_context.reds'
-        'archive/pc/mod/chrome_axis_hud.archive'
-    )) {
-        if ($entry -cnotin $entries) {
-            throw "The release ZIP is missing $entry."
-        }
-    }
-} finally {
-    $zip.Dispose()
-}
-
 $version = $archiveName.Groups['version'].Value
 $gameVersion = $archiveName.Groups['game'].Value
+if (-not $gameVersion) {
+    $gameVersion = '2.5'
+}
+Confirm-ChromeAxisPackage -ArchivePath $file.FullName -Version $version
 if (-not $PSCmdlet.ShouldProcess("$modUrl (file 9ka2kySGT)", "Publish $($file.Name) as the main file")) {
     return
 }

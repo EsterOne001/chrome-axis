@@ -1,6 +1,6 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "app_text.hpp"
-#include "device_capture.hpp"
+#include "app_input.hpp"
 #include "device_inventory.hpp"
 #include "dialog_theme.hpp"
 #include "ui_theme.hpp"
@@ -323,7 +323,7 @@ bool saveAccessorySettings(HWND owner, const std::filesystem::path& root, const 
 
 class AccessoryDialog {
 public:
-    AccessoryDialog(DirectInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
+    AccessoryDialog(AppInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
                     const ProfilePreset& preset, AccessorySection section)
         : input_(input), inventory_(inventory), root_(root), preset_(preset),
           path_(preset.directory / accessoryFilename), section_(section) {}
@@ -396,7 +396,7 @@ private:
     void renderPreview(std::wstring status, std::optional<int> travel, std::optional<int> handbrake = {});
     void setHandbrakePreview(std::optional<int> tenths) const;
 
-    DirectInput& input_;
+    AppInput& input_;
     DeviceInventory& inventory_;
     const std::filesystem::path& root_;
     const ProfilePreset& preset_;
@@ -635,6 +635,7 @@ void AccessoryDialog::refreshDevices()
 
 void AccessoryDialog::clearCapture()
 {
+    input_.invalidate();
     KillTimer(window_, captureTimer);
     stage_ = CaptureStage::Idle;
     captured_.clear();
@@ -747,6 +748,7 @@ void AccessoryDialog::selectPreview()
         }
     }
     if (binding != previewBinding_) {
+        input_.invalidate();
         previewBinding_ = std::move(binding);
         preview_.reset();
         if (previewBinding_) {
@@ -800,6 +802,7 @@ void AccessoryDialog::setPreviewFocus(bool focused)
         return;
     }
     if (previewPolling_) {
+        input_.invalidate();
         KillTimer(window_, previewTimer);
         previewPolling_ = false;
         if (preview_)
@@ -821,7 +824,6 @@ void AccessoryDialog::pollPreview()
     std::array<AccessoryObservation, 1> observations;
     const bool progressive = previewBinding_->handbrakeCeilingPercent != 0;
     std::optional<float> handbrake;
-    input_.beginPoll();
     preview_->poll(input_, observations, nullptr, progressive ? &handbrake : nullptr);
     if (!focused()) {
         setPreviewFocus(false);
@@ -958,6 +960,7 @@ void AccessoryDialog::startSampling(CaptureStage stage, const wchar_t* text)
         setStatus(tr(Text::DlgAccessoriesCaptureFailed));
         return;
     }
+    input_.invalidate();
     measurements_ = {};
     stage_ = stage;
     captureReadInterrupted_ = false;
@@ -990,19 +993,14 @@ void AccessoryDialog::capture()
         return;
     if (analogPage() || send(IDC_ACCESSORY_TYPE, CB_GETCURSEL) == 1) {
         if (std::ranges::none_of(device->axes, [](bool present) { return present; })) {
-            setStatus(tr(Text::DlgAccessoriesNoAbsoluteAxes));
+            setStatus(tr(device->layoutPending.axes.any() ? Text::mainScanningDevices
+                                                           : Text::DlgAccessoriesNoAbsoluteAxes));
             return;
         }
         startSampling(CaptureStage::AxisRest,
             tr(sectionText(Text::DlgAccessoriesHoldAtRest, Text::DlgHandbrakeHoldAtRest, Text::DlgClutchHoldAtRest)));
     } else {
-        previous_ = readCaptureDevice(input_, device->id).sample;
-        if (!previous_) {
-            setStatus(tr(Text::DlgAccessoriesInputUnavailable));
-            return;
-        }
-        povCapture_.observe(*previous_);
-        startSampling(CaptureStage::Digital, tr(Text::DlgAccessoriesPressInput));
+        startSampling(CaptureStage::Digital, tr(Text::DlgAccessoryPreviewPending));
     }
 }
 
@@ -1029,7 +1027,9 @@ void AccessoryDialog::sample()
         return;
     }
     const auto* device = selectedDevice();
-    const auto reading = device ? readCaptureDevice(input_, device->id) : CaptureDeviceRead{};
+    const auto reading = device ? input_.capture(device->id) : CaptureDeviceRead{};
+    if (!reading.updated)
+        return;
     const auto& state = reading.sample;
     if (!focused()) {
         interruptCapture();
@@ -1567,7 +1567,7 @@ std::optional<AccessoryThresholds> editAccessoryThresholds(HWND owner, const Acc
     return result == IDOK ? std::optional{values} : std::nullopt;
 }
 
-bool editAccessories(HWND owner, DirectInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
+bool editAccessories(HWND owner, AppInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
                      const ProfilePreset& preset, AccessorySection section)
 {
     AccessoryDialog dialog(input, inventory, root, preset, section);
@@ -1578,7 +1578,7 @@ bool editAccessories(HWND owner, DirectInput& input, DeviceInventory& inventory,
     return result == IDOK;
 }
 
-bool editProfileShifter(HWND owner, DirectInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
+bool editProfileShifter(HWND owner, AppInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
                         const ProfilePreset& preset, TransmissionShortcut& shortcut)
 {
     const auto path = preset.directory / accessoryFilename;

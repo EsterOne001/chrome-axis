@@ -1,4 +1,7 @@
 #include "device_inventory.hpp"
+#include "input_window.hpp"
+
+#include <algorithm>
 
 #include <condition_variable>
 #include <mutex>
@@ -7,6 +10,38 @@
 
 namespace chrome_axis {
 
+namespace {
+
+bool layoutPending(const DeviceInfo& device) noexcept
+{
+    const auto& pending = device.layoutPending;
+    return pending.axes.any() || pending.buttons.any() || pending.povs.any();
+}
+
+void retainConfirmedLayout(DeviceInventoryResult& answer, const DeviceInventoryResult& previous)
+{
+    for (auto& device : answer.devices) {
+        if (!layoutPending(device))
+            continue;
+        const auto known = std::ranges::find(previous.devices, device.id, &DeviceInfo::id);
+        if (known == previous.devices.end())
+            continue;
+        for (std::size_t axis = 0; axis < axisCount; ++axis) {
+            if (device.layoutPending.axes[axis]) {
+                device.axes[axis] = known->axes[axis];
+                device.forceFeedbackAxes[axis] = known->forceFeedbackAxes[axis];
+            }
+        }
+        device.buttons |= device.layoutPending.buttons & known->buttons;
+        for (std::size_t pov = 0; pov < povCount; ++pov) {
+            if (device.layoutPending.povs[pov])
+                device.povs[pov] = known->povs[pov];
+        }
+    }
+}
+
+} // namespace
+
 struct DeviceInventory::State {
     using Clock = std::chrono::steady_clock;
 
@@ -14,13 +49,24 @@ struct DeviceInventory::State {
     {
         std::unique_lock lock(mutex);
         std::uint64_t scanned{};
+        Clock::time_point retryAfter{};
         for (;;) {
-            wake.wait(lock, [&] { return stopping || requested != scanned; });
             if (stopping)
                 return;
+            if (requested == scanned) {
+                const bool active = automaticRetries;
+                const auto changed = [&] { return stopping || requested != scanned || active != automaticRetries; };
+                if (!active || retryAfter == Clock::time_point{}) {
+                    wake.wait(lock, changed);
+                    continue;
+                }
+                if (wake.wait_until(lock, retryAfter, changed))
+                    continue;
+            }
             const auto revision = requested;
-            if (wake.wait_until(lock, startAfter, [&] { return stopping || requested != revision; }))
+            if (requested != scanned && wake.wait_until(lock, startAfter, [&] { return stopping || requested != revision; }))
                 continue;
+
             lock.unlock();
             auto answer = std::make_shared<DeviceInventoryResult>();
             try {
@@ -28,10 +74,20 @@ struct DeviceInventory::State {
             } catch (...) {
                 // A failure to enumerate must leave the UI able to retry.
             }
-            answer->revision = revision;
             lock.lock();
-            if (!stopping && revision == requested)
-                result = std::move(answer);
+            if (!stopping && revision == requested) {
+                if (result)
+                    retainConfirmedLayout(*answer, *result);
+                retryAfter = std::ranges::any_of(answer->devices, layoutPending)
+                    ? Clock::now() + std::chrono::seconds(1) : Clock::time_point{};
+                if (!result || resultRequest != revision || result->available != answer->available ||
+                    result->devices != answer->devices) {
+                    published = std::max(published + 1, revision);
+                    answer->revision = published;
+                    resultRequest = revision;
+                    result = std::move(answer);
+                }
+            }
             scanned = revision;
         }
     }
@@ -40,8 +96,9 @@ struct DeviceInventory::State {
     std::condition_variable wake;
     Clock::time_point startAfter{};
     std::shared_ptr<const DeviceInventoryResult> result;
-    std::uint64_t requested{};
+    std::uint64_t requested{}, resultRequest{}, published{};
     bool stopping{};
+    bool automaticRetries{true};
 };
 
 DeviceInventory::DeviceInventory(Scan scan)
@@ -49,7 +106,8 @@ DeviceInventory::DeviceInventory(Scan scan)
 {
     if (!scan) {
         scan = [] {
-            DirectInput input(nullptr);
+            const InputWindow window;
+            DirectInput input(window.get());
             return DeviceInventoryResult{.devices = input.devices(), .available = input.ready()};
         };
     }
@@ -81,6 +139,15 @@ void DeviceInventory::refreshAfterDeviceChange()
     schedule(std::chrono::milliseconds(250));
 }
 
+void DeviceInventory::setAutomaticRetries(bool active)
+{
+    {
+        std::scoped_lock lock(state_->mutex);
+        state_->automaticRetries = active;
+    }
+    state_->wake.notify_one();
+}
+
 void DeviceInventory::schedule(std::chrono::milliseconds delay)
 {
     {
@@ -97,7 +164,7 @@ std::shared_ptr<const DeviceInventoryResult> DeviceInventory::current() const
 {
     std::scoped_lock lock(state_->mutex);
     const auto& result = state_->result;
-    return result && result->revision == state_->requested ? result : nullptr;
+    return result && state_->resultRequest == state_->requested ? result : nullptr;
 }
 
 } // namespace chrome_axis

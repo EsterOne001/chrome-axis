@@ -9,9 +9,9 @@
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/profiles_dialog.hpp"
 #include "chrome_axis/simulation.hpp"
+#include "app_input.hpp"
 #include "app_text.hpp"
 #include "calibration_guide.hpp"
-#include "device_capture.hpp"
 #include "device_inventory.hpp"
 #include "diagnostic_recording.hpp"
 #include "diagnostics_dialog.hpp"
@@ -268,6 +268,7 @@ public:
                 layout();
             return 0;
         case WM_ACTIVATEAPP:
+            inventory_.setAutomaticRetries(wp != 0);
             if (!wp)
                 suspendHardware();
             return 0;
@@ -531,7 +532,7 @@ private:
         save_ = button(tr(Text::mainSaveProfile), saveProfile);
         simBack_ = button(tr(Text::mainBack), leaveSimulation);
 
-        input_ = std::make_unique<chrome_axis::DirectInput>(window_);
+        input_ = std::make_unique<chrome_axis::AppInput>();
         updateAnimationPreference();
         updateDpiResources();
         readProfile();
@@ -1038,7 +1039,7 @@ private:
     std::array<HWND, 3> retryAxes_{};
     std::array<HWND, 3> reviewStatuses_{};
     HWND reviewBrakeMeter_{}, reviewBrakeValue_{};
-    std::unique_ptr<chrome_axis::DirectInput> input_;
+    std::unique_ptr<chrome_axis::AppInput> input_;
     chrome_axis::DeviceInventory inventory_;
     std::optional<std::uint64_t> inventoryRevision_;
     bool inventoryAvailable_{};
@@ -1192,9 +1193,11 @@ void App::action(int command, int notification)
             using chrome_axis::AccessorySection;
             const auto section = command == configureClutch ? AccessorySection::clutch
                 : command == configureHandbrake ? AccessorySection::handbrake : AccessorySection::keys;
+            input_->invalidate();
             const bool changed = command == configureTransmission
                 ? chrome_axis::editProfileShifter(window_, *input_, inventory_, directory_, preset_, transmissionShortcut_)
                 : chrome_axis::editAccessories(window_, *input_, inventory_, directory_, preset_, section);
+            input_->invalidate();
             refreshTransmissionKey();
             if (changed) {
                 readAccessories();
@@ -1319,8 +1322,6 @@ void App::consumeDeviceInventory()
     inventoryRevision_ = result->revision;
     inventoryAvailable_ = result->available;
     devices_ = result->devices;
-    if (!input_->ready() && inventoryAvailable_)
-        input_ = std::make_unique<chrome_axis::DirectInput>(window_);
     for (std::size_t channel = 0; channel < deviceCombos_.size(); ++channel)
         fillDeviceCombo(channel);
     updateHardwareStatus();
@@ -1343,6 +1344,10 @@ void App::updateHardwareStatus()
     } else if (!inventoryAvailable_) {
         hardwareStatus = tr(Text::mainDirectInputUnavailable);
         advice = tr(Text::mainTryRefresh);
+    } else if (std::ranges::any_of(devices_, [](const auto& entry) {
+                   return !hasAxes(entry) && entry.layoutPending.axes.any();
+               })) {
+        hardwareStatus = tr(Text::mainScanningDevices);
     } else if (devices_.empty()) {
         hardwareStatus = tr(Text::mainNoDevices);
         advice = tr(Text::mainConnectAndRefresh);
@@ -1390,7 +1395,7 @@ void App::fillDeviceCombo(std::size_t channel)
         addChoice(control, tr(sharedDeviceLabels[channel - 1]));
     }
     for (const auto& item : devices_) {
-        if (!hasAxes(item))
+        if (!hasAxes(item) && !item.layoutPending.axes.any())
             continue;
         choices.push_back(item.id);
         addChoice(control, deviceName(item));
@@ -1517,6 +1522,8 @@ void App::updateProfileView(const CalibrationScope& changed)
 
 void App::rebuildPreview()
 {
+    if (input_)
+        input_->invalidate();
     previewProfile_.reset();
     preview_.reset();
     const bool steeringZoneValid = !draft_[0] || readDeadzone(zones_[0], true).has_value();
@@ -1739,8 +1746,10 @@ void App::configureAxisResponse(std::size_t channel)
         .diagnostics = simulationDiagnostics_,
         .profileName = activeName,
     };
+    input_->invalidate();
     const auto response = chrome_axis::editAxisResponse(window_, *input_, axisSettingsOptions[channel].axis, calibration,
         current, channel == 0 ? nullptr : &pedals);
+    input_->invalidate();
     if (response && *response != current) {
         current = *response;
         dirty_ = true;
@@ -2500,6 +2509,7 @@ void App::measureStep()
         return;
     }
     calibrationMessage_ = tr(Text::mainHoldSteady);
+    input_->invalidate();
     capture_.emplace();
     captureTicks_ = 0;
     captureHadSignal_ = false;
@@ -2558,6 +2568,7 @@ void App::cancelCurrentCalibration()
 
 void App::enterCalibrationReview()
 {
+    input_->invalidate();
     retry_.reset();
     step_ = stepCount_;
     reviewPreview_.emplace(measured_);
@@ -2569,12 +2580,10 @@ void App::enterCalibrationReview()
 void App::updateCalibrationReview(bool foreground)
 {
     chrome_axis::ControlReader::CalibrationReadings readings;
-    if (foreground) {
-        input_->beginPoll();
+    if (foreground)
         readings = reviewPreview_->review(*input_);
-    } else {
+    else
         reviewPreview_->reset();
-    }
 
     chrome_axis::ControlState travel;
     const std::array values{&travel.values.steering, &travel.values.throttle, &travel.values.brake};
@@ -2756,8 +2765,6 @@ void App::tick()
         updateCalibrationReview(foreground);
     } else {
         const bool hardwarePreview = foreground && !simulation_ && !calibrating_ && preview_;
-        if (hardwarePreview)
-            input_->beginPoll();
         updateLiveControls(simulation_ ? previewSimulation()
             : hardwarePreview ? preview_->poll(*input_) : chrome_axis::ControlState{});
     }
@@ -2766,10 +2773,10 @@ void App::tick()
 void App::updateCapture()
 {
     const auto channel = steps_[step_].channel;
-    const auto reading = chrome_axis::readCaptureDevice(*input_, deviceId(channel));
+    const auto reading = input_->capture(deviceId(channel));
     const auto& sample = reading.sample;
     ++captureTicks_;
-    const bool interrupted = captureHadSignal_ && reading.needsRest();
+    const bool interrupted = captureHadSignal_ && reading.updated && reading.needsRest();
     if (interrupted || (sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
         capture_.reset();
         calibrationMessage_ = tr(Text::guideCaptureInterrupted);
@@ -2778,6 +2785,8 @@ void App::updateCapture()
             SetFocus(measure_);
         return;
     }
+    if (!reading.updated)
+        return;
     if (!sample) {
         capture_.emplace();
     } else {

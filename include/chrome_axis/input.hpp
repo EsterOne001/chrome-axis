@@ -37,6 +37,9 @@ struct DeviceInfo {
     std::array<bool, povCount> povs{};
     std::array<bool, axisCount> forceFeedbackAxes{};
     std::string productName;
+    DeviceObjectSelection layoutPending;
+
+    bool operator==(const DeviceInfo&) const = default;
 };
 
 struct DeviceSample {

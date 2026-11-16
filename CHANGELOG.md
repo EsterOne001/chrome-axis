@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.66
+
+- **Transmission.** L'assistant permet de convertir un levier en H par touches vers le mode natif en réutilisant ses contacts. La montée et la descente en séquentiel natif peuvent être capturées sur deux appareils USB.
+- **Application USB.** Les lectures de calibration, de capture et d'aperçu passent en arrière-plan. L'inventaire retente les sondages momentanément indisponibles et garde les commandes déjà reconnues.
+- **Arrêt du plugin.** Les threads de lecture et de retour de force reçoivent leur demande d'arrêt avant les attentes de fermeture. Le journal signale une attente prolongée.
+- **Validation.** CTest vérifie la liaison entre deux processus et le rejeu après refus d'acquisition DirectInput. Le build et le prévol de publication contrôlent les binaires x64 et leur version dans le ZIP.
+
+[ZIP Vortex](out/Chromaxis-0.4.66.zip)
+
 ## Chrome Axis 0.4.65
 
 - **Palettes sur deux périphériques.** Les relevés au repos reçus avant un appui restent disponibles pour le rejeu, même si la boucle de traitement prend du retard. La validation continue d’écarter un relevé absent, ancien ou postérieur à l’appui.

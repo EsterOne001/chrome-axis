@@ -26,6 +26,7 @@ public:
 
     void refresh();
     void refreshAfterDeviceChange();
+    void setAutomaticRetries(bool active);
     std::shared_ptr<const DeviceInventoryResult> current() const;
 
 private:

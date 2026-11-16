@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.65** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.66** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -123,7 +123,7 @@ Dans **Accessoires…** et **Boîte et palettes…**, cliquez sur le bouton de t
 Pour changer la touche d’une entrée déjà capturée, sélectionnez l’affectation et cliquez sur **Modifier la touche…**. Dans **Boîte et palettes…**, sélectionnez d’abord le périphérique. Utilisez **Retirer** pour supprimer la commande par touche sélectionnée ou la configuration native complète. Cliquez sur **Enregistrer** dans la fenêtre où vous avez fait la modification.
 
 1. Ouvrez **Matériel USB → Transmission… → Boîte et palettes…** et sélectionnez le périphérique DirectInput. Si le levier ou les palettes passent par la base, sélectionnez le volant. Pour un appareil USB autonome, sélectionnez son entrée Windows.
-2. En mode **Séquentiel / palettes**, capturez les commandes de montée et de descente. Le mode numérique détecte les boutons ou directions de croix. Si le pilote expose un axe, capturez le repos et chaque butée. Affectez les mêmes touches dans le mod de transmission.
+2. En mode **Palettes / séquentiel natif**, capturez la palette +. Relâchez les palettes, puis choisissez le périphérique et le signal de la palette − avant de cliquer sur **Suivant**. Les deux commandes peuvent se trouver sur le même appareil ou sur deux appareils USB. En mode **Séquentiel par touches**, affectez les mêmes touches dans votre mod de transmission. Les deux modes acceptent les boutons, les directions de croix et les axes. Pour un axe, mesurez le repos et la fin de course de chaque commande.
 3. Pour piloter la boîte de Cyberpunk directement, choisissez **H natif · 6 + R** ou **H natif · 7 + R** selon votre levier. Les positions de 8ᵉ déjà enregistrées sont conservées dans le profil. La boîte native est limitée à sept rapports avant. Commencez au point mort, capturez toutes ses positions utilisables et revenez au point mort entre elles. Confirmez **Absente** seulement pour une position qui n’existe pas physiquement sur le levier. Une grille native créée avant la 0.4.40 est à recalibrer pour confirmer sa disposition. L’assistant reconnaît la position physique sans touche à choisir. Appliquer une nouvelle grille remplace la grille native du profil et les affectations de rapports par touches de ce levier. Les palettes et les autres accessoires conservent leurs réglages.
 4. Cliquez sur **Enregistrer** dans **Boîte et palettes…**, puis sur **Activer l’USB en jeu** dans le bandeau principal. La grille est enregistrée dans `accessories.ini` avec le profil actif et fonctionne avec l’application fermée. Installez V au volant et laissez le levier au point mort pour l’armer. Le HUD affiche **N**, **R** ou le rapport engagé, avec **AUTO** ou **MANUEL**. **F8** change de mode par défaut, y compris à l’arrêt. Choisissez une autre touche avec **Touche AUTO / MANUEL…** dans **Boîte et palettes…**. Le réglage s’applique à tous les profils de cette installation et prend effet sans redémarrer le jeu.
 
@@ -214,6 +214,8 @@ L’enregistrement continue lorsque vous fermez la fenêtre **Diagnostic**. Lais
 - `build/` contient les sorties locales de compilation. `out/` contient les ZIP de distribution.
 
 ## Compilation
+
+Le [guide de développement](docs/development.md) décrit le build Release x64, la vérification du ZIP Vortex et la compilation REDscript.
 
 Utilisez PowerShell avec Visual Studio Build Tools, le SDK Windows et une version de CMake compatible avec votre générateur Visual Studio. Les commandes ci-dessous ciblent Visual Studio 2026 en x64. La configuration récupère le SDK RED4ext au commit compatible avec Cyberpunk 2.5 épinglé dans [`CMakeLists.txt`](CMakeLists.txt). `-DCHROME_AXIS_BUILD_PLUGIN=OFF` permet de compiler l’utilitaire seul.
 

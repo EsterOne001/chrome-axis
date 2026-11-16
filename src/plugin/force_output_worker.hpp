@@ -88,6 +88,11 @@ public:
         changed_.notify_one();
     }
 
+    void requestStop() {
+        cancel();
+        worker_.request_stop();
+    }
+
     std::uint64_t generation() const noexcept { return generation_.load(std::memory_order_acquire); }
 
     std::optional<Completion> nextCompletion() {

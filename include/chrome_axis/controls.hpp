@@ -125,7 +125,7 @@ public:
 
     explicit ControlReader(const Profile& profile);
     ControlState poll(DeviceSampleSource& input, Readings* readings = nullptr);
-    CalibrationReadings review(DirectInput& input);
+    CalibrationReadings review(DeviceSampleSource& input);
     void reset() noexcept;
 
     // Status from the latest sample in steering, throttle, and brake order.
