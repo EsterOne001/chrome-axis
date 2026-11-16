@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.43
+
+- **Transmission.** Accès direct depuis Matériel USB, choix entre levier en H et palettes natives, suivi de la demande jusqu’à l’observation du rapport engagé. Les raccourcis clavier existants restent utilisables.
+- **Diagnostic.** Capture locale exportable en CSV, estimation P95/P99 et comptage des dépassements de cadence. Les relevés de vitesse et régime sont activés uniquement pendant une capture.
+- **Retour de force et pédales.** Effort à basse vitesse, amortissement et suggestion de gain après mesure. Stabilisation indépendante de l’accélérateur et du frein.
+- **Embrayage.** Calibration avec jauge, aide facultative au passage des rapports et essai d’atténuation de l’accélérateur à cinq paliers. Le couple natif et le frein moteur restent à mesurer en jeu.
+
+[ZIP Vortex](out/Chromaxis-0.4.43.zip)
+
 ## Chrome Axis 0.4.42
 
 - **Simulation clavier.** La bascule AUTO / MANUEL lit directement la touche configurée quand la simulation est active. Elle attend le relâchement des touches d’accessoires en cours lors d’un changement de mode. Chaque bascule est consignée dans le journal du plugin.

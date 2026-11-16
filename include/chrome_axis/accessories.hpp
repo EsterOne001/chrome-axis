@@ -10,6 +10,8 @@ namespace chrome_axis {
 inline constexpr wchar_t accessoryFilename[] = L"accessories.ini";
 inline constexpr std::string_view progressiveHandbrakePrefix = "# progressive-handbrake=";
 inline constexpr std::string_view nativeShifterPrefix = "# native-shifter=";
+inline constexpr std::string_view nativeSequentialPrefix = "# native-sequential=";
+inline constexpr std::string_view clutchPrefix = "# clutch=";
 inline constexpr unsigned int defaultHandbrakeCeilingPercent = 15;
 inline constexpr unsigned int maxHandbrakeCeilingPercent = 100;
 
@@ -31,6 +33,7 @@ constexpr std::uint16_t quantizePov(std::uint16_t angle) noexcept
 
 enum class AccessoryKind { Button, Pov, Axis };
 enum class AccessoryActivation { hold, pulse };
+enum class ClutchMode { off, assist, experiment };
 enum class ShifterRole { None, Gear1, Gear2, Gear3, Gear4, Gear5, Gear6, Gear7, Gear8, Reverse, Upshift, Downshift };
 
 constexpr unsigned int nativeShifterPositionBit(ShifterRole role) noexcept
@@ -67,6 +70,8 @@ struct AccessoryBinding {
     unsigned int handbrakeCeilingPercent{}; // A nonzero value makes this an analog output.
     bool nativeShifter{};
     unsigned int nativeShifterPositions{}; // Bit 0 is reverse, bits 1 to 8 are forward gears. Zero is unverified.
+    bool nativeSequential{};
+    std::optional<ClutchMode> clutchMode;
 
     bool operator==(const AccessoryBinding&) const = default;
 };
@@ -90,6 +95,12 @@ struct AccessoryObservation {
     unsigned int key{};
 };
 
+struct AccessoryTransmissionSample {
+    bool sequentialArmed{};
+    int shiftDelta{}; // -1 or +1 on a new, unambiguous paddle press.
+    std::optional<float> clutch; // 0 released, 1 fully depressed, nullopt until armed.
+};
+
 bool isAccessoryKey(unsigned int key) noexcept;
 bool nativeShifterVerified(const AccessoryProfile& profile) noexcept;
 std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path& path, std::string& error);
@@ -100,12 +111,13 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
 class AccessoryReader {
 public:
     explicit AccessoryReader(const AccessoryProfile& profile);
-    // Returns held keys and optional pulse, handbrake and H-pattern outputs.
+    // Returns held keys and optional pulse, handbrake and transmission outputs.
     // Native gears are -1 neutral, 0 reverse and 1–8 forward; nullopt is unavailable.
     std::bitset<256> poll(DirectInput& input, std::span<AccessoryObservation> observations = {},
                          std::bitset<256>* pulses = nullptr,
                          std::optional<float>* progressiveHandbrake = nullptr,
-                         std::optional<int>* nativeGear = nullptr);
+                         std::optional<int>* nativeGear = nullptr,
+                         AccessoryTransmissionSample* transmission = nullptr);
     void reset() noexcept;
     void resetKeyboardBindings() noexcept;
     // All bindings have a usable sample and passed the neutral check.
@@ -116,7 +128,8 @@ public:
     std::bitset<256> update(std::span<const DeviceSample* const> samples, std::span<const DeviceReadStatus> statuses = {},
                             std::span<AccessoryObservation> observations = {}, std::bitset<256>* pulses = nullptr,
                             std::optional<float>* progressiveHandbrake = nullptr,
-                            std::optional<int>* nativeGear = nullptr);
+                            std::optional<int>* nativeGear = nullptr,
+                            AccessoryTransmissionSample* transmission = nullptr);
 
 private:
     struct BindingState {
@@ -139,6 +152,8 @@ private:
     AccessoryProfile profile_;
     bool nativeShifterVerified_{};
     NativeShifterState nativeShifter_;
+    unsigned int sequentialNeutralPolls_{};
+    bool sequentialWaitForRelease_{};
     std::array<std::size_t, maxAccessoryBindings> sampleOwners_{};
     std::array<std::bitset<buttonCount>, maxAccessoryBindings> requiredButtons_{};
     std::array<BindingState, maxAccessoryBindings> states_{};

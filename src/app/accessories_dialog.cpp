@@ -41,7 +41,7 @@ std::wstring accessoryKeyLabel(unsigned int key)
 BindingKeyEdit chooseBindingKey(HWND owner, AccessoryProfile& bindings, std::size_t row)
 {
     auto& binding = bindings[row];
-    if (binding.handbrakeCeilingPercent || binding.nativeShifter)
+    if (binding.handbrakeCeilingPercent || binding.clutchMode || isNativeTransmissionBinding(binding))
         return BindingKeyEdit::unchanged;
     const auto key = chooseAccessoryKey(owner, binding.key);
     if (!key || *key == binding.key)
@@ -72,7 +72,19 @@ std::wstring percent(int value)
 }
 
 enum class CaptureStage { Idle, Digital, AxisRest, AwaitingTravel, AxisTravel };
-enum class AccessoryPage { keys, handbrake };
+enum class AccessoryPage { keys, handbrake, clutch };
+
+struct ClutchOption {
+    ClutchMode mode;
+    Text label;
+    Text hint;
+};
+
+constexpr std::array clutchOptions{
+    ClutchOption{ClutchMode::off, Text::DlgClutchOff, Text::DlgClutchOffHint},
+    ClutchOption{ClutchMode::assist, Text::DlgClutchAssist, Text::DlgClutchAssistHint},
+    ClutchOption{ClutchMode::experiment, Text::DlgClutchExperiment, Text::DlgClutchExperimentHint},
+};
 
 std::wstring wide(std::string_view text)
 {
@@ -127,6 +139,8 @@ std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding)
 
 std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding, bool nativeVerified)
 {
+    if (binding.nativeSequential)
+        return tr(Text::DlgShifterNativeSequentialOutput);
     if (!binding.nativeShifter)
         return accessoryKeyLabel(binding.key);
     return tr(nativeVerified ? Text::DlgShifterNativeOutput : Text::DlgShifterNativeUnverifiedOutput);
@@ -241,6 +255,51 @@ AccessoryBinding asHandbrake(AccessoryBinding binding, unsigned int ceiling)
     return binding;
 }
 
+std::optional<AccessoryProfile> readAccessorySettings(HWND owner, const std::filesystem::path& path)
+{
+    std::error_code fileError;
+    if (!std::filesystem::exists(path, fileError) && !fileError)
+        return AccessoryProfile{};
+    std::string error;
+    auto saved = loadAccessoryProfile(path, error);
+    if (!saved) {
+        const auto message = tr(Text::DlgAccessoriesReadError) + localizedError(error);
+        MessageBoxW(owner, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
+    }
+    return saved;
+}
+
+bool saveAccessorySettings(HWND owner, const std::filesystem::path& root, const ProfilePreset& preset,
+                           const std::optional<ProfileFileRevision>& revision, const AccessoryProfile& bindings)
+{
+    const auto path = preset.directory / accessoryFilename;
+    if (isTemporaryProfileDirectory(preset.directory)) {
+        MessageBoxW(owner, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    std::string error;
+    bool createFailed = false;
+    const std::array checks{ProfileFileCheck{accessoryFilename, revision}};
+    const auto result = savePresetSettings(root, preset, checks, [&] {
+        std::error_code directoryError;
+        std::filesystem::create_directories(preset.directory, directoryError);
+        createFailed = static_cast<bool>(directoryError);
+        return !createFailed && saveAccessoryProfile(path, bindings, error);
+    });
+    if (result == PresetSaveResult::changed) {
+        MessageBoxW(owner, tr(Text::DlgAccessoriesChanged), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (result != PresetSaveResult::saved) {
+        auto message = std::wstring(tr(createFailed ? Text::DlgAccessoriesCreateProfileFailed : Text::DlgAccessoriesSaveError));
+        if (!error.empty())
+            message += localizedError(error);
+        MessageBoxW(owner, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
+        return false;
+    }
+    return true;
+}
+
 class AccessoryDialog {
 public:
     AccessoryDialog(DirectInput& input, const std::filesystem::path& root, const ProfilePreset& preset)
@@ -266,10 +325,11 @@ public:
     void add();
     void edit();
     void editThresholds();
-    void useCapturedHandbrake();
+    void useCapturedAnalog();
     void useLegacyHandbrake();
     void changeHandbrakeCeiling();
-    void removeHandbrake();
+    void removeAnalog();
+    void changeClutchMode();
     void remove();
     void save();
     void cancel();
@@ -281,10 +341,19 @@ private:
     }
 
     bool handbrakePage() const noexcept { return page_ == AccessoryPage::handbrake; }
+    bool clutchPage() const noexcept { return page_ == AccessoryPage::clutch; }
+    bool analogPage() const noexcept { return page_ != AccessoryPage::keys; }
+    Text pageText(Text keys, Text handbrake, Text clutch) const noexcept
+    {
+        return clutchPage() ? clutch : handbrakePage() ? handbrake : keys;
+    }
+    std::string& pageDevice() noexcept;
     const DeviceInfo* selectedDevice() const;
     std::optional<std::size_t> selectedBinding() const;
     std::optional<std::size_t> selectedCapture() const;
     std::optional<std::size_t> handbrakeBinding() const;
+    std::optional<std::size_t> clutchBinding() const;
+    std::optional<std::size_t> analogBinding() const;
     std::optional<std::size_t> legacyHandbrakeBinding() const;
     std::wstring deviceLabel(std::string_view id) const;
     void selectDevice(std::string_view id);
@@ -296,8 +365,9 @@ private:
     void setPreviewFocus(bool focused);
     void finishCapture();
     void refreshBindings(std::optional<std::size_t> selection = {});
-    void refreshHandbrakeActions(bool idle, bool captured);
+    void refreshAnalogActions(bool idle, bool captured);
     void applyHandbrake(AccessoryBinding binding);
+    void applyClutch(AccessoryBinding binding);
     void renderPreview(std::wstring status, std::optional<int> travel, std::optional<int> handbrake = {});
     void setHandbrakePreview(std::optional<int> tenths) const;
 
@@ -323,6 +393,8 @@ private:
     AccessoryPage page_{AccessoryPage::keys};
     std::string keysDevice_;
     std::string handbrakeDevice_;
+    std::string clutchDevice_;
+    ClutchMode clutchMode_{ClutchMode::off};
     unsigned int key_{};
     unsigned int handbrakeCeiling_{defaultHandbrakeCeilingPercent};
     ULONGLONG deadline_{};
@@ -337,24 +409,24 @@ bool AccessoryDialog::initialise(HWND window)
 {
     window_ = window;
     revision_ = profileFileRevision(path_);
-    std::error_code fileError;
-    if (std::filesystem::exists(path_, fileError) || fileError) {
-        std::string error;
-        const auto saved = loadAccessoryProfile(path_, error);
-        if (!saved) {
-            const auto message = tr(Text::DlgAccessoriesReadError) + localizedError(error);
-            MessageBoxW(window_, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
-            EndDialog(window_, IDCANCEL);
-            return false;
-        }
-        bindings_ = *saved;
+    auto saved = readAccessorySettings(window_, path_);
+    if (!saved) {
+        EndDialog(window_, IDCANCEL);
+        return false;
     }
+    bindings_ = std::move(*saved);
     send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgDigital)));
     send(IDC_ACCESSORY_TYPE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgAnalog)));
     send(IDC_ACCESSORY_TYPE, CB_SETCURSEL, 0);
     populateAccessoryActivation(window_, IDC_ACCESSORY_ACTIVATION);
     if (const auto binding = handbrakeBinding())
         handbrakeCeiling_ = bindings_[*binding].handbrakeCeilingPercent;
+    if (const auto binding = clutchBinding())
+        clutchMode_ = *bindings_[*binding].clutchMode;
+    for (const auto& option : clutchOptions)
+        send(IDC_CLUTCH_MODE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(option.label)));
+    const auto mode = std::ranges::find(clutchOptions, clutchMode_, &ClutchOption::mode);
+    send(IDC_CLUTCH_MODE, CB_SETCURSEL, static_cast<WPARAM>(mode - clutchOptions.begin()));
     send(IDC_HANDBRAKE_CEILING, EM_SETLIMITTEXT, 3);
     SetDlgItemInt(window_, IDC_HANDBRAKE_CEILING, handbrakeCeiling_, FALSE);
     refreshDevices();
@@ -372,7 +444,7 @@ const DeviceInfo* AccessoryDialog::selectedDevice() const
 
 std::optional<std::size_t> AccessoryDialog::selectedBinding() const
 {
-    if (handbrakePage())
+    if (analogPage())
         return {};
     const auto row = send(IDC_ACCESSORY_LIST, LB_GETCURSEL);
     if (row == LB_ERR)
@@ -401,6 +473,19 @@ std::optional<std::size_t> AccessoryDialog::handbrakeBinding() const
     return static_cast<std::size_t>(found - bindings_.begin());
 }
 
+std::optional<std::size_t> AccessoryDialog::clutchBinding() const
+{
+    const auto found = std::ranges::find_if(bindings_, [](const auto& binding) { return binding.clutchMode.has_value(); });
+    if (found == bindings_.end())
+        return {};
+    return static_cast<std::size_t>(found - bindings_.begin());
+}
+
+std::optional<std::size_t> AccessoryDialog::analogBinding() const
+{
+    return clutchPage() ? clutchBinding() : handbrakeBinding();
+}
+
 std::optional<std::size_t> AccessoryDialog::legacyHandbrakeBinding() const
 {
     const auto found = std::ranges::find_if(bindings_, isLegacyHandbrakeAxis);
@@ -422,32 +507,32 @@ void AccessoryDialog::selectDevice(std::string_view id)
         send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, static_cast<WPARAM>(device - devices_.begin()));
         return;
     }
-    const bool chooseFirst = !devices_.empty() && (!handbrakePage() || (id.empty() && devices_.size() == 1));
+    const bool chooseFirst = !devices_.empty() && (!analogPage() || (id.empty() && devices_.size() == 1));
     send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, chooseFirst ? 0 : static_cast<WPARAM>(CB_ERR));
+}
+
+std::string& AccessoryDialog::pageDevice() noexcept
+{
+    return clutchPage() ? clutchDevice_ : handbrakePage() ? handbrakeDevice_ : keysDevice_;
 }
 
 void AccessoryDialog::rememberSelectedDevice()
 {
-    if (const auto* device = selectedDevice()) {
-        auto& selection = handbrakePage() ? handbrakeDevice_ : keysDevice_;
-        selection = device->id;
-    }
+    if (const auto* device = selectedDevice())
+        pageDevice() = device->id;
 }
 
 void AccessoryDialog::restoreDeviceSelection()
 {
-    if (!handbrakePage()) {
-        selectDevice(keysDevice_);
+    const auto& previous = pageDevice();
+    if (!analogPage() || !previous.empty()) {
+        selectDevice(previous);
         return;
     }
 
-    if (!handbrakeDevice_.empty()) {
-        selectDevice(handbrakeDevice_);
-        return;
-    }
-
-    const auto configured = handbrakeBinding();
-    const auto axis = configured ? configured : legacyHandbrakeBinding();
+    auto axis = analogBinding();
+    if (!axis && handbrakePage())
+        axis = legacyHandbrakeBinding();
     selectDevice(axis ? std::string_view(bindings_[*axis].deviceId) : std::string_view{});
 }
 
@@ -460,26 +545,34 @@ void AccessoryDialog::showPage(AccessoryPage page, bool initialise)
         page_ = page;
         restoreDeviceSelection();
     }
-    const bool handbrake = handbrakePage();
+    const auto show = [&](int control, bool visible) {
+        ShowWindow(GetDlgItem(window_, control), visible ? SW_SHOW : SW_HIDE);
+    };
     for (const auto control : {IDC_ACCESSORY_SHIFTER, IDC_ACCESSORY_TYPE_LABEL, IDC_ACCESSORY_TYPE,
                                IDC_MODAL_KEY_LABEL, IDC_ACCESSORY_KEY, IDC_ACCESSORY_ADD,
                                IDC_MODAL_LIST_HEADING, IDC_ACCESSORY_ACTIVATION_LABEL,
                                IDC_ACCESSORY_ACTIVATION, IDC_ACCESSORY_THRESHOLDS, IDC_ACCESSORY_LIST,
-                               IDC_ACCESSORY_EDIT, IDC_ACCESSORY_REMOVE}) {
-        ShowWindow(GetDlgItem(window_, control), handbrake ? SW_HIDE : SW_SHOW);
-    }
-    for (const auto control : {IDC_HANDBRAKE_USE_SPACE, IDC_HANDBRAKE_AXIS, IDC_HANDBRAKE_APPLY_AXIS,
-                               IDC_HANDBRAKE_REMOVE, IDC_HANDBRAKE_HEADING, IDC_HANDBRAKE_CEILING_LABEL,
-                               IDC_HANDBRAKE_CEILING, IDC_HANDBRAKE_STATUS}) {
-        ShowWindow(GetDlgItem(window_, control), handbrake ? SW_SHOW : SW_HIDE);
-    }
-    DialogTheme::setPrimary(window_, IDC_ACCESSORY_TAB_KEYS, !handbrake);
-    DialogTheme::setPrimary(window_, IDC_ACCESSORY_TAB_HANDBRAKE, handbrake);
-    SetDlgItemTextW(window_, IDC_MODAL_INTRO, tr(handbrake ? Text::DlgHandbrakeIntro : Text::DlgAccessoriesIntro));
+                               IDC_ACCESSORY_EDIT, IDC_ACCESSORY_REMOVE})
+        show(control, !analogPage());
+    for (const auto control : {IDC_HANDBRAKE_AXIS, IDC_HANDBRAKE_APPLY_AXIS,
+                               IDC_HANDBRAKE_REMOVE, IDC_HANDBRAKE_HEADING})
+        show(control, analogPage());
+    for (const auto control : {IDC_HANDBRAKE_USE_SPACE, IDC_HANDBRAKE_CEILING_LABEL,
+                               IDC_HANDBRAKE_CEILING, IDC_HANDBRAKE_STATUS})
+        show(control, handbrakePage());
+    for (const auto control : {IDC_CLUTCH_MODE, IDC_CLUTCH_MODE_LABEL, IDC_CLUTCH_STATUS})
+        show(control, clutchPage());
+    DialogTheme::setPrimary(window_, IDC_ACCESSORY_TAB_KEYS, !analogPage());
+    DialogTheme::setPrimary(window_, IDC_ACCESSORY_TAB_HANDBRAKE, handbrakePage());
+    DialogTheme::setPrimary(window_, IDC_ACCESSORY_TAB_CLUTCH, clutchPage());
+    SetDlgItemTextW(window_, IDC_MODAL_INTRO,
+        tr(pageText(Text::DlgAccessoriesIntro, Text::DlgHandbrakeIntro, Text::DlgClutchIntro)));
     SetDlgItemTextW(window_, IDC_ACCESSORY_INPUT_LABEL,
-        tr(handbrake ? Text::DlgHandbrakeDetectedAxis : Text::DlgAccessoriesCapturedInput));
+        tr(analogPage() ? Text::DlgHandbrakeDetectedAxis : Text::DlgAccessoriesCapturedInput));
+    SetDlgItemTextW(window_, IDC_HANDBRAKE_HEADING, tr(clutchPage() ? Text::DlgClutchHeading : Text::DlgHandbrakeHeading));
+    SetDlgItemTextW(window_, IDC_HANDBRAKE_REMOVE, tr(clutchPage() ? Text::DlgClutchRemove : Text::DlgHandbrakeRemove));
     SetDlgItemTextW(window_, IDC_ACCESSORY_PREVIEW_HEADING,
-        tr(handbrake ? Text::DlgHandbrakePreview : Text::DlgAccessoryPreview));
+        tr(pageText(Text::DlgAccessoryPreview, Text::DlgHandbrakePreview, Text::DlgClutchPreview)));
     clearCapture();
     RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
@@ -531,10 +624,10 @@ void AccessoryDialog::clearCapture()
     previous_.reset();
     rest_.reset();
     send(IDC_ACCESSORY_INPUT, CB_RESETCONTENT);
-    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(handbrakePage() ? Text::DlgHandbrakeCapture : Text::DlgAccessoriesCapture));
+    SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(pageText(Text::DlgAccessoriesCapture, Text::DlgHandbrakeCapture, Text::DlgClutchCapture)));
     if (const auto* device = selectedDevice()) {
-        if (handbrakePage()) {
-            setStatus(tr(Text::DlgHandbrakeReadyToCapture));
+        if (analogPage()) {
+            setStatus(tr(clutchPage() ? Text::DlgClutchReadyToCapture : Text::DlgHandbrakeReadyToCapture));
         } else {
             const auto status = tr(Text::DlgAccessoriesAxesCount) + std::to_wstring(std::ranges::count(device->axes, true))
                 + L" · " + tr(Text::DlgAccessoriesButtonsCount) + std::to_wstring(device->buttons.count())
@@ -543,16 +636,16 @@ void AccessoryDialog::clearCapture()
             setStatus(status.c_str());
         }
     } else {
-        setStatus(tr(handbrakePage() && !devices_.empty()
-            ? Text::DlgHandbrakeSelectDevice : Text::DlgAccessoriesConnectDevice));
+        setStatus(tr(devices_.empty() ? Text::DlgAccessoriesConnectDevice
+            : pageText(Text::DlgAccessoriesConnectDevice, Text::DlgHandbrakeSelectDevice, Text::DlgClutchSelectDevice)));
     }
     refreshActions();
 }
 
-void AccessoryDialog::refreshHandbrakeActions(bool idle, bool captured)
+void AccessoryDialog::refreshAnalogActions(bool idle, bool captured)
 {
-    const auto index = handbrakeBinding();
-    std::wstring selectedAxis = tr(Text::DlgHandbrakeUnconfigured);
+    const auto index = analogBinding();
+    std::wstring selectedAxis = tr(clutchPage() ? Text::DlgClutchUnconfigured : Text::DlgHandbrakeUnconfigured);
     if (index) {
         const auto& binding = bindings_[*index];
         const auto device = std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id);
@@ -561,12 +654,19 @@ void AccessoryDialog::refreshHandbrakeActions(bool idle, bool captured)
             : wide(device->name.empty() ? binding.deviceId : device->name);
     }
     SetDlgItemTextW(window_, IDC_HANDBRAKE_AXIS, selectedAxis.c_str());
+    EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_REMOVE), idle && index.has_value());
+    if (clutchPage()) {
+        const auto mode = std::ranges::find(clutchOptions, clutchMode_, &ClutchOption::mode);
+        EnableWindow(GetDlgItem(window_, IDC_CLUTCH_MODE), idle);
+        SetDlgItemTextW(window_, IDC_CLUTCH_STATUS, tr(mode->hint));
+        EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_APPLY_AXIS), idle && captured);
+        return;
+    }
     SetDlgItemTextW(window_, IDC_HANDBRAKE_STATUS, validCeiling_ ? L"" : tr(Text::DlgHandbrakeInvalid));
     EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_CEILING), idle);
     EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_APPLY_AXIS), idle && captured && validCeiling_);
     EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_USE_SPACE),
         idle && !index && legacyHandbrakeBinding().has_value() && validCeiling_);
-    EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_REMOVE), idle && index.has_value());
 }
 
 void AccessoryDialog::refreshActions()
@@ -577,11 +677,11 @@ void AccessoryDialog::refreshActions()
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_CAPTURE), selectedDevice() != nullptr);
     EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_INPUT), idle && !captured_.empty());
     EnableWindow(GetDlgItem(window_, IDOK), modified_ && (validCeiling_ || !handbrakeBinding()) && idle);
-    if (handbrakePage()) {
-        refreshHandbrakeActions(idle, capture.has_value());
+    if (analogPage()) {
+        refreshAnalogActions(idle, capture.has_value());
     } else {
         const auto* binding = row ? &bindings_[*row] : capture ? &captured_[*capture] : nullptr;
-        const bool native = binding && binding->nativeShifter;
+        const bool native = binding && isNativeTransmissionBinding(*binding);
         const bool canEdit = idle && binding && !native;
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ACTIVATION), canEdit);
         send(IDC_ACCESSORY_ACTIVATION, CB_SETCURSEL, !canEdit ? static_cast<WPARAM>(-1)
@@ -590,7 +690,7 @@ void AccessoryDialog::refreshActions()
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ADD), idle && capture.has_value() && isAccessoryKey(key_));
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_EDIT), idle && row.has_value() && !native);
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_THRESHOLDS),
-            idle && row.has_value() && !native && bindings_[*row].kind == AccessoryKind::Axis);
+            idle && row.has_value() && !bindings_[*row].nativeShifter && bindings_[*row].kind == AccessoryKind::Axis);
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), idle && row.has_value());
     }
     selectPreview();
@@ -598,7 +698,7 @@ void AccessoryDialog::refreshActions()
 
 void AccessoryDialog::selectCapturedInput()
 {
-    if (!handbrakePage())
+    if (!analogPage())
         send(IDC_ACCESSORY_LIST, LB_SETCURSEL, static_cast<WPARAM>(-1));
     refreshActions();
 }
@@ -607,11 +707,16 @@ void AccessoryDialog::selectPreview()
 {
     std::optional<AccessoryBinding> binding;
     if (stage_ == CaptureStage::Idle) {
-        if (handbrakePage()) {
-            if (const auto capture = selectedCapture())
-                binding = asHandbrake(captured_[*capture], handbrakeCeiling_);
-            else if (const auto row = handbrakeBinding())
+        if (analogPage()) {
+            if (const auto capture = selectedCapture()) {
+                binding = captured_[*capture];
+                if (clutchPage())
+                    binding->clutchMode = clutchMode_;
+                else
+                    binding = asHandbrake(*binding, handbrakeCeiling_);
+            } else if (const auto row = analogBinding()) {
                 binding = bindings_[*row];
+            }
         } else if (const auto row = selectedBinding()) {
             binding = bindings_[*row];
         } else if (const auto capture = selectedCapture()) {
@@ -623,11 +728,11 @@ void AccessoryDialog::selectPreview()
         previewBinding_ = std::move(binding);
         preview_.reset();
         previewIndex_ = 0;
-        if (previewBinding_ && previewBinding_->nativeShifter) {
-            if (nativeShifterVerified(bindings_)) {
+        if (previewBinding_ && isNativeTransmissionBinding(*previewBinding_)) {
+            if (previewBinding_->nativeSequential || nativeShifterVerified(bindings_)) {
                 AccessoryProfile pattern;
                 for (const auto& position : bindings_) {
-                    if (!position.nativeShifter)
+                    if (!isNativeTransmissionBinding(position))
                         continue;
                     if (position == *previewBinding_)
                         previewIndex_ = pattern.size();
@@ -637,7 +742,7 @@ void AccessoryDialog::selectPreview()
             }
         } else if (previewBinding_) {
             auto mapping = *previewBinding_;
-            if (!mapping.handbrakeCeilingPercent && !isAccessoryKey(mapping.key))
+            if (!mapping.handbrakeCeilingPercent && !mapping.clutchMode && !isAccessoryKey(mapping.key))
                 mapping.key = VK_SPACE; // Use a valid internal key to evaluate an unassigned draft.
             preview_.emplace(AccessoryProfile{std::move(mapping)});
         }
@@ -651,6 +756,8 @@ void AccessoryDialog::selectPreview()
         if (axis) {
             if (previewBinding_->handbrakeCeilingPercent) {
                 setHandbrakePreview({});
+            } else if (previewBinding_->clutchMode) {
+                SetDlgItemTextW(window_, IDC_ACCESSORY_PREVIEW_LIMITS, L"");
             } else {
                 const auto thresholds = previewBinding_->thresholds;
                 const auto limits = tr(Text::DlgAccessoryPreviewPress) + percent(static_cast<int>(thresholds.press))
@@ -726,7 +833,9 @@ void AccessoryDialog::pollPreview()
         case AccessoryStatus::armed:
             if (progressive)
                 return Text::DlgAccessoryPreviewHandbrake;
-            if (previewBinding_->nativeShifter)
+            if (previewBinding_->clutchMode)
+                return Text::DlgClutchPreviewReady;
+            if (isNativeTransmissionBinding(*previewBinding_))
                 return observation.engaged.value_or(false) ? Text::DlgAccessoryPreviewNativeEngaged
                                                           : Text::DlgAccessoryPreviewNativeReleased;
             if (!isAccessoryKey(previewBinding_->key))
@@ -739,7 +848,7 @@ void AccessoryDialog::pollPreview()
     }();
     auto message = std::wstring(tr(status));
     if (observation.status == AccessoryStatus::armed) {
-        if (previewBinding_->nativeShifter)
+        if (isNativeTransmissionBinding(*previewBinding_))
             message = shifterRoleLabel(previewBinding_->role) + message;
         else if (isAccessoryKey(previewBinding_->key))
             message = accessoryKeyLabel(previewBinding_->key) + message;
@@ -795,7 +904,7 @@ void AccessoryDialog::drawPreview(const DRAWITEMSTRUCT& item) const
     ui::fill(item.hDC, rect, color(ui::field, COLOR_BTNFACE));
     if (previewTravel_)
         ui::fill(item.hDC, {rect.left, rect.top, x(*previewTravel_), rect.bottom}, color(ui::cyan, COLOR_HIGHLIGHT));
-    if (previewBinding_->handbrakeCeilingPercent)
+    if (previewBinding_->handbrakeCeilingPercent || previewBinding_->clutchMode)
         return;
     const auto line = [&](unsigned int value, COLORREF marker) {
         const auto position = std::clamp(x(static_cast<int>(value)), rect.left, rect.right - 1);
@@ -807,9 +916,9 @@ void AccessoryDialog::drawPreview(const DRAWITEMSTRUCT& item) const
 
 void AccessoryDialog::chooseKey()
 {
-    if (handbrakePage() || stage_ != CaptureStage::Idle)
+    if (analogPage() || stage_ != CaptureStage::Idle)
         return;
-    if (const auto row = selectedBinding(); row && bindings_[*row].nativeShifter)
+    if (const auto row = selectedBinding(); row && isNativeTransmissionBinding(bindings_[*row]))
         return;
     if (const auto key = chooseAccessoryKey(window_, key_)) {
         key_ = *key;
@@ -824,7 +933,7 @@ void AccessoryDialog::chooseKey()
 
 void AccessoryDialog::changeActivation()
 {
-    if (handbrakePage() || stage_ != CaptureStage::Idle)
+    if (analogPage() || stage_ != CaptureStage::Idle)
         return;
     const auto selected = send(IDC_ACCESSORY_ACTIVATION, CB_GETCURSEL);
     if (selected == CB_ERR)
@@ -832,7 +941,7 @@ void AccessoryDialog::changeActivation()
     const auto activation = selected == 1 ? AccessoryActivation::pulse : AccessoryActivation::hold;
     if (const auto row = selectedBinding()) {
         auto& binding = bindings_[*row];
-        if (!binding.nativeShifter && binding.activation != activation) {
+        if (!isNativeTransmissionBinding(binding) && binding.activation != activation) {
             binding.activation = activation;
             modified_ = true;
             refreshBindings(row);
@@ -846,14 +955,14 @@ void AccessoryDialog::changeActivation()
 
 void AccessoryDialog::shifter()
 {
-    if (handbrakePage())
+    if (analogPage())
         return;
     if (inventoryDirty_)
         refreshDevices();
     else
         clearCapture();
     const auto* device = selectedDevice();
-    if (editShifter(window_, input_, bindings_, devices_, device ? std::string_view(device->id) : std::string_view{})) {
+    if (editShifter(window_, input_, bindings_, devices_, device ? std::string_view(device->id) : std::string_view{}, root_)) {
         modified_ = true;
         refreshBindings();
         setStatus(tr(Text::DlgAccessoriesShifterConfigured));
@@ -884,20 +993,20 @@ void AccessoryDialog::capture()
         return;
     if (stage_ == CaptureStage::AwaitingTravel) {
         startSampling(CaptureStage::AxisTravel,
-            tr(handbrakePage() ? Text::DlgHandbrakeHoldAtLimit : Text::DlgAccessoriesHoldAtLimit));
+            tr(pageText(Text::DlgAccessoriesHoldAtLimit, Text::DlgHandbrakeHoldAtLimit, Text::DlgClutchHoldAtLimit)));
         return;
     }
     const auto wasIdle = stage_ == CaptureStage::Idle;
     clearCapture();
     if (!wasIdle)
         return;
-    if (handbrakePage() || send(IDC_ACCESSORY_TYPE, CB_GETCURSEL) == 1) {
+    if (analogPage() || send(IDC_ACCESSORY_TYPE, CB_GETCURSEL) == 1) {
         if (std::ranges::none_of(device->axes, [](bool present) { return present; })) {
             setStatus(tr(Text::DlgAccessoriesNoAbsoluteAxes));
             return;
         }
         startSampling(CaptureStage::AxisRest,
-            tr(handbrakePage() ? Text::DlgHandbrakeHoldAtRest : Text::DlgAccessoriesHoldAtRest));
+            tr(pageText(Text::DlgAccessoriesHoldAtRest, Text::DlgHandbrakeHoldAtRest, Text::DlgClutchHoldAtRest)));
     } else {
         input_.beginPoll();
         previous_ = input_.sample(device->id);
@@ -971,8 +1080,8 @@ void AccessoryDialog::sample()
         rest_ = measured;
         stage_ = CaptureStage::AwaitingTravel;
         SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE,
-            tr(handbrakePage() ? Text::DlgHandbrakeMeasureLimit : Text::DlgAccessoriesMeasureLimit));
-        setStatus(tr(handbrakePage() ? Text::DlgHandbrakeMeasureLimitHint : Text::DlgAccessoriesMeasureLimitHint));
+            tr(analogPage() ? Text::DlgHandbrakeMeasureLimit : Text::DlgAccessoriesMeasureLimit));
+        setStatus(tr(pageText(Text::DlgAccessoriesMeasureLimitHint, Text::DlgHandbrakeMeasureLimitHint, Text::DlgClutchMeasureLimitHint)));
         return;
     }
     for (const auto& candidate : axisCandidates(*rest_, *rest_, *measured, false)) {
@@ -987,7 +1096,7 @@ void AccessoryDialog::finishCapture()
     KillTimer(window_, captureTimer);
     stage_ = CaptureStage::Idle;
     SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE,
-        tr(handbrakePage() ? Text::DlgHandbrakeCapture : Text::DlgAccessoriesCapture));
+        tr(pageText(Text::DlgAccessoriesCapture, Text::DlgHandbrakeCapture, Text::DlgClutchCapture)));
     for (const auto& binding : captured_) {
         const auto label = accessoryInputLabel(binding);
         send(IDC_ACCESSORY_INPUT, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
@@ -995,8 +1104,9 @@ void AccessoryDialog::finishCapture()
     send(IDC_ACCESSORY_INPUT, CB_SETCURSEL, 0);
     if (captured_.empty()) {
         setStatus(tr(Text::DlgAccessoriesAxisDidNotMove));
-    } else if (handbrakePage()) {
-        setStatus(tr(captured_.size() == 1 ? Text::DlgHandbrakeCapturedAxis : Text::DlgHandbrakeMultipleAxes));
+    } else if (analogPage()) {
+        setStatus(tr(captured_.size() == 1 ? Text::DlgHandbrakeCapturedAxis
+            : clutchPage() ? Text::DlgClutchMultipleAxes : Text::DlgHandbrakeMultipleAxes));
     } else {
         setStatus(tr(captured_.size() == 1 ? Text::DlgAccessoriesChooseKeyAndAdd : Text::DlgAccessoriesMultipleInputs));
     }
@@ -1010,10 +1120,10 @@ void AccessoryDialog::refreshBindings(std::optional<std::size_t> selection)
     const bool nativeVerified = nativeShifterVerified(bindings_);
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
         const auto& binding = bindings_[i];
-        if (binding.handbrakeCeilingPercent)
+        if (binding.handbrakeCeilingPercent || binding.clutchMode)
             continue;
         auto label = accessoryBindingOutputLabel(binding, nativeVerified) + L"  ←  " + accessoryBindingInputLabel(binding);
-        if (!binding.nativeShifter)
+        if (!isNativeTransmissionBinding(binding))
             label += L"  ·  " + std::wstring(accessoryActivationLabel(binding.activation));
         if (binding.kind == AccessoryKind::Axis) {
             label += L" · " + std::to_wstring(binding.thresholds.press) + L"% / "
@@ -1035,7 +1145,7 @@ void AccessoryDialog::refreshBindings(std::optional<std::size_t> selection)
 void AccessoryDialog::add()
 {
     const auto input = selectedCapture();
-    if (handbrakePage() || stage_ != CaptureStage::Idle || !input || !isAccessoryKey(key_))
+    if (analogPage() || stage_ != CaptureStage::Idle || !input || !isAccessoryKey(key_))
         return;
     if (std::ranges::find(bindings_, key_, &AccessoryBinding::key) != bindings_.end()) {
         setStatus(tr(Text::DlgAccessoriesKeyAlreadyAssigned));
@@ -1047,9 +1157,15 @@ void AccessoryDialog::add()
     }
     auto binding = captured_[*input];
     if (std::ranges::any_of(bindings_, [&](const auto& saved) {
-            return saved.nativeShifter && sameShifterInput(binding, saved);
+            return isNativeTransmissionBinding(saved) && sameShifterInput(binding, saved);
         })) {
         setStatus(tr(Text::DlgAccessoryNativeInputConflict));
+        return;
+    }
+    if (std::ranges::any_of(bindings_, [&](const auto& saved) {
+            return saved.clutchMode && sameShifterInput(binding, saved);
+        })) {
+        setStatus(tr(Text::DlgClutchInputConflict));
         return;
     }
     if (key_ == VK_SPACE && std::ranges::any_of(bindings_, [&](const auto& saved) {
@@ -1116,7 +1232,13 @@ void AccessoryDialog::editThresholds()
 void AccessoryDialog::applyHandbrake(AccessoryBinding binding)
 {
     if (std::ranges::any_of(bindings_, [&](const auto& saved) {
-            return saved.nativeShifter && sameShifterInput(binding, saved);
+            return saved.clutchMode && sameShifterInput(binding, saved);
+        })) {
+        setStatus(tr(Text::DlgClutchInputConflict));
+        return;
+    }
+    if (std::ranges::any_of(bindings_, [&](const auto& saved) {
+            return isNativeTransmissionBinding(saved) && sameShifterInput(binding, saved);
         })) {
         setStatus(tr(Text::DlgAccessoryNativeInputConflict));
         return;
@@ -1150,12 +1272,59 @@ void AccessoryDialog::applyHandbrake(AccessoryBinding binding)
     setStatus(tr(Text::DlgHandbrakeChanged));
 }
 
-void AccessoryDialog::useCapturedHandbrake()
+void AccessoryDialog::applyClutch(AccessoryBinding binding)
 {
-    if (!handbrakePage() || stage_ != CaptureStage::Idle || !validCeiling_)
+    if (std::ranges::any_of(bindings_, [&](const auto& saved) {
+            return !saved.clutchMode && sameShifterInput(binding, saved);
+        })) {
+        setStatus(tr(Text::DlgClutchInputConflict));
         return;
-    if (const auto capture = selectedCapture())
-        applyHandbrake(captured_[*capture]);
+    }
+    const auto target = clutchBinding();
+    if (!target && bindings_.size() == maxAccessoryBindings) {
+        setStatus(tr(Text::DlgAccessoriesBindingLimit));
+        return;
+    }
+    binding.clutchMode = clutchMode_;
+    clutchDevice_ = binding.deviceId;
+    if (!target) {
+        bindings_.push_back(std::move(binding));
+        modified_ = true;
+    } else if (bindings_[*target] != binding) {
+        bindings_[*target] = std::move(binding);
+        modified_ = true;
+    }
+    selectDevice(clutchDevice_);
+    clearCapture();
+    refreshBindings();
+    setStatus(tr(Text::DlgClutchChanged));
+}
+
+void AccessoryDialog::useCapturedAnalog()
+{
+    if (!analogPage() || stage_ != CaptureStage::Idle || (handbrakePage() && !validCeiling_))
+        return;
+    if (const auto capture = selectedCapture()) {
+        if (clutchPage())
+            applyClutch(captured_[*capture]);
+        else
+            applyHandbrake(captured_[*capture]);
+    }
+}
+
+void AccessoryDialog::changeClutchMode()
+{
+    const auto row = send(IDC_CLUTCH_MODE, CB_GETCURSEL);
+    if (!clutchPage() || stage_ != CaptureStage::Idle || row < 0 ||
+        static_cast<std::size_t>(row) >= clutchOptions.size())
+        return;
+    clutchMode_ = clutchOptions[static_cast<std::size_t>(row)].mode;
+    if (const auto index = clutchBinding(); index && bindings_[*index].clutchMode != clutchMode_) {
+        bindings_[*index].clutchMode = clutchMode_;
+        modified_ = true;
+        setStatus(tr(Text::DlgClutchChanged));
+    }
+    refreshActions();
 }
 
 void AccessoryDialog::useLegacyHandbrake()
@@ -1182,18 +1351,23 @@ void AccessoryDialog::changeHandbrakeCeiling()
     refreshActions();
 }
 
-void AccessoryDialog::removeHandbrake()
+void AccessoryDialog::removeAnalog()
 {
-    if (!handbrakePage() || stage_ != CaptureStage::Idle)
+    if (!analogPage() || stage_ != CaptureStage::Idle)
         return;
-    const auto index = handbrakeBinding();
+    const auto index = analogBinding();
     if (!index)
         return;
     bindings_.erase(bindings_.begin() + *index);
     modified_ = true;
-    handbrakeCeiling_ = defaultHandbrakeCeilingPercent;
-    validCeiling_ = true;
-    SetDlgItemInt(window_, IDC_HANDBRAKE_CEILING, handbrakeCeiling_, FALSE);
+    if (handbrakePage()) {
+        handbrakeCeiling_ = defaultHandbrakeCeilingPercent;
+        validCeiling_ = true;
+        SetDlgItemInt(window_, IDC_HANDBRAKE_CEILING, handbrakeCeiling_, FALSE);
+    } else {
+        clutchMode_ = ClutchMode::off;
+        send(IDC_CLUTCH_MODE, CB_SETCURSEL, 0);
+    }
     clearCapture();
     refreshBindings();
     setStatus(tr(Text::DlgAccessoriesBindingRemoved));
@@ -1204,12 +1378,12 @@ void AccessoryDialog::remove()
     const auto index = selectedBinding();
     if (!index || stage_ != CaptureStage::Idle)
         return;
-    const bool native = bindings_[*index].nativeShifter;
+    const bool native = isNativeTransmissionBinding(bindings_[*index]);
     if (native) {
         if (MessageBoxW(window_, tr(Text::DlgAccessoriesRemoveNative), tr(Text::DlgAccessoriesTitle),
                         MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
             return;
-        std::erase_if(bindings_, [](const AccessoryBinding& binding) { return binding.nativeShifter; });
+        std::erase_if(bindings_, isNativeTransmissionBinding);
     } else {
         bindings_.erase(bindings_.begin() + *index);
     }
@@ -1220,33 +1394,9 @@ void AccessoryDialog::remove()
 
 void AccessoryDialog::save()
 {
-    if (!modified_ || stage_ != CaptureStage::Idle || (!validCeiling_ && handbrakeBinding()))
-        return;
-    if (isTemporaryProfileDirectory(path_.parent_path())) {
-        MessageBoxW(window_, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
-        return;
-    }
-    std::string error;
-    bool createFailed = false;
-    const std::array checks{ProfileFileCheck{accessoryFilename, revision_}};
-    const auto result = savePresetSettings(root_, preset_, checks, [&] {
-        std::error_code directoryError;
-        std::filesystem::create_directories(path_.parent_path(), directoryError);
-        createFailed = static_cast<bool>(directoryError);
-        return !createFailed && saveAccessoryProfile(path_, bindings_, error);
-    });
-    if (result == PresetSaveResult::changed) {
-        MessageBoxW(window_, tr(Text::DlgAccessoriesChanged), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
-        return;
-    }
-    if (result != PresetSaveResult::saved) {
-        auto message = std::wstring(tr(createFailed ? Text::DlgAccessoriesCreateProfileFailed : Text::DlgAccessoriesSaveError));
-        if (!error.empty())
-            message += localizedError(error);
-        MessageBoxW(window_, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
-        return;
-    }
-    EndDialog(window_, IDOK);
+    const bool ready = modified_ && stage_ == CaptureStage::Idle && (validCeiling_ || !handbrakeBinding());
+    if (ready && saveAccessorySettings(window_, root_, preset_, revision_, bindings_))
+        EndDialog(window_, IDOK);
 }
 
 void AccessoryDialog::cancel()
@@ -1264,6 +1414,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetWindowTextW(window, tr(Text::DlgAccessoriesTitle));
         SetDlgItemTextW(window, IDC_ACCESSORY_TAB_KEYS, tr(Text::DlgAccessoriesTabKeys));
         SetDlgItemTextW(window, IDC_ACCESSORY_TAB_HANDBRAKE, tr(Text::DlgAccessoriesTabHandbrake));
+        SetDlgItemTextW(window, IDC_ACCESSORY_TAB_CLUTCH, tr(Text::DlgAccessoriesTabClutch));
+        SetDlgItemTextW(window, IDC_CLUTCH_MODE_LABEL, tr(Text::DlgClutchMode));
         SetDlgItemTextW(window, IDC_ACCESSORY_SHIFTER, tr(Text::DlgAccessoriesShifter));
         SetDlgItemTextW(window, IDC_MODAL_DEVICE_LABEL, tr(Text::DlgDevice));
         SetDlgItemTextW(window, IDC_ACCESSORY_REFRESH, tr(Text::DlgRefresh));
@@ -1374,8 +1526,15 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case IDC_ACCESSORY_TAB_HANDBRAKE:
         dialog->showPage(AccessoryPage::handbrake);
         return TRUE;
+    case IDC_ACCESSORY_TAB_CLUTCH:
+        dialog->showPage(AccessoryPage::clutch);
+        return TRUE;
+    case IDC_CLUTCH_MODE:
+        if (HIWORD(wParam) == CBN_SELCHANGE)
+            dialog->changeClutchMode();
+        return TRUE;
     case IDC_HANDBRAKE_APPLY_AXIS:
-        dialog->useCapturedHandbrake();
+        dialog->useCapturedAnalog();
         return TRUE;
     case IDC_HANDBRAKE_USE_SPACE:
         dialog->useLegacyHandbrake();
@@ -1385,7 +1544,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             dialog->changeHandbrakeCeiling();
         return TRUE;
     case IDC_HANDBRAKE_REMOVE:
-        dialog->removeHandbrake();
+        dialog->removeAnalog();
         return TRUE;
     case IDC_ACCESSORY_REMOVE:
         dialog->remove();
@@ -1410,6 +1569,16 @@ bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path
     if (result == -1)
         MessageBoxW(owner, tr(Text::DlgAccessoriesOpenError), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
     return result == IDOK;
+}
+
+bool editProfileShifter(HWND owner, DirectInput& input, const std::filesystem::path& root,
+                        const ProfilePreset& preset, std::span<const DeviceInfo> devices)
+{
+    const auto path = preset.directory / accessoryFilename;
+    const auto revision = profileFileRevision(path);
+    auto bindings = readAccessorySettings(owner, path);
+    return bindings && editShifter(owner, input, *bindings, devices, {}, root,
+        [&](HWND dialog, const AccessoryProfile& updated) { return saveAccessorySettings(dialog, root, preset, revision, updated); });
 }
 
 } // namespace chrome_axis

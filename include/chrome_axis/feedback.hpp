@@ -11,6 +11,7 @@ inline constexpr int maxFeedbackGainPercent = 200;
 inline constexpr int minFeedbackCenteringPercent = 50;
 inline constexpr int maxFeedbackCenteringPercent = 250;
 inline constexpr int maxFeedbackImpactPercent = 200;
+inline constexpr int maxFeedbackTuningPercent = 200;
 
 struct FeedbackSettings {
     bool enabled{};
@@ -19,6 +20,8 @@ struct FeedbackSettings {
     bool invert{};
     int centering{100};
     int impactStrength{100};
+    int lowSpeedEffort{100};
+    int damping{100};
 
     bool operator==(const FeedbackSettings&) const = default;
 };
@@ -50,6 +53,7 @@ struct FeedbackOutput {
     float requestedForce{};
     float force{};
     FeedbackSaturation saturation{};
+    float continuousForce{};
 };
 
 class WheelFeedback {

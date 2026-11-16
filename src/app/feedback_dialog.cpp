@@ -3,6 +3,7 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "chrome_axis/configuration.hpp"
 #include "chrome_axis/controls.hpp"
+#include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "app_text.hpp"
 #include "dialog_theme.hpp"
@@ -11,6 +12,8 @@
 #include <commctrl.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cwchar>
 namespace chrome_axis {
 namespace {
 
@@ -28,6 +31,11 @@ constexpr GainSlider centering{IDC_FEEDBACK_CENTERING, IDC_FEEDBACK_CENTERING_VA
                                minFeedbackCenteringPercent, maxFeedbackCenteringPercent};
 constexpr GainSlider impactStrength{IDC_FEEDBACK_IMPACT_STRENGTH, IDC_FEEDBACK_IMPACT_STRENGTH_VALUE,
                                     0, maxFeedbackImpactPercent};
+
+constexpr GainSlider lowSpeed{IDC_FEEDBACK_LOW_SPEED, IDC_FEEDBACK_LOW_SPEED_VALUE,
+                              0, maxFeedbackTuningPercent};
+constexpr GainSlider damping{IDC_FEEDBACK_DAMPING, IDC_FEEDBACK_DAMPING_VALUE,
+                              0, maxFeedbackTuningPercent};
 
 enum class Compatibility { noCalibration, disconnected, unsupported, supported };
 
@@ -130,6 +138,13 @@ struct FeedbackDialog {
     int gain{};
     int centeringGain{};
     int impactGain{};
+    int lowSpeedGain{};
+    int dampingGain{};
+    std::optional<int> suggestedGain;
+    std::uint64_t continuousClips{};
+    std::uint64_t impactClips{};
+
+    void showSuggestion(HWND window) const;
 
     void initialise(HWND window);
     void updateControls(HWND window) const;
@@ -165,17 +180,50 @@ void FeedbackDialog::initialise(HWND window)
     initialiseGain(window, overall, gain);
     initialiseGain(window, centering, centeringGain);
     initialiseGain(window, impactStrength, impactGain);
+    lowSpeedGain = settings.lowSpeedEffort;
+    dampingGain = settings.damping;
+    initialiseGain(window, lowSpeed, lowSpeedGain);
+    initialiseGain(window, damping, dampingGain);
+    const auto gameRoot = installedGameRoot(root.parent_path());
+    if (supported && saved && !gameRoot.empty()) {
+        const auto capture = DiagnosticReader(gameRoot).read().performance;
+        const auto name = std::filesystem::path(preset.name).u8string();
+        const std::string_view profile(reinterpret_cast<const char*>(name.data()), name.size());
+        if (capture.state == PerformanceState::complete && capture.submittedEffects >= 50 &&
+            capture.referenceFeedbackGain == settings.strength && capture.feedbackProfile.data() == profile &&
+            capture.peakContinuousForce >= 0.002f * settings.strength && std::isfinite(capture.peakContinuousForce)) {
+            // Reserve headroom for impacts and limit one recommendation to a modest increase.
+            const float scale = std::min(1.25f, 0.88f / capture.peakContinuousForce);
+            suggestedGain = snapGain(overall, static_cast<int>(std::lround(settings.strength * scale)));
+            continuousClips = capture.clippedSamples - std::min(capture.clippedSamples, capture.impactClippedSamples);
+            impactClips = capture.impactClippedSamples;
+        }
+    }
+    showSuggestion(window);
     addToggle(window, IDC_FEEDBACK_IMPACTS, tr(Text::DlgFeedbackImpactsDisabled), tr(Text::DlgFeedbackImpactsEnabled), settings.impacts);
     addToggle(window, IDC_FEEDBACK_DIRECTION, tr(Text::DlgFeedbackNormal), tr(Text::DlgFeedbackInverted), settings.invert);
     updateControls(window);
+}
+
+void FeedbackDialog::showSuggestion(HWND window) const
+{
+    if (!suggestedGain) {
+        SetDlgItemTextW(window, IDC_FEEDBACK_SUGGESTION, tr(Text::DlgFeedbackNoSuggestion));
+        return;
+    }
+    wchar_t label[220]{};
+    swprintf_s(label, tr(Text::DlgFeedbackSuggestion), gain, *suggestedGain,
+               static_cast<unsigned long long>(continuousClips), static_cast<unsigned long long>(impactClips));
+    SetDlgItemTextW(window, IDC_FEEDBACK_SUGGESTION, label);
 }
 
 void FeedbackDialog::updateControls(HWND window) const
 {
     const bool enabled = state == Compatibility::supported
         && SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_GETCURSEL, 0, 0) == 1;
-    for (const int id : {overall.control, centering.control, IDC_FEEDBACK_IMPACTS, IDC_FEEDBACK_DIRECTION})
+    for (const int id : {overall.control, centering.control, lowSpeed.control, damping.control, IDC_FEEDBACK_IMPACTS, IDC_FEEDBACK_DIRECTION})
         EnableWindow(GetDlgItem(window, id), enabled);
+    EnableWindow(GetDlgItem(window, IDC_FEEDBACK_USE_SUGGESTION), enabled && suggestedGain && gain != *suggestedGain);
     const bool impactsEnabled = enabled && SendDlgItemMessageW(window, IDC_FEEDBACK_IMPACTS, CB_GETCURSEL, 0, 0) == 1;
     EnableWindow(GetDlgItem(window, impactStrength.control), impactsEnabled);
 }
@@ -195,6 +243,8 @@ void FeedbackDialog::save(HWND window) const
         selected(IDC_FEEDBACK_DIRECTION) == 1,
         centeringGain,
         impactGain,
+        lowSpeedGain,
+        dampingGain,
     };
     std::string error;
     const std::array checks{ProfileFileCheck{profileFilename, calibrationRevision},
@@ -225,6 +275,11 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_FEEDBACK_IMPACTS_LABEL, tr(Text::DlgFeedbackImpacts));
         SetDlgItemTextW(window, IDC_FEEDBACK_IMPACT_STRENGTH_LABEL, tr(Text::DlgFeedbackImpactStrength));
         SetDlgItemTextW(window, IDC_FEEDBACK_IMPACT_STRENGTH, tr(Text::DlgFeedbackImpactStrengthSlider));
+        SetDlgItemTextW(window, IDC_FEEDBACK_LOW_SPEED_LABEL, tr(Text::DlgFeedbackLowSpeed));
+        SetDlgItemTextW(window, IDC_FEEDBACK_LOW_SPEED, tr(Text::DlgFeedbackLowSpeed));
+        SetDlgItemTextW(window, IDC_FEEDBACK_DAMPING_LABEL, tr(Text::DlgFeedbackDamping));
+        SetDlgItemTextW(window, IDC_FEEDBACK_DAMPING, tr(Text::DlgFeedbackDamping));
+        SetDlgItemTextW(window, IDC_FEEDBACK_USE_SUGGESTION, tr(Text::DlgFeedbackUseSuggestion));
         SetDlgItemTextW(window, IDC_FEEDBACK_DIRECTION_LABEL, tr(Text::DlgFeedbackDirection));
         SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgFeedbackIntro));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
@@ -239,7 +294,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     if (message == WM_NOTIFY && lParam && !ui::isHighContrast()) {
         const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
         if ((notification.idFrom == overall.control || notification.idFrom == centering.control ||
-             notification.idFrom == impactStrength.control) &&
+             notification.idFrom == impactStrength.control || notification.idFrom == lowSpeed.control ||
+             notification.idFrom == damping.control) &&
             notification.code == NM_CUSTOMDRAW) {
             const auto& draw = *reinterpret_cast<const NMCUSTOMDRAW*>(lParam);
             if (draw.dwDrawStage == CDDS_PREPAINT) {
@@ -253,6 +309,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const int control = GetDlgCtrlID(reinterpret_cast<HWND>(lParam));
         if (control == overall.control) {
             dialog->gain = selectGain(window, overall);
+            dialog->showSuggestion(window);
+            dialog->updateControls(window);
             return TRUE;
         }
         if (control == centering.control) {
@@ -263,6 +321,14 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             dialog->impactGain = selectGain(window, impactStrength);
             return TRUE;
         }
+        if (control == lowSpeed.control) {
+            dialog->lowSpeedGain = selectGain(window, lowSpeed);
+            return TRUE;
+        }
+        if (control == damping.control) {
+            dialog->dampingGain = selectGain(window, damping);
+            return TRUE;
+        }
     }
     if (message != WM_COMMAND)
         return FALSE;
@@ -271,6 +337,14 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case IDC_FEEDBACK_IMPACTS:
         if (HIWORD(wParam) == CBN_SELCHANGE)
             dialog->updateControls(window);
+        return TRUE;
+    case IDC_FEEDBACK_USE_SUGGESTION:
+        if (dialog->suggestedGain && IsWindowEnabled(GetDlgItem(window, IDC_FEEDBACK_USE_SUGGESTION))) {
+            dialog->gain = *dialog->suggestedGain;
+            initialiseGain(window, overall, dialog->gain);
+            dialog->showSuggestion(window);
+            dialog->updateControls(window);
+        }
         return TRUE;
     case IDOK:
         dialog->save(window);

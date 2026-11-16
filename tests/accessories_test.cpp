@@ -677,6 +677,109 @@ int testUnverifiedNativeShifter(const std::filesystem::path& path, const std::st
     return 0;
 }
 
+int testNativeSequentialAndClutch(const std::filesystem::path& path, const std::string& wheelId,
+                                 const std::string& pedalsId)
+{
+    using namespace chrome_axis;
+    using ReadStatus = DeviceReadStatus;
+    const AccessoryBinding up{.deviceId = wheelId, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
+                              .role = ShifterRole::Upshift, .nativeSequential = true};
+    const AccessoryBinding down{.deviceId = wheelId, .kind = AccessoryKind::Button, .index = 1, .engaged = 1,
+                                .role = ShifterRole::Downshift, .nativeSequential = true};
+    const AccessoryBinding clutch{.deviceId = pedalsId, .kind = AccessoryKind::Axis, .index = 4,
+                                  .rest = 1000, .engaged = 0, .clutchMode = ClutchMode::assist};
+    const AccessoryBinding keyboard{wheelId, AccessoryKind::Button, 2, 0, 1, VK_ADD};
+    const AccessoryProfile profile{up, down, clutch, keyboard};
+    std::string error;
+    if (!saveAccessoryProfile(path, profile, error) || loadAccessoryProfile(path, error) != profile)
+        return 113;
+
+    auto changed = profile;
+    changed[2].clutchMode = ClutchMode::off;
+    if (sameAccessoryInputProfile(profile, changed) || !saveAccessoryProfile(path, changed, error)
+        || loadAccessoryProfile(path, error) != changed)
+        return 114;
+    changed[2].clutchMode = ClutchMode::experiment;
+    if (!saveAccessoryProfile(path, changed, error) || loadAccessoryProfile(path, error) != changed)
+        return 114;
+    const AccessoryBinding nativeH{.deviceId = wheelId, .kind = AccessoryKind::Button, .index = 3, .engaged = 1,
+                                   .role = ShifterRole::Gear1, .nativeShifter = true, .nativeShifterPositions = 2};
+    auto duplicate = down;
+    duplicate.index = up.index;
+    if (saveAccessoryProfile(path, {up, down, nativeH}, error) || saveAccessoryProfile(path, {up, duplicate}, error)
+        || saveAccessoryProfile(path, {clutch, clutch}, error) || loadAccessoryProfile(path, error) != changed)
+        return 115;
+
+    DeviceSample wheel;
+    wheel.buttonsPresent.set(0).set(1).set(2);
+    DeviceSample pedals;
+    pedals.axesPresent[4] = true;
+    pedals.axes[4] = clutch.rest;
+    const std::array<const DeviceSample*, 4> samples{&wheel, &wheel, &pedals, &wheel};
+    AccessoryTransmissionSample transmission;
+    AccessoryReader incomplete({up});
+    for (int i = 0; i < 4; ++i)
+        incomplete.update(samples, {}, {}, nullptr, nullptr, nullptr, &transmission);
+    if (transmission.sequentialArmed)
+        return 116;
+
+    AccessoryReader reader(profile);
+    std::array statuses{ReadStatus::available, ReadStatus::available, ReadStatus::available, ReadStatus::available};
+    const auto sample = [&] { return reader.update(samples, statuses, {}, nullptr, nullptr, nullptr, &transmission); };
+    wheel.buttons.set(0);
+    pedals.axes[4] = clutch.engaged;
+    for (int i = 0; i < 5; ++i) {
+        if (sample().any() || transmission.sequentialArmed || transmission.shiftDelta || transmission.clutch)
+            return 117;
+    }
+    wheel.buttons.reset();
+    pedals.axes[4] = clutch.rest;
+    sample();
+    sample();
+    if (sample().any() || !transmission.sequentialArmed || transmission.shiftDelta || transmission.clutch != 0.0f)
+        return 118;
+
+    wheel.buttons.set(0).set(2);
+    pedals.axes[4] = 485;
+    if (sample().count() != 1 || !transmission.sequentialArmed || transmission.shiftDelta != 1
+        || !transmission.clutch || std::abs(*transmission.clutch - 0.5f) > 0.001f)
+        return 119;
+    reader.resetKeyboardBindings();
+    if (sample().any() || transmission.shiftDelta || !transmission.sequentialArmed)
+        return 120;
+
+    wheel.buttons.set(1);
+    if (sample().any() || transmission.shiftDelta || !transmission.sequentialArmed)
+        return 121;
+    wheel.buttons.reset(0).reset(2);
+    if (sample().any() || transmission.shiftDelta)
+        return 121;
+    wheel.buttons.reset(1);
+    sample();
+    wheel.buttons.set(1);
+    if (sample().any() || transmission.shiftDelta != -1)
+        return 122;
+
+    statuses[1] = ReadStatus::pending;
+    statuses[2] = ReadStatus::pending;
+    if (sample().any() || transmission.sequentialArmed || transmission.clutch)
+        return 123;
+    statuses[1] = ReadStatus::available;
+    statuses[2] = ReadStatus::available;
+    for (int i = 0; i < 5; ++i) {
+        if (sample().any() || transmission.sequentialArmed || transmission.shiftDelta || transmission.clutch)
+            return 124;
+    }
+    wheel.buttons.reset(1);
+    pedals.axes[4] = clutch.rest;
+    sample();
+    sample();
+    if (sample().any() || !transmission.sequentialArmed || transmission.shiftDelta || transmission.clutch != 0.0f)
+        return 125;
+    pedals.axes[4] = clutch.engaged;
+    return sample().none() && transmission.clutch == 1.0f ? 0 : 126;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -714,6 +817,7 @@ int run()
     const auto replacementResult = testProfileReplacement(path, wheelId);
     const auto nativeShifterProfileResult = testNativeShifterProfile(path, wheelId);
     const auto unverifiedShifterResult = testUnverifiedNativeShifter(path, wheelId);
+    const auto nativeSequentialResult = testNativeSequentialAndClutch(path, wheelId, handbrakeId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
@@ -732,6 +836,8 @@ int run()
         return nativeShifterProfileResult;
     if (unverifiedShifterResult != 0)
         return unverifiedShifterResult;
+    if (nativeSequentialResult != 0)
+        return nativeSequentialResult;
     if (const auto result = testNativeShifterPolling(wheelId); result != 0)
         return result;
     if (const auto result = testPreviewReadings(wheelId); result != 0)

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <optional>
 
 namespace chrome_axis {
@@ -73,6 +75,100 @@ struct DirectGearKeys {
     bool released() const noexcept { return !gear && !ambiguous; }
 };
 
+// The USB reader can observe another press while the game finishes a shift.
+class PaddleRequests {
+public:
+    using TimePoint = std::chrono::steady_clock::time_point;
+
+    bool pending() const noexcept { return count_ != 0; }
+
+    bool push(int delta, TimePoint sampled) noexcept {
+        if (count_ == entries_.size())
+            return false;
+        entries_[(head_ + count_) % entries_.size()] = {delta, sampled};
+        ++count_;
+        return true;
+    }
+
+    int pop() noexcept {
+        if (!pending())
+            return 0;
+        const int delta = entries_[head_].delta;
+        head_ = (head_ + 1) % entries_.size();
+        --count_;
+        return delta;
+    }
+
+    bool expire(TimePoint now) noexcept {
+        const auto previousCount = count_;
+        while (pending() && now - entries_[head_].sampled >= std::chrono::milliseconds(900))
+            pop();
+        return previousCount != count_;
+    }
+
+    void clear() noexcept { count_ = 0; }
+
+private:
+    struct Entry {
+        int delta{};
+        TimePoint sampled{};
+    };
+
+    std::array<Entry, 4> entries_{};
+    std::size_t head_{};
+    std::size_t count_{};
+};
+
+class KeyboardClutchProbe {
+public:
+    static constexpr std::array positions{0.0f, 0.25f, 0.50f, 0.75f, 1.0f};
+
+    std::optional<float> update(const std::array<bool, positions.size()>& keys) noexcept {
+        std::optional<std::size_t> pressed;
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            if (!keys[i])
+                continue;
+            if (pressed) {
+                armed_ = false;
+                return selected_;
+            }
+            pressed = i;
+        }
+        if (!pressed)
+            armed_ = true;
+        else if (armed_) {
+            selected_ = positions[*pressed];
+            armed_ = false;
+        }
+        return selected_;
+    }
+
+private:
+    std::optional<float> selected_;
+    bool armed_{};
+};
+
+class ClutchShiftAssist {
+public:
+    // A selector position stays pending while a paddle press is a momentary request.
+    bool apply(std::optional<float> pressure, std::optional<int>& gear, int& delta) noexcept {
+        constexpr float minimumClutchTravel = 0.65f;
+        const bool released = pressure && *pressure >= minimumClutchTravel;
+        const bool changingGear = gear && *gear >= 0 && gear != acceptedGear_;
+        const bool blocked = !released && (changingGear || delta);
+        if (blocked) {
+            gear = acceptedGear_;
+            delta = 0;
+        } else {
+            acceptedGear_ = gear;
+        }
+        return blocked;
+    }
+
+private:
+    std::optional<int> acceptedGear_;
+};
+
 enum class PedalRouting { standard, reverse, suspended };
 
 constexpr std::optional<bool> reversePedalGear(int engaged, int target, int entries) noexcept {
@@ -138,12 +234,14 @@ class ManualTransmissionInput {
 public:
     TransmissionIntent update(bool hardware, std::optional<int> hardwareGear, bool simulation,
                               std::optional<bool> toggle, bool up, bool down, DirectGearKeys keyboard,
-                              unsigned int toggleKey = 0) noexcept {
-        if (hardware != hardware_ || simulation != simulation_) {
+                              unsigned int toggleKey = 0, bool sequential = false,
+                              bool sequentialArmed = false, int nativeDelta = 0) noexcept {
+        if (hardware != hardware_ || simulation != simulation_ || sequential != sequential_) {
             *this = {};
             hardware_ = hardware;
             simulation_ = simulation;
-            manualSelected_ = hardware;
+            sequential_ = sequential;
+            manualSelected_ = hardware || sequential;
         }
 
         if (toggleKey != toggleKey_) {
@@ -164,6 +262,9 @@ public:
         const int delta = sequentialShift(up, down);
         if (hardware)
             return {manualSelected_ && hardwareGear.has_value(), 0, hardwareGear, toggledByKey};
+        if (sequential)
+            return {manualSelected_ && sequentialArmed, manualSelected_ && sequentialArmed ? nativeDelta : 0,
+                    std::nullopt, toggledByKey};
         if (!simulation || !manualSelected_) {
             directArmed_ = false;
             keyboardSelection_.reset();
@@ -205,6 +306,7 @@ private:
     }
 
     bool hardware_{};
+    bool sequential_{};
     bool simulation_{};
     bool manualSelected_{};
     unsigned int toggleKey_{};

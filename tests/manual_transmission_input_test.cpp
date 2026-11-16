@@ -157,6 +157,63 @@ bool simulationPollsAfterAccessoryKeysAreReleased()
         newKeyReleased.manual && !newKeyReleased.toggledByKey && !automatic.manual && automatic.toggledByKey;
 }
 
+bool nativePaddlesAndClutchRespectArming()
+{
+    ManualTransmissionInput transmission;
+    const auto sequential = [&](bool ready, int edge) {
+        return transmission.update(false, {}, false, false, false, false, {}, VK_F8, true, ready, edge);
+    };
+    if (sequential(false, 1).manual || sequential(true, 1).delta != 1 || sequential(true, 0).delta != 0 ||
+        !sequential(true, -1).manual)
+        return false;
+    auto intent = transmission.update(true, -1, false, false, false, false, {}, VK_F8);
+    if (!intent.manual || intent.gear != -1)
+        return false;
+
+    chrome_axis::ClutchShiftAssist assist;
+    int delta = 0;
+    if (assist.apply({}, intent.gear, delta) || intent.gear != -1)
+        return false;
+    intent.gear = 3;
+    if (!assist.apply(0.6f, intent.gear, delta) || intent.gear != -1)
+        return false;
+    intent.gear = 3;
+    if (assist.apply(0.7f, intent.gear, delta) || intent.gear != 3)
+        return false;
+    intent.gear.reset();
+    delta = 1;
+    if (!assist.apply({}, intent.gear, delta) || delta != 0)
+        return false;
+
+    using namespace std::chrono_literals;
+    chrome_axis::PaddleRequests queue;
+    const auto at = chrome_axis::PaddleRequests::TimePoint{};
+    if (!queue.push(1, at) || !queue.push(-1, at + 800ms) || !queue.expire(at + 900ms) ||
+        queue.pop() != -1 || queue.pending() || queue.pop() != 0)
+        return false;
+    for (const auto edge : {1, 1, -1, -1})
+        if (!queue.push(edge, at))
+            return false;
+    if (queue.push(1, at) || queue.pop() != 1 || queue.pop() != 1 || queue.pop() != -1 || queue.pop() != -1)
+        return false;
+    queue.push(1, at);
+    queue.clear();
+    if (queue.pending())
+        return false;
+
+    chrome_axis::KeyboardClutchProbe probe;
+    if (probe.update({false, false, true, false, false}) || probe.update({}))
+        return false;
+    if (probe.update({false, false, true, false, false}) != 0.50f)
+        return false;
+    probe.update({});
+    if (probe.update({true, false, false, false, true}) != 0.50f ||
+        probe.update({false, false, false, false, true}) != 0.50f)
+        return false;
+    probe.update({});
+    return probe.update({true, false, false, false, false}) == 0.0f;
+}
+
 bool retainsManualReversePedalsDuringHandoff()
 {
     TransmissionPedals pedals;
@@ -197,6 +254,10 @@ int main()
     }
     if (!simulationPollsAfterAccessoryKeysAreReleased()) {
         std::cerr << "Simulation did not rearm the shortcut after accessory keys were released\n";
+        return 1;
+    }
+    if (!nativePaddlesAndClutchRespectArming()) {
+        std::cerr << "Native transmission input or clutch did not respect rearming and gating\n";
         return 1;
     }
     if (!retainsManualReversePedalsDuringHandoff()) {

@@ -35,11 +35,21 @@ enum class ResponseAxis { steering, throttle, brake };
 struct AxisResponse {
     int progressivity{};
     int saturation{maximumResponseSaturation};
+    bool stabilization{};
 
     bool operator==(const AxisResponse&) const = default;
 };
 
 using BrakeResponse = AxisResponse;
+
+class PedalStabilizer {
+public:
+    float update(float pedal) noexcept;
+    void reset() noexcept { output_ = 0.0f; }
+
+private:
+    float output_{};
+};
 
 struct AxisPreview {
     float raw{};
@@ -126,6 +136,7 @@ private:
     std::array<std::size_t, 3> sampleOwners_{};
     std::array<unsigned int, 3> neutralPolls_{};
     std::array<AxisStatus, 3> axisStatuses_{};
+    std::array<PedalStabilizer, 2> pedalStabilizers_{};
 };
 
 } // namespace chrome_axis

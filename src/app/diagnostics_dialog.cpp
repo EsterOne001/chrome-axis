@@ -10,6 +10,7 @@
 #include "dialog_theme.hpp"
 
 #include <winver.h>
+#include <shobjidl.h>
 
 #include <algorithm>
 #include <array>
@@ -17,6 +18,7 @@
 #include <cstddef>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -41,6 +43,7 @@ constexpr UINT_PTR copyTimer = 2;
 constexpr UINT copyFeedbackMs = 2500;
 constexpr wchar_t unavailableValue[] = L"—";
 constexpr ULONGLONG performanceCommandTimeoutMs = 3000;
+constexpr auto releaseCom = [](auto* object) { object->Release(); };
 
 struct PerformanceCommand {
     std::uint64_t id{};
@@ -526,8 +529,10 @@ std::wstring performanceTiming(const PerformanceTiming& timing)
     if (!timing.samples)
         return unavailableValue;
     return milliseconds(static_cast<double>(timing.totalMicros) / static_cast<double>(timing.samples)) +
-        tr(Text::DlgDiagnosticsPerformanceMean) + L" · " + milliseconds(static_cast<double>(timing.maxMicros)) +
-        tr(Text::DlgDiagnosticsPerformanceMaximum) + L" · " + std::to_wstring(timing.samples) +
+        tr(Text::DlgDiagnosticsPerformanceMean) + L" · P95 " + milliseconds(static_cast<double>(timing.percentile(95))) +
+        L" · P99 " + milliseconds(static_cast<double>(timing.percentile(99))) + L" · " +
+        milliseconds(static_cast<double>(timing.maxMicros)) + tr(Text::DlgDiagnosticsPerformanceMaximum) +
+        L" · " + std::to_wstring(timing.samples) +
         L" " + tr(timing.samples == 1 ? Text::DlgDiagnosticsPerformanceSample : Text::DlgDiagnosticsPerformanceSamples);
 }
 
@@ -560,6 +565,7 @@ std::wstring clippingSummary(const PerformanceReport& report)
 bool hasPerformanceData(const PerformanceReport& report)
 {
     return report.expiredReads || report.transientReads || report.forceSamples || report.submittedEffects ||
+        report.usbIntervalOverruns || report.feedbackIntervalOverruns ||
         std::ranges::any_of(performanceControls, [&](const auto& control) {
             return (report.*control.timing).samples != 0;
         });
@@ -576,17 +582,21 @@ std::wstring performanceStatus(const DiagnosticRead& read, ULONGLONG now)
     Text label;
     auto end = performance.endedAt;
     if (performance.state == PerformanceState::capturing) {
-        const bool driving = read.connection == DiagnosticConnection::connected && read.snapshot.mode == DiagnosticMode::usb;
+        const bool driving = read.connection == DiagnosticConnection::connected &&
+            (read.snapshot.mode == DiagnosticMode::usb || read.snapshot.mode == DiagnosticMode::simulation);
         label = driving ? Text::DlgDiagnosticsPerformanceActive : Text::DlgDiagnosticsPerformancePaused;
         end = read.connection == DiagnosticConnection::connected ? now : read.sampledAt;
     } else {
-        label = hasPerformanceData(performance) ? Text::DlgDiagnosticsPerformanceComplete : Text::DlgDiagnosticsPerformanceNoData;
+        label = hasPerformanceData(performance) || read.drivingCaptureSamples
+            ? Text::DlgDiagnosticsPerformanceComplete : Text::DlgDiagnosticsPerformanceNoData;
     }
     std::wstring status = tr(label);
     if (performance.startedAt && end >= performance.startedAt) {
         const auto elapsed = end - performance.startedAt;
         status += elapsed && elapsed < 1000 ? L" · < 1 s" : L" · " + std::to_wstring(elapsed / 1000) + L" s";
     }
+    if (read.drivingCaptureSamples == maxDrivingCaptureSamples)
+        status += L" · " + std::wstring(tr(Text::DlgDiagnosticsCsvFull));
     return status;
 }
 
@@ -605,11 +615,13 @@ const wchar_t* transmissionStatus(const DiagnosticTransmission& transmission)
     case DiagnosticShiftState::expired: return tr(Text::DlgDiagnosticsTransmissionExpired);
     case DiagnosticShiftState::recalibrationNeeded: return tr(Text::DlgDiagnosticsTransmissionRecalibration);
     case DiagnosticShiftState::selectorUnavailable: return tr(Text::DlgDiagnosticsTransmissionSelector);
+    case DiagnosticShiftState::pending: return tr(Text::DlgDiagnosticsTransmissionPending);
+    case DiagnosticShiftState::clutchRequired: return tr(Text::DlgDiagnosticsTransmissionClutchRequired);
     }
     return unavailableValue;
 }
 
-std::wstring transmissionSummary(const DiagnosticTransmission& transmission)
+std::wstring transmissionSummary(const DiagnosticTransmission& transmission, DiagnosticMode mode)
 {
     const auto gear = [](int position) -> std::wstring {
         if (position >= 1 && position <= 8)
@@ -620,10 +632,78 @@ std::wstring transmissionSummary(const DiagnosticTransmission& transmission)
     };
     auto text = std::wstring(tr(transmission.manual ? Text::DlgDiagnosticsTransmissionManual
                                                    : Text::DlgDiagnosticsTransmissionAuto));
+    if (mode == DiagnosticMode::usb)
+        text += L" · " + std::wstring(tr(transmission.sequential ? Text::DlgDiagnosticsTransmissionSequential
+                                                               : Text::DlgDiagnosticsTransmissionHPattern));
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionSelected)) + L" " + gear(transmission.selectedGear);
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsReportRequested)) + L" " + gear(transmission.requestedGear);
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionActual)) + L" " + gear(transmission.engagedGear);
     return text;
+}
+
+std::wstring clutchSummary(const DiagnosticClutch& clutch)
+{
+    auto text = std::wstring(tr(Text::DlgDiagnosticsReportRead)) + L" " +
+        (clutch.inputAvailable ? percentText(clutch.input) : unavailableValue);
+    const auto assistance = clutch.assistanceEnabled ? Text::DlgDiagnosticsClutchAssistanceOn
+                                                    : Text::DlgDiagnosticsClutchAssistanceOff;
+    text += L" · " + std::wstring(tr(assistance));
+    if (clutch.probeActive || clutch.appliedAvailable) {
+        text += L" · " + std::wstring(tr(Text::DlgDiagnosticsClutchApplied)) + L" " +
+            (clutch.appliedAvailable ? percentText(clutch.applied) : unavailableValue);
+        text += L" · " + std::wstring(tr(clutch.probeSupported ? Text::DlgDiagnosticsClutchProbeAvailable
+                                                              : Text::DlgDiagnosticsClutchProbeUnavailable));
+    }
+    return text;
+}
+
+HRESULT pickCsvFile(HWND owner, std::filesystem::path& result)
+{
+    IFileSaveDialog* pointer{};
+    auto status = CoCreateInstance(__uuidof(FileSaveDialog), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pointer));
+    if (FAILED(status))
+        return status;
+    const std::unique_ptr<IFileSaveDialog, decltype(releaseCom)> dialog(pointer);
+    const COMDLG_FILTERSPEC filter{L"CSV (*.csv)", L"*.csv"};
+    DWORD options{};
+    if (FAILED(status = dialog->GetOptions(&options)) ||
+        FAILED(status = dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT)) ||
+        FAILED(status = dialog->SetTitle(tr(Text::DlgDiagnosticsCsvTitle))) ||
+        FAILED(status = dialog->SetFileTypes(1, &filter)) ||
+        FAILED(status = dialog->SetDefaultExtension(L"csv")) ||
+        FAILED(status = dialog->SetFileName(L"Chrome-Axis-driving.csv")) ||
+        FAILED(status = dialog->Show(owner)))
+        return status;
+
+    IShellItem* selected{};
+    if (FAILED(status = dialog->GetResult(&selected)))
+        return status;
+    const std::unique_ptr<IShellItem, decltype(releaseCom)> item(selected);
+    PWSTR path{};
+    if (FAILED(status = item->GetDisplayName(SIGDN_FILESYSPATH, &path)))
+        return status;
+    const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> ownedPath(path, CoTaskMemFree);
+    result = ownedPath.get();
+    return S_OK;
+}
+
+void exportDrivingCapture(HWND window, DiagnosticReader& reader)
+{
+    reader.read();
+    const auto samples = reader.readDrivingCapture();
+    if (samples.empty()) {
+        MessageBoxW(window, tr(Text::DlgDiagnosticsCsvUnavailable), tr(Text::DlgDiagnosticsCsvTitle), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    std::filesystem::path destination;
+    auto status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (SUCCEEDED(status)) {
+        status = pickCsvFile(window, destination);
+        CoUninitialize();
+    }
+    if (status != HRESULT_FROM_WIN32(ERROR_CANCELLED) &&
+        (FAILED(status) || !saveDrivingCaptureCsv(destination, samples)))
+        MessageBoxW(window, tr(Text::DlgDiagnosticsCsvError), tr(Text::DlgDiagnosticsCsvTitle), MB_OK | MB_ICONERROR);
 }
 
 std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& state, std::uint64_t now)
@@ -687,11 +767,13 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         line(Text::DlgDiagnosticsAccessories, accessoryStatus(snapshot));
         line(Text::DlgDiagnosticsLastKey, lastAccessoryKey(snapshot, now));
         if (snapshot.transmission.configured) {
-            auto detail = transmissionSummary(snapshot.transmission);
+            auto detail = transmissionSummary(snapshot.transmission, snapshot.mode);
             if (const auto status = transmissionStatus(snapshot.transmission); *status)
                 detail += L" · " + std::wstring(status);
             line(Text::DlgDiagnosticsTransmission, detail);
         }
+        if (snapshot.clutch.configured)
+            line(Text::DlgDiagnosticsClutch, clutchSummary(snapshot.clutch));
         line(Text::DlgDiagnosticsFeedback, feedbackStatus(snapshot));
         const auto& feedback = snapshot.feedbackData;
         if (hasFeedbackTelemetry(feedback)) {
@@ -750,6 +832,8 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
             line(control.label, performanceTiming(read.performance.*control.timing));
         line(Text::DlgDiagnosticsPerformanceExpired, std::to_wstring(read.performance.expiredReads));
         line(Text::DlgDiagnosticsPerformanceTransient, std::to_wstring(read.performance.transientReads));
+        line(Text::DlgDiagnosticsPerformanceUsbOverruns, std::to_wstring(read.performance.usbIntervalOverruns));
+        line(Text::DlgDiagnosticsPerformanceFeedbackOverruns, std::to_wstring(read.performance.feedbackIntervalOverruns));
         line(Text::DlgDiagnosticsPerformanceAccepted, std::to_wstring(read.performance.submittedEffects));
         const auto& capture = read.performance;
         line(Text::DlgDiagnosticsPerformanceClipped, clippedCount(capture));
@@ -899,6 +983,8 @@ void refreshPerformance(HWND window, DialogState& state, const DiagnosticRead& r
     const bool pluginReady = performancePluginReady(read, state);
     const bool showResults = performance.state != PerformanceState::idle;
     const bool canControl = pluginReady && (!running || state.reader.ownsPerformanceCapture());
+    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_SAVE_CSV),
+        performance.state == PerformanceState::complete && read.drivingCaptureSamples);
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE,
                    tr(running ? Text::DlgDiagnosticsPerformanceStop : Text::DlgDiagnosticsPerformanceStart));
     EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_PERFORMANCE), canControl && !command.id);
@@ -921,6 +1007,12 @@ void refreshPerformance(HWND window, DialogState& state, const DiagnosticRead& r
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_WARNINGS, showResults
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceExpired)) + L" · " + std::to_wstring(performance.expiredReads) +
             L"    " + tr(Text::DlgDiagnosticsPerformanceTransient) + L" · " + std::to_wstring(performance.transientReads)
+        : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_OVERRUNS, showResults
+        ? std::wstring(tr(Text::DlgDiagnosticsPerformanceUsbOverruns)) + L" · " +
+            std::to_wstring(performance.usbIntervalOverruns) + L"    " +
+            tr(Text::DlgDiagnosticsPerformanceFeedbackOverruns) + L" · " +
+            std::to_wstring(performance.feedbackIntervalOverruns)
         : L"");
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_FORCE_COUNTS, showResults
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceAccepted)) + L" · " +
@@ -959,9 +1051,12 @@ void refresh(HWND window, DialogState& state)
     const bool showTransmission = showControls && snapshot.transmission.configured;
     setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_LABEL, showTransmission ? tr(Text::DlgDiagnosticsTransmission) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION,
-                   showTransmission ? transmissionSummary(snapshot.transmission) : L"");
+                   showTransmission ? transmissionSummary(snapshot.transmission, snapshot.mode) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS,
                    showTransmission ? transmissionStatus(snapshot.transmission) : L"");
+    const bool showClutch = showControls && snapshot.clutch.configured;
+    setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_LABEL, showClutch ? tr(Text::DlgDiagnosticsClutch) : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_CLUTCH, showClutch ? clutchSummary(snapshot.clutch) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");
@@ -993,6 +1088,7 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         for (const auto& control : performanceControls)
             SetDlgItemTextW(window, control.labelId, tr(control.label));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_COPY, tr(Text::DlgDiagnosticsCopy));
+        SetDlgItemTextW(window, IDC_DIAGNOSTICS_SAVE_CSV, tr(Text::DlgDiagnosticsCsvSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgDiagnosticsClose));
         DialogTheme::attach(window, tr(Text::DlgDiagnosticsHeading), IDC_DIAGNOSTICS_CONNECTION, 0, {IDCANCEL});
         refresh(window, initial);
@@ -1026,6 +1122,10 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (SetTimer(window, copyTimer, copyFeedbackMs, nullptr))
                 SetDlgItemTextW(window, IDC_DIAGNOSTICS_COPY,
                                 tr(copied ? Text::DlgDiagnosticsCopied : Text::DlgDiagnosticsCopyError));
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDC_DIAGNOSTICS_SAVE_CSV && state) {
+            exportDrivingCapture(window, state->reader);
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_DIAGNOSTICS_PERFORMANCE && state) {

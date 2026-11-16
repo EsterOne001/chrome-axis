@@ -17,13 +17,20 @@ struct Snapshot {
     const char* outcome{"automatic"};
     bool manualActive{};
     std::optional<int> selectedGear;
+    bool requestPending{};
+    std::uint64_t requestedAt{};
+    std::optional<std::uint64_t> engagementDelayMs; // From the request to the first settled observation.
+    std::uint64_t telemetrySampledAt{};
+    std::optional<float> engineRpm;
+    std::optional<float> speedMetersPerSecond;
 };
 
 bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexcept;
 void detach() noexcept;
 bool available() noexcept;
 // The absolute value is a selector level; delta is a single sequential input.
-void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute = std::nullopt) noexcept;
+void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute = std::nullopt,
+             bool captureTelemetry = false) noexcept;
 Snapshot snapshot(void* vehicle = nullptr) noexcept;
 
 namespace detail {
@@ -34,6 +41,14 @@ constexpr int unavailableGear = -2;
 
 enum class Direction { unknown, forward, reverse };
 enum class ShiftPlan { unsupported, alreadyEngaged, direct, stoppedDirect, stoppedThroughNeutral };
+enum class Engagement { pending, confirmed, unconfirmed };
+
+constexpr Engagement observeEngagement(int requested, int engaged, bool settled, std::uint64_t now,
+                                        std::uint64_t expiresAt) noexcept {
+    if (settled && engaged == requested)
+        return Engagement::confirmed;
+    return now < expiresAt ? Engagement::pending : Engagement::unconfirmed;
+}
 
 constexpr bool supportedGear(int gear, int entries) noexcept {
     // The native table contains up to eight entries, including reverse at index zero.
@@ -42,6 +57,13 @@ constexpr bool supportedGear(int gear, int entries) noexcept {
 
 constexpr bool forwardGear(int gear, int entries) noexcept {
     return gear > reverseGear && supportedGear(gear, entries);
+}
+
+constexpr int sequentialDestination(int engaged, int delta, int entries) noexcept {
+    if (forwardGear(engaged, entries))
+        return engaged + delta;
+    // From neutral, a single upshift can select first. planShift still checks direction.
+    return engaged == neutralGear && delta == 1 ? 1 : unavailableGear;
 }
 
 constexpr Direction observeDirection(Direction previous, int engaged, int entries) noexcept {

@@ -39,6 +39,10 @@
 #define IDC_HANDBRAKE_APPLY_AXIS 2138
 #define IDC_HANDBRAKE_REMOVE 2139
 #define IDC_HANDBRAKE_HEADING 2140
+#define IDC_ACCESSORY_TAB_CLUTCH 2141
+#define IDC_CLUTCH_MODE 2142
+#define IDC_CLUTCH_MODE_LABEL 2143
+#define IDC_CLUTCH_STATUS 2144
 #define IDD_ACCESSORY_THRESHOLDS 211
 #define IDD_SHIFTER 202
 #define IDC_SHIFTER_DEVICE 2201
@@ -57,6 +61,8 @@
 #define IDC_SHIFTER_NUMLOCK_HINT 2214
 #define IDC_SHIFTER_ACTIVATION_LABEL 2215
 #define IDC_SHIFTER_ACTIVATION 2216
+#define IDC_SHIFTER_SHORTCUT 2217
+#define IDC_SHIFTER_SHORTCUT_HINT 2218
 #define IDC_MODAL_FORM 2301
 #define IDC_MODAL_RESULTS 2302
 #define IDC_MODAL_LIST_HEADING 2303
@@ -68,6 +74,7 @@
 #include "chrome_axis/accessories.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <span>
 
 namespace chrome_axis {
@@ -75,8 +82,15 @@ namespace chrome_axis {
 struct ProfilePreset;
 
 bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& root, const ProfilePreset& preset);
+bool editProfileShifter(HWND owner, DirectInput& input, const std::filesystem::path& root,
+                        const ProfilePreset& preset, std::span<const DeviceInfo> devices);
 bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings,
-                 std::span<const DeviceInfo> devices, std::string_view preferredDevice);
+                 std::span<const DeviceInfo> devices, std::string_view preferredDevice,
+                 const std::filesystem::path& profileRoot, std::function<bool(HWND, const AccessoryProfile&)> save = {});
+inline bool isNativeTransmissionBinding(const AccessoryBinding& binding) noexcept
+{
+    return binding.nativeShifter || binding.nativeSequential;
+}
 std::wstring accessoryKeyLabel(unsigned int key);
 std::wstring accessoryInputLabel(const AccessoryBinding& binding);
 std::wstring shifterRoleLabel(ShifterRole role);

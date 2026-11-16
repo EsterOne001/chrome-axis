@@ -1,4 +1,6 @@
 public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>) -> Int32;
+public static native func ChromeAxis_CaptureEnabled() -> Bool;
+public static native func ChromeAxis_CaptureVehicleRecord(vehicle: ref<VehicleObject>, record: TweakDBID) -> Void;
 public static native func ChromeAxis_TransmissionState(vehicle: ref<VehicleObject>) -> Int32;
 public static native func ChromeAxis_FeedbackEnabled() -> Bool;
 public static native func ChromeAxis_FeedbackMotion(vehicle: ref<VehicleObject>, velocity: Vector4, forward: Vector4, right: Vector4, mass: Float, simTime: Float, skidding: Bool, airborne: Bool) -> Void;
@@ -317,6 +319,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       vehicle = null;
     }
     let status = ChromeAxis_DriverHeartbeat(vehicle);
+    if IsDefined(vehicle) && ChromeAxis_CaptureEnabled() {
+      ChromeAxis_CaptureVehicleRecord(vehicle, vehicle.GetRecordID());
+    }
     this.feedbackVehicle = vehicle;
     if IsDefined(vehicle) && !this.feedbackPolling && ChromeAxis_FeedbackEnabled() {
       this.feedbackPolling = true;

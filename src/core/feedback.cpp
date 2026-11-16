@@ -15,18 +15,22 @@
 namespace chrome_axis {
 namespace {
 
-constexpr std::array<std::string_view, 7> keys{
-    "version", "enabled", "strength", "impacts", "invert", "centering", "impact_strength"
+constexpr std::array<std::string_view, 9> keys{
+    "version", "enabled", "strength", "impacts", "invert", "centering", "impact_strength", "# low_speed_effort", "# damping"
 };
 constexpr std::size_t strengthKey = 2;
 constexpr std::size_t centeringKey = 5;
 constexpr std::size_t impactStrengthKey = 6;
+constexpr std::size_t lowSpeedEffortKey = 7;
+constexpr std::size_t dampingKey = 8;
 
 bool valid(const FeedbackSettings& settings) noexcept
 {
     return settings.strength >= 1 && settings.strength <= maxFeedbackGainPercent &&
         settings.centering >= minFeedbackCenteringPercent && settings.centering <= maxFeedbackCenteringPercent &&
-        settings.impactStrength >= 0 && settings.impactStrength <= maxFeedbackImpactPercent;
+        settings.impactStrength >= 0 && settings.impactStrength <= maxFeedbackImpactPercent &&
+        settings.lowSpeedEffort >= 0 && settings.lowSpeedEffort <= maxFeedbackTuningPercent &&
+        settings.damping >= 0 && settings.damping <= maxFeedbackTuningPercent;
 }
 
 float normalizedMotion(float value, float fullScale) noexcept
@@ -58,13 +62,18 @@ std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path
     std::array<int, keys.size()> values{};
     values[centeringKey] = FeedbackSettings{}.centering;
     values[impactStrengthKey] = FeedbackSettings{}.impactStrength;
+    values[lowSpeedEffortKey] = FeedbackSettings{}.lowSpeedEffort;
+    values[dampingKey] = FeedbackSettings{}.damping;
     std::array<bool, keys.size()> seen{};
     std::string line;
     while (std::getline(file, line)) {
-        if (line.empty() || line.front() == '#')
+        if (line.empty())
             continue;
         const auto separator = line.find('=');
         const auto key = std::string_view(line).substr(0, separator);
+        // Keep the added settings in comments for apps that load files written by this version.
+        if (line.front() == '#' && key != keys[lowSpeedEffortKey] && key != keys[dampingKey])
+            continue;
         const auto match = std::ranges::find(keys, key);
         if (separator == std::string::npos || match == keys.end()) {
             error = "Invalid force feedback settings.";
@@ -82,7 +91,8 @@ std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path
         seen[index] = true;
     }
     const FeedbackSettings settings{values[1] == 1, values[strengthKey], values[3] == 1,
-                                    values[4] == 1, values[centeringKey], values[impactStrengthKey]};
+                                    values[4] == 1, values[centeringKey], values[impactStrengthKey],
+                                    values[lowSpeedEffortKey], values[dampingKey]};
     const auto requiredEnd = seen.begin() + centeringKey;
     if (file.bad() || values[0] != 1 || !valid(settings) || std::find(seen.begin(), requiredEnd, false) != requiredEnd) {
         error = "Invalid force feedback settings.";
@@ -95,7 +105,7 @@ bool saveFeedbackSettings(const std::filesystem::path& path, const FeedbackSetti
 {
     error.clear();
     if (!valid(settings)) {
-        error = "Force feedback gain, centering, or impact strength is out of range.";
+        error = "A force feedback adjustment is out of range.";
         return false;
     }
     std::error_code status;
@@ -112,6 +122,10 @@ bool saveFeedbackSettings(const std::filesystem::path& path, const FeedbackSetti
         file << "centering=" << settings.centering << '\n';
     if (settings.impactStrength != FeedbackSettings{}.impactStrength)
         file << "impact_strength=" << settings.impactStrength << '\n';
+    if (settings.lowSpeedEffort != FeedbackSettings{}.lowSpeedEffort)
+        file << "# low_speed_effort=" << settings.lowSpeedEffort << '\n';
+    if (settings.damping != FeedbackSettings{}.damping)
+        file << "# damping=" << settings.damping << '\n';
     file.close();
     if (!file || !detail::replaceSettingsFile(temporary, path)) {
         std::filesystem::remove(temporary, status);
@@ -156,10 +170,12 @@ FeedbackOutput WheelFeedback::update(const FeedbackSettings& settings, const Fee
     const float centeringGain = static_cast<float>(settings.centering) / 100.0f;
     const float turnLoad = 0.24f * normalizedMotion(sample.lateralAcceleration, 8.0f) +
         0.045f * normalizedMotion(sample.yawRate, 1.25f);
-    const float steeringLoad = (0.10f + 0.72f * speedFactor) * steering;
+    const float parkingWeight = 4.0f / (speed + 4.0f);
+    const float lowSpeedAdjustment = 0.10f * parkingWeight * (settings.lowSpeedEffort / 100.0f - 1.0f);
+    const float steeringLoad = (0.10f + lowSpeedAdjustment + 0.72f * speedFactor) * steering;
     const float corneringLoad = sample.forwardSpeed > 0.0f ? speedFactor * turnLoad : 0.0f;
     const float centering = -(steeringLoad + corneringLoad) * weight * centeringGain * contact * grip_;
-    const float damping = -(0.015f + 0.035f * speedFactor) * wheelRate;
+    const float damping = -(0.015f + 0.035f * speedFactor) * wheelRate * (settings.damping / 100.0f);
     const float lateral = -0.11f * slip * speedFactor * contact * grip_;
     smoothedForce_ += std::min(seconds * 12.0f, 1.0f) * (centering + damping + lateral - smoothedForce_);
 
@@ -189,7 +205,7 @@ FeedbackOutput WheelFeedback::update(const FeedbackSettings& settings, const Fee
         // Attribute the excess to the steady load if it would already clip in this direction.
         saturation = continuousForce * force > 1.0f ? FeedbackSaturation::continuous : FeedbackSaturation::transient;
     }
-    return {requestedForce, force, saturation};
+    return {requestedForce, force, saturation, continuousForce};
 }
 
 void WheelFeedback::reset() noexcept

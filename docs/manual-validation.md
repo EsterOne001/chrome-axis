@@ -30,6 +30,14 @@ Pour mesurer les performances, comparez le même trajet avec l’USB désactivé
 
 Consignez le résultat de chaque essai et joignez les lignes pertinentes de `red4ext/logs/chromeaxis-*.log` si un problème apparaît. [Audit archivé de la version 0.4.10](archives/audit-0.4.10.md)
 
+### Transmission et capture de conduite (0.4.43)
+
+1. Ouvrez **Aide → Outils de test → Simulation clavier** et cliquez sur **Activer dans le jeu**. Ensuite, allez dans **Aide → Diagnostic** et cliquez sur **Mesurer les performances**. À l’arrêt dans une voiture, basculez en MANUEL. Vérifiez le HUD et essayez N, Page précédente et Page suivante. Avec une voiture et une plage de vitesse adaptées, essayez **7ᵉ → 3ᵉ** et **7ᵉ → N**.
+2. Sur une route plane et dégagée, stabilisez la même voiture à la même vitesse. Faites deux passages dans le même sens. Relâchez les pédales et comparez la baisse de vitesse durant cinq secondes en **3ᵉ** puis en **N**. Laissez le rapport se stabiliser avant de relever le segment et répétez chaque mesure. Gardez réglages, trajet et vitesse de départ constants.
+3. En 1ʳᵉ à l’arrêt, **Verr. Num.** activé, sélectionnez les niveaux **Pavé 0/1/3/5/7**. Faites cinq départs au même endroit avec la même commande d’accélérateur et comparez la mise en mouvement, le régime et la vitesse. Cet essai mesure l’atténuation de la commande et la réaction du véhicule. Relâchez les commandes entre les essais.
+4. Arrêtez la capture, exportez le CSV et copiez le diagnostic. Relevez les rapports, la vitesse, le régime et la commande des pédales réellement disponibles. Conservez les CSV avec le modèle de voiture et l’état du raccourci et de la simulation.
+5. Avec le matériel, comparez les profils H et palettes. Testez un appui maintenu, deux appuis distincts, les palettes simultanées, puis Alt+Tab avec une palette maintenue et débranchement/rebranchement. Ouvrez la jauge d’embrayage, vérifiez la sauvegarde et la réassociation, essayez le mode désactivé puis l’aide au passage. Reprenez aussi les essais **R → N → 1**, frein à main et retour de force. Comparez le signal brut et filtré de chaque pédale après un mouvement rapide puis un relâchement complet.
+
 ## English
 
 Deploy the ZIP through Vortex. Record the Chrome Axis, Cyberpunk 2077, RED4ext, and redscript versions. For each device, record the model, driver version, and connection type. Start with a stationary vehicle and automatic driving disabled.
@@ -57,3 +65,11 @@ Deploy the ZIP through Vortex. Record the Chrome Axis, Cyberpunk 2077, RED4ext, 
 For performance measurements, repeat the same route with USB disabled, with USB active, and with force feedback active. Keep the hardware and graphics settings fixed and record CPU time and frame time.
 
 Record each result and attach relevant lines from `red4ext/logs/chromeaxis-*.log` if an issue occurs. [Archived 0.4.10 audit in French](archives/audit-0.4.10.md)
+
+### Transmission and drive capture (0.4.43)
+
+1. Open **Help → Test tools → Keyboard simulation** and enable it in game. Then go to **Help → Diagnostics**, click **Measure performance**, and switch to MANUAL while stopped in the game. Verify the HUD, N and Page Up/Down. On a suitable car and at safe in-game speeds, try **7th → 3rd** and **7th → N**.
+2. On the same clear, flat road and in the same vehicle, start at the same speed and coast with the pedals released. Compare five seconds of speed loss in **3rd** and in **N** after the selected gear has settled. Repeat each run.
+3. In first gear at a standstill with **Num Lock** on, select the five levels using **Numpad 0/1/3/5/7**. Make five starts from the same spot using the same throttle input. Compare movement, RPM and speed. This measures throttle attenuation and the vehicle’s response. Release controls between tests.
+4. Stop the capture, export the CSV and copy the report. Keep the vehicle model and simulation/shortcut settings with the measured data.
+5. Repeat with H-pattern and paddle profiles. Try holding a paddle, distinct presses, both paddles, Alt+Tab with a paddle held, then disconnect and reconnect. Check clutch calibration, reassociation, disabled and assisted modes. Verify **R → N → 1**, handbrake and force feedback. Compare the raw and filtered pedal signals on sharp movements and full release.

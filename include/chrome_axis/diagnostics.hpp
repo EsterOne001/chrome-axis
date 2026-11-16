@@ -7,8 +7,11 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <iosfwd>
 #include <optional>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace chrome_axis {
 
@@ -89,7 +92,7 @@ struct DiagnosticFeedbackTelemetry {
 
 enum class DiagnosticShiftState : std::uint8_t {
     automatic, ready, unavailable, outsideRange, stopToChangeDirection, alreadyEngaged,
-    rejected, accepted, neutralTransition, expired, recalibrationNeeded, selectorUnavailable
+    rejected, accepted, neutralTransition, expired, recalibrationNeeded, selectorUnavailable, pending, clutchRequired
 };
 
 struct DiagnosticTransmission {
@@ -99,8 +102,20 @@ struct DiagnosticTransmission {
     int requestedGear{-2};
     int engagedGear{-2};
     DiagnosticShiftState shift{};
+    bool sequential{};
 
     bool operator==(const DiagnosticTransmission&) const = default;
+};
+
+struct DiagnosticClutch {
+    float input{};
+    float applied{};
+    bool configured{};
+    bool inputAvailable{};
+    bool assistanceEnabled{};
+    bool probeSupported{};
+    bool appliedAvailable{};
+    bool probeActive{};
 };
 
 struct DiagnosticSnapshot {
@@ -118,6 +133,7 @@ struct DiagnosticSnapshot {
     DiagnosticFeedbackState feedback{DiagnosticFeedbackState::disabled};
     DiagnosticFeedbackTelemetry feedbackData{};
     DiagnosticTransmission transmission{};
+    DiagnosticClutch clutch{};
 };
 
 enum class DiagnosticConnection { unavailable, disconnected, stale, connected };
@@ -133,11 +149,18 @@ struct DiagnosticEvent {
 enum class PerformanceState : std::uint32_t { idle, capturing, complete };
 
 struct PerformanceTiming {
+    static constexpr std::array<std::uint64_t, 20> bucketLimits{
+        100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 7500, 10000, 15000, 20000, 30000, 50000,
+        75000, 100000, 200000, 500000, 1000000
+    };
     std::uint64_t samples{};
     std::uint64_t totalMicros{};
     std::uint64_t maxMicros{};
+    std::array<std::uint64_t, bucketLimits.size() + 1> buckets{};
 
     void add(std::uint64_t micros) noexcept;
+    // Approximate upper bound, limited to the observed maximum.
+    std::uint64_t percentile(unsigned int percent) const noexcept;
 };
 
 struct PerformanceReport {
@@ -158,7 +181,35 @@ struct PerformanceReport {
     float peakRequestedForce{}; // Absolute normalized peak before limiting.
     float peakLimitedForce{}; // Absolute normalized peak after limiting.
     float peakSubmittedForce{}; // Absolute normalized peak of the effects accepted by the driver.
+    std::uint64_t usbIntervalOverruns{};
+    std::uint64_t feedbackIntervalOverruns{};
+    float peakContinuousForce{};
+    int referenceFeedbackGain{};
+    std::array<char, 257> feedbackProfile{};
 };
+
+inline constexpr std::size_t maxDrivingCaptureSamples = 16384;
+
+struct DrivingCaptureSample {
+    std::uint64_t sampledAt{}; // GetTickCount64().
+    DiagnosticMode mode{};
+    std::array<char, 64> vehicle{}; // Optional UTF-8 vehicle label.
+    float speedMps{};
+    float rpm{};
+    float throttle{};
+    float brake{};
+    bool speedAvailable{};
+    bool rpmAvailable{};
+    bool throttleAvailable{};
+    bool brakeAvailable{};
+    DiagnosticTransmission transmission{};
+    DiagnosticClutch clutch{};
+    std::uint64_t shiftDelayMicros{};
+    bool shiftDelayAvailable{};
+};
+
+void writeDrivingCaptureCsv(std::ostream& output, std::span<const DrivingCaptureSample> samples);
+bool saveDrivingCaptureCsv(const std::filesystem::path& path, std::span<const DrivingCaptureSample> samples);
 
 struct PerformanceRequest {
     std::uint64_t id{};
@@ -175,6 +226,7 @@ struct DiagnosticRead {
     std::array<DiagnosticEvent, 8> events{}; // Oldest first. Only status transitions are kept.
     std::uint32_t eventCount{};
     PerformanceReport performance{};
+    std::uint32_t drivingCaptureSamples{}; // Only visible to the owning reader.
 };
 
 struct DiagnosticFrame;
@@ -190,6 +242,7 @@ public:
     // A nonzero driving session identifies a snapshot taken in the driver's seat with game focus.
     void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0,
                  const PerformanceReport& performance = {}) noexcept;
+    void recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept;
     std::optional<PerformanceRequest> performanceRequest() const noexcept;
 
 private:
@@ -200,6 +253,8 @@ private:
     DiagnosticRead report_{};
     std::uint64_t drivingSession_{};
     std::uint64_t publisherId_{};
+    std::uint64_t lastCaptureId_{};
+    DrivingCaptureSample lastCaptureSample_{};
 };
 
 class DiagnosticReader {
@@ -213,6 +268,7 @@ public:
     // Submit a command for this reader's capture. A zero result means no request was sent.
     std::uint64_t requestPerformanceCapture(bool enabled) noexcept;
     bool ownsPerformanceCapture() const noexcept { return captureOwner_ != 0; }
+    std::vector<DrivingCaptureSample> readDrivingCapture();
 
 private:
     std::wstring channel_;
@@ -223,6 +279,7 @@ private:
     DiagnosticRead last_{};
     std::uint64_t publisherId_{};
     std::uint64_t captureOwner_{};
+    std::uint64_t captureId_{};
 };
 
 } // namespace chrome_axis

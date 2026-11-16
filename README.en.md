@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.42** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.43** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -82,13 +82,21 @@ After calibration, open the control settings in **Devices**. Positive steering s
 
 For the throttle, leave progressivity at **0** for a linear response or use a positive value for finer control at the start of pedal travel. The full-output point is also adjustable. For both controls, compare the travel and output gauges using the hardware or a simulated value. Click **Apply**, then **Save profile**.
 
+**Stabilize signal**, in the throttle or brake settings, reduces small fluctuations when holding a pedal. The filter preserves quick intentional changes and returns to zero immediately on release. The chart compares pedal travel and adjusted output. Each pedal has its own setting.
+
 ### Force feedback
 
 Save the steering calibration and open **Force feedback…** from **USB Hardware**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. **Gain** adjusts every effect from 5% to 200%. **Centering** adjusts resistance toward the centre and in corners from 50% to 250%, with 100% for existing profiles. Both sliders move in 5-point steps. Chrome Axis limits the command to DirectInput’s nominal range. You can disable impacts separately or invert the direction if the wheel pushes away from center.
 
 Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. Centering eases in the air. Landings and collisions add distinct jolts with a shared **Impact strength** setting from 0% to 200% in 5-point steps. A setting of 100% preserves the previous strength. Use **Impacts** to switch those jolts on or off. Chrome Axis stops its effects when you stop driving, the game loses focus or the wheel stops responding. Steering and pedals still work on supported devices without force feedback.
 
+**Low-speed effort** adjusts resistance during slow maneuvers. **Damping** adjusts resistance as you turn the wheel. Both range from 0 to 200% and default to 100% for existing profiles. After recording a drive in **Diagnostics**, reopen **Force feedback** to compare the current and suggested gain. The dialog reports continuous and impact clipping separately.
+
 ## Shifters, paddles and accessories
+
+Open **Transmission…** under **USB hardware** to choose the H-pattern or native paddles for the active profile. When both devices are connected, Chrome Axis uses the native source saved in that profile. Existing keyboard bindings remain available. Release both paddles to arm them. Holding a paddle requests a single shift. The same window lets you change the installation-wide AUTO / MANUAL key. The hardware status describes the connected device and Diagnostics shows the selected, requested and engaged gear.
+
+In **Accessories… → Clutch**, capture the rest position and end of travel. The profile stores calibration and offers optional shift assistance that requires about 65% clutch travel to change gear. Neutral remains available. The experimental setting measures throttle attenuation in a forward gear in manual mode. Native progressive clutch behavior and the bite point still require in-game confirmation. With keyboard simulation active and **Num Lock** on, **Numpad 0/1/3/5/7** selects 0/25/50/75/100% for this test.
 
 In **Accessories…** and **Shifter / paddles…**, click the key button to open the visual keyboard and choose a key. Number row and numpad keys are separate.
 
@@ -101,7 +109,7 @@ To change the key for an already captured input, select the binding and click **
 3. To control Cyberpunk’s transmission directly, choose **Native H · 6 + R**, **Native H · 7 + R**, or **Native H · 8 + R** to match your shifter. Start in neutral, capture all usable positions, and return to neutral between them. Confirm **Missing** only for a position the lever physically lacks. Recalibrate native patterns created before 0.4.40 to confirm their layout. The wizard records the physical position without assigning a key. Applying a new pattern replaces the profile’s native pattern and any key-based gear bindings for that lever. Paddle and other accessory settings are kept.
 4. Click **Apply**, then **Save** in **Accessories…**, and **Enable USB in game**. The pattern is saved in the active profile’s `accessories.ini` and works with the app closed. Take the driver’s seat with the shifter in neutral to arm it. The HUD displays **N**, **R**, or the engaged gear alongside **AUTO** or **MANUAL**. Press **F8** to toggle the mode by default, including when stopped. Choose another key in **Devices → AUTO / MANUAL key…**. It applies to all profiles for that installation and takes effect without restarting the game.
 
-Native mode uses the gears available on the vehicle. The supported Cyberpunk build exposes up to seven forward gears and reverse. Bring the vehicle to a stop before selecting reverse or returning to a forward gear. When R is engaged in MANUAL, the throttle pedal commands reverse and the brake pedal keeps its braking role. This mapping remains stable while R is still engaged when switching to AUTO. If a direction change is refused, stop the car and select the gear again. After unplugging or switching windows, return the lever to neutral to rearm it. An analog clutch is outside this feature. Disable other mods that directly control the transmission when testing native mode.
+Native mode uses the gears available on the vehicle. The supported Cyberpunk build exposes up to seven forward gears and reverse. Bring the vehicle to a stop before selecting reverse or returning to a forward gear. When R is engaged in MANUAL, the throttle pedal commands reverse and the brake pedal keeps its braking role. This mapping remains stable while R is still engaged when switching to AUTO. If a direction change is refused, stop the car and select the gear again. After unplugging or switching windows, return the lever to neutral to rearm it. Disable other mods that directly control the transmission when testing native mode.
 
 Choose **H via keys** to keep using an external transmission mod. Assign one key per position and mirror the assignments in that mod. Turn on **Num Lock** if you use the numpad. Existing key-based profiles still work.
 
@@ -167,6 +175,8 @@ When the game directory is recognized, the panel names a missing DLL or script a
 After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it pairs the calibrated reading with the requested command when they come from the same sample. The last value actually written appears separately with its age. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
 
 To measure delays, click **Measure performance** in **Diagnostics…**, switch to Cyberpunk, and drive with USB enabled. Switch back, click **Stop measurement**, and choose **Copy diagnostics**. The report summarizes USB read and force feedback call durations, the age of input when it was applied in game, and the number of expired reads. The capture also reports vehicle data age, the number of effects accepted by the driver, and the fraction of force commands that were clipped. The report separates clipping from continuous force and clipping caused by collisions or landings, and shows the calculated, limited, and driver-accepted peaks. Force percentages represent DirectInput commands. These measurements cover the mod’s input path. Use the manual validation procedure to measure frame time.
+
+To keep a time series from the game, start and stop a **drive capture** in **Diagnostics**, then select **Export CSV**. The capture stays in memory until export. It records vehicle, speed, RPM, pedals and gear changes where available. P95 and P99 timings are estimates. The report counts missed USB and force feedback update intervals.
 
 ## Project folders
 

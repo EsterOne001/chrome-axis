@@ -11,6 +11,44 @@ bool approximatelyEqual(float actual, float expected)
     return std::abs(actual - expected) < 0.0001f;
 }
 
+int testPedalStabilization(chrome_axis::Profile profile, const std::filesystem::path& path)
+{
+    using namespace chrome_axis;
+    PedalStabilizer stabilizer;
+    if (stabilizer.update(0.50f) != 0.50f || stabilizer.update(0.51f) >= 0.505f ||
+        stabilizer.update(0.10f) != 0.10f || stabilizer.update(0.0f) != 0.0f ||
+        stabilizer.update(1.0f) != 1.0f)
+        return 70;
+
+    profile.throttleResponse.stabilization = true;
+    profile.brakeResponse.stabilization = true;
+    std::string error;
+    if (!saveProfile(path, profile, error))
+        return 71;
+    const auto loaded = loadProfile(path, error);
+    if (!loaded || loaded->throttleResponse != profile.throttleResponse || loaded->brakeResponse != profile.brakeResponse ||
+        loaded->throttle.deadzone != profile.throttle.deadzone || loaded->brake.positive != profile.brake.positive)
+        return 72;
+
+    DeviceSample throttle{};
+    throttle.axesPresent[loaded->throttle.axis] = true;
+    throttle.axes[loaded->throttle.axis] = loaded->throttle.neutral;
+    ControlReader reader(*loaded);
+    const std::array<const DeviceSample*, 3> samples{nullptr, &throttle, nullptr};
+    for (int i = 0; i < 4; ++i)
+        reader.update(samples);
+    throttle.axes[loaded->throttle.axis] = loaded->throttle.positive;
+    if (reader.update(samples).values.throttle != 1.0f)
+        return 73;
+    throttle.axes[loaded->throttle.axis] = loaded->throttle.neutral;
+    const auto released = reader.update(samples);
+    if (!released.throttleReady || released.values.throttle != 0.0f)
+        return 74;
+
+    profile.steeringResponse.stabilization = true;
+    return validateProfile(profile, error) ? 75 : 0;
+}
+
 int testTransientRead(const chrome_axis::Profile& profile)
 {
     using namespace chrome_axis;
@@ -503,6 +541,8 @@ int run()
         return rearmResult;
     if (const int responseResult = testAxisResponses(*loaded, path))
         return responseResult;
+    if (const int stabilizationResult = testPedalStabilization(*loaded, path))
+        return stabilizationResult;
     return testTransientRead(*loaded);
 }
 

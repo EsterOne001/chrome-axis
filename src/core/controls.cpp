@@ -98,6 +98,16 @@ bool compatibleAxisPair(const AxisCalibration& throttle, const AxisCalibration& 
         && centerGap <= std::abs(brakeTravel) * brake.deadzone;
 }
 
+float PedalStabilizer::update(float pedal) noexcept
+{
+    // Preserve both endpoints. Blend over a narrow band to pass deliberate movement unfiltered.
+    const float difference = pedal - output_;
+    const float correction = std::clamp((std::abs(difference) - 0.012f) / 0.023f, 0.0f, 1.0f);
+    output_ = pedal == 0.0f || pedal == 1.0f ? pedal
+        : std::lerp(output_, pedal, std::lerp(0.22f, 1.0f, correction));
+    return output_;
+}
+
 bool validateAxisResponse(const AxisResponse& response) noexcept
 {
     return response.progressivity >= minimumResponseProgressivity && response.progressivity <= maximumResponseProgressivity
@@ -160,7 +170,7 @@ bool validateProfile(const Profile& profile, std::string& error)
         return false;
     }
     for (std::size_t i = 0; i < responses.size(); ++i) {
-        if (!validateAxisResponse(profile.*responses[i])) {
+        if (!validateAxisResponse(profile.*responses[i]) || (i == 0 && (profile.*responses[i]).stabilization)) {
             error = "Invalid " + std::string(channelNames[i]) + " response settings";
             return false;
         }
@@ -207,11 +217,14 @@ std::optional<Profile> loadProfile(const std::filesystem::path& path, std::strin
         const std::string prefix = std::string(channelNames[i]) + "_response.";
         const auto progressivity = values.find(prefix + "progressivity");
         const auto saturation = values.find(prefix + "saturation");
+        const auto stabilization = values.find(prefix + "stabilization");
         if ((progressivity != values.end() && !parseNumber(progressivity->second, response.progressivity))
-            || (saturation != values.end() && !parseNumber(saturation->second, response.saturation))) {
+            || (saturation != values.end() && !parseNumber(saturation->second, response.saturation))
+            || (stabilization != values.end() && stabilization->second != "0" && stabilization->second != "1")) {
             error = "Invalid " + std::string(channelNames[i]) + " response settings";
             return std::nullopt;
         }
+        response.stabilization = stabilization != values.end() && stabilization->second == "1";
     }
     const std::array axes{&profile.steering, &profile.throttle, &profile.brake};
     for (std::size_t i = 0; i < axes.size(); ++i) {
@@ -263,6 +276,8 @@ bool saveProfile(const std::filesystem::path& path, const Profile& profile, std:
         if (response != AxisResponse{}) {
             file << '\n' << channelNames[i] << "_response.progressivity=" << response.progressivity << '\n'
                  << channelNames[i] << "_response.saturation=" << response.saturation << '\n';
+            if (response.stabilization)
+                file << channelNames[i] << "_response.stabilization=1\n";
         }
     }
     file.close();
@@ -293,6 +308,8 @@ ControlReader::ControlReader(const Profile& profile)
 void ControlReader::reset() noexcept
 {
     neutralPolls_.fill(0);
+    for (auto& stabilizer : pedalStabilizers_)
+        stabilizer.reset();
     const auto axes = channels(profile_);
     for (std::size_t i = 0; i < axes.size(); ++i) {
         axisStatuses_[i] = axes[i]->deviceId.empty() ? AxisStatus::unassigned : AxisStatus::deviceUnavailable;
@@ -348,6 +365,9 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         if (calibration.deviceId.empty())
             continue;
         const auto* sample = samples[i];
+        if (i > 0 && (!sample || calibration.axis >= axisCount || !sample->axesPresent[calibration.axis] ||
+                      statuses[i] == DeviceReadStatus::resumed))
+            pedalStabilizers_[i - 1].reset();
         if (!sample && statuses[i] == DeviceReadStatus::pending) {
             if (neutralPolls_[i] < requiredNeutralPolls)
                 neutralPolls_[i] = 0;
@@ -389,10 +409,9 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         *readiness[i] = true;
         if (steering)
             state.calibratedSteering = calibrated;
-        if (response != AxisResponse{})
-            *outputs[i] = brake && review ? *review->adjustedBrake : applyResponse(travel, calibration.deadzone, response, steering);
-        else
-            *outputs[i] = calibrated;
+        const float adjusted = (response.progressivity == 0 && response.saturation == maximumResponseSaturation)
+            ? calibrated : applyResponse(travel, calibration.deadzone, response, steering);
+        *outputs[i] = response.stabilization && !steering ? pedalStabilizers_[i - 1].update(adjusted) : adjusted;
         axisStatuses_[i] = AxisStatus::armed;
     }
     return state;

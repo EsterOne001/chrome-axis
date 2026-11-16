@@ -206,6 +206,29 @@ int main()
         landingPushedOverLimit.saturation != FeedbackSaturation::transient)
         return 35;
 
+    settings = {.enabled = true, .strength = 100};
+    const FeedbackSample parking{0.5f, 0.0f, 0.0f, 1700.0f};
+    const float standardParking = settle(parking);
+    settings.lowSpeedEffort = 200;
+    if (!(settle(parking) < standardParking - 0.045f))
+        return 36;
+    settings.lowSpeedEffort = 0;
+    if (settle(parking) != 0.0f)
+        return 37;
+    settings.lowSpeedEffort = 100;
+    const auto forceInMotion = [&](int damping, float speed) {
+        settings.damping = damping;
+        feedback.reset();
+        auto sample = parking;
+        sample.steering = 0.0f;
+        sample.forwardSpeed = speed;
+        feedback.update(settings, sample, 0.020f);
+        sample.steering = 0.1f;
+        return feedback.update(settings, sample, 0.020f).continuousForce;
+    };
+    if (!(forceInMotion(200, 10.0f) < forceInMotion(0, 10.0f) - 0.02f))
+        return 38;
+
     const auto path = std::filesystem::current_path()
         / (L"feedback-test-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
     std::string error;
@@ -222,6 +245,8 @@ int main()
     const bool previous = loadFeedbackSettings(path, error) == FeedbackSettings{true, 35, false, true, 165};
     settings.centering = 165;
     settings.impactStrength = 135;
+    settings.lowSpeedEffort = 180;
+    settings.damping = 45;
     const bool roundTrip = saveFeedbackSettings(path, settings, error) && loadFeedbackSettings(path, error) == settings;
     const FeedbackSettings excessive{true, 201, true, false};
     const bool rejectedSave = !saveFeedbackSettings(path, excessive, error) && !error.empty() &&

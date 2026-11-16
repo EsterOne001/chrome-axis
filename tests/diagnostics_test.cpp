@@ -1,8 +1,10 @@
 #include "chrome_axis/diagnostics.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string_view>
 #include <thread>
 
@@ -22,6 +24,21 @@ struct TemporaryDirectory {
         std::filesystem::remove(path, error);
     }
 };
+
+bool checkPercentiles()
+{
+    chrome_axis::PerformanceTiming timing;
+    if (timing.percentile(99))
+        return false;
+    for (int i = 0; i < 95; ++i)
+        timing.add(250);
+    for (int i = 0; i < 3; ++i)
+        timing.add(2100);
+    timing.add(14000);
+    timing.add(2000000);
+    return timing.samples == 100 && timing.percentile(95) == 250 &&
+        timing.percentile(99) == 15000 && timing.percentile(100) == 2000000;
+}
 
 int testPerformanceCapture(const std::filesystem::path& root)
 {
@@ -63,7 +80,34 @@ int testPerformanceCapture(const std::filesystem::path& root)
         performance.peakRequestedForce = 1.625f;
         performance.peakLimitedForce = 1.0f;
         performance.peakSubmittedForce = 0.875f;
+        performance.usbIntervalOverruns = 4;
+        performance.feedbackIntervalOverruns = 5;
+        performance.peakContinuousForce = 1.125f;
+        performance.referenceFeedbackGain = 130;
         publisher.publish(snapshot, 1, performance);
+        DrivingCaptureSample sample;
+        sample.sampledAt = performance.startedAt;
+        sample.mode = DiagnosticMode::usb;
+        constexpr std::string_view name = "Car, \"A\"";
+        std::ranges::copy(name, sample.vehicle.begin());
+        sample.speedMps = 12.5f;
+        sample.speedAvailable = true;
+        sample.rpm = 3450.0f; // The missing flag must keep this field blank.
+        sample.throttle = 0.5f;
+        sample.throttleAvailable = true;
+        sample.brakeAvailable = true;
+        sample.transmission = {true, true, 3, 3, 2, DiagnosticShiftState::pending, true};
+        sample.clutch = {0.7f, 0.4f, true, true, true, false, true, true};
+        publisher.recordDrivingSample(start + 1, sample);
+        publisher.recordDrivingSample(start, sample);
+        sample.sampledAt += 5;
+        publisher.recordDrivingSample(start, sample); // Unchanged, inside sampling interval.
+        sample.sampledAt += 5;
+        sample.transmission.engagedGear = 3;
+        sample.transmission.shift = DiagnosticShiftState::accepted;
+        sample.shiftDelayMicros = 9900;
+        sample.shiftDelayAvailable = true;
+        publisher.recordDrivingSample(start, sample); // Rapid shift transition is retained.
         const auto live = observer.read();
         if (observer.ownsPerformanceCapture() || live.performance.state != PerformanceState::capturing ||
             live.performance.requestId != start || live.performance.usbRead.samples != 2 ||
@@ -74,7 +118,10 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.performance.motionAge.maxMicros != 18500 || live.performance.forceSamples != 20 ||
             live.performance.clippedSamples != 3 || live.performance.impactClippedSamples != 2 ||
             live.performance.submittedEffects != 13 || live.performance.peakRequestedForce != 1.625f ||
-            live.performance.peakLimitedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f)
+            live.performance.peakLimitedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f ||
+            live.performance.usbIntervalOverruns != 4 || live.performance.feedbackIntervalOverruns != 5 ||
+            live.performance.peakContinuousForce != 1.125f || live.performance.referenceFeedbackGain != 130 ||
+            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 2 || !owner.readDrivingCapture().empty())
             return 15;
 
         const auto stop = owner.requestPerformanceCapture(false);
@@ -82,6 +129,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
         if (stop <= start || owner.ownsPerformanceCapture() || !stopRequest || stopRequest->id != stop ||
             stopRequest->enabled || stopRequest->leaseUntil)
             return 16;
+        sample.sampledAt += 50;
+        publisher.recordDrivingSample(start, sample); // No late samples after the owner stops.
         performance.requestId = stop;
         performance.state = PerformanceState::complete;
         performance.endedAt = GetTickCount64();
@@ -92,6 +141,23 @@ int testPerformanceCapture(const std::filesystem::path& root)
             finished.usbRead.totalMicros != 800 || finished.motionAge.totalMicros != 23000 ||
             finished.clippedSamples != 3 || finished.impactClippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
+        const auto records = owner.readDrivingCapture();
+        if (records.size() != 2 || records.front().transmission.shift != DiagnosticShiftState::pending ||
+            records.back().shiftDelayMicros != 9900 || observer.read().drivingCaptureSamples ||
+            !observer.readDrivingCapture().empty())
+            return 22;
+        std::ostringstream csv;
+        writeDrivingCaptureCsv(csv, records);
+        const auto text = csv.str();
+        constexpr std::string_view pendingRow =
+            "\r\n0,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,2,pending,,1,0,1,1,1,1,0\r\n";
+        constexpr std::string_view acceptedRow =
+            "\r\n10,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,3,accepted,9900,1,0,1,1,1,1,1\r\n";
+        if (!text.starts_with("elapsed_ms,mode,vehicle,speed_mps,engine_rpm,") ||
+            text.find(pendingRow) == std::string::npos || !text.ends_with(acceptedRow)) {
+            std::cerr << text;
+            return 23;
+        }
 
         {
             DiagnosticReader closing(root);
@@ -114,6 +180,40 @@ int testPerformanceCapture(const std::filesystem::path& root)
         observer.ownsPerformanceCapture() || !restartedRequest || restartedRequest->id)
         return 21;
     return 0;
+}
+
+bool testBoundedCaptureAfterGameCloses(const std::filesystem::path& root)
+{
+    using namespace chrome_axis;
+    DiagnosticReader reader(root);
+    {
+        DiagnosticPublisher publisher(root);
+        const DiagnosticSnapshot snapshot{.mode = DiagnosticMode::simulation};
+        publisher.publish(snapshot);
+        reader.read();
+        const auto start = reader.requestPerformanceCapture(true);
+        if (!start)
+            return false;
+        DrivingCaptureSample sample{.sampledAt = GetTickCount64(), .mode = DiagnosticMode::simulation};
+        sample.transmission.engagedGear = 4;
+        for (std::size_t i = 0; i <= maxDrivingCaptureSamples; ++i) {
+            publisher.recordDrivingSample(start, sample);
+            sample.sampledAt += 25;
+        }
+        const auto stop = reader.requestPerformanceCapture(false);
+        if (stop <= start)
+            return false;
+        publisher.publish(snapshot, 1, PerformanceReport{.state = PerformanceState::complete, .requestId = stop});
+    }
+    const auto stopped = reader.read();
+    const auto records = reader.readDrivingCapture();
+    if (stopped.connection != DiagnosticConnection::stale || stopped.performance.state != PerformanceState::complete ||
+        records.size() != maxDrivingCaptureSamples ||
+        records.back().sampledAt - records.front().sampledAt != 25 * (maxDrivingCaptureSamples - 1))
+        return false;
+    std::ostringstream csv;
+    writeDrivingCaptureCsv(csv, std::span(records).first(1));
+    return csv.str().ends_with("\r\n0,simulation,,,,,,0,,0,0,0,,,,,,4,,,0,0,0,0,0,0,0\r\n");
 }
 
 int run()
@@ -366,7 +466,12 @@ int run()
         restart.snapshot.mode != DiagnosticMode::waitingForDriver || restart.lastDriveAt ||
         restart.eventCount != 1 || restart.events[0].mode != DiagnosticMode::waitingForDriver)
         return 7;
-    return testPerformanceCapture(otherRoot);
+    if (!checkPercentiles())
+        return 24;
+    const auto performance = testPerformanceCapture(otherRoot);
+    if (performance != 0)
+        return performance;
+    return testBoundedCaptureAfterGameCloses(otherRoot) ? 0 : 25;
 }
 
 } // namespace

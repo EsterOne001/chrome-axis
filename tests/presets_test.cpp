@@ -207,13 +207,22 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
 
     std::filesystem::remove(analog);
     std::filesystem::remove(digital);
-    conflictingDigital = {{oldWheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 19}};
-    if (!check(saveAccessoryProfile(digital, conflictingDigital, details)
+    AccessoryProfile accessoryOnly{
+        {oldWheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 19},
+        {.deviceId = oldWheel, .kind = AccessoryKind::Axis, .index = 5, .engaged = 1000, .clutchMode = ClutchMode::assist},
+        {.deviceId = oldWheel, .kind = AccessoryKind::Button, .index = 3, .engaged = 1,
+         .role = ShifterRole::Upshift, .nativeSequential = true},
+        {.deviceId = oldWheel, .kind = AccessoryKind::Button, .index = 4, .engaged = 1,
+         .role = ShifterRole::Downshift, .nativeSequential = true},
+    };
+    if (!check(saveAccessoryProfile(digital, accessoryOnly, details)
                && replacePresetDevice(root, selected, oldWheel, newWheel, error)
                && !std::filesystem::exists(analog), "Accessory-only presets must stay accessory-only"))
         return false;
-    conflictingDigital[0].deviceId = newWheel;
-    return check(loadAccessoryProfile(digital, details) == conflictingDigital, "Accessory-only binding did not change");
+    for (auto& binding : accessoryOnly)
+        binding.deviceId = newWheel;
+    return check(loadAccessoryProfile(digital, details) == accessoryOnly,
+                 "Accessory-only replacement must preserve analog and native sequential bindings");
 }
 
 bool testProfileBackups(const std::filesystem::path& fixture)

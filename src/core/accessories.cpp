@@ -20,8 +20,10 @@ constexpr auto nativeGearDebouncePolls = 3u;
 constexpr auto nativeNeutralDebouncePolls = 8u;
 constexpr double neutralThreshold = 0.15;
 constexpr double handbrakeDeadZone = 0.03;
+constexpr double clutchDeadZone = 0.03;
 constexpr AccessoryThresholds defaultThresholds{};
 constexpr std::array<std::string_view, 3> kindNames{"button", "pov", "axis"};
+constexpr std::array<std::string_view, 3> clutchModeNames{"off", "assist", "experiment"};
 constexpr std::string_view pulseSuffix = ",pulse";
 constexpr std::string_view rolePrefix = "# shifter-role=";
 constexpr std::string_view nativeShifterPositionsPrefix = "# native-shifter-positions=";
@@ -130,6 +132,18 @@ bool parseProgressiveHandbrake(std::string_view value, AccessoryBinding& binding
         && validHandbrakeCeilingPercent(binding.handbrakeCeilingPercent);
 }
 
+bool parseClutch(std::string_view value, AccessoryBinding& binding)
+{
+    const auto separator = value.rfind(',');
+    if (separator == std::string_view::npos || !parseBinding(value.substr(0, separator), binding, 1))
+        return false;
+    const auto mode = std::ranges::find(clutchModeNames, trim(value.substr(separator + 1)));
+    if (mode == clutchModeNames.end())
+        return false;
+    binding.clutchMode = static_cast<ClutchMode>(mode - clutchModeNames.begin());
+    return true;
+}
+
 double travel(const AccessoryBinding& binding)
 {
     return static_cast<double>(binding.engaged) - binding.rest;
@@ -162,8 +176,10 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
     }
     std::bitset<256> keys;
     std::array<const AccessoryBinding*, 9> nativePositions{};
+    std::array<const AccessoryBinding*, 2> paddles{};
     std::string_view nativeDevice;
     bool hasProgressiveHandbrake = false;
+    bool hasClutch = false;
     for (const auto& binding : profile) {
         if (!validInput(binding) || static_cast<std::size_t>(binding.role) >= roleNames.size()
             || (binding.activation != AccessoryActivation::hold && binding.activation != AccessoryActivation::pulse)) {
@@ -173,7 +189,8 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
         if (binding.nativeShifter) {
             const int gear = nativeGearNumber(binding.role);
             if (gear < 0 || binding.key != 0 || binding.activation != AccessoryActivation::hold
-                || binding.handbrakeCeilingPercent != 0 || (!nativeDevice.empty() && binding.deviceId != nativeDevice)) {
+                || binding.handbrakeCeilingPercent != 0 || binding.nativeSequential || binding.clutchMode
+                || (!nativeDevice.empty() && binding.deviceId != nativeDevice)) {
                 error = "Invalid accessory input";
                 return false;
             }
@@ -186,6 +203,35 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
             }
             position = &binding;
             nativeDevice = binding.deviceId;
+            continue;
+        }
+        if (binding.nativeSequential) {
+            const bool up = binding.role == ShifterRole::Upshift;
+            const bool down = binding.role == ShifterRole::Downshift;
+            if ((!up && !down) || binding.key != 0 || binding.activation != AccessoryActivation::hold
+                || binding.handbrakeCeilingPercent || binding.nativeShifterPositions || binding.clutchMode) {
+                error = "Invalid native sequential input";
+                return false;
+            }
+            auto& position = paddles[up ? 0 : 1];
+            if (position || std::ranges::any_of(paddles, [&](const AccessoryBinding* other) {
+                return other && sameNativeInput(binding, *other);
+            })) {
+                error = "Duplicate native sequential input";
+                return false;
+            }
+            position = &binding;
+            continue;
+        }
+        if (binding.clutchMode) {
+            if (hasClutch || binding.kind != AccessoryKind::Axis || binding.key != 0 || binding.role != ShifterRole::None
+                || binding.activation != AccessoryActivation::hold || binding.thresholds != defaultThresholds
+                || binding.handbrakeCeilingPercent || binding.nativeShifterPositions
+                || static_cast<std::size_t>(*binding.clutchMode) >= clutchModeNames.size()) {
+                error = "Invalid or duplicate clutch axis";
+                return false;
+            }
+            hasClutch = true;
             continue;
         }
         if (binding.handbrakeCeilingPercent != 0) {
@@ -208,6 +254,10 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
         }
         keys.set(binding.key);
     }
+    if (!nativeDevice.empty() && (paddles[0] || paddles[1])) {
+        error = "Native H-pattern and sequential inputs cannot be active together";
+        return false;
+    }
     error.clear();
     return true;
 }
@@ -215,7 +265,7 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
 struct InputLevel {
     bool neutral{};
     bool engaged{};
-    float progressiveHandbrake{};
+    float analogValue{};
 };
 
 std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const DeviceSample& sample, bool active,
@@ -242,6 +292,10 @@ std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const Devic
         const double fraction = (static_cast<double>(sample.axes[binding.index]) - binding.rest) / travel(binding);
         if (travelReading)
             *travelReading = fraction;
+        if (binding.clutchMode) {
+            const float command = static_cast<float>(std::clamp((fraction - clutchDeadZone) / (1.0 - clutchDeadZone), 0.0, 1.0));
+            return InputLevel{std::abs(fraction) <= clutchDeadZone, command > 0.0f, command};
+        }
         if (binding.handbrakeCeilingPercent != 0) {
             const auto adjusted = std::clamp((fraction - handbrakeDeadZone) / (1.0 - handbrakeDeadZone), 0.0, 1.0);
             const auto command = static_cast<float>(adjusted * (binding.handbrakeCeilingPercent / 100.0));
@@ -306,13 +360,28 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
             nativePositions = 0;
             continue;
         }
-        if (entry.starts_with(nativeShifterPrefix)) {
+        if (entry.starts_with(clutchPrefix)) {
             AccessoryBinding binding;
-            binding.nativeShifter = true;
-            binding.nativeShifterPositions = std::exchange(nativePositions, 0u);
+            if (!version || profile.size() == maxAccessoryBindings
+                || !parseClutch(entry.substr(clutchPrefix.size()), binding)) {
+                error = "Invalid clutch profile entry";
+                return std::nullopt;
+            }
+            profile.push_back(std::move(binding));
+            role = ShifterRole::None;
+            nativePositions = 0;
+            continue;
+        }
+        if (entry.starts_with(nativeShifterPrefix) || entry.starts_with(nativeSequentialPrefix)) {
+            AccessoryBinding binding;
+            binding.nativeShifter = entry.starts_with(nativeShifterPrefix);
+            binding.nativeSequential = !binding.nativeShifter;
+            const auto prefix = binding.nativeShifter ? nativeShifterPrefix : nativeSequentialPrefix;
+            binding.nativeShifterPositions = binding.nativeShifter ? nativePositions : 0u;
+            nativePositions = 0;
             binding.role = std::exchange(role, ShifterRole::None);
             if (!version || profile.size() == maxAccessoryBindings
-                || !parseBinding(entry.substr(nativeShifterPrefix.size()), binding, version)) {
+                || !parseBinding(entry.substr(prefix.size()), binding, version)) {
                 error = "Invalid accessory profile entry";
                 return std::nullopt;
             }
@@ -375,12 +444,15 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
         // Older versions skip these comment rows and still read the keyboard bindings.
         const bool progressive = binding.handbrakeCeilingPercent != 0;
         const auto prefix = binding.nativeShifter ? nativeShifterPrefix
+                          : binding.nativeSequential ? nativeSequentialPrefix : binding.clutchMode ? clutchPrefix
                           : progressive ? progressiveHandbrakePrefix : "binding=";
         file << prefix
              << binding.deviceId << ',' << kindNames[static_cast<std::size_t>(binding.kind)]
              << ',' << binding.index << ',' << binding.rest << ',' << binding.engaged << ',' << binding.key;
         if (progressive)
             file << ',' << binding.handbrakeCeilingPercent;
+        if (binding.clutchMode)
+            file << ',' << clutchModeNames[static_cast<std::size_t>(*binding.clutchMode)];
         if (binding.thresholds != defaultThresholds)
             file << ',' << binding.thresholds.press << ',' << binding.thresholds.release;
         if (binding.activation == AccessoryActivation::pulse)
@@ -428,12 +500,12 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
     const auto mapping = [](const AccessoryBinding& binding) {
         return std::tie(binding.deviceId, binding.kind, binding.index, binding.rest, binding.engaged, binding.key,
                         binding.thresholds, binding.activation, binding.handbrakeCeilingPercent,
-                        binding.nativeShifter);
+                        binding.nativeShifter, binding.nativeSequential, binding.clutchMode);
     };
     return std::ranges::equal(*first, *second, [&](const AccessoryBinding& left, const AccessoryBinding& right) {
         return mapping(left) == mapping(right)
-            && (!left.nativeShifter || (left.role == right.role
-                && left.nativeShifterPositions == right.nativeShifterPositions));
+            && (!(left.nativeShifter || left.nativeSequential) || left.role == right.role)
+            && (!left.nativeShifter || left.nativeShifterPositions == right.nativeShifterPositions);
     });
 }
 
@@ -458,12 +530,14 @@ void AccessoryReader::reset() noexcept
 {
     states_.fill({});
     nativeShifter_ = {};
+    sequentialNeutralPolls_ = 0;
+    sequentialWaitForRelease_ = false;
 }
 
 void AccessoryReader::resetKeyboardBindings() noexcept
 {
     for (std::size_t i = 0; i < profile_.size(); ++i) {
-        if (profile_[i].handbrakeCeilingPercent == 0 && !profile_[i].nativeShifter)
+        if (profile_[i].key)
             states_[i] = {};
     }
 }
@@ -491,7 +565,7 @@ AccessoryReadiness AccessoryReader::readiness() const noexcept
 
 std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryObservation> observations,
                                       std::bitset<256>* pulses, std::optional<float>* progressiveHandbrake,
-                                      std::optional<int>* nativeGear)
+                                      std::optional<int>* nativeGear, AccessoryTransmissionSample* transmission)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
@@ -506,7 +580,7 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryOb
             samples[i] = &*storage[owner];
     }
     return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()),
-                  observations, pulses, progressiveHandbrake, nativeGear);
+                  observations, pulses, progressiveHandbrake, nativeGear, transmission);
 }
 
 float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
@@ -547,13 +621,14 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
     }
     state.status = AccessoryStatus::armed;
     state.active = level->engaged;
-    return level->progressiveHandbrake;
+    return level->analogValue;
 }
 
 std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> samples,
                                        std::span<const DeviceReadStatus> statuses,
                                        std::span<AccessoryObservation> observations, std::bitset<256>* pulses,
-                                       std::optional<float>* progressiveHandbrake, std::optional<int>* nativeGear)
+                                        std::optional<float>* progressiveHandbrake, std::optional<int>* nativeGear,
+                                        AccessoryTransmissionSample* transmission)
 {
     std::bitset<256> keys;
     bool hasNativePositions = false;
@@ -562,18 +637,26 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
     bool allNativeNeutral = true;
     unsigned int activePositions{};
     int selectedGear{};
+    unsigned int paddlePositions{};
+    unsigned int pressedPaddles{};
+    bool paddlesAvailable = true;
+    bool paddlesArmed = true;
+    bool paddlesNeutral = true;
+    int paddleEdge{};
     if (pulses)
         pulses->reset();
     if (progressiveHandbrake)
         progressiveHandbrake->reset();
     if (nativeGear)
         nativeGear->reset();
+    if (transmission)
+        *transmission = {};
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto& binding = profile_[i];
         auto& state = states_[i];
         const auto* sample = i < samples.size() ? samples[i] : nullptr;
         const auto status = i < statuses.size() ? statuses[i] : DeviceReadStatus::unavailable;
-        if (binding.nativeShifter && i < statuses.size() &&
+        if ((binding.nativeShifter || binding.nativeSequential || binding.clutchMode) && i < statuses.size() &&
             (status == DeviceReadStatus::pending || status == DeviceReadStatus::unavailable))
             sample = nullptr;
         auto* observation = i < observations.size() ? &observations[i] : nullptr;
@@ -581,8 +664,8 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             *observation = {};
         const bool wasActive = state.active;
         bool neutral = false;
-        const auto handbrake = advance(binding, state, sample, status, observation,
-                                       binding.nativeShifter ? &neutral : nullptr);
+        const auto analogValue = advance(binding, state, sample, status, observation,
+                                         binding.nativeShifter || binding.nativeSequential ? &neutral : nullptr);
         if (observation) {
             observation->status = state.status;
             observation->active = state.active;
@@ -600,9 +683,29 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             }
             continue;
         }
+        if (binding.nativeSequential) {
+            const bool up = binding.role == ShifterRole::Upshift;
+            paddlePositions |= up ? 1u : 2u;
+            const bool armed = state.status == AccessoryStatus::armed;
+            paddlesAvailable &= status != DeviceReadStatus::resumed &&
+                (armed || state.status == AccessoryStatus::waitingForNeutral);
+            paddlesArmed &= armed;
+            paddlesNeutral &= neutral;
+            if (state.active) {
+                ++pressedPaddles;
+                if (!wasActive)
+                    paddleEdge = up ? 1 : -1;
+            }
+            continue;
+        }
+        if (binding.clutchMode) {
+            if (transmission && state.status == AccessoryStatus::armed)
+                transmission->clutch = analogValue;
+            continue;
+        }
         if (binding.handbrakeCeilingPercent != 0) {
             if (progressiveHandbrake && state.status == AccessoryStatus::armed)
-                *progressiveHandbrake = handbrake;
+                *progressiveHandbrake = analogValue;
             continue;
         }
         if (!state.active)
@@ -611,6 +714,35 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             keys.set(binding.key);
         else if (!wasActive && pulses)
             pulses->set(binding.key);
+    }
+
+    if (paddlePositions) {
+        if (paddlePositions != 3 || !paddlesAvailable) {
+            sequentialNeutralPolls_ = 0;
+            sequentialWaitForRelease_ = false;
+        } else if (sequentialNeutralPolls_ < requiredNeutralPolls) {
+            sequentialNeutralPolls_ = paddlesNeutral ? sequentialNeutralPolls_ + 1 : 0;
+        }
+        const bool armed = paddlesArmed && sequentialNeutralPolls_ == requiredNeutralPolls;
+        if (armed) {
+            // An overlapping press must be followed by both paddles returning to rest.
+            sequentialWaitForRelease_ = pressedPaddles > 1 || (sequentialWaitForRelease_ && !paddlesNeutral);
+            if (transmission) {
+                transmission->sequentialArmed = true;
+                if (!sequentialWaitForRelease_ && pressedPaddles == 1)
+                    transmission->shiftDelta = paddleEdge;
+            }
+        } else {
+            for (std::size_t i = 0; i < profile_.size(); ++i) {
+                if (!profile_[i].nativeSequential || states_[i].status != AccessoryStatus::armed)
+                    continue;
+                states_[i].status = AccessoryStatus::waitingForNeutral;
+                if (i < observations.size()) {
+                    observations[i].status = AccessoryStatus::waitingForNeutral;
+                    observations[i].active = false;
+                }
+            }
+        }
     }
 
     if (!hasNativePositions)

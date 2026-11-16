@@ -68,7 +68,7 @@ enum Command {
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
     backupProfiles, restoreProfiles, openModInfo, reassignDevice, configureBrake, leaveSimulation,
-    chooseAxisSettings, configureSteering, configureThrottle, configureTransmissionKey,
+    chooseAxisSettings, configureSteering, configureThrottle, configureTransmissionKey, configureTransmission,
     deadzoneFirst = 200, meterFirst = 210, brakeResponseMeter = meterFirst + commands.size(), retryAxisFirst = 220
 };
 
@@ -423,6 +423,7 @@ private:
         AppendMenuW(deviceMenu_, MF_STRING, chooseCalibrationScope, tr(Text::mainMenuCalibrationScope));
         AppendMenuW(deviceMenu_, MF_STRING, reassignDevice, tr(Text::mainMenuReassignDevice));
         AppendMenuW(deviceMenu_, MF_STRING, configureAccessories, tr(Text::mainMenuAccessories));
+        AppendMenuW(deviceMenu_, MF_STRING, configureTransmission, tr(Text::mainMenuTransmission));
         for (const auto& option : axisSettingsOptions)
             AppendMenuW(deviceMenu_, MF_STRING, option.command, tr(option.label));
         AppendMenuW(deviceMenu_, MF_STRING, configureFeedback, tr(Text::mainMenuFeedback));
@@ -454,6 +455,7 @@ private:
         devicesTitle_ = label(tr(Text::mainDevices));
         refresh_ = button(tr(Text::mainRefresh), refreshDevices);
         accessories_ = button(tr(Text::mainAccessories), configureAccessories);
+        transmission_ = button(tr(Text::mainTransmission), configureTransmission);
         for (std::size_t i = 0; i < deviceLabels.size(); ++i) {
             deviceLabels_[i] = label(tr(deviceLabels[i]));
             deviceCombos_[i] = combo(deviceComboFirst + static_cast<int>(i));
@@ -501,6 +503,8 @@ private:
         measure_ = button(tr(Text::guideCapture), measure);
         simDirections_ = label(tr(Text::mainSimDirections));
         simArming_ = label(tr(Text::mainSimArming));
+        simTransmission_ = label(L"");
+        simClutch_ = label(L"");
         profileName_ = child(L"STATIC", L"", SS_NOPREFIX | SS_ENDELLIPSIS, 0);
         status_ = label(tr(Text::mainNoProfile));
         folder_ = button(tr(Text::mainProfilesFolder), openProfileFolder);
@@ -570,7 +574,8 @@ private:
         for (const auto button : {frenchFlag_, englishFlag_})
             place(button, width - 24 - languageButtonSize, 26, languageButtonSize, languageButtonSize);
         const int comboWidth = (width - 112) / 3;
-        place(devicesTitle_, 42, 110, width - 334, 24);
+        place(devicesTitle_, 42, 110, width - 466, 24);
+        place(transmission_, width - 414, 106, 122, 29);
         place(accessories_, width - 282, 106, 120, 29);
         place(refresh_, width - 152, 106, 110, 29);
         for (std::size_t i = 0; i < deviceCombos_.size(); ++i) {
@@ -637,8 +642,10 @@ private:
             place(calibrationTitle_, 42, 430, width - 397, 24);
             place(instruction_, 42, 459, width - 84, 24);
         }
-        place(simDirections_, 42, 460, width - 84, 22);
-        place(simArming_, 42, 493, width - 84, 22);
+        place(simDirections_, 42, 452, width - 84, 20);
+        place(simArming_, 42, 471, width - 84, 20);
+        place(simTransmission_, 42, 490, width - 84, 20);
+        place(simClutch_, 42, 509, width - 84, 20);
 
         constexpr int footer = 552;
         place(folder_, width - 650, footer, 148, 31);
@@ -883,6 +890,7 @@ private:
     void selectDevice(std::size_t channel);
     void readProfile();
     void readAccessories();
+    const wchar_t* transmissionHardwareStatus() const;
     void updateProfileView(const CalibrationScope& changed = allChannels);
     void rebuildPreview();
     bool ensureProfileDirectory(const std::filesystem::path& directory);
@@ -961,7 +969,7 @@ private:
         return !simulation_ && !calibrating_ && (draft_[channel]
             ? readDeadzone(zones_[channel], channel == 0).has_value() : channel != 0);
     }
-    bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || accessoriesSaved_)); }
+    bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || !accessoryBindings_.empty())); }
     bool clearAnalogProfile() const
     {
         return saved_ && deviceId(0).empty() && deviceId(1).empty() && deviceId(2).empty();
@@ -990,11 +998,12 @@ private:
     HMENU profileMenu_{}, deviceMenu_{}, languageMenu_{}, testToolsMenu_{}, helpMenu_{};
     HWND devicesTitle_{}, axesTitle_{}, calibrationTitle_{};
     HWND accessories_{}, diagnostics_{}, feedback_{}, axisSettings_{}, steeringDeadzoneHint_{};
-    HWND refresh_{}, hardware_{}, instruction_{}, start_{};
+    HWND refresh_{}, hardware_{}, transmission_{}, instruction_{}, start_{};
     HWND calibrationScopeButton_{}, axisChoice_{}, measure_{}, cancel_{}, previous_{};
     HWND guideStep_{}, guideAction_{}, guideDevice_{}, guideNotice_{};
     HWND profileName_{}, status_{}, folder_{}, select_{}, reload_{}, save_{};
     HWND hardwareTab_{}, usbToggle_{}, simTitle_{}, simToggle_{}, simState_{}, simHint_{}, simDirections_{}, simArming_{}, simBack_{};
+    HWND simTransmission_{}, simClutch_{};
     HWND frenchFlag_{}, englishFlag_{};
     Language selectedLanguage_{chrome_axis::interfaceLanguage()};
     std::array<HWND, 4> headings_{};
@@ -1018,7 +1027,7 @@ private:
     std::array<bool, 3> liveReady_{};
     std::array<int, 3> meterSpans_{};
     bool loadingControls_{}, saved_{}, dirty_{};
-    bool accessoriesSaved_{};
+    chrome_axis::AccessoryProfile accessoryBindings_;
     bool temporaryDirectory_{};
     bool deviceRefreshPending_{};
     bool usbEnabled_{};
@@ -1128,8 +1137,13 @@ void App::action(int command, int notification)
         break;
     }
     case configureAccessories:
+    case configureTransmission:
         if (!simulation_ && !calibrating_ && confirmCurrentPreset()) {
-            if (chrome_axis::editAccessories(window_, *input_, directory_, preset_)) {
+            const bool changed = command == configureTransmission
+                ? chrome_axis::editProfileShifter(window_, *input_, directory_, preset_, devices_)
+                : chrome_axis::editAccessories(window_, *input_, directory_, preset_);
+            refreshTransmissionKey();
+            if (changed) {
                 readAccessories();
                 profileMessage_.clear();
                 rebuildPreview();
@@ -1268,6 +1282,12 @@ void App::scanDevices()
         advice = {};
     } else if (!installed_)
         advice = pluginInstallAdvice(directory_.parent_path(), Text::mainOpenFromGameForUsb);
+    if (!temporaryDirectory_) {
+        if (const auto* transmission = transmissionHardwareStatus()) {
+            hardwareStatus += L" · ";
+            hardwareStatus += transmission;
+        }
+    }
     if (!advice.empty()) {
         hardwareStatus += L". ";
         hardwareStatus += advice;
@@ -1344,9 +1364,25 @@ void App::selectDevice(std::size_t channel)
 void App::readAccessories()
 {
     std::string error;
-    const auto bindings = activeDirectory().empty() ? std::nullopt
+    auto bindings = activeDirectory().empty() ? std::nullopt
         : chrome_axis::loadAccessoryProfile(activeDirectory() / chrome_axis::accessoryFilename, error);
-    accessoriesSaved_ = bindings && !bindings->empty();
+    accessoryBindings_ = bindings ? std::move(*bindings) : chrome_axis::AccessoryProfile{};
+}
+
+const wchar_t* App::transmissionHardwareStatus() const
+{
+    const auto native = std::ranges::find_if(accessoryBindings_, chrome_axis::isNativeTransmissionBinding);
+    if (native == accessoryBindings_.end())
+        return nullptr;
+    if (std::ranges::any_of(accessoryBindings_, [this](const auto& binding) {
+            return chrome_axis::isNativeTransmissionBinding(binding) && !device(binding.deviceId);
+        })) {
+        return tr(native->nativeSequential ? Text::mainSequentialMissing : Text::mainShifterMissing);
+    }
+    if (native->nativeSequential)
+        return tr(Text::mainSequentialDetected);
+    return tr(chrome_axis::nativeShifterVerified(accessoryBindings_)
+        ? Text::mainShifterDetected : Text::mainShifterRecapture);
 }
 
 void App::readProfile()
@@ -1448,7 +1484,7 @@ void App::rebuildPreview()
         : dirty_ ? (canSave ? tr(Text::mainSaveToApplySettings) : tr(Text::mainIncompleteCalibration))
         : saved_ ? (draft_[0] && draft_[0]->deadzone == 0.0f ? tr(Text::mainCalibrationSavedZeroDeadzone)
             : tr(Text::mainCalibrationSaved))
-        : accessoriesSaved_ ? tr(Text::mainAccessoriesSaved)
+        : !accessoryBindings_.empty() ? tr(Text::mainAccessoriesSaved)
         : tr(Text::mainNoProfile));
 }
 
@@ -1874,6 +1910,10 @@ void App::refreshTransmissionKey()
         : std::wstring(tr(Text::mainSteeringKeys)));
     setText(simKeys_[1], keyPair(VK_NUMPAD8, VK_F8, L"  ·  "));
     setText(simKeys_[2], keyPair(VK_NUMPAD2, VK_F10, L"  ·  "));
+    setText(simTransmission_, chrome_axis::accessoryKeyLabel(key) + tr(Text::mainSimulationTransmissionKeys));
+    constexpr std::array<unsigned int, 5> clutchKeys{VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD3, VK_NUMPAD5, VK_NUMPAD7};
+    const bool clutchKeyOverlap = std::ranges::find(clutchKeys, key) != clutchKeys.end();
+    setText(simClutch_, clutchKeyOverlap ? tr(Text::mainSimulationClutchKeysOverlap) : tr(Text::mainSimulationClutchKeys));
 }
 
 void App::chooseTransmissionShortcut()
@@ -1927,7 +1967,7 @@ void App::changeUsbMode()
             MessageBoxW(window_, message, title, MB_OK | MB_ICONWARNING);
             return;
         }
-        if (!accessoriesSaved_ && !chrome_axis::loadProfile(path_, error)) {
+        if (accessoryBindings_.empty() && !chrome_axis::loadProfile(path_, error)) {
             MessageBoxW(window_, tr(Text::mainSaveCalibrationOrMapping),
                 title, MB_OK | MB_ICONWARNING);
             return;
@@ -1978,6 +2018,8 @@ void App::updateCalibrationView()
     EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | (canChooseScope ? MF_ENABLED : MF_GRAYED));
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_ENABLED);
     EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
+    EnableWindow(transmission_, !calibrating_);
+    EnableMenuItem(deviceMenu_, configureTransmission, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(deviceMenu_, reassignDevice, MF_BYCOMMAND |
         (calibrating_ || activeDirectory().empty() || temporaryDirectory_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
@@ -2090,7 +2132,7 @@ void App::updateGuideVisibility()
         return;
     guideVisible_ = calibrating_;
     reviewVisible_ = reviewing;
-    for (const auto control : {devicesTitle_, hardware_, usbToggle_, refresh_, accessories_, axesTitle_,
+    for (const auto control : {devicesTitle_, hardware_, usbToggle_, refresh_, accessories_, transmission_, axesTitle_,
                               start_, calibrationScopeButton_, diagnostics_, feedback_, axisSettings_, steeringDeadzoneHint_})
         show(control, !calibrating_);
     for (const auto control : headings_)
@@ -2140,11 +2182,11 @@ void App::applyMode()
         constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
         SetWindowPos(control, nullptr, 0, 0, 0, 0, flags | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     };
-    for (const auto control : {hardwareTab_, usbToggle_, refresh_, accessories_, diagnostics_, feedback_, axisSettings_,
+    for (const auto control : {hardwareTab_, usbToggle_, refresh_, accessories_, transmission_, diagnostics_, feedback_, axisSettings_,
                               steeringDeadzoneHint_, hardware_, headings_[2],
                               instruction_, start_, calibrationScopeButton_, profileName_, folder_, select_, reload_, save_})
         setVisible(control, !simulation_);
-    for (const auto control : {simTitle_, simToggle_, simState_, simHint_, simDirections_, simArming_, simBack_})
+    for (const auto control : {simTitle_, simToggle_, simState_, simHint_, simDirections_, simArming_, simTransmission_, simClutch_, simBack_})
         setVisible(control, simulation_);
     for (std::size_t i = 0; i < commands.size(); ++i) {
         setVisible(deviceLabels_[i], !simulation_);
@@ -2172,6 +2214,7 @@ void App::updateSimulationView()
     EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | MF_GRAYED);
+    EnableMenuItem(deviceMenu_, configureTransmission, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, reassignDevice, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | MF_GRAYED);
     updateAxisSettingsAvailability();
@@ -2680,6 +2723,8 @@ void App::contextMenu(int x, int y)
         AppendMenuW(menu, MF_STRING, refreshDevices, tr(Text::mainRefreshDevices));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
                     configureAccessories, tr(Text::mainAccessories));
+        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
+                    configureTransmission, tr(Text::mainMenuTransmission));
         AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
                     configureFeedback, tr(Text::mainForceFeedback));
         for (std::size_t channel = 0; channel < axisSettingsOptions.size(); ++channel) {

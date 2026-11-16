@@ -115,6 +115,7 @@ struct AxisResponseDialog {
     bool showingGame{};
     bool showPreviousGame{};
     bool simulatingPedals{};
+    std::array<PedalStabilizer, 2> pedalStabilizers{};
 
     void initialise(HWND window);
     void assignResponse(HWND window, const AxisResponse& response);
@@ -163,6 +164,8 @@ void AxisResponseDialog::initialise(HWND window)
 
 void AxisResponseDialog::assignResponse(HWND window, const AxisResponse& response)
 {
+    if (pedals)
+        CheckDlgButton(window, IDC_PEDAL_STABILIZATION, response.stabilization ? BST_CHECKED : BST_UNCHECKED);
     SetDlgItemInt(window, IDC_BRAKE_PROGRESSIVITY, static_cast<UINT>(response.progressivity), TRUE);
     SetDlgItemInt(window, IDC_BRAKE_SATURATION, static_cast<UINT>(response.saturation), FALSE);
     updatePreview(window);
@@ -176,7 +179,8 @@ std::optional<AxisResponse> AxisResponseDialog::response(HWND window) const
                                        maximumBrakeSaturation);
     if (!progressivity || !saturation)
         return std::nullopt;
-    return AxisResponse{*progressivity, *saturation};
+    return AxisResponse{*progressivity, *saturation,
+                        pedals && IsDlgButtonChecked(window, IDC_PEDAL_STABILIZATION) == BST_CHECKED};
 }
 
 void AxisResponseDialog::updatePreview(HWND window)
@@ -266,6 +270,7 @@ void AxisResponseDialog::initialisePedals(HWND window)
         {IDC_PEDAL_THROTTLE_TEST_LABEL, Text::DlgPedalTestThrottle},
         {IDC_PEDAL_TIME_START, Text::DlgPedalChartStart},
         {IDC_PEDAL_HISTORY, Text::DlgPedalGameHistory},
+        {IDC_PEDAL_STABILIZATION, Text::DlgPedalStabilization},
     };
     for (const auto& [id, label] : labels)
         SetDlgItemTextW(window, id, tr(label));
@@ -345,6 +350,8 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
     const bool simulated = std::ranges::any_of(pedalTestIds, hasTest);
     if (simulated != simulatingPedals) {
         localHistory.clear();
+        for (auto& stabilizer : pedalStabilizers)
+            stabilizer.reset();
         simulatingPedals = simulated;
     }
 
@@ -378,8 +385,12 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
         }
         if (raw && response) {
             const auto preview = previewAxisResponse(pedalAxes[pedal], *binding, *raw, *response);
-            local.pedals[pedal] = {preview.raw, preview.adjusted, std::nullopt};
+            const auto adjusted = response->stabilization ? pedalStabilizers[pedal].update(preview.adjusted) : preview.adjusted;
+            local.pedals[pedal] = {preview.raw, adjusted, std::nullopt};
+            if (response->stabilization)
+                continue;
         }
+        pedalStabilizers[pedal].reset();
     }
 
     if (hasPedalValues(local) || !localHistory.empty())
@@ -529,6 +540,10 @@ INT_PTR CALLBACK axisResponseDialogProc(HWND window, UINT message, WPARAM wp, LP
     case IDC_PEDAL_PRESET:
         if (HIWORD(wp) == CBN_SELCHANGE)
             dialog->applyBrakePreset(window);
+        return TRUE;
+    case IDC_PEDAL_STABILIZATION:
+        if (HIWORD(wp) == BN_CLICKED)
+            dialog->updatePreview(window);
         return TRUE;
     case IDC_PEDAL_HISTORY:
         if (HIWORD(wp) == BN_CLICKED) {

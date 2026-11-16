@@ -42,6 +42,7 @@
 #define IDC_PEDAL_KEY_RAW 2656
 #define IDC_PEDAL_KEY_CORRECTED 2657
 #define IDC_PEDAL_KEY_GAME 2658
+#define IDC_PEDAL_STABILIZATION 2659
 
 #ifndef RC_INVOKED
 #include "chrome_axis/controls.hpp"
