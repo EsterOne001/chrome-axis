@@ -675,12 +675,15 @@ chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleas
 
     const bool simulated = inputFrame.simulated;
     const bool hardware = inputFrame.nativeShifterVerified;
-    const bool enabled = simulated || hardware;
-    const auto intent = transmissionInput.update(hardware, inputFrame.nativeGear, simulated,
-        enabled ? chrome_axis::transmissionHotkey(hotkey) : std::nullopt,
+    const auto toggle = simulated
+        ? chrome_axis::simulatedTransmissionKey(keyDown(static_cast<int>(hotkey)), accessoryKeys.hasInjectedKeys())
+        : hardware ? chrome_axis::transmissionHotkey(hotkey) : std::nullopt;
+    const auto intent = transmissionInput.update(hardware, inputFrame.nativeGear, simulated, toggle,
         simulated && keyDown(VK_PRIOR), simulated && keyDown(VK_NEXT),
-        simulated ? keyboardGear() : chrome_axis::DirectGearKeys{});
+        simulated ? keyboardGear() : chrome_axis::DirectGearKeys{}, hotkey);
     manual_backend::publish(vehicle, intent.manual, intent.delta, intent.manual ? intent.gear : std::nullopt);
+    if (simulated && intent.toggledByKey)
+        info(intent.manual ? "Keyboard simulation transmission: MANUAL." : "Keyboard simulation transmission: AUTO.");
     if (!intent.manual && !transmissionPedals.tracking())
         return PedalRouting::standard;
 

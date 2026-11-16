@@ -136,6 +136,27 @@ bool changingShortcutRearmsWithoutChangingModes()
     return keyboard.down(VK_F9) == true && !update();
 }
 
+bool simulationPollsAfterAccessoryKeysAreReleased()
+{
+    ManualTransmissionInput input;
+    const auto update = [&](bool keyDown, bool accessoryKeysPending, unsigned int key = VK_F8) {
+        return input.update(false, {}, true, chrome_axis::simulatedTransmissionKey(keyDown, accessoryKeysPending),
+                            false, false, {}, key);
+    };
+    // A key held when USB mode releases its last accessory must not arm the shortcut.
+    if (update(true, true).manual || update(true, false).manual || update(false, false).manual)
+        return false;
+    const auto manual = update(true, false);
+    const auto held = update(true, false);
+    const auto released = update(false, false);
+    const auto reboundWhileDown = update(true, false, VK_F9);
+    const auto newKeyReleased = update(false, false, VK_F9);
+    const auto automatic = update(true, false, VK_F9);
+    return manual.manual && manual.toggledByKey && held.manual && !held.toggledByKey &&
+        released.manual && !released.toggledByKey && reboundWhileDown.manual && !reboundWhileDown.toggledByKey &&
+        newKeyReleased.manual && !newKeyReleased.toggledByKey && !automatic.manual && automatic.toggledByKey;
+}
+
 bool retainsManualReversePedalsDuringHandoff()
 {
     TransmissionPedals pedals;
@@ -172,6 +193,10 @@ int main()
     if (!ambiguousKeysNeedFullRelease() || !injectedKeyDoesNotToggleTransmission() ||
         !changingShortcutRearmsWithoutChangingModes()) {
         std::cerr << "A held or injected key changed the transmission\n";
+        return 1;
+    }
+    if (!simulationPollsAfterAccessoryKeysAreReleased()) {
+        std::cerr << "Simulation did not rearm the shortcut after accessory keys were released\n";
         return 1;
     }
     if (!retainsManualReversePedalsDuringHandoff()) {

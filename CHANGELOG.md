@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.42
+
+- **Simulation clavier.** La bascule AUTO / MANUEL lit directement la touche configurée quand la simulation est active. Elle attend le relâchement des touches d’accessoires en cours lors d’un changement de mode. Chaque bascule est consignée dans le journal du plugin.
+
+[ZIP Vortex](out/Chromaxis-0.4.42.zip)
+
 ## Chrome Axis 0.4.41
 
 - **Raccourci AUTO / MANUEL.** Choisissez la touche dans le menu **Périphériques**. Le réglage concerne l’installation, s’applique sans relancer le jeu et suit les sauvegardes de profils. F8 est la valeur par défaut.

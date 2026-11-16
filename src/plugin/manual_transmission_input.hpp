@@ -120,17 +120,25 @@ private:
     bool wasReverse_{};
 };
 
+// Simulation does not emit accessory keys. A pending release from the USB
+// source pauses polling so an injected key cannot toggle the transmission.
+constexpr std::optional<bool> simulatedTransmissionKey(bool down, bool accessoryKeysPending) noexcept {
+    return accessoryKeysPending ? std::nullopt : std::optional{down};
+}
+
 struct TransmissionIntent {
     bool manual{};
     int delta{};
     std::optional<int> gear;
+    bool toggledByKey{};
 };
 
 // Used on the game thread. Hardware input is already debounced and rearmed by AccessoryReader.
 class ManualTransmissionInput {
 public:
     TransmissionIntent update(bool hardware, std::optional<int> hardwareGear, bool simulation,
-                              std::optional<bool> toggle, bool up, bool down, DirectGearKeys keyboard) noexcept {
+                              std::optional<bool> toggle, bool up, bool down, DirectGearKeys keyboard,
+                              unsigned int toggleKey = 0) noexcept {
         if (hardware != hardware_ || simulation != simulation_) {
             *this = {};
             hardware_ = hardware;
@@ -138,6 +146,11 @@ public:
             manualSelected_ = hardware;
         }
 
+        if (toggleKey != toggleKey_) {
+            toggleKey_ = toggleKey;
+            toggleArmed_ = false;
+        }
+        bool toggledByKey = false;
         if (!toggle) {
             toggleArmed_ = false;
         } else if (!*toggle) {
@@ -145,15 +158,16 @@ public:
         } else if (toggleArmed_) {
             toggleArmed_ = false;
             manualSelected_ = !manualSelected_;
+            toggledByKey = true;
         }
 
         const int delta = sequentialShift(up, down);
         if (hardware)
-            return {manualSelected_ && hardwareGear.has_value(), 0, hardwareGear};
+            return {manualSelected_ && hardwareGear.has_value(), 0, hardwareGear, toggledByKey};
         if (!simulation || !manualSelected_) {
             directArmed_ = false;
             keyboardSelection_.reset();
-            return {};
+            return {.gear = std::nullopt, .toggledByKey = toggledByKey};
         }
         if (keyboard.released())
             directArmed_ = true;
@@ -162,10 +176,10 @@ public:
         if (directArmed_ && keyboard.gear)
             keyboardSelection_ = keyboard.gear;
         if (!keyboard.released())
-            return {true, 0, keyboardSelection_};
+            return {true, 0, keyboardSelection_, toggledByKey};
         if (delta)
             keyboardSelection_.reset();
-        return {true, delta, keyboardSelection_};
+        return {true, delta, keyboardSelection_, toggledByKey};
     }
 
     void suspend() noexcept {
@@ -193,6 +207,7 @@ private:
     bool hardware_{};
     bool simulation_{};
     bool manualSelected_{};
+    unsigned int toggleKey_{};
     bool toggleArmed_{};
     bool shiftArmed_{};
     bool directArmed_{};
