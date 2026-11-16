@@ -76,7 +76,7 @@ public:
     void advance();
     void skip();
     void updateControls();
-    void selectDevice();
+    void selectDevice(LRESULT savedSelection = LB_ERR);
     void selectMode();
     void deviceTopologyChanged();
     bool refreshDevices();
@@ -245,10 +245,12 @@ bool ShifterDialog::refreshDevices()
         return false;
     const auto* selected = selectedDevice();
     const auto preferred = selected ? selected->id : std::string{};
+    const auto row = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
     inventoryRevision_ = result->revision;
     devices_ = result->devices;
     fillDevices(preferred);
-    selectDevice();
+    const auto* current = selectedDevice();
+    selectDevice(current && current->id == preferred ? row : LB_ERR);
     return true;
 }
 
@@ -457,7 +459,7 @@ void ShifterDialog::previewFocusChanged(bool active)
 
 void ShifterDialog::pollPreview()
 {
-    if (!previewRunning_ || !preview_ || !inventory_.current())
+    if (!previewRunning_ || !preview_)
         return;
     if (GetForegroundWindow() != window_ || !IsWindowEnabled(window_)) {
         previewFocusChanged(false);
@@ -508,11 +510,11 @@ void ShifterDialog::pollPreview()
     showPreview(std::move(message));
 }
 
-void ShifterDialog::selectDevice()
+void ShifterDialog::selectDevice(LRESULT savedSelection)
 {
     if (stage_ != Stage::Setup)
         return;
-    showSavedBindings();
+    showSavedBindings(savedSelection);
     status(tr(setupStatus()));
     updateControls();
 }

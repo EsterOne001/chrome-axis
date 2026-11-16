@@ -11,6 +11,7 @@
 #include "chrome_axis/simulation.hpp"
 #include "app_text.hpp"
 #include "calibration_guide.hpp"
+#include "device_capture.hpp"
 #include "device_inventory.hpp"
 #include "diagnostic_recording.hpp"
 #include "diagnostics_dialog.hpp"
@@ -1323,10 +1324,6 @@ void App::consumeDeviceInventory()
     for (std::size_t channel = 0; channel < deviceCombos_.size(); ++channel)
         fillDeviceCombo(channel);
     updateHardwareStatus();
-    if (capture_ && !availableCalibrationScope()[steps_[step_].channel]) {
-        capture_.reset();
-        calibrationMessage_ = tr(Text::guideCaptureInterrupted);
-    }
     updateCalibrationView();
 }
 
@@ -2201,7 +2198,7 @@ void App::updateCalibrationView()
     const auto deviceLine = tr(deviceLabels[step.channel]) + (deviceName.empty() ? L"" : L"  ·  " + deviceName);
     setText(guideDevice_, deviceLine);
     setText(instruction_, tr(choosing ? Text::mainChooseMatchingAxis : step.instruction));
-    const bool disconnected = !available[step.channel];
+    const bool disconnected = !capture_ && !available[step.channel];
     setText(guideNotice_, disconnected ? tr(Text::guideRetryReconnect)
         : !calibrationMessage_.empty() ? calibrationMessage_
         : choosing ? L"" : tr(step_ == first ? Text::guideCaptureHint : Text::guideNextCaptureHint));
@@ -2752,14 +2749,13 @@ void App::tick()
     }
     updateCalibrationMotion(foreground);
     if (capture_ && foreground) {
-        if (inventory_.current())
-            updateCapture();
+        updateCapture();
         return;
     }
     if (reviewPreview_) {
         updateCalibrationReview(foreground);
     } else {
-        const bool hardwarePreview = foreground && !simulation_ && !calibrating_ && preview_ && inventory_.current();
+        const bool hardwarePreview = foreground && !simulation_ && !calibrating_ && preview_;
         if (hardwarePreview)
             input_->beginPoll();
         updateLiveControls(simulation_ ? previewSimulation()
@@ -2769,14 +2765,11 @@ void App::tick()
 
 void App::updateCapture()
 {
-    using chrome_axis::DeviceReadStatus;
     const auto channel = steps_[step_].channel;
-    input_->beginPoll();
-    DeviceReadStatus status{};
-    const auto sample = input_->sample(deviceId(channel), {}, &status);
+    const auto reading = chrome_axis::readCaptureDevice(*input_, deviceId(channel));
+    const auto& sample = reading.sample;
     ++captureTicks_;
-    const bool interrupted = captureHadSignal_ &&
-        (status == DeviceReadStatus::resumed || status == DeviceReadStatus::unavailable);
+    const bool interrupted = captureHadSignal_ && reading.needsRest();
     if (interrupted || (sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
         capture_.reset();
         calibrationMessage_ = tr(Text::guideCaptureInterrupted);

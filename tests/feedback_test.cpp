@@ -4,6 +4,7 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/controls.hpp"
 #include "../src/core/device_object_probe.hpp"
+#include "../src/core/device_layout_worker.hpp"
 #include "../src/core/device_read_recovery.hpp"
 #include "../src/core/wheel_force_retry.hpp"
 #include "../src/plugin/force_output_worker.hpp"
@@ -189,6 +190,21 @@ int testWheelForceRecoveryBackoff()
         retry.waiting(recoveredAt + 2s) ? 65 : 0;
 }
 
+int testWheelForceRecoversFromTemporaryAccessDenial()
+{
+    WheelForceRetry retry;
+    const auto start = TestClock::time_point{} + 100s;
+    for (int i = 0; i <= 15; ++i) {
+        const auto now = start + std::chrono::seconds(2 * i);
+        if (retry.waiting(now))
+            return 72;
+        retry.failed(now, true);
+        if (!retry.waiting(now + 1999ms) || retry.waiting(now + 2s))
+            return 73;
+    }
+    return retry.waiting(start + 32s) ? 74 : 0;
+}
+
 int testWheelForceRecoveryAfterPendingReopen()
 {
     DeviceReadRecovery input;
@@ -231,6 +247,46 @@ int testWheelForceRecoveryAfterPendingReopen()
     input.failed(true);
     input.failed(false);
     return acceptReport() && !force.waiting(recovered + 1s) && !acceptReport() ? 0 : 71;
+}
+
+int testSlowLayoutRetryKeepsKnownAxis()
+{
+    DeviceObjectSelection wanted;
+    wanted.axes.set(0);
+    wanted.buttons.set(0);
+    std::atomic<unsigned int> attempts{};
+    std::atomic<bool> busy{};
+    DeviceLayoutWorker worker([&](const DeviceLayoutRequest& request) {
+        DeviceLayoutSnapshot result;
+        if (request.connection == 1) {
+            result.present.axes = request.wanted.axes;
+            result.pending.buttons = request.wanted.buttons;
+            if (++attempts > 1) {
+                busy = true;
+                std::this_thread::sleep_for(150ms);
+                busy = false;
+            }
+        } else {
+            result.present.buttons = request.wanted.buttons;
+        }
+        return result;
+    });
+    const std::string device = "{11111111-1111-1111-1111-111111111111}";
+    if (!waitFor([&] { return worker.read(device, wanted, 1).present.axes.test(0); }))
+        return 75;
+    if (!waitFor([&] {
+        const auto layout = worker.read(device, wanted, 1);
+        return busy && layout.present.axes.test(0) && layout.pending.buttons.test(0);
+    }))
+        return 76;
+    // A result still being queried on the old connection must not be published after reopen.
+    const auto reopened = worker.read(device, wanted, 2);
+    if (reopened.present.axes.any() || reopened.pending != wanted)
+        return 77;
+    return waitFor([&] {
+        const auto layout = worker.read(device, wanted, 2);
+        return !layout.incomplete() && !layout.present.axes.any() && layout.present.buttons.test(0);
+    }) ? 0 : 78;
 }
 
 int testProvisionalInputLayout()
@@ -294,7 +350,11 @@ int main()
     using namespace chrome_axis;
     if (const auto result = testWheelForceRecoveryBackoff())
         return result;
+    if (const auto result = testWheelForceRecoversFromTemporaryAccessDenial())
+        return result;
     if (const auto result = testWheelForceRecoveryAfterPendingReopen())
+        return result;
+    if (const auto result = testSlowLayoutRetryKeepsKnownAxis())
         return result;
     if (const auto result = testProvisionalInputLayout())
         return result;

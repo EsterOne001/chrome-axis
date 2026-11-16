@@ -14,11 +14,16 @@ bool CalibrationCapture::add(const DeviceSample& sample)
         if (std::ranges::none_of(sample.axesPresent, [](bool present) { return present; }))
             return false;
         axesPresent_ = sample.axesPresent;
-    } else if (axesPresent_ != sample.axesPresent) {
-        return false;
     }
-    for (std::size_t axis = 0; axis < readings_.size(); ++axis)
+    // An axis discovered during this position has no readings for its beginning.
+    // Keep measuring the original axes, and reject a report that has lost one of them.
+    for (std::size_t axis = 0; axis < readings_.size(); ++axis) {
+        if (!axesPresent_[axis])
+            continue;
+        if (!sample.axesPresent[axis])
+            return false;
         readings_[axis][count_] = sample.axes[axis];
+    }
     ++count_;
     return true;
 }

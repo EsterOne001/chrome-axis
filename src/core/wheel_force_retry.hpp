@@ -12,7 +12,11 @@ public:
 
     bool waiting(Clock::time_point now) const noexcept { return now < retryAt_; }
 
-    void failed(Clock::time_point now) noexcept {
+    void failed(Clock::time_point now, bool temporaryAccess = false) noexcept {
+        if (temporaryAccess) {
+            retryAt_ = now + std::chrono::seconds(2);
+            return;
+        }
         retryAt_ = now + delay_;
         delay_ = std::min(delay_ * 2, std::chrono::seconds(30));
     }

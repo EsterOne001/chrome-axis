@@ -30,9 +30,20 @@ public:
 
     void setContext(bool active, std::uint64_t now) noexcept {
         std::scoped_lock lock(mutex_);
-        if (contextAt_ && (!active || !contextFresh(now)))
-            rearm();
-        contextAt_ = active ? now : 0;
+        if (!active) {
+            if (contextAt_)
+                rearm();
+            contextStart_ = contextAt_ = 0;
+            return;
+        }
+        if (now < contextAt_)
+            return;
+        if (!contextFresh(now)) {
+            if (contextAt_)
+                rearm();
+            contextStart_ = now;
+        }
+        contextAt_ = now;
     }
 
     std::optional<std::uint64_t> initialState(unsigned int key) const noexcept {
@@ -53,7 +64,9 @@ public:
         if (injected)
             return;
         std::scoped_lock lock(mutex_);
-        if (key != this->key() || !contextFresh(tick))
+        // The hook may have read the clock just before the same context was refreshed.
+        const auto sinceTick = contextAt_ > tick ? contextAt_ - tick : tick - contextAt_;
+        if (key != this->key() || !contextAt_ || tick < contextStart_ || sinceTick > contextLifetime)
             return;
 
         if (!pressed) {
@@ -110,6 +123,7 @@ private:
 
     std::atomic<unsigned int> key_;
     mutable std::mutex mutex_;
+    std::uint64_t contextStart_{};
     std::uint64_t contextAt_{};
     std::uint64_t revision_{};
     Phase phase_{Phase::initial};

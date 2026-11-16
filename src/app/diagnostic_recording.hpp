@@ -8,6 +8,7 @@ namespace chrome_axis {
 
 enum class DiagnosticRecordingState { idle, starting, recording, waitingForGame, slotOccupied, stopping, complete, failed };
 enum class DiagnosticRecordingFailure { none, file, unavailable, stopTimeout, worker };
+enum class DiagnosticExportState { idle, exporting, complete, failed };
 
 struct DiagnosticRecordingStatus {
     DiagnosticRecordingState state{DiagnosticRecordingState::idle};
@@ -30,6 +31,8 @@ public:
     bool start();
     void stop() noexcept;
     DiagnosticRecordingStatus status() const;
+    bool startExport(const std::filesystem::path& source, const std::filesystem::path& destination);
+    DiagnosticExportState exportState() const noexcept;
 
 private:
     struct Impl;

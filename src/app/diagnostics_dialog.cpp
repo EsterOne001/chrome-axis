@@ -722,9 +722,8 @@ bool canStopRecording(DiagnosticRecordingState state)
 
 bool canExportRecording(const DiagnosticRecordingStatus& recording)
 {
-    std::error_code error;
     return (recording.state == DiagnosticRecordingState::complete || recording.state == DiagnosticRecordingState::failed) &&
-        !recording.file.empty() && std::filesystem::is_regular_file(recording.file, error);
+        !recording.file.empty();
 }
 
 const wchar_t* recordingStateText(const DiagnosticRecordingStatus& recording, bool available)
@@ -785,7 +784,7 @@ const wchar_t* transmissionStatus(const DiagnosticTransmission& transmission)
     return unavailableValue;
 }
 
-std::wstring transmissionSummary(const DiagnosticTransmission& transmission, DiagnosticMode mode)
+std::wstring transmissionGearValues(const DiagnosticTransmission& transmission)
 {
     const auto gear = [](int position) -> std::wstring {
         if (position >= 1 && position <= 8)
@@ -794,17 +793,43 @@ std::wstring transmissionSummary(const DiagnosticTransmission& transmission, Dia
             return L"R";
         return position == -1 ? L"N" : unavailableValue;
     };
-    auto text = std::wstring(tr(transmission.manual ? Text::DlgDiagnosticsTransmissionManual
-                                                   : Text::DlgDiagnosticsTransmissionAuto));
-    if (mode == DiagnosticMode::usb)
-        text += L" · " + std::wstring(tr(transmission.sequential ? Text::DlgDiagnosticsTransmissionSequential
-                                                               : Text::DlgDiagnosticsTransmissionHPattern));
-    if (transmission.hasRequestedMode && transmission.requestedManual != transmission.manual)
-        text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionModeRequested)) + L" " +
-            tr(transmission.requestedManual ? Text::DlgDiagnosticsTransmissionManual : Text::DlgDiagnosticsTransmissionAuto);
-    text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionSelected)) + L" " + gear(transmission.selectedGear);
+    auto text = std::wstring(tr(Text::DlgDiagnosticsTransmissionSelected)) + L" " + gear(transmission.selectedGear);
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsReportRequested)) + L" " + gear(transmission.requestedGear);
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionActual)) + L" " + gear(transmission.engagedGear);
+    return text;
+}
+
+const wchar_t* transmissionModeName(bool manual)
+{
+    return tr(manual ? Text::DlgDiagnosticsTransmissionManual : Text::DlgDiagnosticsTransmissionAuto);
+}
+
+void appendDiagnosticPart(std::wstring& line, std::wstring_view part)
+{
+    if (part.empty())
+        return;
+    if (!line.empty())
+        line += L" · ";
+    line += part;
+}
+
+std::wstring transmissionConfiguration(const DiagnosticTransmission& transmission, DiagnosticMode mode)
+{
+    std::wstring text;
+    if (mode == DiagnosticMode::usb)
+        text = tr(transmission.sequential ? Text::DlgDiagnosticsTransmissionSequential
+                                         : Text::DlgDiagnosticsTransmissionHPattern);
+    if (transmission.hasRequestedMode && transmission.requestedManual != transmission.manual)
+        appendDiagnosticPart(text, std::wstring(tr(Text::DlgDiagnosticsTransmissionModeRequested)) + L" " +
+            transmissionModeName(transmission.requestedManual));
+    return text;
+}
+
+std::wstring transmissionSummary(const DiagnosticTransmission& transmission, DiagnosticMode mode)
+{
+    std::wstring text = transmissionModeName(transmission.manual);
+    appendDiagnosticPart(text, transmissionConfiguration(transmission, mode));
+    appendDiagnosticPart(text, transmissionGearValues(transmission));
     return text;
 }
 
@@ -878,8 +903,11 @@ HRESULT pickCsvFile(HWND owner, std::filesystem::path& result)
     return S_OK;
 }
 
-void exportDrivingCapture(HWND window, const DiagnosticRecordingStatus& recording)
+void exportDrivingCapture(HWND window, DiagnosticRecorder& recorder)
 {
+    if (recorder.exportState() == DiagnosticExportState::exporting)
+        return;
+    const auto recording = recorder.status();
     if (!canExportRecording(recording)) {
         MessageBoxW(window, tr(Text::DlgDiagnosticsCsvUnavailable), tr(Text::DlgDiagnosticsCsvTitle), MB_OK | MB_ICONWARNING);
         return;
@@ -891,8 +919,19 @@ void exportDrivingCapture(HWND window, const DiagnosticRecordingStatus& recordin
         CoUninitialize();
     }
     if (status != HRESULT_FROM_WIN32(ERROR_CANCELLED) &&
-        (FAILED(status) || !exportDiagnosticRecording(recording.file, destination)))
+        (FAILED(status) || !recorder.startExport(recording.file, destination)))
         MessageBoxW(window, tr(Text::DlgDiagnosticsCsvError), tr(Text::DlgDiagnosticsCsvTitle), MB_OK | MB_ICONERROR);
+}
+
+const wchar_t* exportStatusText(DiagnosticExportState state)
+{
+    switch (state) {
+    case DiagnosticExportState::idle: return L"";
+    case DiagnosticExportState::exporting: return tr(Text::DlgDiagnosticsCsvExporting);
+    case DiagnosticExportState::complete: return tr(Text::DlgDiagnosticsCsvComplete);
+    case DiagnosticExportState::failed: return tr(Text::DlgDiagnosticsCsvError);
+    }
+    return L"";
 }
 
 std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& state, std::uint64_t now)
@@ -1192,11 +1231,14 @@ void refreshPerformance(HWND window, const DialogState& state, const DiagnosticR
     const bool available = recordingAvailable(state);
     const auto& performance = read.performance;
     const bool showResults = performance.state != PerformanceState::idle;
-    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_SAVE_CSV), canExportRecording(recording));
+    const auto exportState = state.recorder.exportState();
+    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_SAVE_CSV),
+                 exportState != DiagnosticExportState::exporting && canExportRecording(recording));
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE,
                    tr(canStop || stopping ? Text::DlgDiagnosticsPerformanceStop : Text::DlgDiagnosticsPerformanceStart));
     EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_PERFORMANCE), !stopping && (canStop || available));
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, recordingSummary(recording, available));
+    setChangedText(window, IDC_DIAGNOSTICS_CSV_STATUS, exportStatusText(exportState));
     for (const auto& control : performanceControls)
         setChangedText(window, control.valueId, performanceTiming(performance.*control.timing));
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_WARNINGS, showResults
@@ -1271,22 +1313,22 @@ void refresh(HWND window, DialogState& state)
     const auto& shortcutSource = connected && isTransmissionHotkey(read.snapshot.transmission.shortcutKey)
         ? read.snapshot.transmission : snapshot.transmission;
     const auto shortcut = showControls ? transmissionShortcut(shortcutSource, now) : std::wstring{};
-    auto summary = showTransmission ? transmissionSummary(snapshot.transmission, snapshot.mode) : std::wstring{};
+    auto summary = shortcut;
+    std::wstring transmissionContext;
     if (showTransmission) {
-        summary += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionData)) + L" " +
-            gearboxSampleAge(snapshot.transmission, showLastDrive ? read.lastDriveAt : read.sampledAt);
-    }
-    auto transmissionDetails = showTransmission ? std::wstring(transmissionStatus(snapshot.transmission)) : std::wstring{};
-    if (!shortcut.empty()) {
-        if (!transmissionDetails.empty())
-            transmissionDetails = shortcut + L" · " + transmissionDetails;
-        else
-            transmissionDetails = shortcut;
+        summary = transmissionModeName(snapshot.transmission.manual);
+        appendDiagnosticPart(summary, transmissionGearValues(snapshot.transmission));
+        appendDiagnosticPart(summary, std::wstring(tr(Text::DlgDiagnosticsTransmissionData)) + L" " +
+            gearboxSampleAge(snapshot.transmission, showLastDrive ? read.lastDriveAt : read.sampledAt));
+        transmissionContext = transmissionConfiguration(snapshot.transmission, snapshot.mode);
+        appendDiagnosticPart(transmissionContext, shortcut);
     }
     setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_LABEL,
                    showTransmission || !shortcut.empty() ? tr(Text::DlgDiagnosticsTransmission) : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION, showTransmission ? summary : shortcut);
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS, showTransmission ? transmissionDetails : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION, summary);
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_CONTEXT, transmissionContext);
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS,
+                   showTransmission ? transmissionStatus(snapshot.transmission) : L"");
     const bool showClutch = showControls && snapshot.clutch.configured;
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_LABEL, showClutch ? tr(Text::DlgDiagnosticsClutch) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH, showClutch ? clutchSummary(snapshot.clutch) : L"");
@@ -1358,7 +1400,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_DIAGNOSTICS_SAVE_CSV && state) {
-            exportDrivingCapture(window, state->recorder.status());
+            exportDrivingCapture(window, state->recorder);
+            refresh(window, *state);
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_DIAGNOSTICS_PERFORMANCE && state) {

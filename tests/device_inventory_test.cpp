@@ -3,6 +3,7 @@
 #include "transmission_shortcut.hpp"
 #include "usb_game_status.hpp"
 
+#include "chrome_axis/calibration.hpp"
 #include "chrome_axis/shifter.hpp"
 
 #include <atomic>
@@ -59,6 +60,7 @@ struct ScanGate {
 
 struct CaptureInput {
     DeviceSample report;
+    DeviceReadStatus readStatus{DeviceReadStatus::available};
     unsigned int cycles{};
 
     void beginPoll() { ++cycles; }
@@ -70,8 +72,8 @@ struct CaptureInput {
             *status = DeviceReadStatus::unavailable;
             return std::nullopt;
         }
-        *status = DeviceReadStatus::available;
-        return report;
+        *status = readStatus;
+        return readStatus == DeviceReadStatus::unavailable ? std::nullopt : std::optional{report};
     }
 };
 
@@ -131,6 +133,7 @@ bool testCaptureDuringUnrelatedScan()
     const bool scanning = waitFor([&] { return gate->started.load() == 2; }) && !inventory.current();
     input.report.buttons.set(1);
     std::optional<AccessoryBinding> binding;
+    CalibrationCapture calibration;
     if (scanning) {
         for (int i = 0; i < 3; ++i) {
             const auto reading = readCaptureDevice(input, device);
@@ -138,15 +141,29 @@ bool testCaptureDuringUnrelatedScan()
                 break;
             binding = capture.sample(*reading.sample).binding;
         }
+        input.report.axesPresent[0] = true;
+        input.report.axes[0] = 31000;
+        for (std::size_t i = 0; i < CalibrationCapture::sampleCount; ++i) {
+            const auto reading = readCaptureDevice(input, device);
+            if (!reading.sample || reading.needsRest() || !calibration.add(*reading.sample))
+                break;
+        }
     }
+    const auto position = calibration.result();
     const bool capturedBeforeScanFinished = binding && binding->deviceId == device &&
-        binding->kind == AccessoryKind::Button && binding->index == 1 && !gate->finished.load();
+        binding->kind == AccessoryKind::Button && binding->index == 1 &&
+        position && position->median[0] == 31000 && !gate->finished.load();
+    input.readStatus = DeviceReadStatus::unavailable;
+    const auto disconnected = readCaptureDevice(input, device);
+    input.readStatus = DeviceReadStatus::resumed;
+    const auto resumed = readCaptureDevice(input, device);
     gate->unblock();
     if (!waitFor([&] { return static_cast<bool>(inventory.current()); }))
         return false;
     const auto updated = inventory.current();
-    return capturedBeforeScanFinished && input.cycles == 6 && updated && updated->devices.size() == 2 &&
-        updated->devices.front().id == device;
+    return capturedBeforeScanFinished && !disconnected.sample && disconnected.needsRest() &&
+        resumed.sample && resumed.needsRest() && input.cycles == 8 + CalibrationCapture::sampleCount &&
+        updated && updated->devices.size() == 2 && updated->devices.front().id == device;
 }
 
 bool testShortcut(const std::filesystem::path& root)

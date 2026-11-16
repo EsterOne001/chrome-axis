@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <compare>
@@ -284,9 +285,10 @@ bool writeChronologicalRecording(const std::filesystem::path& source, const std:
 
 bool exportDiagnosticRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
 {
-    const auto staged = detail::stagedSettingsPath(destination);
+    std::filesystem::path staged;
     bool created = false;
     try {
+        staged = detail::stagedSettingsPath(destination);
         if (writeChronologicalRecording(source, staged, created) && detail::replaceSettingsFile(staged, destination))
             return true;
     } catch (const std::exception&) {}
@@ -335,6 +337,31 @@ struct DiagnosticRecorder::Impl {
     {
         std::lock_guard lock(mutex_);
         return status_;
+    }
+
+    bool startExport(const std::filesystem::path& source, const std::filesystem::path& destination)
+    {
+        std::lock_guard lock(mutex_);
+        if (exportState() == DiagnosticExportState::exporting)
+            return false;
+
+        exportState_.store(DiagnosticExportState::exporting, std::memory_order_relaxed);
+        try {
+            exportWorker_ = std::jthread([this, source, destination] {
+                const bool saved = exportDiagnosticRecording(source, destination);
+                exportState_.store(saved ? DiagnosticExportState::complete : DiagnosticExportState::failed,
+                                   std::memory_order_release);
+            });
+        } catch (const std::exception&) {
+            exportState_.store(DiagnosticExportState::failed, std::memory_order_release);
+            return false;
+        }
+        return true;
+    }
+
+    DiagnosticExportState exportState() const noexcept
+    {
+        return exportState_.load(std::memory_order_acquire);
     }
 
 private:
@@ -462,7 +489,9 @@ private:
     std::filesystem::path directory_;
     mutable std::mutex mutex_;
     DiagnosticRecordingStatus status_;
-    // Keeping the worker last joins it before destroying the state and paths it uses.
+    std::atomic<DiagnosticExportState> exportState_{DiagnosticExportState::idle};
+    // The recorder owns both jobs even when the diagnostics dialog is closed.
+    std::jthread exportWorker_;
     std::jthread worker_;
 };
 
@@ -486,6 +515,16 @@ void DiagnosticRecorder::stop() noexcept
 DiagnosticRecordingStatus DiagnosticRecorder::status() const
 {
     return impl_->status();
+}
+
+bool DiagnosticRecorder::startExport(const std::filesystem::path& source, const std::filesystem::path& destination)
+{
+    return impl_->startExport(source, destination);
+}
+
+DiagnosticExportState DiagnosticRecorder::exportState() const noexcept
+{
+    return impl_->exportState();
 }
 
 } // namespace chrome_axis

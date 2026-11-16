@@ -19,6 +19,42 @@ struct DrivingInputDevice {
     std::shared_ptr<AccessoryProfile> discrete;
 };
 
+class PaddleInputBatch {
+public:
+    void observe(const AccessoryTransmissionSample& sample) noexcept {
+        if (!sample.sequentialArmed || sample.paddlesPressed > 1) {
+            pending_.reset();
+            return;
+        }
+        if (sample.paddlesPressed == 0 || sample.shiftDelta)
+            finish();
+        if (sample.shiftDelta)
+            pending_ = Edge{sample.shiftDelta, sample.shiftSampledAt};
+    }
+
+    // A shift becomes deliverable on release, or at the end of the batch
+    // if the other paddle has not joined the press.
+    void finish() noexcept {
+        if (!pending_)
+            return;
+        if (count_ == edges_.size())
+            overflowed_ = true;
+        else
+            edges_[count_++] = *pending_;
+        pending_.reset();
+    }
+
+    auto edges() const noexcept { return std::span(edges_).first(count_); }
+    bool overflowed() const noexcept { return overflowed_; }
+
+private:
+    using Edge = std::pair<int, DeviceReadClock::time_point>;
+    std::array<Edge, 4> edges_{};
+    std::optional<Edge> pending_;
+    std::size_t count_{};
+    bool overflowed_{};
+};
+
 // Each DirectInput instance and its COM objects stay on their device's thread.
 // The consumer copies reports and discrete transitions without calling the driver.
 template <class Driver = DirectInput>
@@ -104,7 +140,6 @@ public:
     bool ready() const noexcept { return !active_.empty(); }
 
     void beginPoll(Clock::time_point now) {
-        polledAt_ = now;
         replays_.clear();
         for (auto& [id, entry] : active_) {
             auto& report = entry.report;
@@ -168,19 +203,22 @@ public:
         if (!replays_.empty()) {
             for (auto& [id, entry] : active_) {
                 entry.replay = entry.report;
-                if (entry.config.discrete && !entry.disruptedAccessories) {
-                    if (entry.previousAccessory.sample && polledAt_ - entry.previousAccessory.sample->sampledAt <= lifetime_) {
-                        entry.replay = entry.previousAccessory;
-                        entry.replay.status = DeviceReadStatus::available;
-                    } else {
-                        entry.replay = {};
-                    }
+                if (entry.config.discrete && !entry.disruptedAccessories && entry.previousAccessory.sample) {
+                    // The current report confirms continuity. The previous
+                    // report provides the starting level for the replay, even
+                    // when it has aged out as a source of new commands.
+                    entry.replay = entry.previousAccessory;
+                    entry.replay.status = DeviceReadStatus::available;
                 }
             }
             replaying_ = true;
-            for (const auto& frame : replays_) {
-                frame.entry->replay.sample = frame.sample;
-                frame.entry->replay.status = DeviceReadStatus::available;
+            for (auto frame = replays_.begin(); frame != replays_.end();) {
+                const auto timestamp = frame->sample.sampledAt;
+                do {
+                    frame->entry->replay.sample = frame->sample;
+                    frame->entry->replay.status = DeviceReadStatus::available;
+                    ++frame;
+                } while (frame != replays_.end() && frame->sample.sampledAt == timestamp);
                 visit(false);
             }
             replaying_ = false;
@@ -354,7 +392,7 @@ private:
             ++discreteRevision_;
             discrete_.clear();
             discreteOverflow_ = false;
-            previousDiscrete_.reset();
+            haveDiscreteBaseline_ = false;
         }
 
         void publishDiscrete(const Report& report, const AccessoryProfile& bindings) {
@@ -362,14 +400,19 @@ private:
                 return;
             if (!report.sample || report.status == DeviceReadStatus::resumed) {
                 discrete_.clear();
-                previousDiscrete_ = report.sample;
-                return;
+                haveDiscreteBaseline_ = false;
             }
-            const bool changed = previousDiscrete_ &&
-                std::ranges::any_of(bindings, [&](const auto& binding) {
-                    return !sameDiscreteAccessoryLevel(binding, *previousDiscrete_, *report.sample);
-                });
-            previousDiscrete_ = report.sample;
+            if (!report.sample)
+                return;
+            bool changed = false;
+            for (std::size_t i = 0; i < bindings.size(); ++i) {
+                auto& previous = discreteLevels_[i];
+                const auto current = discreteAccessoryLevel(bindings[i], *report.sample,
+                    haveDiscreteBaseline_ && previous == DiscreteAccessoryLevel::engaged);
+                changed |= haveDiscreteBaseline_ && current != previous;
+                previous = current;
+            }
+            haveDiscreteBaseline_ = true;
             if (!changed || discreteOverflow_)
                 return;
             if (discrete_.full()) {
@@ -432,8 +475,12 @@ private:
                     }
                 }
                 Report report;
-                if (driver)
-                    report.sample = driver->sampleConfigured(id_, config.objects, report.status);
+                if (driver) {
+                    if constexpr (requires { driver->sampleForDriving(id_, config.objects, report.status); })
+                        report.sample = driver->sampleForDriving(id_, config.objects, report.status);
+                    else
+                        report.sample = driver->sampleConfigured(id_, config.objects, report.status);
+                }
                 const auto finishedAt = Clock::now();
                 if (report.sample && finishedAt - report.sample->sampledAt > lifetime_) {
                     observe(this, {DirectInputReadEventKind::sampleExpired, id_, "USB sample", S_OK,
@@ -480,7 +527,8 @@ private:
         Configuration config_{};
         Report latest_;
         Recent<DeviceSample, discreteQueueCapacity> discrete_;
-        std::optional<DeviceSample> previousDiscrete_;
+        std::array<DiscreteAccessoryLevel, maxAccessoryBindings> discreteLevels_{};
+        bool haveDiscreteBaseline_{};
         Recent<Event, 8> events_;
         Recent<Cycle, 32> cycles_;
         std::uint64_t revision_{};
@@ -517,7 +565,6 @@ private:
     std::unordered_map<std::string, Entry> active_;
     std::vector<std::unique_ptr<Worker>> retired_;
     std::vector<Replay> replays_;
-    Clock::time_point polledAt_{};
     bool replaying_{};
 };
 

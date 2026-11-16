@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -63,9 +64,40 @@ bool testChronologicalExport(const std::filesystem::path& directory)
         std::ifstream input(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>{input}, {});
     };
-    return exportDiagnosticRecording(source, destination) && read(destination) == ordered.str() &&
-        read(source) == original && exportDiagnosticRecording(destination, destination) &&
-        read(destination) == ordered.str();
+    if (!exportDiagnosticRecording(source, destination) || read(destination) != ordered.str() ||
+        read(source) != original || !exportDiagnosticRecording(destination, destination) ||
+        read(destination) != ordered.str())
+        return false;
+
+    // A failed background export must preserve the existing destination.
+    const auto unordered = directory / L"unordered.csv";
+    std::ofstream(unordered, std::ios::binary) << original;
+    std::ofstream(destination, std::ios::binary) << "existing export";
+    const auto handle = CreateFileW(destination.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    const std::unique_ptr<void, decltype(&CloseHandle)> locked(handle, CloseHandle);
+    {
+        DiagnosticRecorder exporter({}, {});
+        if (!exporter.startExport(unordered, destination))
+            return false;
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (exporter.exportState() == DiagnosticExportState::exporting &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(5ms);
+        if (exporter.exportState() != DiagnosticExportState::failed || read(destination) != "existing export")
+            return false;
+    }
+
+    // Closing the recorder must account for an export that still owns the paths.
+    const auto retried = directory / L"retried.csv";
+    {
+        DiagnosticRecorder exporter({}, {});
+        if (!exporter.startExport(unordered, retried))
+            return false;
+    }
+    return read(retried) == ordered.str() && read(unordered) == original;
 }
 
 int run()

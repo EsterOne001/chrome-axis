@@ -324,18 +324,17 @@ bool probing(const AccessoryBinding& binding, const DeviceSample& sample) noexce
 
 } // namespace
 
-bool sameDiscreteAccessoryLevel(const AccessoryBinding& binding, const DeviceSample& first,
-                                const DeviceSample& second) noexcept
+DiscreteAccessoryLevel discreteAccessoryLevel(const AccessoryBinding& binding, const DeviceSample& sample,
+                                              bool engaged) noexcept
 {
-    if (probing(binding, first) != probing(binding, second))
-        return false;
-    const auto same = [&](bool active) {
-        const auto before = readLevel(binding, first, active, nullptr);
-        const auto after = readLevel(binding, second, active, nullptr);
-        return before.has_value() == after.has_value() &&
-            (!before || (before->neutral == after->neutral && before->engaged == after->engaged));
-    };
-    return same(false) && (binding.kind != AccessoryKind::Axis || same(true));
+    if (probing(binding, sample))
+        return DiscreteAccessoryLevel::pending;
+    const auto level = readLevel(binding, sample, engaged, nullptr);
+    if (!level)
+        return DiscreteAccessoryLevel::unavailable;
+    if (level->engaged)
+        return DiscreteAccessoryLevel::engaged;
+    return level->neutral ? DiscreteAccessoryLevel::neutral : DiscreteAccessoryLevel::idle;
 }
 
 namespace {
@@ -902,6 +901,7 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             sequentialWaitForRelease_ = pressedPaddles > 1 || (sequentialWaitForRelease_ && !paddlesNeutral);
             if (transmission) {
                 transmission->sequentialArmed = true;
+                transmission->paddlesPressed = pressedPaddles;
                 transmission->sequentialSampledAt = paddlesSampledAt;
                 if (!sequentialWaitForRelease_ && pressedPaddles == 1) {
                     transmission->shiftDelta = paddleEdge;

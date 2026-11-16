@@ -183,10 +183,16 @@ int checkCoalescedArming()
     return accessories.ready() ? 0 : 12;
 }
 
+enum class Transition : unsigned int {
+    neutral, shortPress, repeatedPress, overflow, hold, briefPending,
+    paddleOverlap, thresholdJitter, oldOtherHold, freshOtherHold
+};
+
 struct TransitionDriver {
     struct State {
-        std::atomic<unsigned int> scenario{};
-        std::atomic<std::uint64_t> progress{};
+        std::atomic<Transition> scenario{Transition::neutral};
+        std::array<std::atomic<std::uint64_t>, 2> progress{};
+        bool sameDevicePaddles{};
     };
 
     static inline State* state{};
@@ -200,38 +206,54 @@ struct TransitionDriver {
         DeviceSample sample;
         sample.sampledAt = Clock::now();
         sample.buttonsPresent = wanted.buttons;
+        const auto scenario = state->scenario.load();
+        if (scenario != previousScenario) {
+            previousScenario = scenario;
+            frame = 0;
+        }
+        ++frame;
+        const auto deviceIndex = id == wheel ? 0 : 1;
+        state->progress[deviceIndex] = (static_cast<std::uint64_t>(scenario) << 32) | frame;
         if (id == wheel) {
-            const auto scenario = state->scenario.load();
-            if (scenario != previousScenario) {
-                previousScenario = scenario;
-                frame = 0;
-            }
-            ++frame;
-            state->progress = (static_cast<std::uint64_t>(scenario) << 32) | frame;
-            if (scenario == 5 && frame == 2) {
+            if (scenario == Transition::briefPending && frame == 2) {
                 status = DeviceReadStatus::pending;
                 return std::nullopt;
             }
-            const bool pressed = scenario == 1 ? frame == 1
-                : scenario == 2 ? frame == 1 || frame == 3
-                : scenario == 3 ? frame <= 36 && frame % 2 == 1
-                : scenario == 4 || (scenario == 5 && frame == 1);
+            const bool pressed =
+                ((scenario == Transition::shortPress || scenario == Transition::briefPending ||
+                  scenario == Transition::freshOtherHold) && frame == 1) ||
+                (scenario == Transition::repeatedPress && (frame == 1 || frame == 3)) ||
+                (scenario == Transition::overflow && frame <= 36 && frame % 2 == 1) ||
+                scenario == Transition::hold || scenario == Transition::thresholdJitter ||
+                scenario == Transition::paddleOverlap;
             sample.buttons.set(0, pressed);
             sample.buttons.set(1, pressed);
+            if (state->sameDevicePaddles)
+                sample.buttons.set(2, scenario == Transition::paddleOverlap && frame > 1);
             sample.axesPresent[0] = wanted.axes[0];
             sample.axes[0] = pressed ? 800 : 0;
+            if (scenario == Transition::thresholdJitter)
+                sample.axes[0] = frame % 2 == 0 ? 749 : 751;
             sample.povsPresent[0] = wanted.povs[0];
             sample.povs[0] = pressed ? 9000 : povCentered;
+        } else {
+            if (!state->sameDevicePaddles)
+                sample.buttons.set(0, scenario == Transition::paddleOverlap && frame > 1);
+            sample.buttons.set(1, scenario == Transition::oldOtherHold || scenario == Transition::freshOtherHold);
+            if (scenario == Transition::oldOtherHold)
+                sample.sampledAt -= 160ms;
         }
         return sample;
     }
 
-    unsigned int previousScenario{}, frame{};
+    Transition previousScenario{Transition::neutral};
+    unsigned int frame{};
 };
 
-int checkBufferedTransitions()
+int checkBufferedTransitions(bool sameDevicePaddles)
 {
     TransitionDriver::State fake;
+    fake.sameDevicePaddles = sameDevicePaddles;
     TransitionDriver::state = &fake;
     DrivingInputs<TransitionDriver> input(1ms, 300ms);
     const AccessoryProfile profile{
@@ -244,8 +266,10 @@ int checkBufferedTransitions()
          .key = 'K', .activation = AccessoryActivation::pulse},
         {.deviceId = wheel, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
          .role = ShifterRole::Upshift, .nativeSequential = true},
-        {.deviceId = pedals, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
+        {.deviceId = sameDevicePaddles ? wheel : pedals, .kind = AccessoryKind::Button,
+         .index = sameDevicePaddles ? 2u : 0u, .engaged = 1,
          .role = ShifterRole::Downshift, .nativeSequential = true},
+        {.deviceId = pedals, .kind = AccessoryKind::Button, .index = 1, .engaged = 1, .key = 'B'},
     };
     std::array devices{DrivingInputDevice{.id = wheel}, DrivingInputDevice{.id = pedals}};
     for (auto& device : devices) {
@@ -254,10 +278,10 @@ int checkBufferedTransitions()
             if (binding.deviceId == device.id)
                 device.discrete->push_back(binding);
     }
-    devices[0].objects.buttons.set(0).set(1);
+    devices[0].objects.buttons.set(0).set(1).set(2);
     devices[0].objects.axes.set(0);
     devices[0].objects.povs.set(0);
-    devices[1].objects.buttons.set(0);
+    devices[1].objects.buttons.set(0).set(1);
     const auto window = GetDesktopWindow();
     if (!input.configure(window, devices))
         return 20;
@@ -265,12 +289,13 @@ int checkBufferedTransitions()
 
     struct Collected {
         unsigned int buttonPresses{}, axisPresses{}, povPresses{}, shifts{};
-        bool heldDuringReplay{}, heldCurrently{}, armed{};
+        bool heldDuringReplay{}, heldCurrently{}, unrelatedStillHeld{}, armed{};
         Clock::time_point shiftAt{};
     };
     const auto poll = [&](Clock::time_point now = Clock::now()) {
         Collected collected;
         input.beginPoll(now);
+        PaddleInputBatch paddleBatch;
         input.visitAccessoryDisruptions([&](std::string_view id, bool reset) {
             if (reset)
                 accessories.resetDiscrete(id);
@@ -282,30 +307,38 @@ int checkBufferedTransitions()
             collected.buttonPresses += pulses.test('J');
             collected.axisPresses += pulses.test('E');
             collected.povPresses += pulses.test('K');
-            collected.shifts += shift.shiftDelta == 1;
-            if (shift.shiftDelta)
-                collected.shiftAt = shift.shiftSampledAt;
+            paddleBatch.observe(shift);
             if (latest) {
                 collected.heldCurrently = held.test(VK_SPACE);
+                collected.unrelatedStillHeld = held.test('B');
                 collected.armed = shift.sequentialArmed;
             } else {
                 collected.heldDuringReplay |= held.test(VK_SPACE);
             }
         });
+        paddleBatch.finish();
+        if (collected.armed) {
+            collected.shifts = static_cast<unsigned int>(paddleBatch.edges().size());
+            if (!paddleBatch.edges().empty())
+                collected.shiftAt = paddleBatch.edges().back().second;
+        }
         return collected;
     };
-    const auto run = [&](unsigned int scenario, unsigned int frames) {
+    const auto run = [&](Transition scenario, unsigned int frames) {
         fake.scenario = scenario;
         return waitUntil([&] {
-            const auto progress = fake.progress.load();
-            return progress >> 32 == scenario && static_cast<unsigned int>(progress) >= frames;
+            return std::ranges::all_of(fake.progress, [&](const auto& observed) {
+                const auto progress = observed.load();
+                return progress >> 32 == static_cast<unsigned int>(scenario) &&
+                    static_cast<unsigned int>(progress) >= frames;
+            });
         });
     };
     const auto armed = [&] { return waitUntil([&] { return poll().armed && accessories.ready(); }); };
     if (!armed())
         return 21;
     const auto started = Clock::now();
-    if (!run(1, 5))
+    if (!run(Transition::shortPress, 5))
         return 22;
     const auto single = poll();
     if (single.buttonPresses != 1 || single.axisPresses != 1 || single.povPresses != 1 || single.shifts != 1 ||
@@ -313,24 +346,53 @@ int checkBufferedTransitions()
         poll().buttonPresses != 0)
         return 23;
 
-    if (!run(2, 6))
+    if (!run(Transition::repeatedPress, 6))
         return 24;
     const auto multiple = poll();
     if (multiple.buttonPresses != 2 || multiple.axisPresses != 2 || multiple.povPresses != 2 || multiple.shifts != 2)
         return 25;
 
-    if (!run(5, 6))
+    if (!run(Transition::briefPending, 6))
         return 37;
     const auto briefPending = poll();
     if (briefPending.buttonPresses != 1 || briefPending.shifts != 1)
         return 38;
 
-    if (!run(4, 4))
+    if (!run(Transition::paddleOverlap, 5))
+        return 39;
+    const auto overlap = poll();
+    if (!overlap.armed || overlap.shifts != 0 || !run(Transition::neutral, 4) || poll().shifts != 0)
+        return 40;
+
+    if (!run(Transition::hold, 4))
         return 26;
-    if (!poll().heldCurrently || !poll().heldCurrently || !run(0, 4) || poll().heldCurrently)
+    if (!poll().heldCurrently || !poll().heldCurrently)
         return 27;
 
-    if (!run(3, 40))
+    // The axis is still engaged until 40%, while individual reports cross 75%.
+    if (!run(Transition::thresholdJitter, 22))
+        return 41;
+    const auto jitter = poll();
+    int jitterOverflows = 0;
+    input.drainEvents([&](const auto&, const auto& event) {
+        jitterOverflows += event.kind == DirectInputReadEventKind::discreteOverflow;
+    });
+    if (jitterOverflows || !jitter.heldCurrently || !jitter.armed || jitter.axisPresses || jitter.shifts ||
+        !run(Transition::neutral, 4) || poll().heldCurrently)
+        return 42;
+
+    // Replaying the wheel must keep a held button on another healthy device
+    // even when its last consumed report has since expired.
+    if (!run(Transition::oldOtherHold, 5) || !poll().unrelatedStillHeld ||
+        !run(Transition::freshOtherHold, 5))
+        return 43;
+    const auto crossDevice = poll(Clock::now() + 155ms);
+    if (!crossDevice.unrelatedStillHeld || crossDevice.buttonPresses != 1 || crossDevice.shifts != 1 ||
+        !run(Transition::neutral, 4))
+        return 44;
+    poll();
+
+    if (!run(Transition::overflow, 40))
         return 28;
     const auto overflow = poll();
     int overflowEvents = 0;
@@ -340,7 +402,7 @@ int checkBufferedTransitions()
     if (overflow.buttonPresses || overflow.shifts || overflow.armed || overflowEvents != 1 || !armed())
         return 29;
 
-    if (!run(1, 5))
+    if (!run(Transition::shortPress, 5))
         return 30;
     input.discardAccessorySamples(); // A profile or vehicle change preserves healthy handles.
     accessories.reset();
@@ -348,7 +410,7 @@ int checkBufferedTransitions()
     if (discarded.buttonPresses || discarded.shifts || discarded.heldDuringReplay || !armed())
         return 31;
 
-    if (!run(2, 6))
+    if (!run(Transition::repeatedPress, 6))
         return 32;
     input.pause();
     accessories.reset();
@@ -359,10 +421,39 @@ int checkBufferedTransitions()
         return 34;
 
     // Expire the reports deterministically without slowing down the read workers.
-    if (!run(1, 5))
+    if (!run(Transition::shortPress, 5))
         return 35;
     const auto expired = poll(Clock::now() + 301ms);
     return expired.buttonPresses || expired.shifts || expired.heldDuringReplay || expired.armed ? 36 : 0;
+}
+
+int checkPaddleBatchOrdering()
+{
+    const auto first = Clock::now();
+    PaddleInputBatch batch;
+    const auto add = [&](unsigned int down, int shift, auto at) {
+        batch.observe({.sequentialArmed = true, .paddlesPressed = down, .shiftDelta = shift,
+            .shiftSampledAt = at});
+    };
+    add(1, 1, first);
+    add(0, 0, first + 5ms);
+    add(1, 1, first + 10ms);
+    add(2, 0, first + 15ms);
+    add(1, 0, first + 20ms);
+    add(0, 0, first + 25ms);
+    add(1, -1, first + 30ms);
+    batch.finish();
+    const std::array expected{std::pair{1, first}, std::pair{-1, first + 30ms}};
+    if (batch.overflowed() || !std::ranges::equal(batch.edges(), expected))
+        return 45;
+
+    PaddleInputBatch full;
+    for (int n = 0; n < 5; ++n) {
+        full.observe({.sequentialArmed = true, .paddlesPressed = 1, .shiftDelta = 1,
+            .shiftSampledAt = first + n * 10ms});
+        full.observe({.sequentialArmed = true});
+    }
+    return full.overflowed() && full.edges().size() == 4 ? 0 : 46;
 }
 
 } // namespace
@@ -370,7 +461,8 @@ int checkBufferedTransitions()
 int main()
 {
     for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkCoalescedArming(),
-                              checkBufferedTransitions()}) {
+                              checkBufferedTransitions(false), checkBufferedTransitions(true),
+                              checkPaddleBatchOrdering()}) {
         if (result) {
             std::cerr << "Driving input check failed: " << result << '\n';
             return result;

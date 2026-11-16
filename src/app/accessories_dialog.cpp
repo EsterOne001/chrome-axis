@@ -611,6 +611,7 @@ void AccessoryDialog::refreshIfIdle()
     if (!result || inventoryRevision_ == result->revision)
         return;
     inventoryRevision_ = result->revision;
+    const auto selection = selectedBinding();
     rememberSelectedDevice();
     devices_ = result->devices;
     send(IDC_ACCESSORY_DEVICE, CB_RESETCONTENT);
@@ -622,7 +623,7 @@ void AccessoryDialog::refreshIfIdle()
     }
     restoreDeviceSelection();
     clearCapture();
-    refreshBindings();
+    refreshBindings(selection);
 }
 
 void AccessoryDialog::refreshDevices()
@@ -810,7 +811,7 @@ void AccessoryDialog::setPreviewFocus(bool focused)
 
 void AccessoryDialog::pollPreview()
 {
-    if (!previewPolling_ || !inventory_.current())
+    if (!previewPolling_)
         return;
     const auto focused = [&] { return GetForegroundWindow() == window_ && IsWindowEnabled(window_); };
     if (!focused()) {

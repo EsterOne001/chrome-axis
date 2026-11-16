@@ -125,8 +125,11 @@ public:
     // Only readers that validate a saved button mapping need its availability checked.
     std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>& buttons = {},
                                        DeviceReadStatus* status = nullptr) override;
-    // The game limits layout discovery to commands in the current profile.
+    // Synchronous reads can limit layout discovery to a selection of commands.
     std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,
+                                                 DeviceReadStatus& status);
+    // Driving reads discover configured objects independently of the live report.
+    std::optional<DeviceSample> sampleForDriving(const std::string& id, const DeviceObjectSelection& wanted,
                                                  DeviceReadStatus& status);
     // Output is limited to the calibrated actuator and expires if calls stop.
     // Initialization can continue for a newer valid request for the same connection.

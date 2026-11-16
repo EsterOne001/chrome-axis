@@ -15,6 +15,11 @@ int run()
     sample.axesPresent[0] = true;
     for (std::size_t i = 0; i < chrome_axis::CalibrationCapture::sampleCount; ++i) {
         sample.axes[0] = 1000 - static_cast<long>(i);
+        // A newly discovered axis has no complete measurement for this position.
+        if (i == 6) {
+            sample.axesPresent[1] = true;
+            sample.axes[1] = 45000;
+        }
         if (i == 0)
             sample.axes[0] = 100000;
         else if (i == chrome_axis::CalibrationCapture::sampleCount - 1)
@@ -23,8 +28,9 @@ int run()
             return 2;
         if (i == 0) {
             auto changed = sample;
+            changed.axesPresent[0] = false;
             changed.axesPresent[1] = true;
-            if (capture.add(changed) || capture.result())
+            if (capture.add(changed) || capture.samplesCollected() != 1 || capture.result())
                 return 3;
         }
     }
@@ -64,6 +70,23 @@ int run()
     if (pedal.deviceId != "pedal" || pedal.axis != 2 || pedal.neutral != 65000
         || pedal.negative != 65000 || pedal.positive != 9000)
         return 7;
+
+    // A later position can measure the discovered axis from its first report.
+    chrome_axis::CalibrationCapture later;
+    for (std::size_t i = 0; i < chrome_axis::CalibrationCapture::sampleCount; ++i) {
+        if (!later.add(sample))
+            return 8;
+    }
+    const auto laterPosition = later.result();
+    if (!laterPosition || !laterPosition->axesPresent[1] || laterPosition->median[1] != 45000)
+        return 9;
+
+    // Result matching excludes an axis without a complete reading at rest.
+    auto travel = *laterPosition;
+    travel.median[0] = 9000;
+    const auto subsequent = chrome_axis::axisCandidates(*measured, *measured, travel, false);
+    if (subsequent.size() != 1 || subsequent[0].axis != 0)
+        return 10;
     return 0;
 }
 

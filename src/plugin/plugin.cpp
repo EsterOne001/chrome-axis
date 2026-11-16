@@ -1983,8 +1983,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         std::optional<float> handbrake;
         std::optional<int> nativeGear;
         chrome_axis::AccessoryTransmissionSample transmissionSample;
-        std::array<std::pair<int, Clock::time_point>, 4> paddleEdges{};
-        std::size_t paddleEdgeCount{};
+        chrome_axis::PaddleInputBatch paddleBatch;
         bool paddleOverflow{};
         std::array<chrome_axis::AccessoryObservation, chrome_axis::maxAccessoryBindings> accessoryObservations{};
         bool readAccessories = false;
@@ -2091,15 +2090,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                         const auto held = usb.accessories->poll(*input, observed, &pulses,
                             latest ? &handbrake : nullptr, latest ? &nativeGear : nullptr,
                             &transmissionSample, &keyTimes, !latest);
-                        if (transmissionSample.shiftDelta &&
-                            sourceInputFresh(transmissionSample.sequentialSampledAt, sampledAt)) {
-                            if (paddleEdgeCount < paddleEdges.size()) {
-                                paddleEdges[paddleEdgeCount++] = {transmissionSample.shiftDelta,
-                                                                 transmissionSample.shiftSampledAt};
-                            } else {
-                                paddleOverflow = true;
-                            }
-                        }
+                        paddleBatch.observe(transmissionSample);
                         const auto released = transientHolds & ~held;
                         const auto started = latest ? std::bitset<256>{} : held & ~previousHeldKeys;
                         replayReleases |= previousHeldKeys & ~held;
@@ -2119,6 +2110,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                         if (latest)
                             requestedKeys = held;
                     });
+                    paddleBatch.finish();
+                    paddleOverflow = paddleBatch.overflowed();
                     if (accessoryPresses.pending())
                         accessoryPresses.keep(usb.accessories->armedKeyboardBindings(), sampledAt);
                     if (keyOverflow) {
@@ -2170,7 +2163,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 previousHeldKeys.reset();
                 accessoryPresses.clear();
                 input->discardAccessorySamples();
-                paddleEdgeCount = 0;
+                paddleBatch = {};
                 paddleOverflow = false;
                 handbrake.reset();
                 nativeGear.reset();
@@ -2179,7 +2172,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         const bool hasRequestedKeys = requestedKeys.any() || accessoryPresses.pending();
         const bool keyboardOutputPending = hasRequestedKeys || accessoryKeys.hasInjectedKeys();
-        const bool accessoryContextRequired = keyboardOutputPending || handbrake.has_value() || paddleEdgeCount != 0;
+        const bool accessoryContextRequired = keyboardOutputPending || handbrake.has_value() || !paddleBatch.edges().empty();
         bool accessoryContextLive = false;
         if (accessoryContextRequired) {
             std::scoped_lock lock(stateMutex);
@@ -2197,7 +2190,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             handbrake.reset();
             nativeGear.reset();
             transmissionSample = {};
-            paddleEdgeCount = 0;
+            paddleBatch = {};
             paddleOverflow = false;
             previousHeldKeys.reset();
             if (input)
@@ -2322,7 +2315,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     paddleRequests.clear();
                     paddleExpired = false;
                 } else {
-                    for (const auto& [delta, timestamp] : std::span(paddleEdges).first(paddleEdgeCount)) {
+                    for (const auto& [delta, timestamp] : paddleBatch.edges()) {
                         if (sourceInputFresh(timestamp, sampledAt))
                             paddleOverflow |= !paddleRequests.push(delta, timestamp);
                     }

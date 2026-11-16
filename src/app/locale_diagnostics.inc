@@ -221,6 +221,8 @@ CHROME_AXIS_TEXT(DlgDiagnosticsClutchProbeUnavailable, L"Embrayage natif non con
 CHROME_AXIS_TEXT(DlgDiagnosticsCsvSave, L"&Exporter CSV…", L"&Export CSV…")
 CHROME_AXIS_TEXT(DlgDiagnosticsCsvTitle, L"Exporter les données de conduite", L"Export driving data")
 CHROME_AXIS_TEXT(DlgDiagnosticsCsvUnavailable, L"Aucun fichier d’enregistrement à exporter.", L"No recording file is available to export.")
+CHROME_AXIS_TEXT(DlgDiagnosticsCsvExporting, L"Exportation du CSV en cours…", L"Exporting CSV…")
+CHROME_AXIS_TEXT(DlgDiagnosticsCsvComplete, L"Fichier CSV exporté.", L"CSV file exported.")
 CHROME_AXIS_TEXT(DlgDiagnosticsCsvError, L"Le fichier CSV n’a pas pu être enregistré.", L"The CSV file could not be saved.")
 CHROME_AXIS_TEXT(DlgDiagnosticsNativeReady, L"Position native prête", L"Native position ready")
 CHROME_AXIS_TEXT(DlgDiagnosticsNativePending, L"Rapport sélectionné · passage en attente", L"Gear selected · shift pending")

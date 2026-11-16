@@ -3,6 +3,7 @@
 #include <chrome_axis/input.hpp>
 
 #include "device_object_probe.hpp"
+#include "device_layout_worker.hpp"
 #include "device_read_recovery.hpp"
 #include "wheel_force_retry.hpp"
 
@@ -198,6 +199,7 @@ struct OpenDevice {
         axes = {};
         povs = {};
         buttons = {};
+        ++layoutConnection;
     }
 
     void report(DirectInputDiagnostic diagnostic, std::string_view id, std::string_view stage,
@@ -233,6 +235,7 @@ struct OpenDevice {
     Clock::time_point lastSlowReport{};
     bool reportedReadTimeout{};
     std::uint64_t recoveryToken{};
+    std::uint64_t layoutConnection{};
 };
 
 class ReadObserver {
@@ -292,9 +295,10 @@ private:
 };
 
 template <std::size_t Count, class Offset>
-void refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& wanted,
+bool refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& wanted,
                     IDirectInputDevice8W& device, ReadObserver& observer, std::string_view operation,
                     DWORD type, Offset offset) {
+    bool needsAcquisition = false;
     layout.refresh(wanted, Clock::now(), [&](std::size_t index) {
         bool present = false;
         const auto result = observer.measure(operation, [&] {
@@ -302,9 +306,93 @@ void refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& 
             present = hasObject(device, offset(index), type, &status);
             return status;
         });
+        needsAcquisition |= result == DIERR_NOTACQUIRED;
         return std::tuple{result, present, Clock::now()};
     });
+    return needsAcquisition;
 }
+
+class LayoutDiscovery {
+public:
+    LayoutDiscovery(HWND window, DirectInputReadObserver observer, void* context) noexcept
+        : window_(window), observer_(observer), context_(context) {}
+
+    DeviceLayoutSnapshot operator()(const DeviceLayoutRequest& request) {
+        if (!opened_ || id_ != request.id || connection_ != request.connection) {
+            opened_ = std::make_unique<OpenDevice>();
+            id_ = request.id;
+            connection_ = request.connection;
+            needsAcquisition_ = false;
+        }
+        auto& opened = *opened_;
+        ReadObserver observer(opened, request.id, observer_, context_);
+        if (!opened.device && !open(observer))
+            return {.pending = request.wanted};
+
+        if (needsAcquisition_) {
+            const auto result = observer.measure("Probe Acquire", [&] { return opened.device->Acquire(); });
+            if (FAILED(result))
+                return snapshot(request.wanted);
+            opened.acquired = true;
+        }
+        const auto& wanted = request.wanted;
+        needsAcquisition_ |= refreshObjects(opened.axes, wanted.axes, *opened.device, observer,
+            "GetObjectInfo axis", DIDFT_ABSAXIS, [](std::size_t index) { return axisOffsets[index]; });
+        needsAcquisition_ |= refreshObjects(opened.povs, wanted.povs, *opened.device, observer,
+            "GetObjectInfo POV", DIDFT_POV, [](std::size_t index) { return static_cast<DWORD>(DIJOFS_POV(index)); });
+        needsAcquisition_ |= refreshObjects(opened.buttons, wanted.buttons, *opened.device, observer,
+            "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); });
+        if (opened.acquired) {
+            observer.measure("Probe Unacquire", [&] { return opened.device->Unacquire(); });
+            opened.acquired = false;
+        }
+        return snapshot(wanted);
+    }
+
+private:
+    bool open(ReadObserver& observer) {
+        if (!input_)
+            input_ = createDirectInput(nullptr);
+        GUID guid{};
+        if (!input_ || FAILED(parseDeviceId(id_, guid)))
+            return false;
+        DevicePtr device;
+        const auto created = observer.measure("Probe CreateDevice", [&] {
+            HRESULT result{};
+            device = createDevice(*input_, guid, &result);
+            return result;
+        });
+        if (FAILED(created) || !device)
+            return false;
+        if (FAILED(observer.measure("Probe SetDataFormat", [&] { return device->SetDataFormat(&c_dfDIJoystick2); })))
+            return false;
+        if (FAILED(observer.measure("Probe SetCooperativeLevel", [&] {
+            return device->SetCooperativeLevel(window_, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
+        })))
+            return false;
+        opened_->device = std::move(device);
+        return true;
+    }
+
+    DeviceObjectSelection pending(const DeviceObjectSelection& wanted) const noexcept {
+        return {opened_->axes.pending() & wanted.axes, opened_->buttons.pending() & wanted.buttons,
+                opened_->povs.pending() & wanted.povs};
+    }
+
+    DeviceLayoutSnapshot snapshot(const DeviceObjectSelection& wanted) const noexcept {
+        return {{opened_->axes.present() & wanted.axes, opened_->buttons.present() & wanted.buttons,
+                 opened_->povs.present() & wanted.povs}, pending(wanted)};
+    }
+
+    HWND window_;
+    DirectInputReadObserver observer_;
+    void* context_;
+    InputPtr input_;
+    std::unique_ptr<OpenDevice> opened_;
+    std::string id_;
+    std::uint64_t connection_{};
+    bool needsAcquisition_{};
+};
 
 struct WheelOutput {
     WheelOutput(DirectInputReadObserver observer, void* context) noexcept
@@ -398,7 +486,7 @@ struct DirectInput::Impl {
           readObserver(readObserver), observerContext(observerContext), wheel(readObserver, observerContext) {}
 
     std::optional<DeviceSample> read(OpenDevice& opened, const std::string& id,
-                                     const DeviceObjectSelection& wanted);
+                                     const DeviceObjectSelection& wanted, bool rawPovs = false);
 
     HWND window;
     DirectInputDiagnostic diagnostic;
@@ -408,6 +496,7 @@ struct DirectInput::Impl {
     std::unordered_map<std::string, OpenDevice> openDevices;
     std::uint64_t pollCycle{};
     WheelOutput wheel;
+    std::unique_ptr<DeviceLayoutWorker<LayoutDiscovery>> drivingLayout;
 };
 
 const char* axisName(std::size_t index) noexcept {
@@ -454,7 +543,7 @@ void DirectInput::beginPoll() noexcept {
 }
 
 std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const std::string& id,
-                                                   const DeviceObjectSelection& wanted) {
+                                                    const DeviceObjectSelection& wanted, bool rawPovs) {
     opened.readStatus = DeviceReadStatus::unavailable;
     if (opened.retryAfter != Clock::time_point{} && Clock::now() < opened.retryAfter) {
         return std::nullopt;
@@ -564,7 +653,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     }
     for (std::size_t index = 0; index < povCount; ++index) {
         sample.povsPresent[index] = opened.povs.present()[index];
-        if (sample.povsPresent[index] && state.rgdwPOV[index] < 36000)
+        if ((rawPovs || sample.povsPresent[index]) && state.rgdwPOV[index] < 36000)
             sample.povs[index] = static_cast<std::uint16_t>(state.rgdwPOV[index]);
     }
     return sample;
@@ -603,6 +692,36 @@ std::optional<DeviceSample> DirectInput::sampleConfigured(const std::string& id,
     return opened.cachedSample;
 }
 
+std::optional<DeviceSample> DirectInput::sampleForDriving(const std::string& id, const DeviceObjectSelection& wanted,
+                                                         DeviceReadStatus& status) {
+    if (!ready() || id.empty()) {
+        status = DeviceReadStatus::unavailable;
+        return std::nullopt;
+    }
+    auto& opened = impl_->openDevices[id];
+    auto sample = impl_->read(opened, id, {}, true);
+    status = opened.readStatus;
+    if (!sample)
+        return std::nullopt;
+
+    if (!impl_->drivingLayout)
+        impl_->drivingLayout = std::make_unique<DeviceLayoutWorker<LayoutDiscovery>>(
+            LayoutDiscovery(impl_->window, impl_->readObserver, impl_->observerContext));
+    const auto layout = impl_->drivingLayout->read(id, wanted, opened.layoutConnection);
+    sample->axesPending = layout.pending.axes;
+    sample->buttonsPending = layout.pending.buttons;
+    sample->povsPending = layout.pending.povs;
+    sample->buttonsPresent = layout.present.buttons;
+    for (std::size_t axis = 0; axis < axisCount; ++axis)
+        sample->axesPresent[axis] = layout.present.axes[axis];
+    for (std::size_t pov = 0; pov < povCount; ++pov) {
+        sample->povsPresent[pov] = layout.present.povs[pov];
+        if (!sample->povsPresent[pov])
+            sample->povs[pov] = povCentered;
+    }
+    return sample;
+}
+
 std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t axis, float force,
     WheelForceGuard guard) {
     const auto started = Clock::now();
@@ -630,7 +749,9 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
         wheel.close();
         if (cancelled)
             return;
-        wheel.retry.failed(Clock::now());
+        const bool temporaryAccess = result == DIERR_OTHERAPPHASPRIO || result == DIERR_NOTACQUIRED ||
+            result == DIERR_INPUTLOST || result == E_PENDING;
+        wheel.retry.failed(Clock::now(), temporaryAccess);
         wheel.report(impl_->diagnostic, stage, result, false);
     };
     if (std::abs(magnitude) < 10) {
@@ -812,6 +933,7 @@ void DirectInput::stopWheelForce() noexcept {
 }
 
 void DirectInput::close() {
+    impl_->drivingLayout.reset();
     stopWheelForce();
     impl_->openDevices.clear();
 }

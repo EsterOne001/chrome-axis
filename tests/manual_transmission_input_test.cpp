@@ -198,6 +198,26 @@ bool physicalPressRequiresFreshDrivingContext()
     return !keyboard.takePress(VK_F8, 483) && keyboard.initialState(VK_F8).has_value();
 }
 
+bool physicalPressSurvivesConcurrentContextRefresh()
+{
+    PhysicalModeKey keyboard{VK_F8};
+    keyboard.setContext(true, 100);
+    keyboard.update(VK_F8, false, false, 103);
+    keyboard.setContext(true, 116);
+    keyboard.update(VK_F8, true, false, 115);
+    if (keyboard.takePress(VK_F8, 117) != 115ull)
+        return false;
+
+    keyboard.setContext(false, 118);
+    keyboard.setContext(true, 121);
+    keyboard.update(VK_F8, false, false, 122);
+    keyboard.update(VK_F8, true, false, 119); // Delayed event from before this context.
+    if (keyboard.takePress(VK_F8, 123))
+        return false;
+    keyboard.update(VK_F8, true, false, 124);
+    return keyboard.takePress(VK_F8, 125) == 124ull;
+}
+
 bool physicalPressOverridesLevelArmingInSimulation()
 {
     ManualTransmissionInput input;
@@ -432,7 +452,8 @@ int main()
         std::cerr << "A held or injected key changed the transmission\n";
         return 1;
     }
-    if (!physicalPressRequiresFreshDrivingContext() || !physicalPressOverridesLevelArmingInSimulation() ||
+    if (!physicalPressRequiresFreshDrivingContext() || !physicalPressSurvivesConcurrentContextRefresh() ||
+        !physicalPressOverridesLevelArmingInSimulation() ||
         !consumesBothTapsAndClearsDisabledSource()) {
         std::cerr << "A physical shortcut lost an accepted press or accepted a stale driving context\n";
         return 1;

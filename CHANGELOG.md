@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.63
+
+- **Palettes et accessoires.** Un chevauchement des palettes bloque le changement de rapport. Les variations d’un axe déjà maintenu n’encombrent plus la file. Le rejeu d’un appui conserve l’état valide des autres périphériques.
+- **Lecture USB et calibration.** La détection des commandes configurées se poursuit indépendamment de la lecture en conduite. L’application continue la mesure du périphérique sélectionné pendant l’actualisation de l’inventaire et conserve les axes utilisés au début de la mesure.
+- **Retour de force et raccourci.** Un refus temporaire d’accès au pilote est retenté rapidement. L’appui physique AUTO / MANUEL reste valide lors de l’actualisation du même contexte de conduite.
+- **Diagnostic.** Le rapport engagé et les consignes de transmission disposent de lignes dédiées. L’export CSV garde son ordre chronologique et laisse la fenêtre utilisable.
+
+[ZIP Vortex](out/Chromaxis-0.4.63.zip)
+
 ## Chrome Axis 0.4.62
 
 - **Pédales.** Après une pause, une pédale disponible peut reprendre en marche avant ou au point mort même si l’autre est déconnectée. Les protections de routage restent actives pendant une transition de marche arrière.

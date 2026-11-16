@@ -84,8 +84,9 @@ constexpr bool isDiscreteAccessory(const AccessoryBinding& binding) noexcept
     return binding.nativeSequential || binding.key != 0;
 }
 
-bool sameDiscreteAccessoryLevel(const AccessoryBinding& binding, const DeviceSample& first,
-                                const DeviceSample& second) noexcept;
+enum class DiscreteAccessoryLevel { unavailable, pending, neutral, idle, engaged };
+DiscreteAccessoryLevel discreteAccessoryLevel(const AccessoryBinding& binding, const DeviceSample& sample,
+                                               bool engaged) noexcept;
 
 void removeDisabledDrivingAccessories(AccessoryProfile& profile);
 
@@ -116,6 +117,7 @@ struct AccessoryObservation {
 
 struct AccessoryTransmissionSample {
     bool sequentialArmed{};
+    unsigned int paddlesPressed{};
     int shiftDelta{}; // -1 or +1 on a new, unambiguous paddle press.
     std::optional<float> clutch; // 0 released, 1 fully depressed, nullopt until armed.
     bool selectorAmbiguous{};
