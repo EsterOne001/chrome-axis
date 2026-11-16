@@ -144,6 +144,7 @@ public:
     using TimePoint = std::chrono::steady_clock::time_point;
 
     bool pending() const noexcept { return count_ != 0; }
+    bool expired() const noexcept { return expired_; }
 
     bool push(int delta, TimePoint sampled) noexcept {
         if (count_ == entries_.size())
@@ -157,21 +158,36 @@ public:
         if (!pending())
             return 0;
         const int delta = entries_[head_].delta;
-        head_ = (head_ + 1) % entries_.size();
-        --count_;
+        removeFront();
+        expired_ = false;
         return delta;
     }
 
     bool expire(TimePoint now) noexcept {
         const auto previousCount = count_;
         while (pending() && now - entries_[head_].sampled >= std::chrono::milliseconds(900))
-            pop();
-        return previousCount != count_;
+            removeFront();
+        const bool discarded = previousCount != count_;
+        expired_ |= discarded;
+        return discarded;
     }
 
-    void clear() noexcept { count_ = 0; }
+    void clear() noexcept {
+        count_ = 0;
+        expired_ = false;
+    }
+
+    void discard() noexcept {
+        count_ = 0;
+        expired_ = true;
+    }
 
 private:
+    void removeFront() noexcept {
+        head_ = (head_ + 1) % entries_.size();
+        --count_;
+    }
+
     struct Entry {
         int delta{};
         TimePoint sampled{};
@@ -180,6 +196,7 @@ private:
     std::array<Entry, 4> entries_{};
     std::size_t head_{};
     std::size_t count_{};
+    bool expired_{};
 };
 
 class KeyboardClutchProbe {

@@ -264,6 +264,51 @@ bool testCaptureDuringUnrelatedScan()
         updated && updated->devices.size() == 2 && updated->devices.front().id == device;
 }
 
+bool testGuidedCalibrationWaitsForLayout()
+{
+    CalibrationCapture capture;
+    bool hadSignal{};
+    DeviceSample sample;
+    sample.axesPending.set(0);
+    const CaptureDeviceRead pending{sample, DeviceReadStatus::available};
+    if (!collectGuidedCalibrationReading(capture, pending, hadSignal) ||
+        hadSignal || capture.samplesCollected() != 0)
+        return false;
+    const CaptureDeviceRead absent{DeviceSample{}, DeviceReadStatus::available};
+    if (collectGuidedCalibrationReading(capture, absent, hadSignal))
+        return false;
+
+    sample.axesPending.reset(0);
+    sample.axesPending.set(1);
+    sample.axesPresent[0] = true;
+    sample.axes[0] = 31000;
+    const CaptureDeviceRead ready{sample, DeviceReadStatus::available};
+    if (!collectGuidedCalibrationReading(capture, ready, hadSignal) || !hadSignal ||
+        capture.samplesCollected() != 1)
+        return false;
+    if (!collectGuidedCalibrationReading(capture, {.status = DeviceReadStatus::pending, .updated = false}, hadSignal) ||
+        capture.samplesCollected() != 1)
+        return false;
+    if (collectGuidedCalibrationReading(capture, pending, hadSignal) ||
+        collectGuidedCalibrationReading(capture, {.status = DeviceReadStatus::unavailable}, hadSignal) ||
+        collectGuidedCalibrationReading(capture, {sample, DeviceReadStatus::resumed}, hadSignal))
+        return false;
+    auto lostAxis = sample;
+    lostAxis.axesPresent[0] = false;
+    lostAxis.axesPresent[1] = true;
+    lostAxis.axesPending.reset(1).set(0);
+    if (collectGuidedCalibrationReading(capture, {lostAxis, DeviceReadStatus::available}, hadSignal))
+        return false;
+    sample.axesPending.reset(1);
+    sample.axesPresent[1] = true;
+    const CaptureDeviceRead expanded{sample, DeviceReadStatus::available};
+    for (std::size_t i = 1; i < CalibrationCapture::sampleCount; ++i)
+        if (!collectGuidedCalibrationReading(capture, expanded, hadSignal))
+            return false;
+    const auto completed = capture.result();
+    return completed && completed->median[0] == sample.axes[0] && !completed->axesPresent[1];
+}
+
 bool testShortcut(const std::filesystem::path& root)
 {
     constexpr unsigned int customKey = 'L';
@@ -326,14 +371,15 @@ int main()
     const bool pendingLayout = testPendingLayout();
     const bool asyncCapture = testAsynchronousCapture();
     const bool capture = testCaptureDuringUnrelatedScan();
+    const bool guidedCalibration = testGuidedCalibrationWaitsForLayout();
     const bool shortcut = testShortcut(root);
     const bool usbStatus = testUsbStatus();
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
-    if (!inventory || !pendingLayout || !asyncCapture || !capture || !shortcut || !usbStatus)
+    if (!inventory || !pendingLayout || !asyncCapture || !capture || !guidedCalibration || !shortcut || !usbStatus)
         std::cerr << "inventory=" << inventory << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
-                  << " capture=" << capture << " shortcut=" << shortcut
+                  << " capture=" << capture << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
                   << " usb_state=" << usbStatus << '\n';
-    return inventory && pendingLayout && asyncCapture && capture && shortcut && usbStatus ? 0 : 1;
+    return inventory && pendingLayout && asyncCapture && capture && guidedCalibration && shortcut && usbStatus ? 0 : 1;
 }

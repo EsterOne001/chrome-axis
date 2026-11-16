@@ -395,6 +395,12 @@ const wchar_t* commandState(DiagnosticCommandState state)
     return unavailableValue;
 }
 
+bool clutchCommand(const DiagnosticAccessoryCommand& command) noexcept
+{
+    return !command.key && !command.handbrakeCeilingPercent && command.kind == AccessoryKind::Axis &&
+        command.role == ShifterRole::None;
+}
+
 std::wstring commandOutput(const DiagnosticAccessoryCommand& command)
 {
     if (command.handbrakeCeilingPercent) {
@@ -448,8 +454,14 @@ std::wstring commandName(const DiagnosticAccessoryCommand& command)
         return input + L" → " + tr(Text::DlgDiagnosticsHandbrake) + L" · "
             + tr(Text::DlgDiagnosticsHandbrakeCeiling) + L" " + std::to_wstring(command.handbrakeCeilingPercent) + L" %";
     }
-    if (command.key == 0 && binding.role >= ShifterRole::Gear1 && binding.role <= ShifterRole::Reverse)
-        return input + L" → " + tr(Text::DlgShifterNativeOutput);
+    if (!command.key) {
+        if (binding.role == ShifterRole::Upshift || binding.role == ShifterRole::Downshift)
+            return input + L" → " + tr(Text::DlgShifterNativeSequentialOutput);
+        if (nativeShifterPositionBit(binding.role))
+            return input + L" → " + tr(Text::DlgShifterNativeOutput);
+        if (clutchCommand(command))
+            return input + L" → " + tr(Text::DlgDiagnosticsClutch);
+    }
     const auto key = isAccessoryKey(command.key) ? accessoryKeyLabel(command.key) : unavailableValue;
     return input + L" → " + key + L" · " + accessoryActivationLabel(command.activation);
 }
@@ -873,10 +885,20 @@ std::wstring gearboxSampleAge(const DiagnosticTransmission& transmission, std::u
     return std::to_wstring(sampledAt - transmission.gearboxSampledAt) + L" ms";
 }
 
+std::wstring clutchInputText(float value)
+{
+    if (!std::isfinite(value))
+        return unavailableValue;
+    // Round down so a reading just below the shift threshold remains distinguishable.
+    const auto tenths = static_cast<unsigned int>(std::floor(std::clamp(value, 0.0f, 1.0f) * 1000.0f));
+    return std::to_wstring(tenths / 10) + tr(Text::mainDecimalSeparator) +
+        std::to_wstring(tenths % 10) + tr(Text::mainPercentSuffix);
+}
+
 std::wstring clutchSummary(const DiagnosticClutch& clutch)
 {
     auto text = std::wstring(tr(Text::DlgDiagnosticsReportRead)) + L" " +
-        (clutch.inputAvailable ? percentText(clutch.input) : unavailableValue);
+        (clutch.inputAvailable ? clutchInputText(clutch.input) : unavailableValue);
     const auto assistance = clutch.assistanceEnabled ? Text::DlgDiagnosticsClutchAssistanceOn
                                                     : Text::DlgDiagnosticsClutchAssistanceOff;
     text += L" · " + std::wstring(tr(assistance));
@@ -1049,9 +1071,10 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         line(Text::DlgDiagnosticsCommandHeading, accessoryViewContext(accessories, now));
         for (const auto& command : accessories.commands()) {
             report += L"- " + commandName(command) +
-                L" · " + tr(Text::DlgDiagnosticsCommandInput) + L" " + commandSignal(command) +
-                L" · " + tr(Text::DlgDiagnosticsCommandOutput) + L" " + commandOutput(command);
-            if (!command.handbrakeCeilingPercent)
+                L" · " + tr(Text::DlgDiagnosticsCommandInput) + L" " + commandSignal(command);
+            if (!clutchCommand(command))
+                report += L" · " + std::wstring(tr(Text::DlgDiagnosticsCommandOutput)) + L" " + commandOutput(command);
+            if (isAccessoryKey(command.key))
                 report += L" · " + std::wstring(tr(Text::DlgDiagnosticsCommandLastSent)) + L" " + commandSent(command, now);
             report += L"\r\n";
         }
@@ -1194,11 +1217,14 @@ void refreshAccessoryDetails(HWND window, AccessoryDialogState& state)
     }
     const auto& command = commands[static_cast<std::size_t>(selected)];
     detail(IDC_DIAGNOSTICS_COMMAND_INPUT, Text::DlgDiagnosticsCommandInput, commandSignal(command));
-    detail(IDC_DIAGNOSTICS_COMMAND_OUTPUT, Text::DlgDiagnosticsCommandOutput, commandOutput(command));
-    if (command.handbrakeCeilingPercent)
-        setChangedText(window, IDC_DIAGNOSTICS_COMMAND_SENT, L"");
+    if (clutchCommand(command))
+        setChangedText(window, IDC_DIAGNOSTICS_COMMAND_OUTPUT, L"");
     else
+        detail(IDC_DIAGNOSTICS_COMMAND_OUTPUT, Text::DlgDiagnosticsCommandOutput, commandOutput(command));
+    if (isAccessoryKey(command.key))
         detail(IDC_DIAGNOSTICS_COMMAND_SENT, Text::DlgDiagnosticsCommandLastSent, commandSent(command, now));
+    else
+        setChangedText(window, IDC_DIAGNOSTICS_COMMAND_SENT, L"");
 }
 
 INT_PTR CALLBACK accessoryDetailsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)

@@ -9,7 +9,9 @@
 namespace chrome_axis {
 
 inline bool objectProbeDeferred(HRESULT result) noexcept {
-    return result == E_PENDING || result == DIERR_NOTACQUIRED;
+    return result == E_PENDING || result == DIERR_NOTACQUIRED ||
+        result == DIERR_OTHERAPPHASPRIO || result == DIERR_INPUTLOST ||
+        result == static_cast<HRESULT>(DIERR_UNPLUGGED);
 }
 
 // A refused acquisition must not skip a fresh metadata probe. Some drivers
@@ -43,11 +45,15 @@ public:
         if (known_[index] || now < retryAt_[index])
             return false;
         const auto [result, present, completedAt] = probe(index);
-        deferred_.set(index, objectProbeDeferred(result));
         if (SUCCEEDED(result) || result == DIERR_OBJECTNOTFOUND) {
             known_.set(index);
             present_.set(index, SUCCEEDED(result) && present);
+            deferred_.reset(index);
         } else {
+            // Another driver error can follow a refused acquisition. Keep
+            // the fallback eligible until this connection confirms the layout.
+            if (objectProbeDeferred(result))
+                deferred_.set(index);
             retryAt_[index] = completedAt + std::chrono::milliseconds(500);
         }
         return true;

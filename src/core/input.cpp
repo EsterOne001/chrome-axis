@@ -163,7 +163,7 @@ BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
     const auto device = createDevice(enumeration.input, instance->guidInstance, &result);
     if (device)
         result = device->SetDataFormat(&c_dfDIJoystick2);
-    if (FAILED(result) && result != E_PENDING)
+    if (FAILED(result) && !objectProbeDeferred(result))
         return DIENUM_CONTINUE;
 
     DeviceInfo info{
@@ -525,6 +525,8 @@ void probeOnReadHandle(OpenDevice& opened, const DeviceObjectSelection& wanted, 
             return;
         }
     }
+    // All fallback candidates can still be in their per-object backoff.
+    opened.nextReadHandleProbe = now + readHandleProbeInterval;
 }
 
 struct WheelOutput {
@@ -976,11 +978,18 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
             return std::nullopt;
         }
         DIDEVICEOBJECTINSTANCEW actuator{};
-        actuator.dwSize = sizeof(actuator);
-        result = initialize("FFB GetObjectInfo", [&] {
-            return wheel.device->GetObjectInfo(&actuator, axisOffsets[axis], DIPH_BYOFFSET);
-        });
-        if (FAILED(result) || !(actuator.dwFlags & DIDOI_FFACTUATOR) || !(actuator.dwType & DIDFT_ABSAXIS)) {
+        const auto probeActuator = [&] {
+            actuator = {.dwSize = sizeof(actuator)};
+            return initialize("FFB GetObjectInfo", [&] {
+                return wheel.device->GetObjectInfo(&actuator, axisOffsets[axis], DIPH_BYOFFSET);
+            });
+        };
+        const auto validActuator = [&] {
+            return (actuator.dwFlags & DIDOI_FFACTUATOR) && (actuator.dwType & DIDFT_ABSAXIS);
+        };
+        result = probeActuator();
+        const bool retryActuator = objectProbeDeferred(result);
+        if (!retryActuator && (FAILED(result) || !validActuator())) {
             fail("force feedback actuator", FAILED(result) ? result : DIERR_UNSUPPORTED);
             return std::nullopt;
         }
@@ -1012,6 +1021,13 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
         if (FAILED(result)) {
             fail("force feedback Acquire", result);
             return std::nullopt;
+        }
+        if (retryActuator) {
+            result = probeActuator();
+            if (FAILED(result) || !validActuator()) {
+                fail("force feedback actuator", FAILED(result) ? result : DIERR_UNSUPPORTED);
+                return std::nullopt;
+            }
         }
 
         DWORD offset = axisOffsets[axis];

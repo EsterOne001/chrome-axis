@@ -315,8 +315,11 @@ bool nativePaddlesAndClutchRespectArming()
     using namespace std::chrono_literals;
     chrome_axis::PaddleRequests queue;
     const auto at = chrome_axis::PaddleRequests::TimePoint{};
-    if (!queue.push(1, at) || !queue.push(-1, at + 800ms) || !queue.expire(at + 900ms) ||
-        queue.pop() != -1 || queue.pending() || queue.pop() != 0)
+    if (!queue.push(1, at) || !queue.push(-1, at + 800ms) || !queue.expire(at + 900ms) || !queue.expired() ||
+        queue.pop() != -1 || queue.pending() || queue.expired() || queue.pop() != 0)
+        return false;
+    if (!queue.push(1, at) || !queue.expire(at + 900ms) || !queue.expired() || queue.pop() != 0 ||
+        !queue.expired() || !queue.push(1, at + 910ms) || queue.pop() != 1 || queue.expired())
         return false;
     for (const auto edge : {1, 1, -1, -1})
         if (!queue.push(edge, at))
@@ -326,6 +329,12 @@ bool nativePaddlesAndClutchRespectArming()
     queue.push(1, at);
     queue.clear();
     if (queue.pending())
+        return false;
+    queue.discard();
+    if (queue.pending() || !queue.expired())
+        return false;
+    queue.clear();
+    if (queue.expired())
         return false;
 
     chrome_axis::KeyboardClutchProbe probe;

@@ -2774,10 +2774,8 @@ void App::updateCapture()
 {
     const auto channel = steps_[step_].channel;
     const auto reading = input_->capture(deviceId(channel));
-    const auto& sample = reading.sample;
     ++captureTicks_;
-    const bool interrupted = captureHadSignal_ && reading.updated && reading.needsRest();
-    if (interrupted || (sample && !capture_->add(*sample)) || captureTicks_ >= 40) {
+    if (!chrome_axis::collectGuidedCalibrationReading(*capture_, reading, captureHadSignal_) || captureTicks_ >= 40) {
         capture_.reset();
         calibrationMessage_ = tr(Text::guideCaptureInterrupted);
         scanDevices();
@@ -2787,17 +2785,12 @@ void App::updateCapture()
     }
     if (!reading.updated)
         return;
-    if (!sample) {
-        capture_.emplace();
-    } else {
-        captureHadSignal_ = true;
-        if (capture_->complete()) {
-            const auto result = capture_->result();
-            capture_.reset();
-            if (result)
-                finishCapture(*result);
-            return;
-        }
+    if (capture_->complete()) {
+        const auto result = capture_->result();
+        capture_.reset();
+        if (result)
+            finishCapture(*result);
+        return;
     }
     RECT client{};
     GetClientRect(window_, &client);

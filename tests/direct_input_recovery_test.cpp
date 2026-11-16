@@ -21,7 +21,10 @@ constexpr char pedalsId[] = "{22222222-2222-2222-2222-222222222222}";
 constexpr GUID wheelGuid{0x11111111, 0x1111, 0x1111, {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11}};
 constexpr GUID pedalsGuid{0x22222222, 0x2222, 0x2222, {0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}};
 
+enum class ProbeFailure { pending, accessDenied, errorAfterAcquireDenial };
+
 struct MockController {
+    ProbeFailure axisProbeFailure{ProbeFailure::pending};
     std::atomic<bool> connected{true};
     std::atomic<bool> reportsPending{};
     std::atomic<bool> buttonPresent{true};
@@ -33,6 +36,13 @@ struct MockController {
     std::atomic<unsigned> delayedButtonChecks{};
     std::atomic<unsigned> capabilityChecks{};
     bool acquisitionRequired{true};
+    bool feedback{};
+    bool setupBlocked{};
+    DWORD autocenter{DIPROPAUTOCENTER_ON};
+    LONG force{};
+    bool exclusivelyAcquired{};
+    unsigned effects{};
+    unsigned exclusiveAcquires{};
 };
 
 struct MockDriver {
@@ -42,6 +52,43 @@ struct MockDriver {
 };
 
 MockDriver* driver{};
+
+class MockEffect final : public IDirectInputEffect {
+public:
+    explicit MockEffect(MockController& controller) : controller_(controller) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, LPVOID*) override { return E_NOINTERFACE; }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const auto remaining = --references_;
+        if (!remaining)
+            delete this;
+        return remaining;
+    }
+    HRESULT STDMETHODCALLTYPE Initialize(HINSTANCE, DWORD, REFGUID) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetEffectGuid(LPGUID) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetParameters(LPDIEFFECT, DWORD) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetParameters(LPCDIEFFECT parameters, DWORD flags) override {
+        if (flags != (DIEP_TYPESPECIFICPARAMS | DIEP_START) ||
+            parameters->cbTypeSpecificParams != sizeof(DICONSTANTFORCE))
+            return DIERR_INVALIDPARAM;
+        controller_.force = static_cast<const DICONSTANTFORCE*>(parameters->lpvTypeSpecificParams)->lMagnitude;
+        return DI_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Start(DWORD, DWORD) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Stop() override {
+        controller_.force = 0;
+        return DI_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetEffectStatus(LPDWORD) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Download() override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Unload() override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Escape(LPDIEFFESCAPE) override { return E_NOTIMPL; }
+
+private:
+    MockController& controller_;
+    ULONG references_{1};
+};
 
 class MockDevice final : public IDirectInputDevice8W {
 public:
@@ -58,12 +105,22 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetCapabilities(LPDIDEVCAPS caps) override {
         ++controller_.capabilityChecks;
-        caps->dwFlags = 0;
+        caps->dwFlags = controller_.feedback ? DIDC_FORCEFEEDBACK : 0;
         return DI_OK;
     }
     HRESULT STDMETHODCALLTYPE EnumObjects(LPDIENUMDEVICEOBJECTSCALLBACKW, LPVOID, DWORD) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE GetProperty(REFGUID, LPDIPROPHEADER) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE SetProperty(REFGUID, LPCDIPROPHEADER) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetProperty(REFGUID property, LPDIPROPHEADER value) override {
+        if (!exclusive_ || &property != &DIPROP_AUTOCENTER)
+            return E_NOTIMPL;
+        reinterpret_cast<DIPROPDWORD*>(value)->dwData = controller_.autocenter;
+        return DI_OK;
+    }
+    HRESULT STDMETHODCALLTYPE SetProperty(REFGUID property, LPCDIPROPHEADER value) override {
+        if (!exclusive_ || acquired_ || &property != &DIPROP_AUTOCENTER)
+            return E_NOTIMPL;
+        controller_.autocenter = reinterpret_cast<const DIPROPDWORD*>(value)->dwData;
+        return DI_OK;
+    }
     HRESULT STDMETHODCALLTYPE Acquire() override {
         if (!controller_.connected)
             return DIERR_INPUTLOST;
@@ -72,10 +129,16 @@ public:
             return DIERR_OTHERAPPHASPRIO;
         }
         acquired_ = true;
+        if (exclusive_) {
+            controller_.exclusivelyAcquired = true;
+            ++controller_.exclusiveAcquires;
+        }
         return DI_OK;
     }
     HRESULT STDMETHODCALLTYPE Unacquire() override {
         acquired_ = false;
+        if (exclusive_)
+            controller_.exclusivelyAcquired = false;
         return DI_OK;
     }
     HRESULT STDMETHODCALLTYPE GetDeviceState(DWORD size, LPVOID output) override {
@@ -99,7 +162,10 @@ public:
     HRESULT STDMETHODCALLTYPE GetDeviceData(DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE SetDataFormat(LPCDIDATAFORMAT) override { return DI_OK; }
     HRESULT STDMETHODCALLTYPE SetEventNotification(HANDLE) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE SetCooperativeLevel(HWND, DWORD) override { return DI_OK; }
+    HRESULT STDMETHODCALLTYPE SetCooperativeLevel(HWND, DWORD flags) override {
+        exclusive_ = (flags & DISCL_EXCLUSIVE) != 0;
+        return DI_OK;
+    }
     HRESULT STDMETHODCALLTYPE GetObjectInfo(LPDIDEVICEOBJECTINSTANCEW object, DWORD offset, DWORD how) override {
         if (how != DIPH_BYOFFSET)
             return DIERR_INVALIDPARAM;
@@ -112,9 +178,15 @@ public:
                 controller_.probeStarted = true;
                 controller_.waitForProbe.wait(true);
             }
-            if (!acquired_ && controller_.acquisitionRequired)
+            if (!acquired_ && controller_.acquisitionRequired) {
+                if (controller_.axisProbeFailure == ProbeFailure::accessDenied)
+                    return DIERR_OTHERAPPHASPRIO;
+                if (controller_.axisProbeFailure == ProbeFailure::errorAfterAcquireDenial && controller_.deniedAcquires)
+                    return E_FAIL;
                 return E_PENDING;
+            }
             object->dwType = DIDFT_ABSAXIS;
+            object->dwFlags = controller_.feedback ? DIDOI_FFACTUATOR : 0;
             return DI_OK;
         }
         if (offset == DIJOFS_POV(0)) {
@@ -141,11 +213,19 @@ public:
     HRESULT STDMETHODCALLTYPE GetDeviceInfo(LPDIDEVICEINSTANCEW) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE RunControlPanel(HWND, DWORD) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE Initialize(HINSTANCE, DWORD, REFGUID) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE CreateEffect(REFGUID, LPCDIEFFECT, LPDIRECTINPUTEFFECT*, LPUNKNOWN) override {
-        return E_NOTIMPL;
+    HRESULT STDMETHODCALLTYPE CreateEffect(REFGUID effect, LPCDIEFFECT parameters,
+                                           LPDIRECTINPUTEFFECT* output, LPUNKNOWN) override {
+        if (!controller_.feedback || !exclusive_ || !acquired_ || effect != GUID_ConstantForce ||
+            parameters->dwDuration != 100000 || parameters->cAxes != 1 || parameters->rgdwAxes[0] != DIJOFS_X)
+            return DIERR_INVALIDPARAM;
+        ++controller_.effects;
+        *output = new MockEffect(controller_);
+        return DI_OK;
     }
     HRESULT STDMETHODCALLTYPE EnumEffects(LPDIENUMEFFECTSCALLBACKW, LPVOID, DWORD) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE GetEffectInfo(LPDIEFFECTINFOW, REFGUID) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetEffectInfo(LPDIEFFECTINFOW, REFGUID effect) override {
+        return controller_.feedback && effect == GUID_ConstantForce ? DI_OK : DIERR_UNSUPPORTED;
+    }
     HRESULT STDMETHODCALLTYPE GetForceFeedbackState(LPDWORD) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE SendForceFeedbackCommand(DWORD) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE EnumCreatedEffectObjects(LPDIENUMCREATEDEFFECTOBJECTSCALLBACK, LPVOID, DWORD) override {
@@ -167,6 +247,7 @@ private:
     ULONG references_{1};
     const bool discovery_;
     bool acquired_{};
+    bool exclusive_{};
 };
 
 class MockInput final : public IDirectInput8W {
@@ -185,6 +266,8 @@ public:
         auto* const controller = find(id);
         if (!controller || !controller->connected)
             return DIERR_INPUTLOST;
+        if (controller->setupBlocked)
+            return DIERR_OTHERAPPHASPRIO;
         *device = new MockDevice(*controller, GetCurrentThreadId() != mock_.samplingThread);
         return DI_OK;
     }
@@ -373,6 +456,26 @@ bool recoverRequiredLayout(MockController& wheel, DirectInput& input, const Read
     return true;
 }
 
+bool recoverAfterMetadataError(ProbeFailure failure)
+{
+    MockDriver mock;
+    mock.wheel.axisProbeFailure = failure;
+    driver = &mock;
+    DirectInput input(GetDesktopWindow());
+    DeviceObjectSelection wanted;
+    wanted.axes.set(0);
+    DeviceReadStatus status{};
+    bool sawPending = false;
+    return waitFor([&] {
+        const auto sample = input.sampleForDriving(wheelId, wanted, status);
+        if (!sample || status != DeviceReadStatus::available)
+            return false;
+        sawPending |= sample->axesPending[0] && sample->axes[0] == 630;
+        return sawPending && sample->axesPresent[0] && !sample->axesPending[0] &&
+            sample->axes[0] == 630 && mock.wheel.deniedAcquires;
+    }, 2s);
+}
+
 bool independentDiscovery(MockDriver& mock)
 {
     MockController& wheel = mock.wheel;
@@ -413,8 +516,57 @@ HRESULT WINAPI DirectInput8Create(HINSTANCE, DWORD, REFIID, LPVOID* output, LPUN
     return S_OK;
 }
 
+namespace {
+
+HWND WINAPI mockForegroundWindow() {
+    return reinterpret_cast<HWND>(1);
+}
+
+} // namespace
+
+// Satisfy the imported Win32 symbol locally in this Windows x64 test executable.
+// This leaves the production foreground check active without taking desktop focus.
+extern "C" {
+    decltype(&GetForegroundWindow) __imp_GetForegroundWindow = &mockForegroundWindow;
+}
+
+namespace {
+
+bool forceWithDeferredActuator(bool invalidateDuringAcquire)
+{
+    MockDriver mock;
+    mock.wheel.feedback = true;
+    driver = &mock;
+    DirectInput inactive(nullptr);
+    if (inactive.setWheelForce(wheelId, 0, -0.5f) || mock.wheel.capabilityChecks)
+        return false;
+
+    DirectInput input(mockForegroundWindow());
+    const auto current = [](const void* data) noexcept {
+        return !static_cast<const MockController*>(data)->exclusivelyAcquired;
+    };
+    const auto accepted = input.setWheelForce(wheelId, 0, -0.5f,
+        {invalidateDuringAcquire ? +current : nullptr, nullptr, &mock.wheel});
+    const bool active = accepted == -0.5f && mock.wheel.force == -5000 &&
+        mock.wheel.exclusivelyAcquired && mock.wheel.autocenter == DIPROPAUTOCENTER_OFF &&
+        mock.wheel.effects == 1 && input.wheelForceState() == WheelForceState::active;
+    const bool rejected = !accepted && !mock.wheel.effects && !mock.wheel.force &&
+        !mock.wheel.exclusivelyAcquired && mock.wheel.autocenter == DIPROPAUTOCENTER_ON;
+    input.stopWheelForce();
+    const bool released = !mock.wheel.force && !mock.wheel.exclusivelyAcquired &&
+        mock.wheel.autocenter == DIPROPAUTOCENTER_ON;
+    return mock.wheel.exclusiveAcquires == 1 && (invalidateDuringAcquire ? rejected : active) && released;
+}
+
+} // namespace
+
 int main()
 {
+    if (!forceWithDeferredActuator(false) || !forceWithDeferredActuator(true)) {
+        std::cerr << "Force feedback did not recover deferred actuator metadata or safely stop\n";
+        return 6;
+    }
+
     MockDriver mock;
     mock.pedals.acquisitionRequired = false;
     driver = &mock;
@@ -426,13 +578,30 @@ int main()
     }
     if (!independentDiscovery(mock))
         return 2;
+    if (!recoverAfterMetadataError(ProbeFailure::accessDenied)) {
+        std::cerr << "A metadata access denial did not recover on the acquired reader\n";
+        return 3;
+    }
+    if (!recoverAfterMetadataError(ProbeFailure::errorAfterAcquireDenial)) {
+        std::cerr << "An acquisition refusal followed by a different metadata error prevented recovery\n";
+        return 4;
+    }
 
+    driver = &mock;
+    mock.wheel.axisProbeFailure = ProbeFailure::accessDenied;
     mock.wheel.buttonPresent = true;
     DirectInput input(GetDesktopWindow());
     const auto inventory = input.devices();
     if (inventory.size() != 1 || !inventory[0].axes[0] || !inventory[0].buttons[0] ||
         !inventory[0].povs[0] || inventory[0].layoutPending.buttons[0]) {
-        std::cerr << "Inventory did not retry DIERR_NOTACQUIRED on an acquired handle\n";
-        return 3;
+        std::cerr << "Inventory did not retry temporary access failures on an acquired handle\n";
+        return 5;
+    }
+
+    mock.wheel.setupBlocked = true;
+    const auto provisional = input.devices();
+    if (provisional.size() != 1 || !provisional[0].layoutPending.axes[0] || provisional[0].axes[0]) {
+        std::cerr << "Inventory lost a controller whose handle was temporarily refused\n";
+        return 7;
     }
 }

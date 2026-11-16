@@ -1,6 +1,8 @@
 #pragma once
 
-#include "chrome_axis/input.hpp"
+#include "chrome_axis/calibration.hpp"
+
+#include <algorithm>
 
 namespace chrome_axis {
 
@@ -13,6 +15,29 @@ struct CaptureDeviceRead {
         return status == DeviceReadStatus::unavailable || status == DeviceReadStatus::resumed;
     }
 };
+
+inline bool collectGuidedCalibrationReading(CalibrationCapture& capture, const CaptureDeviceRead& reading,
+                                            bool& hadSignal)
+{
+    if (!reading.updated)
+        return true;
+    if (hadSignal && reading.needsRest())
+        return false;
+    if (!reading.sample) {
+        capture = {};
+        return true;
+    }
+    // The inventory may already know the device while the reading handle is
+    // still discovering its axes. Wait before collecting the first position.
+    const auto& sample = *reading.sample;
+    if (!hadSignal && sample.axesPending.any() &&
+        std::ranges::none_of(sample.axesPresent, [](bool present) { return present; }))
+        return true;
+    if (!capture.add(sample))
+        return false;
+    hadSignal = true;
+    return true;
+}
 
 // Once a device has been selected, its own readings govern capture.
 template <class Input>

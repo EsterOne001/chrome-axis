@@ -200,7 +200,6 @@ bool probeThrottleInterlock{};
 std::array<char, 64> captureVehicleLabel{};
 std::atomic<bool> drivingCaptureActive{};
 chrome_axis::PaddleRequests paddleRequests;
-bool paddleExpired{};
 chrome_axis::TransmissionPedals transmissionPedals;
 Clock::time_point lastSimulationStep{};
 std::jthread readerThread;
@@ -662,7 +661,6 @@ void resetSimulator() noexcept {
 void invalidateFrames() noexcept {
     inputFrame = {};
     paddleRequests.clear();
-    paddleExpired = false;
     keyboardClutch = {};
     probePosition.reset();
     clutchAssist = {};
@@ -820,7 +818,6 @@ chrome_axis::PedalGear pedalGear(const manual_backend::Snapshot& gearbox) noexce
 void suspendTransmission(Vehicle* captureVehicle = nullptr) noexcept {
     transmissionInput.suspend();
     paddleRequests.clear();
-    paddleExpired = false;
     keyboardClutch = {};
     probePosition.reset();
     clutchAssist = {};
@@ -849,7 +846,7 @@ chrome_axis::PedalRoutingDecision updateTransmission(Vehicle* vehicle, chrome_ax
     const auto gear = sourceInputFresh(inputFrame.gearSampledAt, now) ? inputFrame.nativeGear : std::nullopt;
     const bool sequentialArmed = inputFrame.sequentialArmed && sourceInputFresh(inputFrame.sequentialSampledAt, now);
     const auto clutch = sourceInputFresh(inputFrame.clutchSampledAt, now) ? inputFrame.clutch : std::nullopt;
-    paddleExpired |= paddleRequests.expire(now);
+    paddleRequests.expire(now);
     const bool sendPaddle = sequentialArmed && paddleRequests.pending() && !manual_backend::snapshot(vehicle).requestPending;
     unsigned int physicalPresses = 0;
     const bool hasShortcut = hardware || sequential || simulated;
@@ -877,8 +874,6 @@ chrome_axis::PedalRoutingDecision updateTransmission(Vehicle* vehicle, chrome_ax
     }
     if (!intent.manual || !sequentialArmed)
         paddleRequests.clear();
-    if (!intent.manual)
-        paddleExpired = false;
 
     if (intent.manual && inputFrame.clutchMode == chrome_axis::ClutchMode::assist) {
         if (!sequential || intent.delta)
@@ -1470,12 +1465,12 @@ chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend:
         result.shift = DiagnosticShiftState::clutchRequired;
         return result;
     }
-    if (paddleExpired) {
-        result.shift = DiagnosticShiftState::expired;
-        return result;
-    }
     if (state.requestPending || (state.manualRequested && paddleRequests.pending())) {
         result.shift = DiagnosticShiftState::pending;
+        return result;
+    }
+    if (paddleRequests.expired()) {
+        result.shift = DiagnosticShiftState::expired;
         return result;
     }
     constexpr std::array outcomes{
@@ -2330,15 +2325,13 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 const auto clutchMode = simulated ? std::nullopt : usb.clutchMode;
                 if (!nativeSequential || !transmissionSample.sequentialArmed) {
                     paddleRequests.clear();
-                    paddleExpired = false;
                 } else {
                     for (const auto& [delta, timestamp] : paddleBatch.edges()) {
                         if (sourceInputFresh(timestamp, sampledAt))
                             paddleOverflow |= !paddleRequests.push(delta, timestamp);
                     }
                     if (paddleOverflow) {
-                        paddleRequests.clear();
-                        paddleExpired = true;
+                        paddleRequests.discard();
                         transmissionSample.sequentialArmed = false;
                         usb.accessories->resetSequential();
                     }

@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.68
+
+- **Détection DirectInput.** Le sondage reprend après un refus temporaire d’accès, y compris si le pilote change de code d’erreur avant la confirmation. La recherche d’une commande en attente respecte son délai entre les tentatives.
+- **Retour de force.** Si le pilote diffère la vérification de l’axe moteur, le plugin la retente après l’acquisition. Il démarre l’effet lorsque l’axe est confirmé.
+- **Calibration guidée.** La prise de mesure attend un premier relevé d’axe valide tant que le périphérique est encore en cours de détection. Une interruption pendant la mesure demande toujours de reprendre la position.
+- **Diagnostic des commandes.** Un appui de palette expiré laisse la place au résultat de l’appui suivant. Le diagnostic distingue les commandes natives et les touches envoyées à Windows. La course de l’embrayage est affichée au dixième de point pour suivre son seuil d’assistance.
+
+[ZIP Vortex](out/Chromaxis-0.4.68.zip)
+
 ## Chrome Axis 0.4.67
 
 - **Détection DirectInput.** Quand le sondage séparé est bloqué, Chrome Axis vérifie les commandes encore en attente sur la connexion qui lit déjà le périphérique. La reprise conserve l’expiration des relevés et le réarmement au repos.
