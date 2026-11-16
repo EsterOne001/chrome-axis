@@ -124,6 +124,12 @@ static_assert(planShift(neutralGear, 7, 6, Direction::unknown, Direction::forwar
 static_assert(planShift(neutralGear, 3, eightEntries, Direction::forward, Direction::reverse) == ShiftPlan::stoppedDirect);
 static_assert(planShift(neutralGear, reverseGear, eightEntries, Direction::unknown, Direction::forward) == ShiftPlan::stoppedDirect);
 static_assert(planShift(reverseGear, 3, eightEntries, Direction::reverse, Direction::forward) == ShiftPlan::stoppedThroughNeutral);
+static_assert(shiftSpeedAllowed(reverseGear, 2.5f / 3.6f));
+static_assert(shiftSpeedAllowed(reverseGear, static_cast<float>(3.0 / 3.6)));
+static_assert(!shiftSpeedAllowed(reverseGear, 3.01f / 3.6f));
+static_assert(!shiftSpeedAllowed(reverseGear, std::nullopt));
+static_assert(shiftSpeedAllowed(1, 0.5f));
+static_assert(!shiftSpeedAllowed(1, 2.5f / 3.6f));
 
 constexpr bool checksHeadingTimeAndVehicle() {
     int vehicle{}, otherVehicle{};

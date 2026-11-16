@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.55
+
+- **Marche arrière.** L’engagement de R est autorisé jusqu’à 3 km/h inclus. Le passage de la marche arrière à un rapport avant reste limité à 1,8 km/h.
+- **HUD de conduite.** Le titre et la valeur du rapport partagent le même axe horizontal. Le titre est dégagé du biseau du liseré gris.
+
+[ZIP Vortex](out/Chromaxis-0.4.55.zip)
+
 ## Chrome Axis 0.4.54
 
 - **Boîte manuelle.** Au point mort après un menu, le déplacement vers l’avant permet de sélectionner directement tout rapport avant disponible, même si le dernier rapport est inconnu. La marche arrière et les changements de sens conservent leur protection.

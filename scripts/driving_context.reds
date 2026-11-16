@@ -651,8 +651,15 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     let label = this.CreateHudLabel(badge, 42.0, 11.0, 130.0, 20.0, 17, textHorizontalAlignment.Left);
 
     let modeLabel = this.CreateHudLabel(badge, 42.0, 32.0, 130.0, 16.0, 13, textHorizontalAlignment.Left);
-    let gearCaption = this.CreateHudLabel(badge, 178.0, 11.0, 44.0, 14.0, 10, textHorizontalAlignment.Center);
-    let gearLabel = this.CreateHudLabel(badge, 178.0, 25.0, 44.0, 23.0, 25, textHorizontalAlignment.Center);
+    let gearColumn = new inkCanvas();
+    gearColumn.SetInteractive(false);
+    gearColumn.SetAnchor(inkEAnchor.TopLeft);
+    gearColumn.SetAnchorPoint(0.0, 0.0);
+    gearColumn.SetSize(Vector2(44.0, 40.0));
+    gearColumn.SetTranslation(176.0, 10.0);
+    gearColumn.Reparent(badge);
+    let gearCaption = this.CreateCenteredHudLabel(gearColumn, 4.0, 13.0, 9);
+    let gearLabel = this.CreateCenteredHudLabel(gearColumn, 15.0, 23.0, 25);
 
     this.hudBadge = badge;
     this.hudLogo = logo;
@@ -771,6 +778,14 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     label.SetSize(Vector2(width, height));
     label.SetTranslation(x, y);
     label.Reparent(badge);
+    return label;
+  }
+
+  private func CreateCenteredHudLabel(column: ref<inkCanvas>, y: Float, height: Float, fontSize: Int32) -> ref<inkText> {
+    let label = this.CreateHudLabel(column, 0.0, y, 44.0, height, fontSize, textHorizontalAlignment.Left);
+    label.SetFitToContent(true);
+    label.SetAnchor(inkEAnchor.TopCenter);
+    label.SetAnchorPoint(0.5, 0.0);
     return label;
   }
 

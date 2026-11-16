@@ -46,6 +46,12 @@ constexpr int unavailableGear = -2;
 constexpr std::uint64_t gearboxObservationLifetimeMs = 100;
 constexpr std::uint64_t headingLifetimeMs = 200;
 constexpr float directionChangeSpeed = 0.5f; // m/s
+constexpr float reverseEngagementSpeed = 5.0f / 6.0f; // 3 km/h in m/s
+
+constexpr bool shiftSpeedAllowed(int requested, std::optional<float> speed) noexcept {
+    const float limit = requested == reverseGear ? reverseEngagementSpeed : directionChangeSpeed;
+    return speed && *speed <= limit;
+}
 
 enum class Direction { unknown, forward, reverse };
 enum class ShiftPlan { unsupported, alreadyEngaged, direct, stoppedDirect, stoppedThroughNeutral };

@@ -429,7 +429,7 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
     const bool throughNeutral = plan == ShiftPlan::stoppedThroughNeutral;
     if (throughNeutral || plan == ShiftPlan::stoppedDirect) {
         const auto speed = speedOf(forwardFromNeutral ? velocity : vehicleVelocity(owner));
-        if (!speed || *speed > directionChangeSpeed) {
+        if (!shiftSpeedAllowed(requested, speed)) {
             recordRequest(owner, generation, *command, requested, "direction_change_requires_stop", gearbox);
             return;
         }
