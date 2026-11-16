@@ -389,6 +389,11 @@ std::wstring commandOutput(const DiagnosticAccessoryCommand& command)
             + L" · " + tr(Text::DlgDiagnosticsHandbrakeFinal) + L" " + precisePercentText(command.handbrakeFinal, false);
     }
     switch (command.output) {
+    case DiagnosticCommandOutput::nativeReady: return tr(Text::DlgDiagnosticsNativeReady);
+    case DiagnosticCommandOutput::nativePending: return tr(Text::DlgDiagnosticsNativePending);
+    case DiagnosticCommandOutput::nativeEngaged: return tr(Text::DlgDiagnosticsNativeEngaged);
+    case DiagnosticCommandOutput::nativeRefused: return tr(Text::DlgDiagnosticsNativeRefused);
+    case DiagnosticCommandOutput::nativePaused: return tr(Text::DlgDiagnosticsNativePaused);
     case DiagnosticCommandOutput::none: return tr(Text::DlgDiagnosticsCommandOutputIdle);
     case DiagnosticCommandOutput::held: return tr(Text::DlgDiagnosticsCommandOutputHeld);
     case DiagnosticCommandOutput::pulsing: return tr(Text::DlgDiagnosticsCommandOutputPulsing);
@@ -585,6 +590,42 @@ std::wstring performanceStatus(const DiagnosticRead& read, ULONGLONG now)
     return status;
 }
 
+const wchar_t* transmissionStatus(const DiagnosticTransmission& transmission)
+{
+    switch (transmission.shift) {
+    case DiagnosticShiftState::automatic: return L"";
+    case DiagnosticShiftState::ready: return tr(Text::DlgDiagnosticsTransmissionReady);
+    case DiagnosticShiftState::unavailable: return tr(Text::DlgDiagnosticsTransmissionUnavailable);
+    case DiagnosticShiftState::outsideRange: return tr(Text::DlgDiagnosticsTransmissionOutsideRange);
+    case DiagnosticShiftState::stopToChangeDirection: return tr(Text::DlgDiagnosticsTransmissionStop);
+    case DiagnosticShiftState::alreadyEngaged: return tr(Text::DlgDiagnosticsTransmissionEngaged);
+    case DiagnosticShiftState::rejected: return tr(Text::DlgDiagnosticsTransmissionRejected);
+    case DiagnosticShiftState::accepted: return tr(Text::DlgDiagnosticsTransmissionAccepted);
+    case DiagnosticShiftState::neutralTransition: return tr(Text::DlgDiagnosticsTransmissionNeutral);
+    case DiagnosticShiftState::expired: return tr(Text::DlgDiagnosticsTransmissionExpired);
+    case DiagnosticShiftState::recalibrationNeeded: return tr(Text::DlgDiagnosticsTransmissionRecalibration);
+    case DiagnosticShiftState::selectorUnavailable: return tr(Text::DlgDiagnosticsTransmissionSelector);
+    }
+    return unavailableValue;
+}
+
+std::wstring transmissionSummary(const DiagnosticTransmission& transmission)
+{
+    const auto gear = [](int position) -> std::wstring {
+        if (position >= 1 && position <= 8)
+            return std::to_wstring(position);
+        if (position == 0)
+            return L"R";
+        return position == -1 ? L"N" : unavailableValue;
+    };
+    auto text = std::wstring(tr(transmission.manual ? Text::DlgDiagnosticsTransmissionManual
+                                                   : Text::DlgDiagnosticsTransmissionAuto));
+    text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionSelected)) + L" " + gear(transmission.selectedGear);
+    text += L" · " + std::wstring(tr(Text::DlgDiagnosticsReportRequested)) + L" " + gear(transmission.requestedGear);
+    text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionActual)) + L" " + gear(transmission.engagedGear);
+    return text;
+}
+
 std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& state, std::uint64_t now)
 {
     std::wstring report = tr(Text::DlgDiagnosticsReport);
@@ -645,31 +686,10 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         }
         line(Text::DlgDiagnosticsAccessories, accessoryStatus(snapshot));
         line(Text::DlgDiagnosticsLastKey, lastAccessoryKey(snapshot, now));
-        const auto& transmission = snapshot.transmission;
-        if (transmission.configured) {
-            const auto gear = [](int position) -> std::wstring {
-                if (position >= 1 && position <= 8)
-                    return std::to_wstring(position);
-                if (position == 0)
-                    return L"R";
-                return position == -1 ? L"N" : unavailableValue;
-            };
-            constexpr std::array shiftStates{
-                Text::DlgDiagnosticsTransmissionAuto, Text::DlgDiagnosticsTransmissionReady,
-                Text::DlgDiagnosticsTransmissionUnavailable, Text::DlgDiagnosticsTransmissionOutsideRange,
-                Text::DlgDiagnosticsTransmissionStop, Text::DlgDiagnosticsTransmissionEngaged,
-                Text::DlgDiagnosticsTransmissionRejected, Text::DlgDiagnosticsTransmissionAccepted,
-                Text::DlgDiagnosticsTransmissionNeutral, Text::DlgDiagnosticsTransmissionExpired,
-            };
-            const auto index = static_cast<std::size_t>(transmission.shift);
-            const auto shiftStatus = index < shiftStates.size() ? tr(shiftStates[index]) : unavailableValue;
-            auto detail = std::wstring(tr(transmission.manual ? Text::DlgDiagnosticsTransmissionManual
-                                                              : Text::DlgDiagnosticsTransmissionAuto));
-            detail += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionSelected)) + L" " + gear(transmission.selectedGear);
-            detail += L" · " + std::wstring(tr(Text::DlgDiagnosticsReportRequested)) + L" " + gear(transmission.requestedGear);
-            detail += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionActual)) + L" " + gear(transmission.engagedGear);
-            if (transmission.shift != DiagnosticShiftState::automatic)
-                detail += L" · " + std::wstring(shiftStatus);
+        if (snapshot.transmission.configured) {
+            auto detail = transmissionSummary(snapshot.transmission);
+            if (const auto status = transmissionStatus(snapshot.transmission); *status)
+                detail += L" · " + std::wstring(status);
             line(Text::DlgDiagnosticsTransmission, detail);
         }
         line(Text::DlgDiagnosticsFeedback, feedbackStatus(snapshot));
@@ -936,6 +956,12 @@ void refresh(HWND window, DialogState& state)
 
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORIES, showControls ? accessoryStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORY, showControls ? lastAccessoryKey(snapshot, now) : unavailableValue);
+    const bool showTransmission = showControls && snapshot.transmission.configured;
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_LABEL, showTransmission ? tr(Text::DlgDiagnosticsTransmission) : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION,
+                   showTransmission ? transmissionSummary(snapshot.transmission) : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS,
+                   showTransmission ? transmissionStatus(snapshot.transmission) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");

@@ -21,9 +21,8 @@ using namespace detail;
 constexpr std::uintptr_t stepRva = 0x6E2E6C;
 constexpr std::uintptr_t shiftRva = 0x81DB9C;
 constexpr std::uintptr_t shiftCallRva = 0x6E32BA;
-constexpr std::uintptr_t planarSpeedRva = 0x6E45F0;
 constexpr std::uintptr_t gearboxOwnerLinkRva = 0x81DB1D;
-constexpr std::uintptr_t engineRpmStoreRva = 0x6E0318;
+constexpr std::uintptr_t bodyLinkRva = 0x6E2F41;
 constexpr std::uintptr_t bodyVelocityLoadRva = 0x6E4641;
 constexpr std::uintptr_t shiftCooldownLoadRva = 0x81DBD9;
 constexpr std::uintptr_t neutralRequestRva = 0x6E32CC;
@@ -36,14 +35,9 @@ constexpr std::array<std::uint8_t, 24> shiftBytes{
     0xD9, 0x0F, 0x29, 0x74, 0x24, 0x20, 0x8B, 0x89, 0xC8, 0x01, 0x00, 0x00};
 constexpr std::array<std::uint8_t, 10> shiftCallBytes{
     0xE8, 0xDD, 0xA8, 0x13, 0x00, 0xE9, 0x47, 0xFC, 0xFF, 0xFF};
-constexpr std::array<std::uint8_t, 16> planarSpeedBytes{
-    0x48, 0x83, 0xEC, 0x38, 0x4C, 0x8B, 0xC1, 0x48, 0x8D, 0x54, 0x24, 0x20,
-    0x48, 0x83, 0xC1, 0x20};
 constexpr std::array<std::uint8_t, 10> gearboxOwnerLinkBytes{
     0x48, 0x8B, 0x89, 0xC8, 0x0B, 0x00, 0x00, 0x48, 0x89, 0x39};
-constexpr std::array<std::uint8_t, 14> engineRpmStoreBytes{
-    0xF3, 0x0F, 0x5F, 0x53, 0x68, 0xF3, 0x0F, 0x5D, 0xD0, 0xF3, 0x0F, 0x11, 0x53, 0x14};
-
+constexpr std::array<std::uint8_t, 7> bodyLinkBytes{0x49, 0x8B, 0xAA, 0xF0, 0x05, 0x00, 0x00};
 constexpr std::array<std::uint8_t, 8> bodyVelocityLoadBytes{
     0x41, 0x0F, 0x10, 0x58, 0x30, 0x0F, 0x28, 0xC3};
 constexpr std::array<std::uint8_t, 10> shiftCooldownLoadBytes{
@@ -55,8 +49,6 @@ constexpr auto ownerOffset = 0x0;
 constexpr auto vehicleDriveBodyOffset = 0x5F0;
 constexpr auto bodyVelocityOffset = 0x30;
 constexpr auto vehicleGearboxOffset = 0xBC8;
-constexpr auto vehicleEngineOffset = 0xBD0;
-constexpr auto engineRpmOffset = 0x14;
 constexpr auto gearCountOffset = 0x198;
 constexpr auto shiftTimeOffset = 0x1AC;
 constexpr auto shiftCooldownOffset = 0x1B4;
@@ -68,7 +60,6 @@ constexpr float directionChangeSpeed = 0.5f; // m/s
 
 using Step = void (*)(void*, float);
 using Shift = bool (*)(void*, int, bool, bool);
-using PlanarSpeed = float (*)(void*);
 
 RED4ext::v1::PluginHandle hookPlugin{};
 const RED4ext::v1::Sdk* hookSdk{};
@@ -76,7 +67,6 @@ void* stepTarget{};
 void* shiftTarget{};
 void* originalStep{};
 void* originalShift{};
-PlanarSpeed planarSpeed{};
 std::atomic<bool> installed{false};
 std::atomic<void*> publishedVehicle{nullptr};
 SRWLOCK stateLock = SRWLOCK_INIT;
@@ -85,7 +75,6 @@ struct ShiftRequest {
     std::optional<int> absolute;
     int delta{};
     ULONGLONG expiresAt{};
-    bool completingDirectionChange{};
 };
 
 struct SharedState {
@@ -96,6 +85,7 @@ struct SharedState {
     std::optional<int> selectedGear;
     std::optional<int> heldGear;
     std::optional<ShiftRequest> request;
+    Direction lastDirection{Direction::unknown};
     bool enabled{};
     Snapshot view{};
 };
@@ -201,19 +191,18 @@ bool filterAutomatic(void* gearbox, int target, bool immediate, bool bypassCoold
         const bool live = state.enabled && liveLease(activeStep.owner, activeStep.generation);
         if (live) {
             auto held = state.heldGear;
-            if (!held && state.request && state.request->absolute == neutralGear)
+            if (!held && state.selectedGear && (engaged == neutralGear || state.selectedGear == neutralGear))
                 held = neutralGear;
-            if (suppressAutomatic(engaged, target, entries, bypassCooldown, held)) {
-                ++state.view.suppressedAutoShifts;
+            if (suppressAutomatic(engaged, target, entries, bypassCooldown, held))
                 return false;
-            }
         }
     }
     return original(gearbox, target, immediate, bypassCooldown);
 }
 
-bool nearStop(const void* driveBody, float planar) noexcept {
-    if (!driveBody || !std::isfinite(planar) || planar < 0.0f || planar > directionChangeSpeed)
+bool nearStop(const void* vehicle) noexcept {
+    const auto* driveBody = readField<void*>(vehicle, vehicleDriveBodyOffset);
+    if (!driveBody)
         return false;
     // The native planar speed routine reads this same velocity vector before projecting it.
     const auto velocity = readField<std::array<float, 3>>(driveBody, bodyVelocityOffset);
@@ -231,35 +220,39 @@ void resetSelection() noexcept {
 struct ReadyRequest {
     ShiftRequest request;
     std::uint64_t selectionRevision{};
+    Direction lastDirection{Direction::unknown};
 };
 
 std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t generation,
-                                             int engaged, int target, int entries, float speed, float rpm,
-                                             bool settled, bool cooldownReady) noexcept {
+                                             int engaged, int target, int entries, const void* gearbox) noexcept {
     StateGuard guard;
     if (!liveLease(owner, generation))
         return std::nullopt;
 
     const auto now = GetTickCount64();
-    state.view.engagedGear = engaged;
-    state.view.targetGear = target;
-    state.view.gearCount = entries;
-    state.view.sampledAt = now;
-    state.view.speedMetersPerSecond = speed;
-    state.view.engineRpm = rpm;
+    const bool validGear = supportedGear(engaged, entries);
+    if (!state.view.sampledAt || now - state.view.sampledAt >= leaseDurationMs)
+        state.lastDirection = Direction::unknown;
+    state.lastDirection = observeDirection(state.lastDirection, engaged, entries);
+    state.view.engagedGear = validGear ? engaged : unavailableGear;
+    state.view.targetGear = supportedGear(target, entries) ? target : unavailableGear;
+    state.view.gearCount = validGear ? entries : 0;
+    state.view.sampledAt = validGear ? now : 0;
     if (!state.enabled || !state.request)
         return std::nullopt;
     if (now >= state.request->expiresAt) {
         state.view.requestedGear = state.request->absolute.value_or(unavailableGear);
         state.view.outcome = "request_expired";
-        ++state.view.shiftSerial;
         state.request.reset();
-        state.heldGear.reset();
         return std::nullopt;
     }
+    const float shiftTime = readField<float>(gearbox, shiftTimeOffset);
+    const float cooldown = readField<float>(gearbox, shiftCooldownOffset);
+    const bool settled = validGear && engaged == target && std::isfinite(shiftTime) && shiftTime < 0.001f;
+    const bool cooldownReady = std::isfinite(cooldown) && cooldown < 0.0f;
     if (!settled || (!cooldownReady && state.request->absolute != engaged))
         return std::nullopt;
-    return ReadyRequest{*std::exchange(state.request, std::nullopt), state.selectionRevision};
+    return ReadyRequest{*std::exchange(state.request, std::nullopt), state.selectionRevision, state.lastDirection};
 }
 
 bool liveRequest(const void* owner, std::uint64_t generation, const ReadyRequest& command) noexcept {
@@ -274,17 +267,14 @@ void recordRequest(const void* owner, std::uint64_t generation, const ReadyReque
     StateGuard guard;
     if (!liveRequest(owner, generation, command))
         return;
-    ++state.view.shiftSerial;
     state.view.requestedGear = requested;
     state.view.engagedGear = readField<int>(gearbox, engagedGearOffset);
     state.view.targetGear = readField<int>(gearbox, targetGearOffset);
     state.view.outcome = outcome;
-    if (command.request.absolute)
+    if (command.request.absolute && held)
         state.heldGear = held;
-    if (continueAfterNeutral) {
+    if (continueAfterNeutral)
         state.request = command.request;
-        state.request->completingDirectionChange = true;
-    }
 }
 
 void updateGearbox(void* gearbox, float deltaTime) noexcept {
@@ -329,42 +319,23 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
         original(gearbox, deltaTime);
     }
 
-    float speed = -1.0f;
-    auto* driveBody = readField<void*>(owner, vehicleDriveBodyOffset);
-    if (driveBody) {
-        const float observedSpeed = planarSpeed(driveBody);
-        if (std::isfinite(observedSpeed) && observedSpeed >= 0.0f)
-            speed = observedSpeed;
-    }
     const auto engaged = readField<int>(gearbox, engagedGearOffset);
     const auto target = readField<int>(gearbox, targetGearOffset);
     const auto entries = readField<int>(gearbox, gearCountOffset);
-    float rpm = -1.0f;
-    if (const auto* engine = readField<void*>(owner, vehicleEngineOffset)) {
-        // The engine integrator clamps its live RPM and stores it at +0x14 (6E0318..6E0325).
-        const float observedRpm = readField<float>(engine, engineRpmOffset);
-        if (std::isfinite(observedRpm) && observedRpm >= 0.0f)
-            rpm = observedRpm;
-    }
-    const float shiftTime = readField<float>(gearbox, shiftTimeOffset);
-    const float cooldown = readField<float>(gearbox, shiftCooldownOffset);
-    const bool settled = supportedGear(engaged, entries) && engaged == target &&
-                         std::isfinite(shiftTime) && shiftTime < 0.001f;
-    const bool cooldownReady = std::isfinite(cooldown) && cooldown < 0.0f;
-    const auto command = takeReadyRequest(owner, generation, engaged, target, entries, speed, rpm, settled, cooldownReady);
+    const auto command = takeReadyRequest(owner, generation, engaged, target, entries, gearbox);
     if (!command)
         return;
 
     const auto& request = command->request;
     const int requested = request.absolute.value_or(forwardGear(engaged, entries)
         ? engaged + request.delta : unavailableGear);
-    const bool stopped = nearStop(driveBody, speed);
-    const auto plan = planShift(engaged, requested, entries, stopped);
+    const auto plan = planShift(engaged, requested, entries, command->lastDirection);
     if (plan == ShiftPlan::unsupported || (!request.absolute && !forwardGear(requested, entries))) {
         recordRequest(owner, generation, *command, requested, "outside_supported_range", gearbox);
         return;
     }
-    if (plan == ShiftPlan::requiresStop || (request.completingDirectionChange && !stopped)) {
+    const bool throughNeutral = plan == ShiftPlan::stoppedThroughNeutral;
+    if ((throughNeutral || plan == ShiftPlan::stoppedDirect) && !nearStop(owner)) {
         recordRequest(owner, generation, *command, requested, "direction_change_requires_stop", gearbox);
         return;
     }
@@ -381,7 +352,6 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
     if (!gameForeground())
         return;
 
-    const bool throughNeutral = plan == ShiftPlan::throughNeutral;
     // For a direction change, wait for the native neutral shift to finish before requesting
     // the opposite gear. A direct reversing request can also be interpreted as neutral by the game.
     const auto shift = std::bit_cast<Shift>(originalShift);
@@ -410,10 +380,9 @@ bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexc
     const auto module = GetModuleHandleW(nullptr);
     auto* const step = verifiedAddress(module, stepRva, stepBytes);
     auto* const shift = verifiedAddress(module, shiftRva, shiftBytes);
-    auto* const speed = verifiedAddress(module, planarSpeedRva, planarSpeedBytes);
-    if (!step || !shift || !speed || !verifiedAddress(module, shiftCallRva, shiftCallBytes) ||
+    if (!step || !shift || !verifiedAddress(module, shiftCallRva, shiftCallBytes) ||
         !verifiedAddress(module, gearboxOwnerLinkRva, gearboxOwnerLinkBytes) ||
-        !verifiedAddress(module, engineRpmStoreRva, engineRpmStoreBytes) ||
+        !verifiedAddress(module, bodyLinkRva, bodyLinkBytes) ||
         !verifiedAddress(module, bodyVelocityLoadRva, bodyVelocityLoadBytes) ||
         !verifiedAddress(module, shiftCooldownLoadRva, shiftCooldownLoadBytes) ||
         !verifiedAddress(module, neutralRequestRva, neutralRequestBytes) ||
@@ -422,7 +391,6 @@ bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexc
 
     hookPlugin = plugin;
     hookSdk = sdk;
-    planarSpeed = std::bit_cast<PlanarSpeed>(speed);
     if (!sdk->hooking->Attach(plugin, shift, std::bit_cast<void*>(&filterAutomatic), &originalShift))
         return false;
     shiftTarget = shift;
@@ -456,14 +424,15 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
 
     const auto now = GetTickCount64();
     enabled = vehicle && enabled;
-    if (state.vehicle != vehicle || state.enabled != enabled || now >= state.expiresAt) {
+    const bool newVehicle = state.vehicle != vehicle || (vehicle && now >= state.expiresAt);
+    if (newVehicle || state.enabled != enabled) {
         ++state.generation;
         resetSelection();
-        const auto shiftSerial = state.view.shiftSerial;
-        const auto suppressedAutoShifts = state.view.suppressedAutoShifts;
-        state.view = {};
-        state.view.shiftSerial = shiftSerial;
-        state.view.suppressedAutoShifts = suppressedAutoShifts;
+        if (newVehicle) {
+            state.lastDirection = Direction::unknown;
+            state.view = {};
+        }
+        state.view.requestedGear = unavailableGear;
         state.view.outcome = enabled ? "manual_ready" : "automatic";
     }
 
@@ -472,7 +441,10 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
     state.expiresAt = vehicle ? now + leaseDurationMs : 0;
     if (enabled) {
         if (absolute != state.selectedGear) {
+            const bool keepNeutral = absolute && state.heldGear == neutralGear;
             resetSelection();
+            if (keepNeutral)
+                state.heldGear = neutralGear;
             state.selectedGear = absolute;
             if (absolute)
                 state.request = ShiftRequest{absolute, 0, now + requestLifetimeMs};
@@ -495,8 +467,6 @@ Snapshot snapshot(void* vehicle) noexcept {
         view.targetGear = neutralGear;
         view.gearCount = 0;
         view.sampledAt = 0;
-        view.speedMetersPerSecond = -1.0f;
-        view.engineRpm = -1.0f;
     }
     view.manualActive = state.enabled;
     view.selectedGear = state.selectedGear;

@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.40
+
+- **Marche arrière.** Le routage des pédales suit le rapport engagé lors de la bascule AUTO/MANUEL ou de la perte du levier. Le contrôle d’arrêt suit également le dernier sens engagé à travers le point mort.
+- **Profils et commandes.** L’assistant confirme la grille du levier et indique quelles anciennes grilles doivent être recalibrées. La bascule F8 utilise l’état du clavier physique. La simulation attend le relâchement complet des touches de rapport pour se réarmer.
+- **Diagnostic et lecture.** La fenêtre indique le rapport sélectionné, demandé et engagé. Accessoires et Boîte / palettes partagent l’inventaire des périphériques. Le plugin mesure la vitesse de la boîte lors des changements de sens qui l’exigent.
+
+[ZIP Vortex](out/Chromaxis-0.4.40.zip)
+
 ## Chrome Axis 0.4.39
 
 - **Boîte en H native.** L’assistant Chrome Axis enregistre les positions du levier dans le profil actif et les transmet directement à Cyberpunk. Il conserve un mode par touches pour les configurations existantes. La sélection directe inclut le point mort et les rapports autorisés par le véhicule.

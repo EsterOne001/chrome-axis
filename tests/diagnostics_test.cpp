@@ -154,7 +154,7 @@ int run()
     snapshot.axes[2].delivery = DiagnosticDelivery::gameKept;
     snapshot.pedalSampledAt = snapshot.axes[0].appliedAt;
     snapshot.profileLoaded = 1;
-    snapshot.accessoryCount = 3;
+    snapshot.accessoryCount = 4;
     snapshot.accessoryArmed = 2;
     snapshot.accessories = DiagnosticAccessoryState::deviceUnavailable;
     snapshot.lastAccessoryKey = VK_SPACE;
@@ -200,6 +200,17 @@ int run()
         .handbrakeFinal = 1.0f,
         .handbrakeAvailable = 1,
     };
+    snapshot.accessoryCommands[3] = {
+        .kind = AccessoryKind::Button,
+        .role = ShifterRole::Reverse,
+        .index = 5,
+        .engaged = 1,
+        .state = DiagnosticCommandState::ready,
+        .output = DiagnosticCommandOutput::nativeRefused,
+        .active = 1,
+        .activeAvailable = 1,
+    };
+    snapshot.transmission = {true, true, 0, 0, -1, DiagnosticShiftState::stopToChangeDirection};
     snapshot.feedback = DiagnosticFeedbackState::active;
     snapshot.feedbackData = {
         .motionAgeMicros = 16500,
@@ -241,6 +252,10 @@ int run()
             !lever.travelAvailable || lever.travel != 0.75f || lever.lastSentAt != snapshot.accessorySentAt ||
             handbrake.key || handbrake.lastSentAt || handbrake.handbrakeCeilingPercent != 15 ||
             !handbrake.handbrakeAvailable || handbrake.handbrakeRequested != 0.075f || handbrake.handbrakeFinal != 1.0f ||
+            received.snapshot.transmission != snapshot.transmission ||
+            received.lastDrive.transmission != snapshot.transmission ||
+            received.snapshot.accessoryCommands[3].output != DiagnosticCommandOutput::nativeRefused ||
+            received.lastDrive.accessoryCommands[3].output != DiagnosticCommandOutput::nativeRefused ||
             received.snapshot.feedback != snapshot.feedback ||
             received.snapshot.feedbackData.motionAgeMicros != 16500 ||
             received.snapshot.feedbackData.submittedAt != snapshot.feedbackData.submittedAt ||

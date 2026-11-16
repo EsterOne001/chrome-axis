@@ -14,10 +14,6 @@ struct Snapshot {
     int requestedGear{-2};
     int gearCount{};
     std::uint64_t sampledAt{};
-    float speedMetersPerSecond{-1.0f};
-    float engineRpm{-1.0f};
-    unsigned shiftSerial{};
-    unsigned suppressedAutoShifts{};
     const char* outcome{"automatic"};
     bool manualActive{};
     std::optional<int> selectedGear;
@@ -36,7 +32,8 @@ constexpr int neutralGear = -1;
 constexpr int reverseGear = 0;
 constexpr int unavailableGear = -2;
 
-enum class ShiftPlan { unsupported, alreadyEngaged, requiresStop, throughNeutral, direct };
+enum class Direction { unknown, forward, reverse };
+enum class ShiftPlan { unsupported, alreadyEngaged, direct, stoppedDirect, stoppedThroughNeutral };
 
 constexpr bool supportedGear(int gear, int entries) noexcept {
     // The native table contains up to eight entries, including reverse at index zero.
@@ -47,16 +44,25 @@ constexpr bool forwardGear(int gear, int entries) noexcept {
     return gear > reverseGear && supportedGear(gear, entries);
 }
 
-constexpr ShiftPlan planShift(int engaged, int requested, int entries, bool nearStop) noexcept {
+constexpr Direction observeDirection(Direction previous, int engaged, int entries) noexcept {
+    if (!supportedGear(engaged, entries))
+        return Direction::unknown;
+    if (engaged == neutralGear)
+        return previous;
+    return engaged == reverseGear ? Direction::reverse : Direction::forward;
+}
+
+constexpr ShiftPlan planShift(int engaged, int requested, int entries, Direction previous) noexcept {
     if (!supportedGear(engaged, entries) || !supportedGear(requested, entries))
         return ShiftPlan::unsupported;
     if (requested == engaged)
         return ShiftPlan::alreadyEngaged;
-    const bool fromReverse = engaged == reverseGear && requested > reverseGear;
-    if ((requested == reverseGear || fromReverse) && !nearStop)
-        return ShiftPlan::requiresStop;
-    if (fromReverse || (requested == reverseGear && engaged > reverseGear))
-        return ShiftPlan::throughNeutral;
+    if (requested == neutralGear)
+        return ShiftPlan::direct;
+    if (engaged == reverseGear || (requested == reverseGear && engaged != neutralGear))
+        return ShiftPlan::stoppedThroughNeutral;
+    if (requested == reverseGear || (engaged == neutralGear && previous != Direction::forward))
+        return ShiftPlan::stoppedDirect;
     return ShiftPlan::direct;
 }
 

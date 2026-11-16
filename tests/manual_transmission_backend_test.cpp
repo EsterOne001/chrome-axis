@@ -12,17 +12,29 @@ static_assert(!supportedGear(4, 4));
 static_assert(!supportedGear(unavailableGear, eightEntries));
 static_assert(!supportedGear(reverseGear, 0));
 
-static_assert(planShift(2, neutralGear, eightEntries, false) == ShiftPlan::direct);
-static_assert(planShift(neutralGear, 2, eightEntries, false) == ShiftPlan::direct);
-static_assert(planShift(3, 2, eightEntries, false) == ShiftPlan::direct);
-static_assert(planShift(2, reverseGear, eightEntries, false) == ShiftPlan::requiresStop);
-static_assert(planShift(neutralGear, reverseGear, eightEntries, false) == ShiftPlan::requiresStop);
-static_assert(planShift(reverseGear, 1, eightEntries, false) == ShiftPlan::requiresStop);
-static_assert(planShift(2, reverseGear, eightEntries, true) == ShiftPlan::throughNeutral);
-static_assert(planShift(reverseGear, 1, eightEntries, true) == ShiftPlan::throughNeutral);
-static_assert(planShift(neutralGear, reverseGear, eightEntries, true) == ShiftPlan::direct);
-static_assert(planShift(reverseGear, reverseGear, eightEntries, false) == ShiftPlan::alreadyEngaged);
-static_assert(planShift(unavailableGear, reverseGear, eightEntries, true) == ShiftPlan::unsupported);
+constexpr auto priorReverse = observeDirection(Direction::unknown, reverseGear, eightEntries);
+constexpr auto neutralAfterReverse = observeDirection(priorReverse, neutralGear, eightEntries);
+constexpr auto priorForward = observeDirection(Direction::unknown, 2, eightEntries);
+constexpr auto neutralAfterForward = observeDirection(priorForward, neutralGear, eightEntries);
+static_assert(neutralAfterReverse == Direction::reverse);
+static_assert(neutralAfterForward == Direction::forward);
+static_assert(observeDirection(priorForward, unavailableGear, eightEntries) == Direction::unknown);
+
+// Neutral is available while coasting. A fresh forward selection or reselection must
+// still wait for near-stop if the gearbox reached neutral from reverse.
+static_assert(planShift(reverseGear, neutralGear, eightEntries, priorReverse) == ShiftPlan::direct);
+static_assert(planShift(neutralGear, 1, eightEntries, neutralAfterReverse) == ShiftPlan::stoppedDirect);
+static_assert(planShift(neutralGear, 3, eightEntries, neutralAfterReverse) == ShiftPlan::stoppedDirect);
+static_assert(planShift(neutralGear, 1, eightEntries, Direction::unknown) == ShiftPlan::stoppedDirect);
+static_assert(planShift(neutralGear, 2, eightEntries, neutralAfterForward) == ShiftPlan::direct);
+static_assert(planShift(3, 2, eightEntries, priorForward) == ShiftPlan::direct);
+static_assert(planShift(2, neutralGear, eightEntries, priorForward) == ShiftPlan::direct);
+static_assert(planShift(2, reverseGear, eightEntries, priorForward) == ShiftPlan::stoppedThroughNeutral);
+static_assert(planShift(neutralGear, reverseGear, eightEntries, neutralAfterForward) == ShiftPlan::stoppedDirect);
+static_assert(planShift(neutralGear, reverseGear, eightEntries, neutralAfterReverse) == ShiftPlan::stoppedDirect);
+static_assert(planShift(reverseGear, 1, eightEntries, priorReverse) == ShiftPlan::stoppedThroughNeutral);
+static_assert(planShift(reverseGear, reverseGear, eightEntries, priorReverse) == ShiftPlan::alreadyEngaged);
+static_assert(planShift(unavailableGear, reverseGear, eightEntries, Direction::unknown) == ShiftPlan::unsupported);
 
 static_assert(suppressAutomatic(2, 3, eightEntries, false, std::nullopt));
 static_assert(!suppressAutomatic(2, 3, eightEntries, true, std::nullopt));

@@ -33,6 +33,15 @@ enum class AccessoryKind { Button, Pov, Axis };
 enum class AccessoryActivation { hold, pulse };
 enum class ShifterRole { None, Gear1, Gear2, Gear3, Gear4, Gear5, Gear6, Gear7, Gear8, Reverse, Upshift, Downshift };
 
+constexpr unsigned int nativeShifterPositionBit(ShifterRole role) noexcept
+{
+    if (role == ShifterRole::Reverse)
+        return 1u;
+    if (role >= ShifterRole::Gear1 && role <= ShifterRole::Gear8)
+        return 1u << (static_cast<unsigned int>(role) - static_cast<unsigned int>(ShifterRole::Gear1) + 1);
+    return 0;
+}
+
 struct AccessoryThresholds {
     unsigned int press{55};
     unsigned int release{35};
@@ -57,6 +66,7 @@ struct AccessoryBinding {
     AccessoryActivation activation{AccessoryActivation::hold};
     unsigned int handbrakeCeilingPercent{}; // A nonzero value makes this an analog output.
     bool nativeShifter{};
+    unsigned int nativeShifterPositions{}; // Bit 0 is reverse, bits 1 to 8 are forward gears. Zero is unverified.
 
     bool operator==(const AccessoryBinding&) const = default;
 };
@@ -81,6 +91,7 @@ struct AccessoryObservation {
 };
 
 bool isAccessoryKey(unsigned int key) noexcept;
+bool nativeShifterVerified(const AccessoryProfile& profile) noexcept;
 std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path& path, std::string& error);
 bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProfile& profile, std::string& error);
 bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
@@ -126,6 +137,7 @@ private:
                          DeviceReadStatus status, AccessoryObservation* observation, bool* neutral);
 
     AccessoryProfile profile_;
+    bool nativeShifterVerified_{};
     NativeShifterState nativeShifter_;
     std::array<std::size_t, maxAccessoryBindings> sampleOwners_{};
     std::array<std::bitset<buttonCount>, maxAccessoryBindings> requiredButtons_{};

@@ -10,6 +10,8 @@
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/shifter.hpp"
 
+#include <dbt.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -61,6 +63,8 @@ constexpr UINT captureIntervalMs = 30;
 constexpr ULONGLONG captureTimeoutMs = 12000;
 constexpr UINT_PTR previewTimer = 2;
 constexpr UINT previewIntervalMs = 50;
+constexpr UINT_PTR inventoryTimer = 3;
+constexpr UINT inventoryDebounceMs = 300;
 
 std::wstring percent(int value)
 {
@@ -121,9 +125,11 @@ std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding)
     return input;
 }
 
-std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding)
+std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding, bool nativeVerified)
 {
-    return binding.nativeShifter ? std::wstring(tr(Text::DlgShifterNativeOutput)) : accessoryKeyLabel(binding.key);
+    if (!binding.nativeShifter)
+        return accessoryKeyLabel(binding.key);
+    return tr(nativeVerified ? Text::DlgShifterNativeOutput : Text::DlgShifterNativeUnverifiedOutput);
 }
 
 const wchar_t* accessoryActivationLabel(AccessoryActivation activation)
@@ -245,6 +251,8 @@ public:
     void capture();
     void sample();
     void refreshDevices();
+    void deviceTopologyChanged();
+    void refreshIfIdle();
     void clearCapture();
     void refreshActions();
     void selectPreview();
@@ -304,6 +312,7 @@ private:
     std::vector<AccessoryBinding> captured_;
     std::optional<AccessoryBinding> previewBinding_;
     std::optional<AccessoryReader> preview_;
+    std::size_t previewIndex_{};
     std::wstring previewStatus_;
     std::optional<int> previewTravel_;
     std::optional<int> previewHandbrake_;
@@ -321,6 +330,7 @@ private:
     bool validCeiling_{true};
     bool previewPolling_{};
     bool previewAxis_{};
+    bool inventoryDirty_{};
 };
 
 bool AccessoryDialog::initialise(HWND window)
@@ -480,8 +490,25 @@ void AccessoryDialog::setStatus(const wchar_t* text) const
         !handbrakePage() && !validCeiling_ && handbrakeBinding() ? tr(Text::DlgHandbrakeInvalidOtherTab) : text);
 }
 
+void AccessoryDialog::deviceTopologyChanged()
+{
+    inventoryDirty_ = true;
+    if (!SetTimer(window_, inventoryTimer, inventoryDebounceMs, nullptr))
+        refreshIfIdle();
+}
+
+void AccessoryDialog::refreshIfIdle()
+{
+    KillTimer(window_, inventoryTimer);
+    if (inventoryDirty_ && IsWindowEnabled(window_) && GetForegroundWindow() == window_ &&
+        stage_ == CaptureStage::Idle && captured_.empty())
+        refreshDevices();
+}
+
 void AccessoryDialog::refreshDevices()
 {
+    KillTimer(window_, inventoryTimer);
+    inventoryDirty_ = false;
     rememberSelectedDevice();
     devices_ = input_.devices();
     send(IDC_ACCESSORY_DEVICE, CB_RESETCONTENT);
@@ -595,9 +622,22 @@ void AccessoryDialog::selectPreview()
     if (binding != previewBinding_) {
         previewBinding_ = std::move(binding);
         preview_.reset();
-        if (previewBinding_) {
+        previewIndex_ = 0;
+        if (previewBinding_ && previewBinding_->nativeShifter) {
+            if (nativeShifterVerified(bindings_)) {
+                AccessoryProfile pattern;
+                for (const auto& position : bindings_) {
+                    if (!position.nativeShifter)
+                        continue;
+                    if (position == *previewBinding_)
+                        previewIndex_ = pattern.size();
+                    pattern.push_back(position);
+                }
+                preview_.emplace(pattern);
+            }
+        } else if (previewBinding_) {
             auto mapping = *previewBinding_;
-            if (!mapping.nativeShifter && !mapping.handbrakeCeilingPercent && !isAccessoryKey(mapping.key))
+            if (!mapping.handbrakeCeilingPercent && !isAccessoryKey(mapping.key))
                 mapping.key = VK_SPACE; // Use a valid internal key to evaluate an unassigned draft.
             preview_.emplace(AccessoryProfile{std::move(mapping)});
         }
@@ -628,7 +668,9 @@ void AccessoryDialog::selectPreview()
 
 void AccessoryDialog::activationChanged(bool active)
 {
-    if (!active)
+    if (active)
+        refreshIfIdle();
+    else
         interruptCapture();
     setPreviewFocus(active);
 }
@@ -647,8 +689,10 @@ void AccessoryDialog::setPreviewFocus(bool focused)
         if (preview_)
             preview_->reset();
     }
-    renderPreview(tr(stage_ != CaptureStage::Idle || previewBinding_
-        ? Text::DlgAccessoryPreviewPaused : Text::DlgAccessoryPreviewSelect), std::nullopt);
+    const bool needsRecapture = previewBinding_ && previewBinding_->nativeShifter && !preview_;
+    renderPreview(tr(needsRecapture ? Text::DlgShifterNativeRecapture
+        : stage_ != CaptureStage::Idle || previewBinding_ ? Text::DlgAccessoryPreviewPaused
+                                                          : Text::DlgAccessoryPreviewSelect), std::nullopt);
 }
 
 void AccessoryDialog::pollPreview()
@@ -660,7 +704,7 @@ void AccessoryDialog::pollPreview()
         setPreviewFocus(false);
         return;
     }
-    std::array<AccessoryObservation, 1> observations;
+    std::array<AccessoryObservation, maxAccessoryBindings> observations;
     const bool progressive = previewBinding_->handbrakeCeilingPercent != 0;
     std::optional<float> handbrake;
     input_.beginPoll();
@@ -669,7 +713,7 @@ void AccessoryDialog::pollPreview()
         setPreviewFocus(false);
         return;
     }
-    const auto& observation = observations.front();
+    const auto& observation = observations[previewIndex_];
     const auto travel = observation.travel
         ? std::optional{static_cast<int>(std::lround(std::clamp(*observation.travel, 0.0, 1.0) * 100.0))}
         : std::nullopt;
@@ -804,9 +848,12 @@ void AccessoryDialog::shifter()
 {
     if (handbrakePage())
         return;
-    clearCapture();
+    if (inventoryDirty_)
+        refreshDevices();
+    else
+        clearCapture();
     const auto* device = selectedDevice();
-    if (editShifter(window_, input_, bindings_, device ? std::string_view(device->id) : std::string_view{})) {
+    if (editShifter(window_, input_, bindings_, devices_, device ? std::string_view(device->id) : std::string_view{})) {
         modified_ = true;
         refreshBindings();
         setStatus(tr(Text::DlgAccessoriesShifterConfigured));
@@ -830,6 +877,8 @@ void AccessoryDialog::startSampling(CaptureStage stage, const wchar_t* text)
 
 void AccessoryDialog::capture()
 {
+    if (inventoryDirty_ && stage_ == CaptureStage::Idle)
+        refreshDevices();
     const auto* device = selectedDevice();
     if (!device)
         return;
@@ -958,11 +1007,12 @@ void AccessoryDialog::refreshBindings(std::optional<std::size_t> selection)
 {
     const auto top = send(IDC_ACCESSORY_LIST, LB_GETTOPINDEX);
     send(IDC_ACCESSORY_LIST, LB_RESETCONTENT);
+    const bool nativeVerified = nativeShifterVerified(bindings_);
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
         const auto& binding = bindings_[i];
         if (binding.handbrakeCeilingPercent)
             continue;
-        auto label = accessoryBindingOutputLabel(binding) + L"  ←  " + accessoryBindingInputLabel(binding);
+        auto label = accessoryBindingOutputLabel(binding, nativeVerified) + L"  ←  " + accessoryBindingInputLabel(binding);
         if (!binding.nativeShifter)
             label += L"  ·  " + std::wstring(accessoryActivationLabel(binding.activation));
         if (binding.kind == AccessoryKind::Axis) {
@@ -1154,10 +1204,18 @@ void AccessoryDialog::remove()
     const auto index = selectedBinding();
     if (!index || stage_ != CaptureStage::Idle)
         return;
-    bindings_.erase(bindings_.begin() + *index);
+    const bool native = bindings_[*index].nativeShifter;
+    if (native) {
+        if (MessageBoxW(window_, tr(Text::DlgAccessoriesRemoveNative), tr(Text::DlgAccessoriesTitle),
+                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES)
+            return;
+        std::erase_if(bindings_, [](const AccessoryBinding& binding) { return binding.nativeShifter; });
+    } else {
+        bindings_.erase(bindings_.begin() + *index);
+    }
     modified_ = true;
     refreshBindings();
-    setStatus(tr(Text::DlgAccessoriesBindingRemoved));
+    setStatus(tr(native ? Text::DlgAccessoriesNativeRemoved : Text::DlgAccessoriesBindingRemoved));
 }
 
 void AccessoryDialog::save()
@@ -1243,6 +1301,15 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             dialog->pollPreview();
             return TRUE;
         }
+        if (wParam == inventoryTimer) {
+            dialog->refreshIfIdle();
+            return TRUE;
+        }
+    }
+    if (message == WM_DEVICECHANGE &&
+        (wParam == DBT_DEVNODES_CHANGED || wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE)) {
+        dialog->deviceTopologyChanged();
+        return FALSE;
     }
     if (message == WM_ACTIVATE || message == WM_ENABLE) {
         const bool focused = message == WM_ACTIVATE ? LOWORD(wParam) != WA_INACTIVE : wParam != 0;

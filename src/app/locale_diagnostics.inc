@@ -165,3 +165,11 @@ CHROME_AXIS_TEXT(DlgDiagnosticsTransmissionRejected, L"Passage refusé par le je
 CHROME_AXIS_TEXT(DlgDiagnosticsTransmissionAccepted, L"Demande acceptée par le jeu", L"Request accepted by the game")
 CHROME_AXIS_TEXT(DlgDiagnosticsTransmissionNeutral, L"Transition par le point mort", L"Shifting through neutral")
 CHROME_AXIS_TEXT(DlgDiagnosticsTransmissionExpired, L"Demande expirée", L"Request expired")
+
+CHROME_AXIS_TEXT(DlgDiagnosticsTransmissionRecalibration, L"Grille en H à recalibrer", L"H-pattern needs recalibration")
+CHROME_AXIS_TEXT(DlgDiagnosticsTransmissionSelector, L"Levier indisponible · revenez au point mort", L"Shifter unavailable · return to neutral")
+CHROME_AXIS_TEXT(DlgDiagnosticsNativeReady, L"Position native prête", L"Native position ready")
+CHROME_AXIS_TEXT(DlgDiagnosticsNativePending, L"Rapport sélectionné · passage en attente", L"Gear selected · shift pending")
+CHROME_AXIS_TEXT(DlgDiagnosticsNativeEngaged, L"Rapport engagé par la boîte native", L"Gear engaged by the native transmission")
+CHROME_AXIS_TEXT(DlgDiagnosticsNativeRefused, L"Rapport non engagé · voir le diagnostic de boîte", L"Gear not engaged · see transmission diagnostics")
+CHROME_AXIS_TEXT(DlgDiagnosticsNativePaused, L"Commande native en pause", L"Native output paused")

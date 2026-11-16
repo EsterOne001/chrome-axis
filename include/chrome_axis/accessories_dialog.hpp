@@ -68,18 +68,20 @@
 #include "chrome_axis/accessories.hpp"
 
 #include <filesystem>
+#include <span>
 
 namespace chrome_axis {
 
 struct ProfilePreset;
 
 bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& root, const ProfilePreset& preset);
-bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings, std::string_view preferredDevice);
+bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings,
+                 std::span<const DeviceInfo> devices, std::string_view preferredDevice);
 std::wstring accessoryKeyLabel(unsigned int key);
 std::wstring accessoryInputLabel(const AccessoryBinding& binding);
 std::wstring shifterRoleLabel(ShifterRole role);
 std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding);
-std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding);
+std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding, bool nativeVerified);
 const wchar_t* accessoryActivationLabel(AccessoryActivation activation);
 void populateAccessoryActivation(HWND window, int control);
 enum class BindingKeyEdit { unchanged, changed, occupied, handbrakeInputConflict };

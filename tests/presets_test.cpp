@@ -117,7 +117,8 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
         {newWheel, AccessoryKind::Pov, 0, povCentered, 18000, VK_SPACE},
         {oldWheel, AccessoryKind::Axis, 3, 0, 1000, VK_F8, {65, 30}, ShifterRole::Gear3},
         {oldWheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 19},
-        {oldWheel, AccessoryKind::Button, 5, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true}};
+        {oldWheel, AccessoryKind::Button, 5, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true,
+         nativeShifterPositionBit(ShifterRole::Gear1)}};
     const FeedbackSettings feedback{true, 19, false, true};
     std::string details;
     if (!check(saveProfile(root / profileFilename, calibration, details)
@@ -183,6 +184,12 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
         std::cerr << "Replacement error: " << static_cast<int>(error) << '\n';
         return false;
     }
+    const auto replacedBindings = loadAccessoryProfile(digital, details);
+    if (!check(replacedBindings && nativeShifterVerified(*replacedBindings)
+               && replacedBindings->back().deviceId == newWheel
+               && replacedBindings->back().nativeShifterPositions == bindings.back().nativeShifterPositions,
+               "Device replacement must preserve the verified native shifter positions"))
+        return false;
 
     auto conflictingAxes = calibration;
     conflictingAxes.throttle.axis = 0;

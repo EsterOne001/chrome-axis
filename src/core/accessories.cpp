@@ -3,6 +3,7 @@
 #include "settings_replace.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <fstream>
@@ -23,6 +24,7 @@ constexpr AccessoryThresholds defaultThresholds{};
 constexpr std::array<std::string_view, 3> kindNames{"button", "pov", "axis"};
 constexpr std::string_view pulseSuffix = ",pulse";
 constexpr std::string_view rolePrefix = "# shifter-role=";
+constexpr std::string_view nativeShifterPositionsPrefix = "# native-shifter-positions=";
 constexpr std::array<std::string_view, 12> roleNames{
     "", "gear-1", "gear-2", "gear-3", "gear-4", "gear-5", "gear-6", "gear-7", "gear-8",
     "reverse", "upshift", "downshift"
@@ -40,11 +42,8 @@ std::string_view trim(std::string_view value)
 
 int nativeGearNumber(ShifterRole role) noexcept
 {
-    if (role == ShifterRole::Reverse)
-        return 0;
-    if (role >= ShifterRole::Gear1 && role <= ShifterRole::Gear8)
-        return static_cast<int>(role) - static_cast<int>(ShifterRole::Gear1) + 1;
-    return -1;
+    const auto position = nativeShifterPositionBit(role);
+    return position ? std::countr_zero(position) : -1;
 }
 
 bool sameNativeInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept
@@ -284,9 +283,17 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
     AccessoryProfile profile;
     int version = 0;
     auto role = ShifterRole::None;
+    unsigned int nativePositions{};
     std::string line;
     while (std::getline(file, line)) {
         const auto entry = trim(line);
+        if (entry.starts_with(nativeShifterPositionsPrefix)) {
+            unsigned int declared{};
+            nativePositions = parseNumber(trim(entry.substr(nativeShifterPositionsPrefix.size())), declared)
+                ? declared : 0u;
+            role = ShifterRole::None;
+            continue;
+        }
         if (entry.starts_with(progressiveHandbrakePrefix)) {
             AccessoryBinding binding;
             if (!version || profile.size() == maxAccessoryBindings
@@ -296,11 +303,13 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
             }
             profile.push_back(std::move(binding));
             role = ShifterRole::None;
+            nativePositions = 0;
             continue;
         }
         if (entry.starts_with(nativeShifterPrefix)) {
             AccessoryBinding binding;
             binding.nativeShifter = true;
+            binding.nativeShifterPositions = std::exchange(nativePositions, 0u);
             binding.role = std::exchange(role, ShifterRole::None);
             if (!version || profile.size() == maxAccessoryBindings
                 || !parseBinding(entry.substr(nativeShifterPrefix.size()), binding, version)) {
@@ -312,8 +321,11 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
         }
         if (entry.empty() || entry.starts_with('#')) {
             role = parseRole(entry);
+            if (role == ShifterRole::None)
+                nativePositions = 0;
             continue;
         }
+        nativePositions = 0;
         if (!version && (entry == "version=1" || entry == "version=2" || entry == "version=3")) {
             version = entry.back() - '0';
             role = ShifterRole::None;
@@ -356,6 +368,8 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     file << "# Chrome Axis accessories\nversion=" << version << '\n';
     for (const auto& binding : profile) {
         // Accessory versions 1 and 2 already ignore comment lines.
+        if (binding.nativeShifter && binding.nativeShifterPositions)
+            file << nativeShifterPositionsPrefix << binding.nativeShifterPositions << '\n';
         if (binding.role != ShifterRole::None)
             file << rolePrefix << roleNames[static_cast<std::size_t>(binding.role)] << '\n';
         // Older versions skip these comment rows and still read the keyboard bindings.
@@ -384,6 +398,28 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
     return false;
 }
 
+bool nativeShifterVerified(const AccessoryProfile& profile) noexcept
+{
+    std::string_view device;
+    unsigned int declared{};
+    unsigned int present{};
+    for (const auto& binding : profile) {
+        if (!binding.nativeShifter)
+            continue;
+        const auto position = nativeShifterPositionBit(binding.role);
+        if (!position || (present & position) || !binding.nativeShifterPositions)
+            return false;
+        if (!present) {
+            device = binding.deviceId;
+            declared = binding.nativeShifterPositions;
+        }
+        if (binding.deviceId != device || binding.nativeShifterPositions != declared)
+            return false;
+        present |= position;
+    }
+    return declared && declared == present;
+}
+
 bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
                                const std::optional<AccessoryProfile>& second)
 {
@@ -395,7 +431,9 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
                         binding.nativeShifter);
     };
     return std::ranges::equal(*first, *second, [&](const AccessoryBinding& left, const AccessoryBinding& right) {
-        return mapping(left) == mapping(right) && (!left.nativeShifter || left.role == right.role);
+        return mapping(left) == mapping(right)
+            && (!left.nativeShifter || (left.role == right.role
+                && left.nativeShifterPositions == right.nativeShifterPositions));
     });
 }
 
@@ -405,6 +443,7 @@ AccessoryReader::AccessoryReader(const AccessoryProfile& profile)
     if (!validateAccessories(profile, error))
         return;
     profile_ = profile;
+    nativeShifterVerified_ = nativeShifterVerified(profile_);
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         std::size_t owner = 0;
         while (owner < i && profile_[owner].deviceId != profile_[i].deviceId)
@@ -518,7 +557,7 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
 {
     std::bitset<256> keys;
     bool hasNativePositions = false;
-    bool nativeAvailable = true;
+    bool nativeAvailable = nativeShifterVerified_;
     bool nativeArmed = true;
     bool allNativeNeutral = true;
     unsigned int activePositions{};

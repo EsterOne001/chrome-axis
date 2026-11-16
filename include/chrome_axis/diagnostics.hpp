@@ -31,7 +31,9 @@ enum class DiagnosticCommandState : std::uint8_t {
     temporarilyUnavailable, sampleExpired
 };
 
-enum class DiagnosticCommandOutput : std::uint8_t { none, held, pulsing, blocked, failed };
+enum class DiagnosticCommandOutput : std::uint8_t {
+    none, held, pulsing, blocked, failed, nativeReady, nativePending, nativeEngaged, nativeRefused, nativePaused
+};
 
 struct DiagnosticAccessoryCommand {
     AccessoryKind kind{};
@@ -87,7 +89,7 @@ struct DiagnosticFeedbackTelemetry {
 
 enum class DiagnosticShiftState : std::uint8_t {
     automatic, ready, unavailable, outsideRange, stopToChangeDirection, alreadyEngaged,
-    rejected, accepted, neutralTransition, expired
+    rejected, accepted, neutralTransition, expired, recalibrationNeeded, selectorUnavailable
 };
 
 struct DiagnosticTransmission {
@@ -97,6 +99,8 @@ struct DiagnosticTransmission {
     int requestedGear{-2};
     int engagedGear{-2};
     DiagnosticShiftState shift{};
+
+    bool operator==(const DiagnosticTransmission&) const = default;
 };
 
 struct DiagnosticSnapshot {

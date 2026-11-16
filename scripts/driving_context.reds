@@ -1,6 +1,5 @@
 public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>) -> Int32;
-public static native func ChromeAxis_ManualGear(vehicle: ref<VehicleObject>) -> Int32;
-public static native func ChromeAxis_ManualModeActive(vehicle: ref<VehicleObject>) -> Bool;
+public static native func ChromeAxis_TransmissionState(vehicle: ref<VehicleObject>) -> Int32;
 public static native func ChromeAxis_FeedbackEnabled() -> Bool;
 public static native func ChromeAxis_FeedbackMotion(vehicle: ref<VehicleObject>, velocity: Vector4, forward: Vector4, right: Vector4, mass: Float, simTime: Float, skidding: Bool, airborne: Bool) -> Void;
 public static native func ChromeAxis_VehicleImpact(vehicle: ref<VehicleObject>, velocityChange: Float, lateral: Float) -> Void;
@@ -151,8 +150,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     return label;
   }
 
-  private func ReadHudGear(vehicle: wref<VehicleObject>) -> Int32 {
-    let nativeGear = ChromeAxis_ManualGear(vehicle);
+  private func ReadHudGear(vehicle: wref<VehicleObject>, nativeGear: Int32) -> Int32 {
     if nativeGear >= -1 && nativeGear <= 8 {
       return nativeGear;
     }
@@ -191,8 +189,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     let gear: Int32 = -2;
     let manualMode: Bool = false;
     if status != 0 && IsDefined(vehicle) {
-      gear = this.ReadHudGear(vehicle);
-      manualMode = ChromeAxis_ManualModeActive(vehicle);
+      let transmission = ChromeAxis_TransmissionState(vehicle);
+      manualMode = transmission >= 16;
+      gear = this.ReadHudGear(vehicle, (manualMode ? transmission - 16 : transmission) - 2);
     }
     let modeChanged = this.hudManualMode ? !manualMode : manualMode;
     let gearLineChanged = this.hudGear != gear || modeChanged;

@@ -451,15 +451,21 @@ int testProgressiveHandbrake(const std::filesystem::path& path, const std::strin
 int testNativeShifterProfile(const std::filesystem::path& path, const std::string& deviceId)
 {
     using namespace chrome_axis;
+    constexpr auto positions = nativeShifterPositionBit(ShifterRole::Gear1)
+        | nativeShifterPositionBit(ShifterRole::Gear2) | nativeShifterPositionBit(ShifterRole::Reverse);
+    static_assert(positions == 0b111u);
+    static_assert(nativeShifterPositionBit(ShifterRole::Gear8) == 256u);
+    static_assert(nativeShifterPositionBit(ShifterRole::Upshift) == 0u);
     const AccessoryProfile profile{
-        {deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true},
-        {deviceId, AccessoryKind::Axis, 1, 0, 1000, 0, {62, 35}, ShifterRole::Gear2, AccessoryActivation::hold, 0, true},
-        {deviceId, AccessoryKind::Pov, 0, povCentered, 18000, 0, {}, ShifterRole::Reverse, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true, positions},
+        {deviceId, AccessoryKind::Axis, 1, 0, 1000, 0, {62, 35}, ShifterRole::Gear2, AccessoryActivation::hold, 0, true, positions},
+        {deviceId, AccessoryKind::Pov, 0, povCentered, 18000, 0, {}, ShifterRole::Reverse, AccessoryActivation::hold, 0, true, positions},
         {deviceId, AccessoryKind::Button, 2, 0, 1, VK_NUMPAD6, {}, ShifterRole::Gear6},
         {deviceId, AccessoryKind::Button, 3, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
     };
     std::string error;
-    if (!saveAccessoryProfile(path, profile, error) || loadAccessoryProfile(path, error) != profile)
+    if (!nativeShifterVerified(profile) || !saveAccessoryProfile(path, profile, error)
+        || loadAccessoryProfile(path, error) != profile)
         return 94;
     {
         std::ifstream file(path);
@@ -467,6 +473,9 @@ int testNativeShifterProfile(const std::filesystem::path& path, const std::strin
         std::getline(file, line);
         std::getline(file, line);
         if (line != "version=3")
+            return 95;
+        std::getline(file, line);
+        if (line != "# native-shifter-positions=7")
             return 95;
         std::getline(file, line);
         if (line != "# shifter-role=gear-1")
@@ -483,6 +492,10 @@ int testNativeShifterProfile(const std::filesystem::path& path, const std::strin
     edited = profile;
     edited.front().nativeShifter = false;
     if (sameAccessoryInputProfile(profile, edited))
+        return 96;
+    edited = profile;
+    edited.front().nativeShifterPositions = 0;
+    if (sameAccessoryInputProfile(profile, edited) || nativeShifterVerified(edited))
         return 96;
 
     const auto rejected = [&](const auto& change) {
@@ -510,9 +523,9 @@ int testNativeShifterPolling(const std::string& deviceId)
     using namespace chrome_axis;
     using Status = DeviceReadStatus;
     AccessoryReader reader({
-        {deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true},
-        {deviceId, AccessoryKind::Button, 1, 0, 1, 0, {}, ShifterRole::Gear2, AccessoryActivation::hold, 0, true},
-        {deviceId, AccessoryKind::Pov, 0, povCentered, 18000, 0, {}, ShifterRole::Reverse, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true, 7},
+        {deviceId, AccessoryKind::Button, 1, 0, 1, 0, {}, ShifterRole::Gear2, AccessoryActivation::hold, 0, true, 7},
+        {deviceId, AccessoryKind::Pov, 0, povCentered, 18000, 0, {}, ShifterRole::Reverse, AccessoryActivation::hold, 0, true, 7},
         {deviceId, AccessoryKind::Button, 2, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
     });
     DeviceSample sample;
@@ -601,6 +614,69 @@ int testNativeShifterPolling(const std::string& deviceId)
     return expect(std::nullopt, 4) && !reader.ready() ? 0 : 109;
 }
 
+int testUnverifiedNativeShifter(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    const AccessoryBinding first{deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1,
+        AccessoryActivation::hold, 0, true, 3};
+    const AccessoryBinding reverse{deviceId, AccessoryKind::Button, 1, 0, 1, 0, {}, ShifterRole::Reverse,
+        AccessoryActivation::hold, 0, true, 3};
+    const AccessoryBinding paddle{deviceId, AccessoryKind::Button, 2, 0, 1, VK_ADD, {}, ShifterRole::Upshift,
+        AccessoryActivation::pulse};
+    const AccessoryProfile incomplete{first, paddle};
+    auto legacy = incomplete;
+    legacy.front().nativeShifterPositions = 0;
+    AccessoryProfile inconsistent{first, paddle, reverse};
+    inconsistent.back().nativeShifterPositions = 1;
+    auto unknown = inconsistent;
+    unknown.front().nativeShifterPositions = 515;
+    unknown.back().nativeShifterPositions = 515;
+
+    const auto noNativeOutput = [&](const AccessoryProfile& profile) {
+        AccessoryReader reader(profile);
+        DeviceSample sample;
+        sample.buttonsPresent.set(0).set(1).set(2);
+        const std::array<const DeviceSample*, 3> connected{&sample, &sample, &sample};
+        std::array<AccessoryObservation, 3> observations;
+        std::optional<int> gear;
+        std::bitset<256> pulses;
+        const auto poll = [&] { return reader.update(connected, {}, observations, &pulses, nullptr, &gear); };
+        for (int i = 0; i < 12; ++i) {
+            if (poll().any() || gear || pulses.any())
+                return false;
+        }
+        sample.buttons.set(0).set(2);
+        if (poll().any() || gear || pulses.count() != 1 || !pulses.test(VK_ADD))
+            return false;
+        for (int i = 0; i < 8; ++i) {
+            if (poll().any() || gear || pulses.any())
+                return false;
+        }
+        return observations[0].status == AccessoryStatus::waitingForNeutral && observations[0].engaged == true
+            && !observations[0].active && reader.readiness().armed == 1;
+    };
+
+    std::string error;
+    const std::array<const AccessoryProfile*, 4> profiles{&incomplete, &legacy, &inconsistent, &unknown};
+    for (const auto* profile : profiles) {
+        if (!saveAccessoryProfile(path, *profile, error))
+            return 110;
+        const auto loaded = loadAccessoryProfile(path, error);
+        if (loaded != *profile || nativeShifterVerified(*loaded) || !noNativeOutput(*loaded))
+            return 111;
+    }
+    {
+        std::ofstream file(path);
+        file << "version=3\n# native-shifter-positions=3invalid\n# shifter-role=gear-1\n"
+             << nativeShifterPrefix << deviceId << ",button,0,0,1,0\n"
+             << "# shifter-role=upshift\nbinding=" << deviceId << ",button,2,0,1," << VK_ADD << ",pulse\n";
+    }
+    const auto malformed = loadAccessoryProfile(path, error);
+    if (malformed != legacy || nativeShifterVerified(*malformed) || !noNativeOutput(*malformed))
+        return 112;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -637,6 +713,7 @@ int run()
     const auto handbrakeResult = testProgressiveHandbrake(path, handbrakeId);
     const auto replacementResult = testProfileReplacement(path, wheelId);
     const auto nativeShifterProfileResult = testNativeShifterProfile(path, wheelId);
+    const auto unverifiedShifterResult = testUnverifiedNativeShifter(path, wheelId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
@@ -653,6 +730,8 @@ int run()
         return replacementResult;
     if (nativeShifterProfileResult != 0)
         return nativeShifterProfileResult;
+    if (unverifiedShifterResult != 0)
+        return unverifiedShifterResult;
     if (const auto result = testNativeShifterPolling(wheelId); result != 0)
         return result;
     if (const auto result = testPreviewReadings(wheelId); result != 0)

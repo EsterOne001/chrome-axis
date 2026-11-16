@@ -3,8 +3,16 @@
 #include <iostream>
 
 using chrome_axis::ManualTransmissionInput;
+using chrome_axis::PedalRouting;
+using chrome_axis::PhysicalModeKey;
+using chrome_axis::TransmissionPedals;
 
 namespace {
+
+static_assert(chrome_axis::reversePedalGear(0, -1, 8) == true);
+static_assert(chrome_axis::reversePedalGear(-1, 0, 8) == std::nullopt);
+static_assert(chrome_axis::reversePedalGear(-1, 1, 8) == false);
+static_assert(chrome_axis::reversePedalGear(-1, -2, 0) == std::nullopt);
 
 bool hardwareModeNeedsAValidLever()
 {
@@ -37,19 +45,82 @@ bool simulationRequiresAnExplicitToggle()
     const auto manual = input.update(false, {}, true, true, false, false, {});
     const auto next = input.update(false, {}, true, false, true, false, {});
     const auto held = input.update(false, {}, true, false, true, false, {});
-    const auto direct = input.update(false, {}, true, false, false, true, 3);
-    const auto neutral = input.update(false, {}, true, false, false, false, -1);
+    const auto direct = input.update(false, {}, true, false, false, true, {.gear = 3});
+    const auto neutral = input.update(false, {}, true, false, false, false, {.gear = -1});
     const auto neutralAfterRelease = input.update(false, {}, true, false, false, false, {});
     if (!manual.manual || next.delta != 1 || held.delta != 0 || direct.gear != 3 ||
         direct.delta != 0 || neutral.gear != -1 || neutralAfterRelease.gear != -1)
         return false;
     input.suspend();
-    const auto resumed = input.update(false, {}, true, true, true, false, 3);
+    const auto resumed = input.update(false, {}, true, true, true, false, {.gear = 3});
     const auto released = input.update(false, {}, true, false, false, false, {});
     const auto previous = input.update(false, {}, true, false, false, true, {});
     return resumed.manual && !resumed.delta && !resumed.gear &&
         released.manual && previous.delta == -1 &&
         !input.update(false, {}, false, false, false, false, {}).manual;
+}
+
+bool ambiguousKeysNeedFullRelease()
+{
+    ManualTransmissionInput input;
+    input.update(false, {}, true, false, false, false, {});
+    input.update(false, {}, true, true, false, false, {});
+    input.suspend();
+    const auto conflict = input.update(false, {}, true, false, false, false, {.ambiguous = true});
+    const auto partlyReleased = input.update(false, {}, true, false, false, false, {.gear = 1});
+    const auto released = input.update(false, {}, true, false, false, false, {});
+    const auto selected = input.update(false, {}, true, false, false, false, {.gear = 1});
+    const auto overlap = input.update(false, {}, true, false, false, false, {.ambiguous = true});
+    const auto heldThird = input.update(false, {}, true, false, false, false, {.gear = 3});
+    return conflict.manual && !conflict.gear && !partlyReleased.gear && !released.gear
+        && selected.gear == 1 && overlap.gear == 1 && heldThird.gear == 1;
+}
+
+bool injectedF8DoesNotToggleTransmission()
+{
+    ManualTransmissionInput input;
+    PhysicalModeKey keyboard;
+    const auto update = [&] { return input.update(true, -1, false, keyboard.down(), false, false, {}).manual; };
+    if (!update())
+        return false;
+    keyboard.update(true, true); // Sent by a held or pulsed USB accessory.
+    if (!update())
+        return false;
+    keyboard.update(false, true);
+    if (!update())
+        return false;
+    keyboard.update(true, false);
+    if (update())
+        return false;
+    keyboard.update(false, true); // A simulated release must not rearm the held physical key.
+    if (update())
+        return false;
+    keyboard.update(false, false);
+    if (update())
+        return false;
+    keyboard.update(true, false);
+    return update();
+}
+
+bool retainsManualReversePedalsDuringHandoff()
+{
+    TransmissionPedals pedals;
+    if (pedals.update(false, true, false) != PedalRouting::standard ||
+        pedals.update(true, true, false) != PedalRouting::reverse ||
+        pedals.update(false, true, false) != PedalRouting::reverse ||
+        pedals.update(false, false, false) != PedalRouting::suspended ||
+        pedals.update(false, false, true) != PedalRouting::standard ||
+        pedals.update(false, true, false) != PedalRouting::standard)
+        return false;
+
+    return pedals.update(true, false, false) == PedalRouting::standard &&
+        pedals.update(true, chrome_axis::reversePedalGear(-1, 0, 8), false) == PedalRouting::suspended &&
+        pedals.update(true, true, false) == PedalRouting::suspended &&
+        pedals.update(true, true, true) == PedalRouting::reverse &&
+        pedals.update(false, {}, false) == PedalRouting::suspended &&
+        pedals.update(false, true, false) == PedalRouting::suspended &&
+        pedals.update(false, true, true) == PedalRouting::reverse &&
+        pedals.update(false, false, true) == PedalRouting::standard;
 }
 
 } // namespace
@@ -62,6 +133,14 @@ int main()
     }
     if (!simulationRequiresAnExplicitToggle()) {
         std::cerr << "Transmission simulation used a held or disabled command\n";
+        return 1;
+    }
+    if (!ambiguousKeysNeedFullRelease() || !injectedF8DoesNotToggleTransmission()) {
+        std::cerr << "A held or injected key changed the transmission\n";
+        return 1;
+    }
+    if (!retainsManualReversePedalsDuringHandoff()) {
+        std::cerr << "Pedal routing changed before the reverse handoff was safe\n";
         return 1;
     }
 }
