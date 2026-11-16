@@ -307,7 +307,7 @@ int checkBufferedTransitions(bool sameDevicePaddles)
             collected.buttonPresses += pulses.test('J');
             collected.axisPresses += pulses.test('E');
             collected.povPresses += pulses.test('K');
-            paddleBatch.observe(shift);
+            paddleBatch.observe(shift, 100ms);
             if (latest) {
                 collected.heldCurrently = held.test(VK_SPACE);
                 collected.unrelatedStillHeld = held.test('B');
@@ -381,13 +381,14 @@ int checkBufferedTransitions(bool sameDevicePaddles)
         !run(Transition::neutral, 4) || poll().heldCurrently)
         return 42;
 
-    // Replaying the wheel must keep a held button on another healthy device
-    // even when its last consumed report has since expired.
+    // Keep the held button on the other device. Its historical report can
+    // preserve that hold while being too old to validate a split-device shift.
     if (!run(Transition::oldOtherHold, 5) || !poll().unrelatedStillHeld ||
         !run(Transition::freshOtherHold, 5))
         return 43;
     const auto crossDevice = poll(Clock::now() + 155ms);
-    if (!crossDevice.unrelatedStillHeld || crossDevice.buttonPresses != 1 || crossDevice.shifts != 1 ||
+    if (!crossDevice.unrelatedStillHeld || crossDevice.buttonPresses != 1 ||
+        crossDevice.shifts != (sameDevicePaddles ? 1u : 0u) ||
         !run(Transition::neutral, 4))
         return 44;
     poll();
@@ -433,7 +434,7 @@ int checkPaddleBatchOrdering()
     PaddleInputBatch batch;
     const auto add = [&](unsigned int down, int shift, auto at) {
         batch.observe({.sequentialArmed = true, .paddlesPressed = down, .shiftDelta = shift,
-            .shiftSampledAt = at});
+            .shiftSampledAt = at, .oppositePaddleSampledAt = at}, 100ms);
     };
     add(1, 1, first);
     add(0, 0, first + 5ms);
@@ -449,11 +450,33 @@ int checkPaddleBatchOrdering()
 
     PaddleInputBatch full;
     for (int n = 0; n < 5; ++n) {
+        const auto at = first + n * 10ms;
         full.observe({.sequentialArmed = true, .paddlesPressed = 1, .shiftDelta = 1,
-            .shiftSampledAt = first + n * 10ms});
-        full.observe({.sequentialArmed = true});
+            .shiftSampledAt = at, .oppositePaddleSampledAt = at}, 100ms);
+        full.observe({.sequentialArmed = true}, 100ms);
     }
     return full.overflowed() && full.edges().size() == 4 ? 0 : 46;
+}
+
+int checkPaddleEvidenceAtPress()
+{
+    const auto first = Clock::now();
+    PaddleInputBatch batch;
+    const auto tap = [&](int shift, auto at, auto opposite) {
+        batch.observe({.sequentialArmed = true, .paddlesPressed = 1, .shiftDelta = shift,
+                       .shiftSampledAt = at, .oppositePaddleSampledAt = opposite}, 100ms);
+        // A later neutral report finishes the gesture. It cannot validate a
+        // press that was discarded for lack of evidence.
+        batch.observe({.sequentialArmed = true, .sequentialSampledAt = at + 5ms}, 100ms);
+    };
+    tap(1, first, first - 100ms); // Inclusive age limit.
+    tap(1, first + 10ms, first - 91ms);
+    tap(-1, first + 20ms, first + 21ms);
+    tap(1, first + 30ms, Clock::time_point{});
+    tap(-1, first + 40ms, first + 40ms);
+    batch.finish();
+    const std::array expected{std::pair{1, first}, std::pair{-1, first + 40ms}};
+    return !batch.overflowed() && std::ranges::equal(batch.edges(), expected) ? 0 : 47;
 }
 
 } // namespace
@@ -462,7 +485,7 @@ int main()
 {
     for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkCoalescedArming(),
                               checkBufferedTransitions(false), checkBufferedTransitions(true),
-                              checkPaddleBatchOrdering()}) {
+                              checkPaddleBatchOrdering(), checkPaddleEvidenceAtPress()}) {
         if (result) {
             std::cerr << "Driving input check failed: " << result << '\n';
             return result;

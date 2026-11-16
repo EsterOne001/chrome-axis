@@ -22,6 +22,16 @@ struct DeviceLayoutSnapshot {
     bool incomplete() const noexcept {
         return pending.axes.any() || pending.buttons.any() || pending.povs.any();
     }
+
+    void changeSelection(const DeviceObjectSelection& previous, const DeviceObjectSelection& wanted) noexcept {
+        const auto retain = [](auto& present, auto& pending, const auto& previous, const auto& wanted) {
+            present &= previous & wanted;
+            pending = (pending | ~previous) & wanted;
+        };
+        retain(present.axes, pending.axes, previous.axes, wanted.axes);
+        retain(present.buttons, pending.buttons, previous.buttons, wanted.buttons);
+        retain(present.povs, pending.povs, previous.povs, wanted.povs);
+    }
 };
 
 // Query is called only on the discovery thread. Sampling never waits on the driver.
@@ -40,9 +50,14 @@ public:
     DeviceLayoutSnapshot read(const std::string& id, const DeviceObjectSelection& wanted, std::uint64_t connection) {
         const auto now = DeviceReadClock::now();
         std::scoped_lock lock(mutex_);
-        if (request_.connection != connection || request_.wanted != wanted || request_.id != id) {
+        const bool sameConnection = request_.connection == connection && request_.id == id;
+        if (!sameConnection || request_.wanted != wanted) {
+            const auto previous = request_.wanted;
             request_ = {id, wanted, connection};
-            snapshot_ = {.pending = wanted};
+            if (sameConnection)
+                snapshot_.changeSelection(previous, wanted);
+            else
+                snapshot_ = {.pending = wanted};
             retryAt_ = {};
             ++revision_;
             changed_.notify_one();
@@ -71,8 +86,8 @@ private:
                 continue;
             }
             const auto request = request_;
+            auto result = snapshot_;
             lock.unlock();
-            auto result = DeviceLayoutSnapshot{.pending = request.wanted};
             try {
                 result = query(request);
             } catch (...) {

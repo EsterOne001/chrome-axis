@@ -306,7 +306,8 @@ bool refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& 
             present = hasObject(device, offset(index), type, &status);
             return status;
         });
-        needsAcquisition |= result == DIERR_NOTACQUIRED;
+        // Some drivers defer metadata on an unacquired handle without returning DIERR_NOTACQUIRED.
+        needsAcquisition |= result == DIERR_NOTACQUIRED || result == E_PENDING;
         return std::tuple{result, present, Clock::now()};
     });
     return needsAcquisition;
@@ -327,7 +328,7 @@ public:
         auto& opened = *opened_;
         ReadObserver observer(opened, request.id, observer_, context_);
         if (!opened.device && !open(observer))
-            return {.pending = request.wanted};
+            return snapshot(request.wanted);
 
         if (needsAcquisition_) {
             const auto result = observer.measure("Probe Acquire", [&] { return opened.device->Acquire(); });
@@ -343,8 +344,10 @@ public:
         needsAcquisition_ |= refreshObjects(opened.buttons, wanted.buttons, *opened.device, observer,
             "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); });
         if (opened.acquired) {
-            observer.measure("Probe Unacquire", [&] { return opened.device->Unacquire(); });
+            const auto result = observer.measure("Probe Unacquire", [&] { return opened.device->Unacquire(); });
             opened.acquired = false;
+            if (FAILED(result))
+                opened.device.reset();
         }
         return snapshot(wanted);
     }

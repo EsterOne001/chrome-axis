@@ -2090,7 +2090,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                         const auto held = usb.accessories->poll(*input, observed, &pulses,
                             latest ? &handbrake : nullptr, latest ? &nativeGear : nullptr,
                             &transmissionSample, &keyTimes, !latest);
-                        paddleBatch.observe(transmissionSample);
+                        paddleBatch.observe(transmissionSample, inputLifetime);
                         const auto released = transientHolds & ~held;
                         const auto started = latest ? std::bitset<256>{} : held & ~previousHeldKeys;
                         replayReleases |= previousHeldKeys & ~held;

@@ -767,6 +767,7 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
     std::array<std::uint64_t, maxAccessoryBindings> sampleSequences{};
     bool nativeFresh = !replayDiscrete, paddlesFresh = true;
     DeviceReadClock::time_point gearSampledAt{}, paddlesSampledAt{}, shiftSampledAt{};
+    std::array<DeviceReadClock::time_point, 2> paddleSampleTimes{};
     const auto oldestSample = [](auto& oldest, const DeviceSample* sample) {
         if (sample && sample->sampledAt != DeviceReadClock::time_point{} &&
             (oldest == DeviceReadClock::time_point{} || sample->sampledAt < oldest))
@@ -836,6 +837,8 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             paddlesFresh &= sample && (!sample->sequence || sample->sequence != selectorSequences_[i]);
             oldestSample(paddlesSampledAt, sample);
             const bool up = binding.role == ShifterRole::Upshift;
+            if (sample)
+                paddleSampleTimes[up ? 0 : 1] = sample->sampledAt;
             paddlePositions |= up ? 1u : 2u;
             const bool armed = state.status == AccessoryStatus::armed;
             paddlesAvailable &= status != DeviceReadStatus::resumed &&
@@ -906,6 +909,8 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
                 if (!sequentialWaitForRelease_ && pressedPaddles == 1) {
                     transmission->shiftDelta = paddleEdge;
                     transmission->shiftSampledAt = shiftSampledAt;
+                    if (paddleEdge)
+                        transmission->oppositePaddleSampledAt = paddleSampleTimes[paddleEdge > 0 ? 1 : 0];
                 }
             }
         } else {

@@ -289,6 +289,110 @@ int testSlowLayoutRetryKeepsKnownAxis()
     }) ? 0 : 78;
 }
 
+int testLayoutSelectionKeepsConfirmedControls()
+{
+    DeviceObjectSelection initial;
+    initial.axes.set(0).set(1);
+    initial.buttons.set(1).set(2);
+    initial.povs.set(0).set(1);
+    auto extended = initial;
+    extended.buttons.set(5);
+    auto replacement = initial;
+    replacement.buttons.set(7);
+    replacement.povs.reset(0);
+
+    DeviceObjectSelection knownPresent;
+    knownPresent.axes.set(0);
+    knownPresent.buttons.set(1);
+    knownPresent.povs.set(0);
+    std::atomic<bool> firstStarted{}, firstReleased{}, secondStarted{}, secondReleased{};
+    DeviceLayoutWorker worker([&](const DeviceLayoutRequest& request) {
+        DeviceLayoutSnapshot result{.present = knownPresent};
+        if (request.wanted == extended) {
+            firstStarted.store(true);
+            firstReleased.wait(false);
+            result.present.buttons.set(5);
+        } else if (request.wanted == replacement) {
+            secondStarted.store(true);
+            secondReleased.wait(false);
+            result.present.buttons.set(7);
+            result.present.povs.reset(0);
+        }
+        return result;
+    });
+    const auto unblock = [](std::atomic<bool>& gate) {
+        gate.store(true);
+        gate.notify_one();
+    };
+    const auto unblockOnExit = [&] {
+        unblock(firstReleased);
+        unblock(secondReleased);
+    };
+    struct ReleaseQueriesOnExit {
+        const decltype(unblockOnExit)& release;
+        ~ReleaseQueriesOnExit() { release(); }
+    } releaseQueries{unblockOnExit};
+
+    const std::string device = "{11111111-1111-1111-1111-111111111111}";
+    if (!waitFor([&] {
+        const auto layout = worker.read(device, initial, 1);
+        return !layout.incomplete() && layout.present == knownPresent;
+    }))
+        return 79;
+
+    Profile profile;
+    profile.steering = {device, 0, 0, -1000, 1000, 0.02f};
+    ControlReader controls(profile);
+    DeviceSample sample;
+    const std::array<const DeviceSample*, 3> samples{&sample, nullptr, nullptr};
+    const auto updateSteering = [&](const DeviceLayoutSnapshot& layout) {
+        sample.axesPresent[0] = layout.present.axes.test(0);
+        sample.axesPending = layout.pending.axes;
+        return controls.update(samples);
+    };
+    for (int i = 0; i < 3; ++i)
+        updateSteering(worker.read(device, initial, 1));
+    sample.axes[0] = 1000;
+
+    const auto expanding = worker.read(device, extended, 1);
+    DeviceObjectSelection onlyNewButton;
+    onlyNewButton.buttons.set(5);
+    if (expanding.present != knownPresent || expanding.pending != onlyNewButton ||
+        !updateSteering(expanding).steeringReady || !waitFor([&] { return firstStarted.load(); }))
+        return 80;
+
+    const auto switching = worker.read(device, replacement, 1);
+    const auto retained = [&] {
+        auto present = knownPresent;
+        present.povs.reset(0);
+        return present;
+    }();
+    onlyNewButton.buttons.reset(5).set(7);
+    if (switching.present != retained || switching.pending != onlyNewButton ||
+        !updateSteering(switching).steeringReady)
+        return 81;
+
+    // Completion of the superseded scan must not restore a removed button or POV.
+    unblock(firstReleased);
+    if (!waitFor([&] { return secondStarted.load(); }))
+        return 82;
+    const auto stillWaiting = worker.read(device, replacement, 1);
+    if (stillWaiting.present != retained || stillWaiting.pending != onlyNewButton ||
+        !updateSteering(stillWaiting).steeringReady)
+        return 83;
+    unblock(secondReleased);
+    if (!waitFor([&] {
+        const auto layout = worker.read(device, replacement, 1);
+        auto expected = retained;
+        expected.buttons.set(7);
+        return !layout.incomplete() && layout.present == expected && updateSteering(layout).steeringReady;
+    }))
+        return 84;
+
+    const auto differentDevice = worker.read("{22222222-2222-2222-2222-222222222222}", replacement, 1);
+    return differentDevice.present == DeviceObjectSelection{} && differentDevice.pending == replacement ? 0 : 85;
+}
+
 int testProvisionalInputLayout()
 {
     DeviceObjectProbe<3> layout;
@@ -355,6 +459,8 @@ int main()
     if (const auto result = testWheelForceRecoveryAfterPendingReopen())
         return result;
     if (const auto result = testSlowLayoutRetryKeepsKnownAxis())
+        return result;
+    if (const auto result = testLayoutSelectionKeepsConfirmedControls())
         return result;
     if (const auto result = testProvisionalInputLayout())
         return result;

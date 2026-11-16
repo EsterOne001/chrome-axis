@@ -21,14 +21,18 @@ struct DrivingInputDevice {
 
 class PaddleInputBatch {
 public:
-    void observe(const AccessoryTransmissionSample& sample) noexcept {
+    void observe(const AccessoryTransmissionSample& sample, DeviceReadClock::duration lifetime) noexcept {
         if (!sample.sequentialArmed || sample.paddlesPressed > 1) {
             pending_.reset();
             return;
         }
         if (sample.paddlesPressed == 0 || sample.shiftDelta)
             finish();
-        if (sample.shiftDelta)
+        // Replaying a historical level preserves holds, but a shift requires
+        // evidence from both paddles when the press occurred.
+        const auto opposite = sample.oppositePaddleSampledAt;
+        if (sample.shiftDelta && opposite != DeviceReadClock::time_point{} &&
+            opposite <= sample.shiftSampledAt && sample.shiftSampledAt - opposite <= lifetime)
             pending_ = Edge{sample.shiftDelta, sample.shiftSampledAt};
     }
 

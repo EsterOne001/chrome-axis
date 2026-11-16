@@ -126,6 +126,7 @@ struct AccessoryTransmissionSample {
     DeviceReadClock::time_point sequentialSampledAt{};
     DeviceReadClock::time_point clutchSampledAt{};
     DeviceReadClock::time_point shiftSampledAt{};
+    DeviceReadClock::time_point oppositePaddleSampledAt{};
 };
 
 using AccessoryKeyTimes = std::array<DeviceReadClock::time_point, 256>;
