@@ -164,9 +164,10 @@ int main() {
             using chrome_axis::PedalRouting;
             const auto inGear = engaged == reverseGear ? PedalRouting::reverse : PedalRouting::standard;
             if (planShift(engaged, neutralGear, eightEntries, priorDirection) != ShiftPlan::direct ||
-                pedals.update(true, observePedalGear(engaged, engaged, eightEntries), false) != inGear ||
-                pedals.update(true, observePedalGear(engaged, neutralGear, eightEntries), false) != inGear ||
-                pedals.update(true, observePedalGear(neutralGear, neutralGear, eightEntries), false) != PedalRouting::standard)
+                pedals.update(true, observePedalGear(engaged, engaged, eightEntries), {}).routing != inGear ||
+                pedals.update(true, observePedalGear(engaged, neutralGear, eightEntries), {}).routing != inGear ||
+                pedals.update(true, observePedalGear(neutralGear, neutralGear, eightEntries), {})
+                    .routing != PedalRouting::standard)
                 return 2;
             const auto movement = speed == 0.0f ? Direction::unknown : priorDirection;
             const auto next = planShift(neutralGear, 1, eightEntries, priorDirection, movement);

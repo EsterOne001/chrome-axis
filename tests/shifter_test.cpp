@@ -1,5 +1,9 @@
+#include "../src/app/shifter_capture_key.hpp"
+#include "chrome_axis/calibration.hpp"
 #include "chrome_axis/shifter.hpp"
 
+#include <chrono>
+#include <filesystem>
 #include <iostream>
 
 namespace {
@@ -214,6 +218,60 @@ bool comparesPhysicalGestures()
         && sameShifterInput(button, sameButton);
 }
 
+bool keepsSequentialKeyThroughRestRecapture()
+{
+    using namespace chrome_axis;
+    using enum ShifterRole;
+
+    ShifterCaptureKey key;
+    key.enter(Upshift, VK_ADD);
+    if (!key.hasPosition() || key.value() != VK_ADD)
+        return false;
+    key.choose('J');
+
+    DeviceSample released;
+    released.axesPresent[0] = released.axesPresent[1] = true;
+    released.axes[0] = released.axes[1] = 32000;
+    CalibrationCapture recapture;
+    for (std::size_t i = 0; i < CalibrationCapture::sampleCount; ++i) {
+        if (!recapture.add(released))
+            return false;
+    }
+    const auto rest = recapture.result();
+    if (!rest)
+        return false;
+
+    key.enter(Upshift, VK_ADD);
+    AccessoryProfile draft{{shifterId, AccessoryKind::Axis, 0, rest->median[0], 65000, key.value()}};
+    draft.back().role = Upshift;
+    key.enter(Downshift, VK_SUBTRACT);
+    if (draft.front().key != 'J' || key.value() != VK_SUBTRACT)
+        return false;
+    key.choose('K');
+    key.enter(Downshift, VK_SUBTRACT);
+    draft.emplace_back(shifterId, AccessoryKind::Axis, 1, rest->median[1], 65000, key.value());
+    draft.back().role = Downshift;
+    if (draft.back().key != 'K')
+        return false;
+
+    key = {};
+    if (key.hasPosition())
+        return false;
+    key.enter(Upshift, 0);
+    key.enter(Upshift, 0);
+    if (!key.hasPosition() || key.value() != 0)
+        return false;
+
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path()
+        / ("chrome-axis-shifter-recapture-" + std::to_string(nonce) + ".ini");
+    std::string error;
+    const bool roundTrip = saveAccessoryProfile(path, draft, error) && loadAccessoryProfile(path, error) == draft;
+    std::error_code cleanup;
+    std::filesystem::remove(path, cleanup);
+    return roundTrip && !cleanup;
+}
+
 } // namespace
 
 int main()
@@ -237,6 +295,10 @@ int main()
     if (!recoveredPovRequiresObservedCenter()) {
         std::cerr << "A POV was not safely rearmed after discovery or reconnect\n";
         return 5;
+    }
+    if (!keepsSequentialKeyThroughRestRecapture()) {
+        std::cerr << "Sequential capture lost the assignment after USB rest recapture\n";
+        return 6;
     }
     return 0;
 }

@@ -509,6 +509,7 @@ const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
     case DiagnosticUsbEventKind::contextChanged: return tr(Text::DlgDiagnosticsUsbEventContext);
     case DiagnosticUsbEventKind::menuPaused: return tr(Text::DlgDiagnosticsUsbEventMenu);
     case DiagnosticUsbEventKind::directInputReopened: return tr(Text::DlgDiagnosticsUsbEventReopened);
+    case DiagnosticUsbEventKind::discreteOverflow: return tr(Text::DlgDiagnosticsUsbEventDiscreteOverflow);
     }
     return unavailableValue;
 }
@@ -556,7 +557,8 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     case DiagnosticUsbEventKind::deviceSlow:
     case DiagnosticUsbEventKind::devicePending:
     case DiagnosticUsbEventKind::deviceUnavailable:
-    case DiagnosticUsbEventKind::deviceRecovered: {
+    case DiagnosticUsbEventKind::deviceRecovered:
+    case DiagnosticUsbEventKind::discreteOverflow: {
         const auto id = bounded(event.deviceId);
         const auto device = std::ranges::find(devices, id, &DeviceInfo::id);
         const auto model = device == devices.end() ? std::wstring{} : reportDeviceModel(*device);
@@ -568,7 +570,8 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
         }
         if (event.deviceAccessoryCount)
             append(std::wstring(tr(Text::DlgDiagnosticsAccessories)) + L" " + std::to_wstring(event.deviceAccessoryCount));
-        if (!operation.empty() && std::ranges::all_of(operation, [](char character) {
+        if (event.kind != DiagnosticUsbEventKind::discreteOverflow &&
+            !operation.empty() && std::ranges::all_of(operation, [](char character) {
             return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
                 (character >= '0' && character <= '9') || character == ' ';
         }))

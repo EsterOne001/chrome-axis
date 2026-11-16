@@ -68,9 +68,10 @@ constexpr std::array<std::string_view, 10> axisTokens{
     "unassigned", "device_unavailable", "axis_unavailable", "waiting_for_neutral", "armed", "awaiting_profile",
     "inactive", "simulated", "sample_expired", "temporarily_unavailable"
 };
-constexpr std::array<std::string_view, 11> usbTokens{
+constexpr std::array<std::string_view, 12> usbTokens{
     "device_slow", "device_pending", "device_unavailable", "device_recovered", "poll_expired", "poll_gap",
-    "commands_waiting", "commands_ready", "context_changed", "menu_paused", "directinput_reopened"
+    "commands_waiting", "commands_ready", "context_changed", "menu_paused", "directinput_reopened",
+    "discrete_overflow"
 };
 constexpr std::array<std::string_view, 13> accessoryTokens{
     "unconfigured", "waiting", "ready", "profile_error", "inactive", "blocked", "device_unavailable",
@@ -89,7 +90,7 @@ constexpr std::array<std::string_view, 12> shifterRoleTokens{
 static_assert(modeTokens.size() == static_cast<std::size_t>(DiagnosticMode::simulation) + 1);
 static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::selectorAmbiguous) + 1);
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::temporarilyUnavailable) + 1);
-static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::directInputReopened) + 1);
+static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::discreteOverflow) + 1);
 static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::selectorAmbiguous) + 1);
 static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::sampleExpired) + 1);
 static_assert(inputKindTokens.size() == static_cast<std::size_t>(AccessoryKind::Axis) + 1);

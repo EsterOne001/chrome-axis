@@ -2,6 +2,7 @@
 #include "app_text.hpp"
 #include "device_capture.hpp"
 #include "device_inventory.hpp"
+#include "shifter_capture_key.hpp"
 #include "transmission_shortcut.hpp"
 #include "dialog_theme.hpp"
 
@@ -105,7 +106,7 @@ private:
     bool confirm(Text message) const;
     ShifterRole role() const;
     unsigned int suggestedKey() const;
-    void setKey(unsigned int key);
+    void updateKeyLabel();
     void enterSetup();
     void showSavedBindings(LRESULT selection = LB_ERR);
     void fillDevices(std::string_view preferredDevice);
@@ -145,7 +146,7 @@ private:
     std::wstring status_;
     std::size_t step_{};
     std::size_t forward_{};
-    unsigned int key_{};
+    ShifterCaptureKey key_;
     unsigned int absentNativePositions_{};
     Stage stage_{Stage::Setup};
     ULONGLONG deadline_{};
@@ -314,7 +315,7 @@ void ShifterDialog::updateNumLockHint()
     const bool hPattern = setup ? mode.forward != 0 && !mode.native : forward_ != 0 && !native_;
     const bool usesNumpad = hPattern || (setup
         ? std::ranges::any_of(savedRows_, [this](std::size_t row) { return isNumpadDigit(edited_[row].key); })
-        : isNumpadDigit(key_) || std::ranges::any_of(draft_, [](const auto& binding) {
+        : isNumpadDigit(key_.value()) || std::ranges::any_of(draft_, [](const auto& binding) {
             return isNumpadDigit(binding.key);
         }));
     ShowWindow(GetDlgItem(window_, IDC_SHIFTER_NUMLOCK_HINT), usesNumpad ? SW_SHOW : SW_HIDE);
@@ -559,7 +560,8 @@ Text ShifterDialog::setupStatus() const
 void ShifterDialog::enterSetup()
 {
     stage_ = Stage::Setup;
-    setKey(0);
+    key_ = {};
+    updateKeyLabel();
     SetDlgItemTextW(window_, IDC_SHIFTER_STEP, tr(Text::DlgShifterCapture));
     SetDlgItemTextW(window_, IDC_MODAL_LIST_HEADING, tr(Text::DlgShifterDeviceBindings));
     if (!refreshDevices())
@@ -581,7 +583,7 @@ void ShifterDialog::interruptCapture(Text analogMessage, Text positionMessage, T
     if (stage_ == Stage::AnalogMeasure) {
         stage_ = Stage::AnalogReady;
         status(tr(analogMessage));
-    } else if (stage_ == Stage::Neutral && analog_ && !draft_.empty()) {
+    } else if (stage_ == Stage::Neutral && analog_ && key_.hasPosition()) {
         stage_ = Stage::AnalogReady;
         status(tr(Text::DlgShifterCaptureDeviceRest));
     } else if (stage_ == Stage::Position) {
@@ -653,10 +655,10 @@ unsigned int ShifterDialog::suggestedKey() const
     return step_ == forward_ ? VK_NUMPAD0 : VK_NUMPAD1 + static_cast<unsigned int>(step_);
 }
 
-void ShifterDialog::setKey(unsigned int key)
+void ShifterDialog::updateKeyLabel()
 {
-    key_ = key;
-    const auto label = key_ ? accessoryKeyLabel(key_) + L"…" : std::wstring(tr(Text::DlgChooseKey));
+    const auto key = key_.value();
+    const auto label = key ? accessoryKeyLabel(key) + L"…" : std::wstring(tr(Text::DlgChooseKey));
     SetDlgItemTextW(window_, IDC_SHIFTER_KEY, label.c_str());
 }
 
@@ -664,8 +666,9 @@ void ShifterDialog::chooseKey()
 {
     if (native_ || (stage_ != Stage::Captured && stage_ != Stage::AnalogReady && stage_ != Stage::Paused))
         return;
-    if (const auto key = chooseAccessoryKey(window_, key_)) {
-        setKey(*key);
+    if (const auto key = chooseAccessoryKey(window_, key_.value())) {
+        key_.choose(*key);
+        updateKeyLabel();
         updateNumLockHint();
     }
 }
@@ -777,13 +780,15 @@ void ShifterDialog::position()
     pending_.reset();
     if (step_ >= (forward_ ? forward_ + 1 : 2)) {
         stage_ = Stage::Done;
-        setKey(0);
+        key_ = {};
+        updateKeyLabel();
         SetDlgItemTextW(window_, IDC_SHIFTER_STEP, tr(Text::DlgShifterComplete));
         status(draft_.empty() ? tr(Text::DlgShifterNoPosition)
             : tr(native_ ? Text::DlgShifterSaveDirect : Text::DlgShifterExternalSaveDirect));
     } else {
         SetDlgItemTextW(window_, IDC_SHIFTER_STEP, shifterRoleLabel(role()).c_str());
-        setKey(native_ ? 0 : suggestedKey());
+        key_.enter(role(), native_ ? 0 : suggestedKey());
+        updateKeyLabel();
         if (analog_) {
             stage_ = Stage::AnalogReady;
             status(tr(Text::DlgShifterHoldAndMeasure));
@@ -940,9 +945,10 @@ void ShifterDialog::advance()
     if (stage_ != Stage::Captured || !pending_)
         return;
     if (!native_) {
-        if (!isAccessoryKey(key_))
+        const auto key = key_.value();
+        if (!isAccessoryKey(key))
             return;
-        if (std::ranges::find(draft_, key_, &AccessoryBinding::key) != draft_.end()) {
+        if (std::ranges::find(draft_, key, &AccessoryBinding::key) != draft_.end()) {
             status(tr(Text::DlgShifterKeyAlreadyUsed));
             return;
         }
@@ -950,12 +956,12 @@ void ShifterDialog::advance()
                 if (replacesSetup(other))
                     return false;
                 const bool sameInput = sameShifterInput(*pending_, other);
-                return sameInput != (other.key == key_);
+                return sameInput != (other.key == key);
             })) {
             status(tr(Text::DlgShifterBindingConflict));
             return;
         }
-        pending_->key = key_;
+        pending_->key = key;
     }
     pending_->role = role();
     const auto summary = bindingSummary(*pending_, true);

@@ -3,6 +3,7 @@
 #include <chrome_axis/input.hpp>
 
 #include "device_object_probe.hpp"
+#include "device_read_recovery.hpp"
 #include "wheel_force_retry.hpp"
 
 #include <dinput.h>
@@ -22,7 +23,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-constexpr auto reconnectDelay = std::chrono::milliseconds(500);
 // A temporarily missing USB report can preserve arming, never the old input itself.
 constexpr auto pendingGrace = std::chrono::milliseconds(100);
 constexpr auto slowInputOperation = std::chrono::milliseconds(20);
@@ -216,7 +216,7 @@ struct OpenDevice {
     DeviceObjectProbe<buttonCount> buttons;
     bool acquired{};
     Clock::time_point retryAfter{};
-    Clock::time_point pendingSince{};
+    DeviceReadRecovery recovery;
     DeviceReadContinuity continuity;
     DeviceReadStatus readStatus{DeviceReadStatus::unavailable};
     std::string_view lastStage;
@@ -232,7 +232,6 @@ struct OpenDevice {
     std::optional<ReadFault> reportedFault;
     Clock::time_point lastSlowReport{};
     bool reportedReadTimeout{};
-    bool hardwareLost{};
     std::uint64_t recoveryToken{};
 };
 
@@ -463,12 +462,10 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     opened.retryAfter = {};
     ReadObserver observer(opened, id, readObserver, observerContext);
     const auto retry = [&](std::string_view stage, HRESULT result) {
-        if ((stage == "GetDeviceStatus" && result == DI_NOTATTACHED) ||
-            result == static_cast<HRESULT>(DIERR_UNPLUGGED) || result == DIERR_INPUTLOST)
-            opened.hardwareLost = true;
-        opened.pendingSince = {};
+        opened.recovery.failed((stage == "GetDeviceStatus" && result == DI_NOTATTACHED) ||
+            result == static_cast<HRESULT>(DIERR_UNPLUGGED) || result == DIERR_INPUTLOST);
         opened.continuity.reset();
-        opened.retryAfter = Clock::now() + reconnectDelay;
+        opened.retryAfter = Clock::now() + DeviceReadRecovery::reopenDelay;
         opened.report(diagnostic, id, stage, result, false);
         observer.fault(DirectInputReadEventKind::unavailable, stage, result);
         return std::nullopt;
@@ -520,17 +517,16 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     }
     if (result == E_PENDING) {
         const auto now = Clock::now();
-        if (opened.pendingSince == Clock::time_point{}) {
-            opened.pendingSince = now;
+        const auto pending = opened.recovery.pending(now);
+        if (pending.first)
             observer.fault(DirectInputReadEventKind::pending, stage, result);
-        }
-        if (now - opened.pendingSince >= reconnectDelay) {
+        if (pending.reopen) {
             // A device that never supplies a fresh report needs a new DirectInput handle.
             opened.release();
             return retry(stage, result);
         }
         opened.readStatus = opened.continuity.pending(now);
-        if (opened.readStatus == DeviceReadStatus::unavailable && now - opened.pendingSince >= pendingGrace)
+        if (opened.readStatus == DeviceReadStatus::unavailable && pending.elapsed >= pendingGrace)
             observer.fault(DirectInputReadEventKind::unavailable, stage, result);
         return std::nullopt;
     }
@@ -539,10 +535,9 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         opened.release();
         return retry(stage, result);
     }
-    opened.pendingSince = {};
     opened.readStatus = opened.continuity.available(sampledAt);
-    if (std::exchange(opened.hardwareLost, false)) {
-        // Recovery is confirmed by a successful physical report after a driver loss.
+    if (opened.recovery.accepted()) {
+        // Confirm a connection only when the driver provides a valid report again.
         opened.recoveryToken = hardwareRecoverySerial.fetch_add(1, std::memory_order_relaxed) + 1;
         opened.readStatus = DeviceReadStatus::resumed;
     }

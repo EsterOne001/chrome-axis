@@ -1,6 +1,6 @@
 #pragma once
 
-#include "chrome_axis/input.hpp"
+#include "chrome_axis/accessories.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -16,10 +16,11 @@ namespace chrome_axis {
 struct DrivingInputDevice {
     std::string id;
     DeviceObjectSelection objects;
+    std::shared_ptr<AccessoryProfile> discrete;
 };
 
 // Each DirectInput instance and its COM objects stay on their device's thread.
-// The game thread only copies the newest report, never calls or waits on a driver.
+// The consumer copies reports and discrete transitions without calling the driver.
 template <class Driver = DirectInput>
 class DrivingInputs final : public DeviceSampleSource {
 public:
@@ -73,9 +74,13 @@ public:
                 found = active_.try_emplace(device.id, Entry{std::move(worker)}).first;
             }
             auto& entry = found->second;
-            entry.config = {window, device.objects, true};
+            const Configuration config{window, device.objects, device.discrete, true};
+            if (entry.config != config)
+                entry.previousAccessory = {};
+            entry.config = config;
             entry.worker->configure(entry.config);
         }
+        replays_.reserve(devices.size() * discreteQueueCapacity);
         return configured;
     }
 
@@ -83,13 +88,24 @@ public:
         for (auto& [id, entry] : active_) {
             entry.config.active = false;
             entry.worker->pause();
+            entry.previousAccessory = {};
         }
         reap();
+    }
+
+    void discardAccessorySamples() {
+        replays_.clear();
+        for (auto& [id, entry] : active_) {
+            entry.previousAccessory = {};
+            entry.worker->discardAccessorySamples();
+        }
     }
 
     bool ready() const noexcept { return !active_.empty(); }
 
     void beginPoll(Clock::time_point now) {
+        polledAt_ = now;
+        replays_.clear();
         for (auto& [id, entry] : active_) {
             auto& report = entry.report;
             if (entry.worker->finished() && entry.config.active && now >= entry.restartAfter) {
@@ -103,23 +119,77 @@ public:
                     // The other devices remain available if this thread cannot be created.
                 }
             }
-            report = entry.worker->latest();
+            const auto start = replays_.size();
+            const bool overflow = entry.worker->collect(report, now, [&](const auto& sample) {
+                replays_.push_back({&entry, sample});
+            });
+            entry.resetAccessories = overflow;
+            entry.disruptedAccessories = overflow;
+            if (overflow)
+                replays_.resize(start);
             if (!report.sample || now - report.sample->sampledAt > lifetime_) {
                 if (report.sample || (report.status == DeviceReadStatus::pending &&
                     (report.lastValid == Clock::time_point{} || now - report.lastValid > lifetime_)))
                     report.status = DeviceReadStatus::unavailable;
                 report.sample.reset();
                 entry.needsRearm |= report.status == DeviceReadStatus::unavailable;
+                replays_.resize(start);
+                entry.resetAccessories |= report.status == DeviceReadStatus::unavailable;
+                entry.disruptedAccessories = true;
                 continue;
             }
             if (entry.needsRearm || entry.seenLoss != report.loss) {
                 report.status = DeviceReadStatus::resumed;
                 entry.needsRearm = false;
                 entry.seenLoss = report.loss;
+                replays_.resize(start);
+                entry.resetAccessories = true;
+                entry.disruptedAccessories = true;
             } else {
                 report.status = DeviceReadStatus::available;
             }
         }
+        std::ranges::sort(replays_, {}, [](const auto& frame) {
+            return std::pair{frame.sample.sampledAt, frame.sample.sequence};
+        });
+    }
+
+    template <class Visit>
+    void visitAccessoryDisruptions(Visit&& visit) const {
+        for (const auto& [id, entry] : active_)
+            if (entry.config.discrete && entry.disruptedAccessories)
+                visit(id, entry.resetAccessories);
+    }
+
+    // Replay discrete changes against the prior per-device state. The final
+    // visit publishes current levels, including the continuous accessory axes.
+    template <class Visit>
+    void replayAccessories(Visit&& visit) {
+        if (!replays_.empty()) {
+            for (auto& [id, entry] : active_) {
+                entry.replay = entry.report;
+                if (entry.config.discrete && !entry.disruptedAccessories) {
+                    if (entry.previousAccessory.sample && polledAt_ - entry.previousAccessory.sample->sampledAt <= lifetime_) {
+                        entry.replay = entry.previousAccessory;
+                        entry.replay.status = DeviceReadStatus::available;
+                    } else {
+                        entry.replay = {};
+                    }
+                }
+            }
+            replaying_ = true;
+            for (const auto& frame : replays_) {
+                frame.entry->replay.sample = frame.sample;
+                frame.entry->replay.status = DeviceReadStatus::available;
+                visit(false);
+            }
+            replaying_ = false;
+        }
+        replays_.clear();
+        visit(true);
+        for (auto& [id, entry] : active_)
+            if (entry.config.discrete)
+                entry.previousAccessory = entry.report;
     }
 
     std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>&,
@@ -130,7 +200,8 @@ public:
                 *status = DeviceReadStatus::unavailable;
             return std::nullopt;
         }
-        const auto& report = it->second.report;
+        const auto& entry = it->second;
+        const auto& report = replaying_ ? entry.replay : entry.report;
         if (status)
             *status = report.status;
         return report.sample;
@@ -160,9 +231,12 @@ public:
     }
 
 private:
+    static constexpr std::size_t discreteQueueCapacity = 16;
+
     struct Configuration {
         HWND window{};
         DeviceObjectSelection objects;
+        std::shared_ptr<const AccessoryProfile> discrete;
         bool active{};
 
         bool operator==(const Configuration&) const = default;
@@ -178,6 +252,9 @@ private:
     template <class Record, std::size_t capacity>
     class Recent {
     public:
+        bool full() const noexcept { return size_ == capacity; }
+        void clear() noexcept { size_ = 0; }
+
         void push(const Record& record) noexcept {
             if (size_ == capacity)
                 pop();
@@ -220,6 +297,7 @@ private:
                 config_ = std::move(config);
                 ++revision_;
                 latest_ = {};
+                discardDiscrete();
                 cycles_ = {};
                 changed_.notify_one();
             }
@@ -231,6 +309,7 @@ private:
                 config_.active = false;
                 ++revision_;
                 latest_ = {};
+                discardDiscrete();
                 cycles_ = {};
                 changed_.notify_one();
             }
@@ -239,9 +318,25 @@ private:
         void stop() { thread_.request_stop(); }
         bool finished() const noexcept { return finished_.load(std::memory_order_acquire); }
 
-        Report latest() {
+        void discardAccessorySamples() {
             std::scoped_lock lock(mutex_);
-            return latest_;
+            discardDiscrete();
+        }
+
+        template <class Visit>
+        bool collect(Report& report, Clock::time_point now, Visit&& visit) {
+            std::scoped_lock lock(mutex_);
+            report = latest_;
+            if (std::exchange(discreteOverflow_, false))
+                return true;
+            while (const auto sample = discrete_.pop()) {
+                if (now - sample->sampledAt > lifetime_) {
+                    discrete_.clear();
+                    return true;
+                }
+                visit(*sample);
+            }
+            return false;
         }
 
         std::optional<Event> nextEvent() {
@@ -255,6 +350,39 @@ private:
         }
 
     private:
+        void discardDiscrete() noexcept {
+            ++discreteRevision_;
+            discrete_.clear();
+            discreteOverflow_ = false;
+            previousDiscrete_.reset();
+        }
+
+        void publishDiscrete(const Report& report, const AccessoryProfile& bindings) {
+            if (report.status == DeviceReadStatus::pending)
+                return;
+            if (!report.sample || report.status == DeviceReadStatus::resumed) {
+                discrete_.clear();
+                previousDiscrete_ = report.sample;
+                return;
+            }
+            const bool changed = previousDiscrete_ &&
+                std::ranges::any_of(bindings, [&](const auto& binding) {
+                    return !sameDiscreteAccessoryLevel(binding, *previousDiscrete_, *report.sample);
+                });
+            previousDiscrete_ = report.sample;
+            if (!changed || discreteOverflow_)
+                return;
+            if (discrete_.full()) {
+                discrete_.clear();
+                discreteOverflow_ = true;
+                Event event{.kind = DirectInputReadEventKind::discreteOverflow, .sampledAt = GetTickCount64()};
+                std::ranges::copy(std::string_view("USB discrete inputs"), event.operation.begin());
+                events_.push(event);
+                return;
+            }
+            discrete_.push(*report.sample);
+        }
+
         static void observe(void* opaque, const DirectInputReadEvent& read) noexcept {
             auto& worker = *static_cast<Worker*>(opaque);
             Event event{.kind = read.kind, .result = read.result, .durationMicros = read.durationMicros,
@@ -274,7 +402,7 @@ private:
             bool hadReport{};
             while (!stop.stop_requested()) {
                 Configuration config;
-                std::uint64_t revision;
+                std::uint64_t revision, discreteRevision;
                 {
                     std::unique_lock lock(mutex_);
                     changed_.wait(lock, stop, [&] { return config_.active; });
@@ -282,6 +410,7 @@ private:
                         break;
                     config = config_;
                     revision = revision_;
+                    discreteRevision = discreteRevision_;
                 }
                 const auto started = Clock::now();
                 const bool missedCadence = previousRevision == revision && previousStart != Clock::time_point{} &&
@@ -329,6 +458,8 @@ private:
                 {
                     std::unique_lock lock(mutex_);
                     if (revision == revision_) {
+                        if (config.discrete && discreteRevision == discreteRevision_)
+                            publishDiscrete(report, *config.discrete);
                         latest_ = std::move(report);
                         cycles_.push({finishedAt, elapsedMicros(finishedAt - started), missedCadence});
                     }
@@ -348,9 +479,13 @@ private:
         std::condition_variable_any changed_;
         Configuration config_{};
         Report latest_;
+        Recent<DeviceSample, discreteQueueCapacity> discrete_;
+        std::optional<DeviceSample> previousDiscrete_;
         Recent<Event, 8> events_;
         Recent<Cycle, 32> cycles_;
         std::uint64_t revision_{};
+        std::uint64_t discreteRevision_{};
+        bool discreteOverflow_{};
         std::atomic<bool> finished_{};
         std::jthread thread_;
     };
@@ -359,9 +494,18 @@ private:
         std::unique_ptr<Worker> worker;
         Configuration config{};
         Report report{};
+        Report previousAccessory{};
+        Report replay{};
         Clock::time_point restartAfter{};
         std::uint64_t seenLoss{};
         bool needsRearm{};
+        bool resetAccessories{};
+        bool disruptedAccessories{};
+    };
+
+    struct Replay {
+        Entry* entry{};
+        DeviceSample sample;
     };
 
     void reap() {
@@ -372,6 +516,9 @@ private:
     DirectInputDiagnostic logger_{};
     std::unordered_map<std::string, Entry> active_;
     std::vector<std::unique_ptr<Worker>> retired_;
+    std::vector<Replay> replays_;
+    Clock::time_point polledAt_{};
+    bool replaying_{};
 };
 
 } // namespace chrome_axis

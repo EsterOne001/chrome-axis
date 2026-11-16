@@ -78,6 +78,15 @@ struct AccessoryBinding {
 
 using AccessoryProfile = std::vector<AccessoryBinding>;
 
+// Position selectors and analog controls are read from their current report.
+constexpr bool isDiscreteAccessory(const AccessoryBinding& binding) noexcept
+{
+    return binding.nativeSequential || binding.key != 0;
+}
+
+bool sameDiscreteAccessoryLevel(const AccessoryBinding& binding, const DeviceSample& first,
+                                const DeviceSample& second) noexcept;
+
 void removeDisabledDrivingAccessories(AccessoryProfile& profile);
 
 struct Profile;
@@ -114,6 +123,7 @@ struct AccessoryTransmissionSample {
     DeviceReadClock::time_point gearSampledAt{};
     DeviceReadClock::time_point sequentialSampledAt{};
     DeviceReadClock::time_point clutchSampledAt{};
+    DeviceReadClock::time_point shiftSampledAt{};
 };
 
 using AccessoryKeyTimes = std::array<DeviceReadClock::time_point, 256>;
@@ -135,9 +145,12 @@ public:
                          std::optional<float>* progressiveHandbrake = nullptr,
                          std::optional<int>* nativeGear = nullptr,
                          AccessoryTransmissionSample* transmission = nullptr,
-                         AccessoryKeyTimes* keyTimes = nullptr);
+                         AccessoryKeyTimes* keyTimes = nullptr, bool replayDiscrete = false);
     void reset() noexcept;
     void resetKeyboardBindings() noexcept;
+    void resetDiscrete(std::string_view deviceId) noexcept;
+    void resetSequential() noexcept;
+    std::bitset<256> armedKeyboardBindings() const noexcept;
     // All bindings have a usable sample and passed the neutral check.
     bool ready() const noexcept;
     AccessoryReadiness readiness(bool nativeSelectorUsable = true) const noexcept;
@@ -148,7 +161,7 @@ public:
                             std::optional<float>* progressiveHandbrake = nullptr,
                             std::optional<int>* nativeGear = nullptr,
                             AccessoryTransmissionSample* transmission = nullptr,
-                            AccessoryKeyTimes* keyTimes = nullptr);
+                            AccessoryKeyTimes* keyTimes = nullptr, bool replayDiscrete = false);
 
 private:
     struct BindingState {

@@ -4,6 +4,7 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/controls.hpp"
 #include "../src/core/device_object_probe.hpp"
+#include "../src/core/device_read_recovery.hpp"
 #include "../src/core/wheel_force_retry.hpp"
 #include "../src/plugin/force_output_worker.hpp"
 
@@ -188,6 +189,50 @@ int testWheelForceRecoveryBackoff()
         retry.waiting(recoveredAt + 2s) ? 65 : 0;
 }
 
+int testWheelForceRecoveryAfterPendingReopen()
+{
+    DeviceReadRecovery input;
+    DeviceReadRecovery otherDevice;
+    WheelForceRetry force;
+    std::uint64_t token{};
+    const auto acceptReport = [&] {
+        if (input.accepted())
+            ++token;
+        return force.recovered(token);
+    };
+    const auto start = TestClock::time_point{} + 100s;
+    for (const auto elapsed : {0s, 2s, 6s, 14s, 30s})
+        force.failed(start + elapsed);
+
+    // A short interruption reuses the open handle and keeps the force retry deadline.
+    const auto now = start + 31s;
+    const auto transient = input.pending(now);
+    const auto beforeReopen = input.pending(now + 499ms);
+    if (!transient.first || transient.reopen || beforeReopen.first || beforeReopen.reopen ||
+        acceptReport() || !force.waiting(now + 499ms))
+        return 66;
+
+    // A forced reopen still needs a successful report, even after additional failures.
+    const auto stalled = now + 1s;
+    if (!input.pending(stalled).first || !input.pending(stalled + 500ms).reopen)
+        return 67;
+    input.failed(false);
+    input.failed(false);
+    if (otherDevice.accepted() || force.recovered(token) || !force.waiting(stalled + 1500ms))
+        return 68;
+    const auto recovered = stalled + 1500ms;
+    if (!acceptReport() || !token || force.waiting(recovered))
+        return 69;
+
+    // Duplicate successes and context pauses can leave the same token in the report.
+    force.failed(recovered);
+    if (acceptReport() || !force.waiting(recovered + 1s) || force.waiting(recovered + 2s))
+        return 70;
+    input.failed(true);
+    input.failed(false);
+    return acceptReport() && !force.waiting(recovered + 1s) && !acceptReport() ? 0 : 71;
+}
+
 int testProvisionalInputLayout()
 {
     DeviceObjectProbe<3> layout;
@@ -248,6 +293,8 @@ int main()
 {
     using namespace chrome_axis;
     if (const auto result = testWheelForceRecoveryBackoff())
+        return result;
+    if (const auto result = testWheelForceRecoveryAfterPendingReopen())
         return result;
     if (const auto result = testProvisionalInputLayout())
         return result;

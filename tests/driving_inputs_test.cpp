@@ -183,11 +183,194 @@ int checkCoalescedArming()
     return accessories.ready() ? 0 : 12;
 }
 
+struct TransitionDriver {
+    struct State {
+        std::atomic<unsigned int> scenario{};
+        std::atomic<std::uint64_t> progress{};
+    };
+
+    static inline State* state{};
+
+    TransitionDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*) {}
+    bool ready() const noexcept { return true; }
+
+    std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,
+                                                 DeviceReadStatus& status) {
+        status = DeviceReadStatus::available;
+        DeviceSample sample;
+        sample.sampledAt = Clock::now();
+        sample.buttonsPresent = wanted.buttons;
+        if (id == wheel) {
+            const auto scenario = state->scenario.load();
+            if (scenario != previousScenario) {
+                previousScenario = scenario;
+                frame = 0;
+            }
+            ++frame;
+            state->progress = (static_cast<std::uint64_t>(scenario) << 32) | frame;
+            if (scenario == 5 && frame == 2) {
+                status = DeviceReadStatus::pending;
+                return std::nullopt;
+            }
+            const bool pressed = scenario == 1 ? frame == 1
+                : scenario == 2 ? frame == 1 || frame == 3
+                : scenario == 3 ? frame <= 36 && frame % 2 == 1
+                : scenario == 4 || (scenario == 5 && frame == 1);
+            sample.buttons.set(0, pressed);
+            sample.buttons.set(1, pressed);
+            sample.axesPresent[0] = wanted.axes[0];
+            sample.axes[0] = pressed ? 800 : 0;
+            sample.povsPresent[0] = wanted.povs[0];
+            sample.povs[0] = pressed ? 9000 : povCentered;
+        }
+        return sample;
+    }
+
+    unsigned int previousScenario{}, frame{};
+};
+
+int checkBufferedTransitions()
+{
+    TransitionDriver::State fake;
+    TransitionDriver::state = &fake;
+    DrivingInputs<TransitionDriver> input(1ms, 300ms);
+    const AccessoryProfile profile{
+        {.deviceId = wheel, .kind = AccessoryKind::Button, .index = 0, .engaged = 1, .key = 'J',
+         .activation = AccessoryActivation::pulse},
+        {.deviceId = wheel, .kind = AccessoryKind::Button, .index = 1, .engaged = 1, .key = VK_SPACE},
+        {.deviceId = wheel, .kind = AccessoryKind::Axis, .index = 0, .engaged = 1000, .key = 'E',
+         .thresholds = {75, 40}, .activation = AccessoryActivation::pulse},
+        {.deviceId = wheel, .kind = AccessoryKind::Pov, .index = 0, .rest = povCentered, .engaged = 9000,
+         .key = 'K', .activation = AccessoryActivation::pulse},
+        {.deviceId = wheel, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
+         .role = ShifterRole::Upshift, .nativeSequential = true},
+        {.deviceId = pedals, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
+         .role = ShifterRole::Downshift, .nativeSequential = true},
+    };
+    std::array devices{DrivingInputDevice{.id = wheel}, DrivingInputDevice{.id = pedals}};
+    for (auto& device : devices) {
+        device.discrete = std::make_shared<AccessoryProfile>();
+        for (const auto& binding : profile)
+            if (binding.deviceId == device.id)
+                device.discrete->push_back(binding);
+    }
+    devices[0].objects.buttons.set(0).set(1);
+    devices[0].objects.axes.set(0);
+    devices[0].objects.povs.set(0);
+    devices[1].objects.buttons.set(0);
+    const auto window = GetDesktopWindow();
+    if (!input.configure(window, devices))
+        return 20;
+    AccessoryReader accessories(profile);
+
+    struct Collected {
+        unsigned int buttonPresses{}, axisPresses{}, povPresses{}, shifts{};
+        bool heldDuringReplay{}, heldCurrently{}, armed{};
+        Clock::time_point shiftAt{};
+    };
+    const auto poll = [&](Clock::time_point now = Clock::now()) {
+        Collected collected;
+        input.beginPoll(now);
+        input.visitAccessoryDisruptions([&](std::string_view id, bool reset) {
+            if (reset)
+                accessories.resetDiscrete(id);
+        });
+        input.replayAccessories([&](bool latest) {
+            AccessoryTransmissionSample shift;
+            std::bitset<256> pulses;
+            const auto held = accessories.poll(input, {}, &pulses, nullptr, nullptr, &shift, nullptr, !latest);
+            collected.buttonPresses += pulses.test('J');
+            collected.axisPresses += pulses.test('E');
+            collected.povPresses += pulses.test('K');
+            collected.shifts += shift.shiftDelta == 1;
+            if (shift.shiftDelta)
+                collected.shiftAt = shift.shiftSampledAt;
+            if (latest) {
+                collected.heldCurrently = held.test(VK_SPACE);
+                collected.armed = shift.sequentialArmed;
+            } else {
+                collected.heldDuringReplay |= held.test(VK_SPACE);
+            }
+        });
+        return collected;
+    };
+    const auto run = [&](unsigned int scenario, unsigned int frames) {
+        fake.scenario = scenario;
+        return waitUntil([&] {
+            const auto progress = fake.progress.load();
+            return progress >> 32 == scenario && static_cast<unsigned int>(progress) >= frames;
+        });
+    };
+    const auto armed = [&] { return waitUntil([&] { return poll().armed && accessories.ready(); }); };
+    if (!armed())
+        return 21;
+    const auto started = Clock::now();
+    if (!run(1, 5))
+        return 22;
+    const auto single = poll();
+    if (single.buttonPresses != 1 || single.axisPresses != 1 || single.povPresses != 1 || single.shifts != 1 ||
+        !single.heldDuringReplay || single.heldCurrently || !single.armed || single.shiftAt < started ||
+        poll().buttonPresses != 0)
+        return 23;
+
+    if (!run(2, 6))
+        return 24;
+    const auto multiple = poll();
+    if (multiple.buttonPresses != 2 || multiple.axisPresses != 2 || multiple.povPresses != 2 || multiple.shifts != 2)
+        return 25;
+
+    if (!run(5, 6))
+        return 37;
+    const auto briefPending = poll();
+    if (briefPending.buttonPresses != 1 || briefPending.shifts != 1)
+        return 38;
+
+    if (!run(4, 4))
+        return 26;
+    if (!poll().heldCurrently || !poll().heldCurrently || !run(0, 4) || poll().heldCurrently)
+        return 27;
+
+    if (!run(3, 40))
+        return 28;
+    const auto overflow = poll();
+    int overflowEvents = 0;
+    input.drainEvents([&](const auto& id, const auto& event) {
+        overflowEvents += id == wheel && event.kind == DirectInputReadEventKind::discreteOverflow;
+    });
+    if (overflow.buttonPresses || overflow.shifts || overflow.armed || overflowEvents != 1 || !armed())
+        return 29;
+
+    if (!run(1, 5))
+        return 30;
+    input.discardAccessorySamples(); // A profile or vehicle change preserves healthy handles.
+    accessories.reset();
+    const auto discarded = poll();
+    if (discarded.buttonPresses || discarded.shifts || discarded.heldDuringReplay || !armed())
+        return 31;
+
+    if (!run(2, 6))
+        return 32;
+    input.pause();
+    accessories.reset();
+    if (!input.configure(window, devices) || !armed())
+        return 33;
+    const auto resumed = poll();
+    if (resumed.buttonPresses || resumed.shifts || resumed.heldDuringReplay)
+        return 34;
+
+    // Expire the reports deterministically without slowing down the read workers.
+    if (!run(1, 5))
+        return 35;
+    const auto expired = poll(Clock::now() + 301ms);
+    return expired.buttonPresses || expired.shifts || expired.heldDuringReplay || expired.armed ? 36 : 0;
+}
+
 } // namespace
 
 int main()
 {
-    for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkCoalescedArming()}) {
+    for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkCoalescedArming(),
+                              checkBufferedTransitions()}) {
         if (result) {
             std::cerr << "Driving input check failed: " << result << '\n';
             return result;

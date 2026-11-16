@@ -327,6 +327,8 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
                                                 .shift = DiagnosticShiftState::selectorAmbiguous}}},
         DiagnosticCaptureRecord{.usb = {.sampledAt = tick + 52, .kind = DiagnosticUsbEventKind::commandsWaiting,
             .mode = DiagnosticMode::usb, .accessories = DiagnosticAccessoryState::selectorAmbiguous}, .usbIncident = true},
+        DiagnosticCaptureRecord{.usb = {.sampledAt = tick + 53, .kind = DiagnosticUsbEventKind::discreteOverflow,
+            .mode = DiagnosticMode::usb}, .usbIncident = true},
     };
     std::ostringstream csv;
     writeDiagnosticCaptureHeader(csv);
@@ -339,7 +341,8 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,,\r\n") == std::string::npos ||
         text.find(",modifier_blocked,0,5,") == std::string::npos ||
         text.find(",selector_ambiguous,,") == std::string::npos ||
-        text.find(",selector_ambiguous,0,0,") == std::string::npos)
+        text.find(",selector_ambiguous,0,0,") == std::string::npos ||
+        text.find(",discrete_overflow,") == std::string::npos)
         return false;
     std::istringstream lines(text);
     std::string row;

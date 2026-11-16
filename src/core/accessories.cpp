@@ -312,7 +312,31 @@ std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const Devic
     return std::nullopt;
 }
 
+bool probing(const AccessoryBinding& binding, const DeviceSample& sample) noexcept
+{
+    switch (binding.kind) {
+    case AccessoryKind::Button: return sample.buttonsPending[binding.index];
+    case AccessoryKind::Pov: return sample.povsPending[binding.index];
+    case AccessoryKind::Axis: return sample.axesPending[binding.index];
+    }
+    return false;
+}
+
 } // namespace
+
+bool sameDiscreteAccessoryLevel(const AccessoryBinding& binding, const DeviceSample& first,
+                                const DeviceSample& second) noexcept
+{
+    if (probing(binding, first) != probing(binding, second))
+        return false;
+    const auto same = [&](bool active) {
+        const auto before = readLevel(binding, first, active, nullptr);
+        const auto after = readLevel(binding, second, active, nullptr);
+        return before.has_value() == after.has_value() &&
+            (!before || (before->neutral == after->neutral && before->engaged == after->engaged));
+    };
+    return same(false) && (binding.kind != AccessoryKind::Axis || same(true));
+}
 
 namespace {
 
@@ -600,6 +624,43 @@ void AccessoryReader::resetKeyboardBindings() noexcept
     }
 }
 
+void AccessoryReader::resetDiscrete(std::string_view deviceId) noexcept
+{
+    for (std::size_t i = 0; i < profile_.size(); ++i) {
+        const auto& binding = profile_[i];
+        if (binding.deviceId != deviceId || !isDiscreteAccessory(binding))
+            continue;
+        states_[i] = {};
+        if (binding.nativeSequential) {
+            selectorSequences_[i] = 0;
+            sequentialNeutralPolls_ = 0;
+            sequentialWaitForRelease_ = false;
+        }
+    }
+}
+
+void AccessoryReader::resetSequential() noexcept
+{
+    sequentialNeutralPolls_ = 0;
+    sequentialWaitForRelease_ = false;
+    for (std::size_t i = 0; i < profile_.size(); ++i) {
+        if (profile_[i].nativeSequential) {
+            states_[i] = {};
+            selectorSequences_[i] = 0;
+        }
+    }
+}
+
+std::bitset<256> AccessoryReader::armedKeyboardBindings() const noexcept
+{
+    std::bitset<256> keys;
+    for (std::size_t i = 0; i < profile_.size(); ++i) {
+        if (profile_[i].key && states_[i].status == AccessoryStatus::armed)
+            keys.set(profile_[i].key);
+    }
+    return keys;
+}
+
 bool AccessoryReader::ready() const noexcept
 {
     for (const auto& state : std::span(states_).first(profile_.size())) {
@@ -630,7 +691,7 @@ AccessoryReadiness AccessoryReader::readiness(bool nativeSelectorUsable) const n
 std::bitset<256> AccessoryReader::poll(DeviceSampleSource& input, std::span<AccessoryObservation> observations,
                                       std::bitset<256>* pulses, std::optional<float>* progressiveHandbrake,
                                       std::optional<int>* nativeGear, AccessoryTransmissionSample* transmission,
-                                      AccessoryKeyTimes* keyTimes)
+                                      AccessoryKeyTimes* keyTimes, bool replayDiscrete)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
@@ -645,7 +706,7 @@ std::bitset<256> AccessoryReader::poll(DeviceSampleSource& input, std::span<Acce
             samples[i] = &*storage[owner];
     }
     return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()),
-                  observations, pulses, progressiveHandbrake, nativeGear, transmission, keyTimes);
+                  observations, pulses, progressiveHandbrake, nativeGear, transmission, keyTimes, replayDiscrete);
 }
 
 float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
@@ -656,8 +717,7 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
     const bool fresh = sample && (!sample->sequence || state.sequence != sample->sequence);
     if (sample)
         state.sequence = sample->sequence;
-    const bool probePending = sample && (binding.kind == AccessoryKind::Button ? sample->buttonsPending[binding.index]
-        : binding.kind == AccessoryKind::Pov ? sample->povsPending[binding.index] : sample->axesPending[binding.index]);
+    const bool probePending = sample && probing(binding, *sample);
     if ((!sample && status == DeviceReadStatus::pending) || probePending) {
         if (state.neutralPolls < requiredNeutralPolls)
             state.neutralPolls = 0;
@@ -701,12 +761,13 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
                                        std::span<const DeviceReadStatus> statuses,
                                        std::span<AccessoryObservation> observations, std::bitset<256>* pulses,
                                         std::optional<float>* progressiveHandbrake, std::optional<int>* nativeGear,
-                                        AccessoryTransmissionSample* transmission, AccessoryKeyTimes* keyTimes)
+                                        AccessoryTransmissionSample* transmission, AccessoryKeyTimes* keyTimes,
+                                        bool replayDiscrete)
 {
     std::bitset<256> keys;
     std::array<std::uint64_t, maxAccessoryBindings> sampleSequences{};
-    bool nativeFresh = true, paddlesFresh = true;
-    DeviceReadClock::time_point gearSampledAt{}, paddlesSampledAt{};
+    bool nativeFresh = !replayDiscrete, paddlesFresh = true;
+    DeviceReadClock::time_point gearSampledAt{}, paddlesSampledAt{}, shiftSampledAt{};
     const auto oldestSample = [](auto& oldest, const DeviceSample* sample) {
         if (sample && sample->sampledAt != DeviceReadClock::time_point{} &&
             (oldest == DeviceReadClock::time_point{} || sample->sampledAt < oldest))
@@ -736,6 +797,8 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         keyTimes->fill({});
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto& binding = profile_[i];
+        if (replayDiscrete && !isDiscreteAccessory(binding))
+            continue;
         auto& state = states_[i];
         const auto* sample = i < samples.size() ? samples[i] : nullptr;
         const auto status = i < statuses.size() ? statuses[i] : DeviceReadStatus::unavailable;
@@ -782,8 +845,10 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             paddlesNeutral &= neutral;
             if (state.active) {
                 ++pressedPaddles;
-                if (!wasActive)
+                if (!wasActive) {
                     paddleEdge = up ? 1 : -1;
+                    shiftSampledAt = sample->sampledAt;
+                }
             }
             continue;
         }
@@ -838,8 +903,10 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             if (transmission) {
                 transmission->sequentialArmed = true;
                 transmission->sequentialSampledAt = paddlesSampledAt;
-                if (!sequentialWaitForRelease_ && pressedPaddles == 1)
+                if (!sequentialWaitForRelease_ && pressedPaddles == 1) {
                     transmission->shiftDelta = paddleEdge;
+                    transmission->shiftSampledAt = shiftSampledAt;
+                }
             }
         } else {
             for (std::size_t i = 0; i < profile_.size(); ++i) {

@@ -219,61 +219,93 @@ private:
 };
 
 enum class PedalRouting { standard, reverse, suspended };
-enum class PedalGear { unavailable, forwardOrNeutral, reverse, reversePending };
+enum class PedalGear { unavailable, forwardOrNeutral, neutralToForward, reverse, reversePending };
 
-constexpr PedalGear observePedalGear(int engaged, int target, int entries, bool reverseIssued = false) noexcept {
+constexpr PedalGear observePedalGear(int engaged, int target, int entries, bool reverseIssued = false,
+                                    std::optional<int> pending = std::nullopt) noexcept {
     const bool engagedValid = entries >= 2 && engaged >= -1 && engaged < entries;
     if (engagedValid && engaged == 0)
         return PedalGear::reverse;
     // The game can use reverse channels before R engages.
-    if (reverseIssued || (engagedValid && target == 0))
+    if (reverseIssued || pending == 0 || (engagedValid && target == 0))
         return PedalGear::reversePending;
     if (!engagedValid || target < -1 || target >= entries)
         return PedalGear::unavailable;
+    if (engaged == -1 && (target > 0 || (pending && *pending > 0 && *pending < entries)))
+        return PedalGear::neutralToForward;
     return PedalGear::forwardOrNeutral;
 }
 
+struct PedalRelease {
+    bool throttle{};
+    bool brake{};
+};
+
+struct PedalRoutingDecision {
+    PedalRouting routing{PedalRouting::standard};
+    bool throttleAllowed{true};
+    bool brakeAllowed{true};
+};
+
 class TransmissionPedals {
 public:
-    PedalRouting update(bool manualRequested, PedalGear gear, bool released) noexcept {
+    PedalRoutingDecision update(bool manualRequested, PedalGear gear, PedalRelease released) noexcept {
+        constexpr PedalRoutingDecision suspended{PedalRouting::suspended, false, false};
+        const bool bothReleased = released.throttle && released.brake;
         // A MANUAL request alone does not change the routing of an unobserved vehicle.
         if (!tracking_ && (!manualRequested || gear == PedalGear::unavailable))
-            return PedalRouting::standard;
+            return standard(released);
         tracking_ = true;
 
         if (gear == PedalGear::reversePending) {
             reversePossible_ = true;
-            waitingForRelease_ = true;
-            return PedalRouting::suspended;
+            throttleMustRelease_ = brakeMustRelease_ = true;
+            return suspended;
         }
         if (gear == PedalGear::unavailable) {
             // In AUTO, a forward-only session can fall back after both pedals are released.
-            if (!manualRequested && !reversePossible_ && released) {
+            if (!manualRequested && !reversePossible_ && bothReleased) {
                 *this = {};
-                return PedalRouting::standard;
+                return {};
             }
-            waitingForRelease_ = true;
-            return PedalRouting::suspended;
+            throttleMustRelease_ = brakeMustRelease_ = true;
+            return suspended;
         }
 
-        if (gear == PedalGear::reverse)
+        if (gear == PedalGear::reverse) {
             reversePossible_ = true;
-        if (!released && (waitingForRelease_ || (!manualRequested && gear != PedalGear::reverse && reversePossible_)))
-            return PedalRouting::suspended;
-        waitingForRelease_ = false;
-        if (gear == PedalGear::reverse)
-            return PedalRouting::reverse;
+            if ((throttleMustRelease_ || brakeMustRelease_) && !bothReleased)
+                return suspended;
+            throttleMustRelease_ = brakeMustRelease_ = false;
+            return {PedalRouting::reverse};
+        }
+        if (gear == PedalGear::neutralToForward && reversePossible_) {
+            throttleMustRelease_ = brakeMustRelease_ = true;
+            return suspended;
+        }
 
+        if (reversePossible_ && !manualRequested)
+            throttleMustRelease_ = brakeMustRelease_ = true;
         reversePossible_ = false;
         tracking_ = manualRequested;
-        return PedalRouting::standard;
+        return standard(released);
     }
 
     bool tracking() const noexcept { return tracking_; }
 
 private:
+    PedalRoutingDecision standard(PedalRelease released) noexcept {
+        // A confirmed standard route lets each pedal prove its own release.
+        // Keep these latches independent of ownership of AUTO pedal routing.
+        throttleMustRelease_ &= !released.throttle;
+        brakeMustRelease_ &= !released.brake;
+        const auto routing = throttleMustRelease_ && brakeMustRelease_ ? PedalRouting::suspended : PedalRouting::standard;
+        return {routing, !throttleMustRelease_, !brakeMustRelease_};
+    }
+
     bool tracking_{};
-    bool waitingForRelease_{};
+    bool throttleMustRelease_{};
+    bool brakeMustRelease_{};
     bool reversePossible_{};
 };
 

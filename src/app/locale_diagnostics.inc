@@ -123,6 +123,7 @@ CHROME_AXIS_TEXT(DlgDiagnosticsUsbWaitingCommands, L"Commandes en attente", L"Wa
 CHROME_AXIS_TEXT(DlgDiagnosticsUsbEventContext, L"Contexte de conduite modifié", L"Driving context changed")
 CHROME_AXIS_TEXT(DlgDiagnosticsUsbEventMenu, L"Menu en jeu · commandes suspendues", L"In-game menu · controls suspended")
 CHROME_AXIS_TEXT(DlgDiagnosticsUsbEventReopened, L"Connexion DirectInput rouverte", L"DirectInput connection reopened")
+CHROME_AXIS_TEXT(DlgDiagnosticsUsbEventDiscreteOverflow, L"Trop d’appuis en attente · relâchez les commandes", L"Too many pending presses · release the controls")
 CHROME_AXIS_TEXT(DlgDiagnosticsUsbEventDevice, L"Périphérique USB", L"USB device")
 CHROME_AXIS_TEXT(DlgDiagnosticsUsbEventInterface, L"Interface DirectInput", L"DirectInput interface")
 CHROME_AXIS_TEXT(DlgDiagnosticsUsbReasonSession, L"Reprise de session conducteur", L"Driving session resumed")

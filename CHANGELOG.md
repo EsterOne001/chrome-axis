@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.62
+
+- **Pédales.** Après une pause, une pédale disponible peut reprendre en marche avant ou au point mort même si l’autre est déconnectée. Les protections de routage restent actives pendant une transition de marche arrière.
+- **Palettes et accessoires.** Les appuis brefs lus par DirectInput sont conservés jusqu’au traitement de la commande. Les événements anciens ou enregistrés avant une interruption sont écartés.
+- **Capture.** La touche choisie dans l’assistant de boîte séquentielle reste associée à la commande si la reprise USB impose une nouvelle mesure au repos.
+- **Retour de force.** La lecture valide qui suit une réouverture après une attente prolongée du pilote permet de relancer le retour de force.
+
+[ZIP Vortex](out/Chromaxis-0.4.62.zip)
+
 ## Chrome Axis 0.4.61
 
 - **Reprise USB.** Les commandes sont lues et leur fraîcheur est contrôlée par périphérique. Une redétection lente laisse les autres périphériques utilisables.

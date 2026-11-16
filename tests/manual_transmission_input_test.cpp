@@ -5,18 +5,25 @@
 #include <iostream>
 
 using chrome_axis::ManualTransmissionInput;
+using chrome_axis::observePedalGear;
 using chrome_axis::PedalGear;
+using chrome_axis::PedalRelease;
 using chrome_axis::PedalRouting;
 using chrome_axis::PhysicalModeKey;
 using chrome_axis::TransmissionPedals;
 
 namespace {
 
-static_assert(chrome_axis::observePedalGear(0, -1, 8) == PedalGear::reverse);
-static_assert(chrome_axis::observePedalGear(-1, 0, 8) == PedalGear::reversePending);
-static_assert(chrome_axis::observePedalGear(-1, 1, 8) == PedalGear::forwardOrNeutral);
-static_assert(chrome_axis::observePedalGear(-1, -2, 0) == PedalGear::unavailable);
-static_assert(chrome_axis::observePedalGear(-1, -2, 0, true) == PedalGear::reversePending);
+static_assert(observePedalGear(0, -1, 8) == PedalGear::reverse);
+static_assert(observePedalGear(-1, 0, 8) == PedalGear::reversePending);
+static_assert(observePedalGear(2, -1, 8, false, 0) == PedalGear::reversePending);
+static_assert(observePedalGear(-1, 1, 8) == PedalGear::neutralToForward);
+static_assert(observePedalGear(-1, -1, 8, false, 1) == PedalGear::neutralToForward);
+static_assert(observePedalGear(-1, -1, 8) == PedalGear::forwardOrNeutral);
+static_assert(observePedalGear(-1, -2, 0) == PedalGear::unavailable);
+static_assert(observePedalGear(-1, -2, 0, true) == PedalGear::reversePending);
+
+constexpr PedalRelease bothReleased{true, true};
 
 bool hardwareModeNeedsAValidLever()
 {
@@ -314,40 +321,98 @@ bool nativePaddlesAndClutchRespectArming()
 bool missingGearboxLeavesOrRestoresStandardPedals()
 {
     TransmissionPedals pedals;
-    if (pedals.update(true, PedalGear::unavailable, false) != PedalRouting::standard ||
-        pedals.update(false, PedalGear::unavailable, false) != PedalRouting::standard ||
-        pedals.update(false, PedalGear::unavailable, true) != PedalRouting::standard ||
+    if (pedals.update(true, PedalGear::unavailable, {}).routing != PedalRouting::standard ||
+        pedals.update(false, PedalGear::unavailable, {}).routing != PedalRouting::standard ||
+        pedals.update(false, PedalGear::unavailable, bothReleased).routing != PedalRouting::standard ||
         pedals.tracking())
         return false;
 
-    return pedals.update(true, PedalGear::forwardOrNeutral, false) == PedalRouting::standard &&
-        pedals.update(true, PedalGear::unavailable, true) == PedalRouting::suspended &&
-        pedals.update(false, PedalGear::unavailable, false) == PedalRouting::suspended &&
-        pedals.update(false, PedalGear::unavailable, true) == PedalRouting::standard &&
+    return pedals.update(true, PedalGear::forwardOrNeutral, {}).routing == PedalRouting::standard &&
+        pedals.update(true, PedalGear::unavailable, bothReleased).routing == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::unavailable, {}).routing == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::unavailable, bothReleased).routing == PedalRouting::standard &&
         !pedals.tracking() &&
-        pedals.update(false, PedalGear::unavailable, false) == PedalRouting::standard;
+        pedals.update(false, PedalGear::unavailable, {}).routing == PedalRouting::standard;
+}
+
+bool knownGearLetsEachPedalResumeIndependently()
+{
+    for (const bool brakeAvailable : {true, false}) {
+        for (const int engaged : {3, -1}) {
+            TransmissionPedals pedals;
+            const auto known = observePedalGear(engaged, engaged, 8);
+            const PedalRelease oneReleased{!brakeAvailable, brakeAvailable};
+            if (pedals.update(true, known, {}).routing != PedalRouting::standard ||
+                pedals.update(false, PedalGear::unavailable, {}).routing != PedalRouting::suspended ||
+                pedals.update(false, PedalGear::unavailable, oneReleased).routing != PedalRouting::suspended)
+                return false;
+
+            const auto resumed = pedals.update(true, known, oneReleased);
+            if (resumed.routing != PedalRouting::standard || resumed.brakeAllowed != brakeAvailable ||
+                resumed.throttleAllowed == brakeAvailable)
+                return false;
+
+            // An absent pedal or one returning while held cannot clear its own latch.
+            const auto held = pedals.update(true, known, {});
+            if (held.routing != PedalRouting::standard || held.brakeAllowed != brakeAvailable ||
+                held.throttleAllowed == brakeAvailable)
+                return false;
+            const auto recovered = pedals.update(true, known, {brakeAvailable, !brakeAvailable});
+            if (recovered.routing != PedalRouting::standard || !recovered.brakeAllowed || !recovered.throttleAllowed)
+                return false;
+        }
+    }
+    return true;
 }
 
 bool retainsManualReversePedalsDuringHandoff()
 {
     TransmissionPedals pedals;
-    if (pedals.update(false, PedalGear::reverse, false) != PedalRouting::standard ||
-        pedals.update(true, PedalGear::reverse, false) != PedalRouting::reverse ||
-        pedals.update(false, PedalGear::reverse, false) != PedalRouting::reverse ||
-        pedals.update(false, PedalGear::forwardOrNeutral, false) != PedalRouting::suspended ||
-        pedals.update(false, PedalGear::forwardOrNeutral, true) != PedalRouting::standard ||
-        pedals.update(false, PedalGear::reverse, false) != PedalRouting::standard)
+    if (pedals.update(false, PedalGear::reverse, {}).routing != PedalRouting::standard ||
+        pedals.update(true, PedalGear::reverse, {}).routing != PedalRouting::reverse ||
+        pedals.update(false, PedalGear::reverse, {}).routing != PedalRouting::reverse ||
+        pedals.update(false, PedalGear::forwardOrNeutral, {}).routing != PedalRouting::suspended ||
+        pedals.update(false, PedalGear::forwardOrNeutral, bothReleased).routing != PedalRouting::standard ||
+        pedals.update(false, PedalGear::reverse, {}).routing != PedalRouting::standard)
         return false;
 
-    return pedals.update(true, PedalGear::forwardOrNeutral, false) == PedalRouting::standard &&
-        pedals.update(true, PedalGear::reversePending, false) == PedalRouting::suspended &&
-        pedals.update(false, PedalGear::unavailable, true) == PedalRouting::suspended &&
-        pedals.update(true, PedalGear::reverse, false) == PedalRouting::suspended &&
-        pedals.update(true, PedalGear::reverse, true) == PedalRouting::reverse &&
-        pedals.update(false, PedalGear::unavailable, true) == PedalRouting::suspended &&
-        pedals.update(false, PedalGear::reverse, false) == PedalRouting::suspended &&
-        pedals.update(false, PedalGear::reverse, true) == PedalRouting::reverse &&
-        pedals.update(false, PedalGear::forwardOrNeutral, true) == PedalRouting::standard;
+    return pedals.update(true, PedalGear::forwardOrNeutral, {}).routing == PedalRouting::standard &&
+        pedals.update(true, PedalGear::reversePending, {}).routing == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::unavailable, bothReleased).routing == PedalRouting::suspended &&
+        pedals.update(true, PedalGear::reverse, {}).routing == PedalRouting::suspended &&
+        pedals.update(true, PedalGear::reverse, bothReleased).routing == PedalRouting::reverse &&
+        pedals.update(false, PedalGear::unavailable, bothReleased).routing == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::reverse, {}).routing == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::reverse, bothReleased).routing == PedalRouting::reverse &&
+        pedals.update(false, PedalGear::neutralToForward, bothReleased).routing == PedalRouting::suspended &&
+        pedals.update(true, PedalGear::neutralToForward, bothReleased).routing == PedalRouting::suspended &&
+        pedals.update(true, PedalGear::forwardOrNeutral, {}).routing == PedalRouting::suspended &&
+        pedals.update(true, PedalGear::forwardOrNeutral, bothReleased).routing == PedalRouting::standard;
+}
+
+bool automaticReverseKeepsStandardRoutingAfterPartialResume()
+{
+    for (const int engaged : {-1, 3}) {
+        TransmissionPedals pedals;
+        const auto known = observePedalGear(engaged, engaged, 8);
+        pedals.update(true, known, bothReleased);
+        pedals.update(false, PedalGear::unavailable, {});
+        const auto resumed = pedals.update(false, known, {false, true});
+        if (pedals.tracking() || resumed.routing != PedalRouting::standard ||
+            resumed.throttleAllowed || !resumed.brakeAllowed)
+            return false;
+
+        for (const auto gear : {PedalGear::unavailable, PedalGear::reversePending, PedalGear::reverse}) {
+            const auto automatic = pedals.update(false, gear, {});
+            if (pedals.tracking() || automatic.routing != PedalRouting::standard ||
+                automatic.throttleAllowed || !automatic.brakeAllowed)
+                return false;
+        }
+        const auto recovered = pedals.update(false, PedalGear::reverse, {true, false});
+        if (recovered.routing != PedalRouting::standard || !recovered.throttleAllowed || !recovered.brakeAllowed)
+            return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -384,7 +449,11 @@ int main()
         std::cerr << "A missing gearbox observation stranded the pedals in AUTO\n";
         return 1;
     }
-    if (!retainsManualReversePedalsDuringHandoff()) {
+    if (!knownGearLetsEachPedalResumeIndependently()) {
+        std::cerr << "A pedal resumed without its own release or was blocked by a missing pedal\n";
+        return 1;
+    }
+    if (!retainsManualReversePedalsDuringHandoff() || !automaticReverseKeepsStandardRoutingAfterPartialResume()) {
         std::cerr << "Pedal routing changed before the reverse handoff was safe\n";
         return 1;
     }
