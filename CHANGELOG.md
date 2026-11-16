@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.60
+
+- **Reprise USB.** Les appels de retour de force sont isolés de la lecture des axes et boutons. La découverte DirectInput retente les vérifications momentanément indisponibles et l’application actualise son inventaire en arrière-plan.
+- **Conduite et calibration.** Un embrayage désactivé est exclu de l’état USB en jeu. La calibration conserve la précision des valeurs et la grille indique les limites de la boîte native.
+- **Transmission et diagnostic.** La bascule AUTO / MANUEL traite les appuis physiques successifs, le diagnostic conserve le dernier relevé valide et le CSV suit les changements de raccourci dans un menu. L’application distingue l’autorisation USB enregistrée des commandes effectivement actives dans le jeu.
+
+[ZIP Vortex](out/Chromaxis-0.4.60.zip)
+
 ## Chrome Axis 0.4.59
 
 - **Reprise USB.** Chrome Axis réutilise ses connexions DirectInput lorsque la fenêtre du jeu reste la même et retire `GetCapabilities` de la lecture des axes et des boutons. Une perte de périphérique déclenche toujours sa réacquisition avec réarmement au neutre.

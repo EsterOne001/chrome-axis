@@ -34,7 +34,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 14;
+constexpr LONG64 protocolVersion = 15;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate gear and mode changes.
@@ -46,7 +46,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v14.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v15.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -59,10 +59,10 @@ constexpr std::array<std::string_view, 7> modeTokens{
     "waiting_for_driver", "game_not_foreground", "waiting_for_vehicle_input", "usb_disabled", "profile_unavailable",
     "usb", "simulation"
 };
-constexpr std::array<std::string_view, 14> shiftTokens{
+constexpr std::array<std::string_view, 15> shiftTokens{
     "automatic", "ready", "unavailable", "outside_range", "stop_to_change_direction", "already_engaged",
     "rejected", "accepted", "neutral_transition", "expired", "recalibration_needed", "selector_unavailable", "pending",
-    "clutch_required"
+    "clutch_required", "selector_ambiguous"
 };
 constexpr std::array<std::string_view, 10> axisTokens{
     "unassigned", "device_unavailable", "axis_unavailable", "waiting_for_neutral", "armed", "awaiting_profile",
@@ -72,9 +72,10 @@ constexpr std::array<std::string_view, 11> usbTokens{
     "device_slow", "device_pending", "device_unavailable", "device_recovered", "poll_expired", "poll_gap",
     "commands_waiting", "commands_ready", "context_changed", "menu_paused", "directinput_reopened"
 };
-constexpr std::array<std::string_view, 11> accessoryTokens{
+constexpr std::array<std::string_view, 13> accessoryTokens{
     "unconfigured", "waiting", "ready", "profile_error", "inactive", "blocked", "device_unavailable",
-    "input_unavailable", "sample_expired", "temporarily_unavailable", "axis_conflict"
+    "input_unavailable", "sample_expired", "temporarily_unavailable", "axis_conflict", "modifier_blocked",
+    "selector_ambiguous"
 };
 constexpr std::array<std::string_view, 8> commandTokens{
     "inactive", "waiting_for_vehicle", "waiting_for_neutral", "ready", "device_unavailable",
@@ -86,16 +87,18 @@ constexpr std::array<std::string_view, 12> shifterRoleTokens{
     "reverse", "upshift", "downshift"
 };
 static_assert(modeTokens.size() == static_cast<std::size_t>(DiagnosticMode::simulation) + 1);
-static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::clutchRequired) + 1);
+static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::selectorAmbiguous) + 1);
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::temporarilyUnavailable) + 1);
 static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::directInputReopened) + 1);
-static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::axisConflict) + 1);
+static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::selectorAmbiguous) + 1);
 static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::sampleExpired) + 1);
 static_assert(inputKindTokens.size() == static_cast<std::size_t>(AccessoryKind::Axis) + 1);
 static_assert(shifterRoleTokens.size() == static_cast<std::size_t>(ShifterRole::Downshift) + 1);
 
 constexpr std::size_t drivingCsvColumns = 27;
 constexpr std::size_t captureCsvColumns = 51;
+constexpr std::size_t drivingTransmissionColumn = 13; // Index of transmission_mode in a CSV row.
+constexpr std::size_t drivingTransmissionColumns = 6;
 constexpr std::size_t usbCsvColumns = 9;
 constexpr std::size_t transmissionCsvColumns = 5;
 
@@ -192,16 +195,36 @@ void writeDrivingHeader(std::ostream& output)
               "clutch_input_valid,clutch_attenuation_valid,shift_delay_valid";
 }
 
+void writeDrivingTransmission(std::ostream& output, const DrivingCaptureSample& sample)
+{
+    const auto gear = [&output](int value) {
+        if (value >= -1)
+            output << value;
+        output << ',';
+    };
+    const auto& transmission = sample.transmission;
+    if (transmission.configured) {
+        output << (transmission.manual ? "manual" : "auto") << ',';
+        if (sample.mode == DiagnosticMode::usb)
+            output << (transmission.sequential ? "sequential" : "h_pattern");
+        else if (sample.mode == DiagnosticMode::simulation)
+            output << "keyboard";
+        output << ',';
+    } else {
+        output << ",,";
+    }
+    gear(transmission.selectedGear);
+    gear(transmission.requestedGear);
+    gear(transmission.engagedGear);
+    if (transmission.configured)
+        output << csvToken(transmission.shift, shiftTokens);
+}
+
 void writeDrivingRow(std::ostream& output, const DrivingCaptureSample& sample, std::uint64_t startedAt)
 {
     const auto valid = [](bool available, float value) { return available && std::isfinite(value); };
     const auto number = [&output](bool available, float value) {
         if (available)
-            output << value;
-        output << ',';
-    };
-    const auto gear = [&output](int value) {
-        if (value >= -1)
             output << value;
         output << ',';
     };
@@ -222,22 +245,7 @@ void writeDrivingRow(std::ostream& output, const DrivingCaptureSample& sample, s
     number(clutchInput, sample.clutch.input);
     output << sample.clutch.assistanceEnabled << ',' << sample.clutch.probeSupported << ',' << sample.clutch.probeActive << ',';
     number(attenuation, sample.clutch.applied);
-    const auto& transmission = sample.transmission;
-    if (transmission.configured) {
-        output << (transmission.manual ? "manual" : "auto") << ',';
-        if (sample.mode == DiagnosticMode::usb)
-            output << (transmission.sequential ? "sequential" : "h_pattern");
-        else if (sample.mode == DiagnosticMode::simulation)
-            output << "keyboard";
-        output << ',';
-    } else {
-        output << ",,";
-    }
-    gear(transmission.selectedGear);
-    gear(transmission.requestedGear);
-    gear(transmission.engagedGear);
-    if (transmission.configured)
-        output << csvToken(transmission.shift, shiftTokens);
+    writeDrivingTransmission(output, sample);
     output << ',';
     if (sample.shiftDelayAvailable)
         output << sample.shiftDelayMicros;
@@ -354,7 +362,9 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
             output << ",driving,,";
         } else {
             output << elapsed(sample.sampledAt, startedAt) << ',' << csvToken(sample.mode, modeTokens);
-            emptyCsvColumns(output, drivingCsvColumns - 2);
+            emptyCsvColumns(output, drivingTransmissionColumn - 1);
+            writeDrivingTransmission(output, sample);
+            emptyCsvColumns(output, drivingCsvColumns - drivingTransmissionColumn - drivingTransmissionColumns);
             output << ",context,,";
         }
         writeCaptureAxes(output, sample.axes);
@@ -432,7 +442,7 @@ DiagnosticPublisher::~DiagnosticPublisher()
 }
 
 void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession,
-                                  const PerformanceReport& performance) noexcept
+                                  const PerformanceReport& performance, bool validDrivingSample) noexcept
 {
     if (!frame_)
         return;
@@ -444,8 +454,10 @@ void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint6
             drivingSession_ = drivingSession;
             report_.eventCount = 0;
         }
-        report_.lastDrive = snapshot;
-        report_.lastDriveAt = report_.sampledAt;
+        if (validDrivingSample) {
+            report_.lastDrive = snapshot;
+            report_.lastDriveAt = report_.sampledAt;
+        }
     }
     recordTransition(report_);
     const auto lock = WaitForSingleObject(mutex_, 0);
@@ -496,12 +508,10 @@ void DiagnosticPublisher::recordDrivingSample(std::uint64_t captureId, const Dri
         return;
     if (sample.sampledAt < lastCaptureSample_.sampledAt)
         return;
-    if (sample.mode == lastCaptureSample_.mode && lastCaptureSample_.sampledAt) {
-        if (!isDrivingCaptureMode(sample.mode) ||
-            (sample.sampledAt - lastCaptureSample_.sampledAt < drivingCaptureInterval &&
-             transmissionForSampling(sample.transmission) == transmissionForSampling(lastCaptureSample_.transmission)))
-            return;
-    }
+    if (sample.mode == lastCaptureSample_.mode && lastCaptureSample_.sampledAt &&
+        (!isDrivingCaptureMode(sample.mode) || sample.sampledAt - lastCaptureSample_.sampledAt < drivingCaptureInterval) &&
+        transmissionForSampling(sample.transmission) == transmissionForSampling(lastCaptureSample_.transmission))
+        return;
     queueCaptureRecord({.driving = sample});
     lastCaptureSample_ = sample;
 }
@@ -613,6 +623,7 @@ DiagnosticRead DiagnosticReader::read() noexcept
             publisherId_ = frame_->publisherId;
             const bool captureMatches = captureId_ && captureId_ == frame_->captureId &&
                 capturePublisherId_ == frame_->capturePublisherId;
+            captureSlotOccupied_ = !captureMatches && now < frame_->captureHoldUntil;
             if (frame_->report.sampledAt) {
                 last_ = frame_->report;
                 last_.connection = DiagnosticConnection::connected;
@@ -639,6 +650,7 @@ DiagnosticRead DiagnosticReader::read() noexcept
             last_.usbEventCount = std::min(last_.usbEventCount, static_cast<std::uint32_t>(last_.usbEvents.size()));
         } else {
             last_.connection = DiagnosticConnection::stale;
+            captureSlotOccupied_ = false;
         }
         ReleaseMutex(mutex_);
     }

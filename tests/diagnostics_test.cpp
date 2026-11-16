@@ -124,8 +124,17 @@ int testPerformanceCapture(const std::filesystem::path& root)
         sample.sampledAt += 20;
         sample.mode = DiagnosticMode::waitingForVehicleInput;
         publisher.recordDrivingSample(start, sample); // Pausing is a context transition.
-        sample.sampledAt += 40;
-        publisher.recordDrivingSample(start, sample); // No repeated rows while it remains paused.
+        sample.sampledAt += 10;
+        sample.transmission.shortcutKey = 'L';
+        publisher.recordDrivingSample(start, sample); // A new binding can arrive during the same menu.
+        sample.sampledAt += 10;
+        sample.transmission = {.configured = true, .manual = true, .selectedGear = 2, .requestedGear = 2,
+                               .engagedGear = 2, .shift = DiagnosticShiftState::accepted, .shortcutKey = 'L',
+                               .hasRequestedMode = true, .requestedManual = true};
+        publisher.recordDrivingSample(start, sample); // A mode change alone also gets its own row.
+        sample.sampledAt += 20;
+        sample.transmission.gearboxSampledAt = sample.sampledAt - 3;
+        publisher.recordDrivingSample(start, sample); // A timestamp alone leaves the menu state unchanged.
         publisher.publish(snapshot, 1, performance);
         const auto live = observer.read();
         if (observer.ownsPerformanceCapture() || live.performance.state != PerformanceState::capturing ||
@@ -143,7 +152,7 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 3)
             return 15;
 
-        std::array<DiagnosticCaptureRecord, 5> records;
+        std::array<DiagnosticCaptureRecord, 7> records;
         const auto firstBatch = owner.drainCapture(std::span(records).first(2));
         if (!firstBatch.available || firstBatch.finished || firstBatch.dropped || firstBatch.count != 2 ||
             observer.drainCapture(records).available)
@@ -175,13 +184,16 @@ int testPerformanceCapture(const std::filesystem::path& root)
             finished.clippedSamples != 3 || finished.impactClippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
         const auto tail = owner.drainCapture(std::span(records).subspan(2));
-        if (!tail.available || !tail.finished || tail.count != 3 || tail.dropped ||
+        if (!tail.available || !tail.finished || tail.count != 5 || tail.dropped ||
             records.front().driving.transmission.shift != DiagnosticShiftState::pending ||
             records[1].driving.transmission.shortcutPressedAt != performance.startedAt + 5 ||
             records[1].driving.shiftDelayMicros != 9900 || records[2].driving.mode != DiagnosticMode::usbDisabled ||
             !records[2].driving.speedAvailable || records[2].driving.speedMps != 12.5f ||
             records[3].driving.mode != DiagnosticMode::waitingForVehicleInput ||
-            !records[4].usbIncident || records[4].usb.durationMicros != 52100 ||
+            records[4].driving.mode != DiagnosticMode::waitingForVehicleInput ||
+            records[4].driving.transmission.shortcutKey != 'L' ||
+            records[4].driving.transmission.configured || records[5].driving.transmission.engagedGear != 2 ||
+            !records[6].usbIncident || records[6].usb.durationMicros != 52100 ||
             owner.drainCapture(records).count || observer.read().drivingCaptureSamples ||
             observer.drainCapture(records).available)
             return 22;
@@ -202,6 +214,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
             text.find(",119,1,5,manual,7\r\n") == std::string::npos ||
             text.find("\r\n30,usb_disabled,") == std::string::npos ||
             text.find("\r\n50,waiting_for_vehicle_input,") == std::string::npos ||
+            text.find("\r\n70,waiting_for_vehicle_input,,,,,,,,,,,,manual,,2,2,2,accepted,,,,,,,,,context,") == std::string::npos ||
+            text.find(",76,0,,manual,\r\n") == std::string::npos ||
             text.find(",context,") == std::string::npos ||
             text.find(",device_slow,\"Poll\",0x80070005,52100,") == std::string::npos ||
             text.find(privateId) != std::string::npos ||
@@ -245,6 +259,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
         .configured = true, .engagedGear = 2, .shortcutKey = VK_F8, .shortcutPressedAt = tick,
         .hasRequestedMode = true, .requestedManual = true, .shortcutAvailable = true,
     };
+    first.axes[1] = {.state = DiagnosticAxisState::armed, .value = 0.6f, .appliedAt = tick};
     publisher.publish(first, 1);
     const auto initial = reader.read();
     if (!initial.lastDriveAt || initial.lastDrive.transmission != first.transmission)
@@ -259,9 +274,27 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
         interrupted.lastDrive.transmission != first.transmission)
         return false;
 
+    DiagnosticSnapshot expired{.mode = DiagnosticMode::usb, .accessories = DiagnosticAccessoryState::sampleExpired};
+    expired.axes[1].state = DiagnosticAxisState::sampleExpired;
+    publisher.publish(expired, 1, {}, false);
+    const auto rearming = reader.read();
+    if (rearming.snapshot.axes[1].state != DiagnosticAxisState::sampleExpired ||
+        rearming.lastDrive.axes[1].appliedAt != tick || rearming.lastDrive.axes[1].value != 0.6f ||
+        rearming.lastDrive.transmission != first.transmission || rearming.lastDriveAt != initial.lastDriveAt)
+        return false;
+    expired.axes[1].state = DiagnosticAxisState::waitingForNeutral;
+    expired.accessories = DiagnosticAccessoryState::waiting;
+    publisher.publish(expired, 1, {}, false);
+    publisher.publish({.mode = DiagnosticMode::gameNotForeground});
+    const auto background = reader.read();
+    if (background.lastDrive.transmission.engagedGear != 2 || background.lastDrive.axes[1].value != 0.6f ||
+        background.lastDriveAt != initial.lastDriveAt || background.events[2].axes[1] != DiagnosticAxisState::sampleExpired ||
+        background.events[3].axes[1] != DiagnosticAxisState::waitingForNeutral)
+        return false;
+
     const DiagnosticUsbEvent blockers{
         .sampledAt = tick + 40, .kind = DiagnosticUsbEventKind::commandsWaiting, .mode = DiagnosticMode::usb,
-        .accessories = DiagnosticAccessoryState::waiting, .accessoryCount = 5,
+        .accessories = DiagnosticAccessoryState::modifierBlocked, .accessoryCount = 5,
         .blockers = {{
             {.kind = AccessoryKind::Button, .role = ShifterRole::Gear1, .index = 1,
              .state = DiagnosticCommandState::waitingForNeutral},
@@ -278,7 +311,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     first.transmission.manual = true;
     publisher.publish(first, 1);
     const auto resumed = reader.read();
-    if (resumed.lastDrive.transmission != first.transmission || resumed.eventCount != 3 ||
+    if (resumed.lastDrive.transmission != first.transmission || resumed.eventCount != 6 ||
         resumed.usbEventCount != 1 || resumed.usbEvents[0].blockerCount != blockers.blockerCount ||
         !resumed.usbEvents[0].blockers[1].clutch || !resumed.usbEvents[0].blockers[3].progressiveHandbrake)
         return false;
@@ -289,6 +322,11 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
         DiagnosticCaptureRecord{.usb = resumed.usbEvents[0], .usbIncident = true},
         DiagnosticCaptureRecord{.driving = {.sampledAt = tick + 50, .mode = waiting.mode,
                                             .transmission = waiting.transmission}},
+        DiagnosticCaptureRecord{.driving = {.sampledAt = tick + 51, .mode = DiagnosticMode::usb,
+                                            .transmission = {.configured = true,
+                                                .shift = DiagnosticShiftState::selectorAmbiguous}}},
+        DiagnosticCaptureRecord{.usb = {.sampledAt = tick + 52, .kind = DiagnosticUsbEventKind::commandsWaiting,
+            .mode = DiagnosticMode::usb, .accessories = DiagnosticAccessoryState::selectorAmbiguous}, .usbIncident = true},
     };
     std::ostringstream csv;
     writeDiagnosticCaptureHeader(csv);
@@ -298,7 +336,10 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     constexpr std::string_view blockersCell =
         ",5,gear_1:button:2:0:waiting_for_neutral|clutch:axis:3:0:temporarily_unavailable|"
         "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,\r\n";
-    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,,\r\n") == std::string::npos)
+    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,,\r\n") == std::string::npos ||
+        text.find(",modifier_blocked,0,5,") == std::string::npos ||
+        text.find(",selector_ambiguous,,") == std::string::npos ||
+        text.find(",selector_ambiguous,0,0,") == std::string::npos)
         return false;
     std::istringstream lines(text);
     std::string row;

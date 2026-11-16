@@ -1,14 +1,229 @@
+#define DIRECTINPUT_VERSION 0x0800
+
 #include "chrome_axis/feedback.hpp"
+#include "chrome_axis/accessories.hpp"
+#include "chrome_axis/controls.hpp"
+#include "../src/core/device_object_probe.hpp"
+#include "../src/plugin/force_output_worker.hpp"
 
 #include <windows.h>
 
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <tuple>
+
+namespace {
+
+using namespace std::chrono_literals;
+using TestClock = std::chrono::steady_clock;
+using namespace chrome_axis;
+
+struct TestForceContext {
+    TestClock::time_point expires;
+    bool current() const noexcept { return TestClock::now() < expires; }
+    TestClock::time_point deadline() const noexcept { return expires; }
+};
+
+struct FakeForceDriver {
+    struct State {
+        std::atomic<bool> entered{};
+        std::atomic<bool> resume{};
+        std::atomic<unsigned int> initialized{};
+        std::atomic<unsigned int> stops{};
+        std::atomic<unsigned int> started{};
+    };
+    static inline State* testState{};
+
+    FakeForceDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver observer, void* context) noexcept
+        : observer(observer), observerContext(context) {}
+
+    bool ready() const noexcept { return true; }
+    WheelForceState wheelForceState() const noexcept { return mode; }
+
+    std::optional<float> setWheelForce(std::string_view id, std::size_t, float force,
+                                      bool (*current)(const void*) noexcept, const void* guard) {
+        if (!initialized) {
+            initialized = true;
+            if (++testState->initialized == 1) {
+                const auto start = TestClock::now();
+                testState->entered.store(true);
+                testState->resume.wait(false);
+                const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(TestClock::now() - start);
+                observer(observerContext, {DirectInputReadEventKind::slow, id, "FFB Acquire", S_OK,
+                    static_cast<std::uint64_t>(duration.count())});
+            }
+        }
+        if (!current(guard))
+            return std::nullopt;
+        ++testState->started;
+        mode = WheelForceState::active;
+        return force;
+    }
+
+    void stopWheelForce() noexcept {
+        ++testState->stops;
+        initialized = false;
+        mode = WheelForceState::waiting;
+    }
+
+    DirectInputReadObserver observer{};
+    void* observerContext{};
+    bool initialized{};
+    WheelForceState mode{WheelForceState::waiting};
+};
+
+template <class Predicate>
+bool waitFor(Predicate&& predicate)
+{
+    const auto deadline = TestClock::now() + 2s;
+    while (!predicate()) {
+        if (TestClock::now() >= deadline)
+            return false;
+        std::this_thread::sleep_for(1ms);
+    }
+    return true;
+}
+
+int testSlowForceDuringIndependentInput(bool cancel)
+{
+    FakeForceDriver::State state;
+    FakeForceDriver::testState = &state;
+    ForceOutputWorker<TestForceContext, FakeForceDriver> worker;
+    const auto allowDriver = [&] {
+        state.resume.store(true);
+        state.resume.notify_one();
+    };
+    struct AllowDriverOnExit {
+        const decltype(allowDriver)& allow;
+        ~AllowDriverOnExit() { allow(); }
+    } restore{allowDriver};
+
+    const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
+    const std::string pedal = "{22222222-2222-2222-2222-222222222222}";
+    const HWND window = GetDesktopWindow();
+    auto now = TestClock::now();
+    if (!worker.submit(window, wheel, 0, 0.75f, {now + 100ms}, 42) ||
+        !waitFor([&] { return state.entered.load(); }))
+        return 51;
+
+    Profile profile;
+    profile.brake = {pedal, 0, 0, 0, 1000, 0.02f};
+    ControlReader controls(profile);
+    AccessoryReader accessories({{pedal, AccessoryKind::Button, 0, 0, 1, VK_SPACE}});
+    DeviceSample input;
+    input.axesPresent[0] = true;
+    input.buttonsPresent.set(0);
+    std::array<const DeviceSample*, 3> axisSamples{nullptr, nullptr, &input};
+    std::array<const DeviceSample*, 1> buttonSamples{&input};
+    for (int i = 0; i < 5; ++i) {
+        input.axes[0] = 0;
+        input.buttons.reset(0);
+        for (int neutral = 0; neutral < 3; ++neutral) {
+            controls.update(axisSamples);
+            accessories.update(buttonSamples);
+        }
+        input.axes[0] = 1000;
+        input.buttons.set(0);
+        if (controls.update(axisSamples).values.brake != 1.0f || !accessories.update(buttonSamples).test(VK_SPACE))
+            return 52;
+        std::this_thread::sleep_for(25ms);
+    }
+
+    if (cancel)
+        worker.cancel();
+    const auto latestDeadline = TestClock::now() + (cancel ? 1s : 350ms);
+    if (!worker.submit(window, wheel, 0, 0.25f, {latestDeadline}, 42) ||
+        !worker.submit(window, wheel, 0, 0.5f, {latestDeadline}, 42))
+        return 53;
+    allowDriver();
+    std::optional<decltype(worker)::Completion> accepted;
+    if (!waitFor([&] {
+            while (auto result = worker.nextCompletion()) {
+                if (result->accepted)
+                    accepted = result;
+            }
+            return accepted.has_value();
+        }) || accepted->accepted != 0.5f || accepted->captureId != 42 || state.started.load() != 1 ||
+        state.initialized.load() != (cancel ? 2u : 1u))
+        return 54;
+    const auto slow = worker.nextOperation();
+    if (!slow || slow->name.data() != std::string_view("FFB Acquire") || slow->deviceId.data() != wheel ||
+        slow->durationMicros <= 100000)
+        return 55;
+    const auto previousStops = state.stops.load();
+    if (cancel)
+        worker.cancel();
+    if (!waitFor([&] { return state.stops.load() > previousStops; }))
+        return 56;
+    return 0;
+}
+
+int testProvisionalInputLayout()
+{
+    DeviceObjectProbe<3> layout;
+    const auto now = TestClock::now();
+    std::array<unsigned int, 3> attempts{};
+    const auto probe = [&](std::size_t index) -> std::tuple<HRESULT, bool, TestClock::time_point> {
+        ++attempts[index];
+        if (index == 0 && attempts[index] == 1)
+            return {E_PENDING, false, now + 10ms};
+        if (index == 2)
+            return {DIERR_OBJECTNOTFOUND, false, now};
+        return {S_OK, true, now};
+    };
+    const auto all = std::bitset<3>{}.set();
+    layout.refresh(all, now, probe);
+    if (layout.pending().to_ulong() != 0b001 || layout.present().to_ulong() != 0b010)
+        return 57;
+    layout.refresh(all, now + 509ms, probe);
+    if (attempts != std::array<unsigned int, 3>{1, 1, 1})
+        return 58;
+    layout.refresh(all, now + 510ms, probe);
+    if (layout.pending().any() || layout.present().to_ulong() != 0b011 ||
+        attempts != std::array<unsigned int, 3>{2, 1, 1})
+        return 59;
+
+    const std::string device = "{33333333-3333-3333-3333-333333333333}";
+    Profile profile;
+    profile.brake = {device, 2, 0, 0, 1000, 0.02f};
+    ControlReader controls(profile);
+    AccessoryReader accessories({{device, AccessoryKind::Button, 0, 0, 1, VK_SPACE},
+                                  {device, AccessoryKind::Pov, 1, povCentered, 0, VK_LEFT}});
+    DeviceSample input;
+    input.axesPending.set(2);
+    input.buttonsPending.set(0);
+    input.povsPending.set(1);
+    std::array<const DeviceSample*, 3> axisSamples{nullptr, nullptr, &input};
+    std::array<const DeviceSample*, 2> accessorySamples{&input, &input};
+    std::array<AccessoryObservation, 2> observations;
+    controls.update(axisSamples);
+    accessories.update(accessorySamples, {}, observations);
+    if (controls.axisStatuses()[2] != AxisStatus::temporarilyUnavailable ||
+        observations[0].status != AccessoryStatus::temporarilyUnavailable ||
+        observations[1].status != AccessoryStatus::temporarilyUnavailable)
+        return 60;
+    input.axesPending.reset();
+    input.buttonsPending.reset();
+    input.povsPending.reset();
+    controls.update(axisSamples);
+    accessories.update(accessorySamples, {}, observations);
+    return controls.axisStatuses()[2] == AxisStatus::axisUnavailable &&
+        observations[0].status == AccessoryStatus::inputUnavailable &&
+        observations[1].status == AccessoryStatus::inputUnavailable ? 0 : 61;
+}
+
+} // namespace
 
 int main()
 {
     using namespace chrome_axis;
+    if (const auto result = testProvisionalInputLayout())
+        return result;
+    if (const auto result = testSlowForceDuringIndependentInput(false))
+        return result;
+    if (const auto result = testSlowForceDuringIndependentInput(true))
+        return result;
     FeedbackSettings settings;
     WheelFeedback feedback;
     FeedbackSample motion{0.8f, 20.0f, 0.0f, 1600.0f};

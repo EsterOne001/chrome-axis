@@ -407,6 +407,17 @@ int run()
     if (!loadedCombined || loadedCombined->brake.axis != loadedCombined->throttle.axis)
         return 10;
 
+    auto limit = combined;
+    limit.throttle = {pedalId, 1, 0, 0, 1001, static_cast<float>(34.0 / 1001.0)};
+    limit.brake = {pedalId, 1, 34, 34, -967, static_cast<float>(36.0 / 1001.0)};
+    if (!chrome_axis::saveProfile(path, limit, error))
+        return 46;
+    const auto reloadedLimit = chrome_axis::loadProfile(path, error);
+    std::filesystem::remove(path);
+    if (!reloadedLimit || reloadedLimit->throttle.deadzone != limit.throttle.deadzone ||
+        reloadedLimit->brake.deadzone != limit.brake.deadzone)
+        return 47;
+
     chrome_axis::ControlReader combinedReader(*loadedCombined);
     pedals.axes[1] = combined.brake.neutral;
     for (int i = 0; i < 3; ++i)

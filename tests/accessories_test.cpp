@@ -523,12 +523,13 @@ int testNativeShifterPolling(const std::string& deviceId)
 {
     using namespace chrome_axis;
     using Status = DeviceReadStatus;
-    AccessoryReader reader({
+    const AccessoryProfile profile{
         {deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true, 7},
         {deviceId, AccessoryKind::Button, 1, 0, 1, 0, {}, ShifterRole::Gear2, AccessoryActivation::hold, 0, true, 7},
         {deviceId, AccessoryKind::Pov, 0, povCentered, 18000, 0, {}, ShifterRole::Reverse, AccessoryActivation::hold, 0, true, 7},
         {deviceId, AccessoryKind::Button, 2, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
-    });
+    };
+    AccessoryReader reader(profile);
     DeviceSample sample;
     sample.buttonsPresent.set(0).set(1).set(2);
     sample.povsPresent[0] = true;
@@ -538,9 +539,10 @@ int testNativeShifterPolling(const std::string& deviceId)
     const std::array resumed{Status::resumed, Status::resumed, Status::resumed, Status::resumed};
     std::bitset<256> pulses;
     std::optional<int> gear;
+    AccessoryTransmissionSample transmission;
     const auto expect = [&](std::optional<int> expected, int polls = 1) {
         for (int i = 0; i < polls; ++i) {
-            if (reader.update(connected, {}, {}, &pulses, nullptr, &gear).any() || gear != expected)
+            if (reader.update(connected, {}, {}, &pulses, nullptr, &gear, &transmission).any() || gear != expected)
                 return false;
         }
         return true;
@@ -560,6 +562,8 @@ int testNativeShifterPolling(const std::string& deviceId)
     if (!expect(-1, 2) || !expect(1) || pulses.any())
         return 100;
     reader.resetKeyboardBindings();
+    if (reader.readiness(gear.has_value()).armed != profile.size() - 1)
+        return 100;
     if (!expect(1))
         return 100;
     sample.buttons.reset(0);
@@ -570,10 +574,11 @@ int testNativeShifterPolling(const std::string& deviceId)
         return 101;
 
     sample.buttons.set(0);
-    if (!expect(std::nullopt, 4))
+    if (!expect(std::nullopt, 4) || !transmission.selectorAmbiguous || reader.readiness(false).armed != 1)
         return 102;
     sample.buttons.reset(0);
-    if (!expect(std::nullopt, 2) || !expect(2))
+    if (!expect(std::nullopt, 2) || transmission.selectorAmbiguous || !expect(2) ||
+        reader.readiness(gear.has_value()).armed != profile.size())
         return 102;
     sample.buttons.reset(1);
     if (!expect(2, 7) || !expect(-1))
@@ -699,6 +704,11 @@ int testNativeSequentialAndClutch(const std::filesystem::path& path, const std::
     changed[2].clutchMode = ClutchMode::off;
     if (sameAccessoryInputProfile(profile, changed) || !saveAccessoryProfile(path, changed, error)
         || loadAccessoryProfile(path, error) != changed)
+        return 114;
+    auto drivingBindings = changed;
+    removeDisabledDrivingAccessories(drivingBindings);
+    if (drivingBindings != AccessoryProfile{up, down, keyboard} ||
+        loadAccessoryProfile(path, error) != changed)
         return 114;
     changed[2].clutchMode = ClutchMode::experiment;
     if (!saveAccessoryProfile(path, changed, error) || loadAccessoryProfile(path, error) != changed)

@@ -31,7 +31,7 @@ enum class DiagnosticAxisState : std::uint32_t {
 
 enum class DiagnosticAccessoryState : std::uint32_t {
     unconfigured, waiting, ready, profileError, inactive, blocked, deviceUnavailable, inputUnavailable, sampleExpired,
-    temporarilyUnavailable, axisConflict
+    temporarilyUnavailable, axisConflict, modifierBlocked, selectorAmbiguous
 };
 
 enum class DiagnosticCommandState : std::uint8_t {
@@ -97,7 +97,8 @@ struct DiagnosticFeedbackTelemetry {
 
 enum class DiagnosticShiftState : std::uint8_t {
     automatic, ready, unavailable, outsideRange, stopToChangeDirection, alreadyEngaged,
-    rejected, accepted, neutralTransition, expired, recalibrationNeeded, selectorUnavailable, pending, clutchRequired
+    rejected, accepted, neutralTransition, expired, recalibrationNeeded, selectorUnavailable, pending, clutchRequired,
+    selectorAmbiguous
 };
 
 struct DiagnosticTransmission {
@@ -310,9 +311,9 @@ public:
     DiagnosticPublisher(const DiagnosticPublisher&) = delete;
     DiagnosticPublisher& operator=(const DiagnosticPublisher&) = delete;
 
-    // A nonzero session and a driving mode identify a snapshot to retain when driving is interrupted.
+    // Always publish live status. Retain this reading only when the driving commands are usable.
     void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0,
-                 const PerformanceReport& performance = {}) noexcept;
+                 const PerformanceReport& performance = {}, bool validDrivingSample = true) noexcept;
     void recordUsbEvent(const DiagnosticUsbEvent& event) noexcept;
     void recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept;
     std::optional<PerformanceRequest> performanceRequest() noexcept;
@@ -348,6 +349,9 @@ public:
     // Submit a command for this reader's capture. A zero result means no request was sent.
     std::uint64_t requestPerformanceCapture(bool enabled) noexcept;
     bool ownsPerformanceCapture() const noexcept { return captureOwner_ != 0; }
+    bool captureSlotOccupied() const noexcept {
+        return last_.connection == DiagnosticConnection::connected && captureSlotOccupied_;
+    }
     // Caller supplies a nonempty buffer. False availability is transient unless finished is also true.
     DiagnosticCaptureBatch drainCapture(std::span<DiagnosticCaptureRecord> output) noexcept;
 
@@ -367,6 +371,7 @@ private:
     std::uint64_t capturePublisherId_{};
     std::uint64_t captureRead_{};
     std::uint64_t nextSequence_{};
+    bool captureSlotOccupied_{};
 };
 
 } // namespace chrome_axis

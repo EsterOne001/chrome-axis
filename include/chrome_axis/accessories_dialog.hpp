@@ -79,15 +79,17 @@
 namespace chrome_axis {
 
 struct ProfilePreset;
+class DeviceInventory;
+class TransmissionShortcut;
 
 enum class AccessorySection { keys, handbrake, clutch };
 
-bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& root,
+bool editAccessories(HWND owner, DirectInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
                      const ProfilePreset& preset, AccessorySection section = AccessorySection::keys);
-bool editProfileShifter(HWND owner, DirectInput& input, const std::filesystem::path& root,
-                        const ProfilePreset& preset, std::span<const DeviceInfo> devices);
-bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings,
-                 std::span<const DeviceInfo> devices, const std::filesystem::path& profileRoot,
+bool editProfileShifter(HWND owner, DirectInput& input, DeviceInventory& inventory, const std::filesystem::path& root,
+                        const ProfilePreset& preset, TransmissionShortcut& shortcut);
+bool editShifter(HWND owner, DirectInput& input, DeviceInventory& inventory, AccessoryProfile& bindings,
+                 const std::filesystem::path& profileRoot, TransmissionShortcut& shortcut,
                  std::function<bool(HWND, const AccessoryProfile&)> save);
 inline bool isNativeTransmissionBinding(const AccessoryBinding& binding) noexcept
 {

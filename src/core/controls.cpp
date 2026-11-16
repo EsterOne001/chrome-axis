@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <locale>
 #include <map>
 #include <sstream>
@@ -271,6 +272,7 @@ bool saveProfile(const std::filesystem::path& path, const Profile& profile, std:
     const auto temporary = detail::stagedSettingsPath(path);
     std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
     file.imbue(std::locale::classic());
+    file.precision(std::numeric_limits<float>::max_digits10);
     file << "# Chrome Axis calibration\nversion=1\n";
     const auto axes = channels(profile);
     for (std::size_t i = 0; i < axes.size(); ++i) {
@@ -383,7 +385,10 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         if (i > 0 && (!sample || calibration.axis >= axisCount || !sample->axesPresent[calibration.axis] ||
                       statuses[i] == DeviceReadStatus::resumed))
             pedalStabilizers_[i - 1].reset();
-        if (!sample && statuses[i] == DeviceReadStatus::pending) {
+        if (statuses[i] == DeviceReadStatus::resumed)
+            neutralPolls_[i] = 0;
+        if ((!sample && statuses[i] == DeviceReadStatus::pending) ||
+            (sample && calibration.axis < axisCount && sample->axesPending[calibration.axis])) {
             if (neutralPolls_[i] < requiredNeutralPolls)
                 neutralPolls_[i] = 0;
             axisStatuses_[i] = AxisStatus::temporarilyUnavailable;
@@ -394,8 +399,6 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
             axisStatuses_[i] = sample ? AxisStatus::axisUnavailable : AxisStatus::deviceUnavailable;
             continue;
         }
-        if (statuses[i] == DeviceReadStatus::resumed)
-            neutralPolls_[i] = 0;
         const long raw = sample->axes[calibration.axis];
         const bool steering = i == 0;
         const bool brake = i == 2;

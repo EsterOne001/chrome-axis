@@ -6,7 +6,7 @@
 
 namespace chrome_axis {
 
-enum class DiagnosticRecordingState { idle, starting, recording, waitingForGame, stopping, complete, failed };
+enum class DiagnosticRecordingState { idle, starting, recording, waitingForGame, slotOccupied, stopping, complete, failed };
 enum class DiagnosticRecordingFailure { none, file, unavailable, stopTimeout, worker };
 
 struct DiagnosticRecordingStatus {

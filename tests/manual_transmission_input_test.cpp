@@ -205,6 +205,34 @@ bool physicalPressOverridesLevelArmingInSimulation()
         disable.toggledByKey && !disable.manual && !input.manualSelected();
 }
 
+bool consumesBothTapsAndClearsDisabledSource()
+{
+    using chrome_axis::TransmissionSource;
+    PhysicalModeKey keyboard{VK_F8};
+    keyboard.setContext(true, 100);
+    keyboard.update(VK_F8, false, false, 101);
+    keyboard.update(VK_F8, true, false, 106);
+    keyboard.update(VK_F8, false, false, 112);
+    keyboard.update(VK_F8, true, false, 158);
+    keyboard.update(VK_F8, false, false, 165);
+    if (keyboard.takePress(VK_F8, 168) != 106 || keyboard.takePress(VK_F8, 168) != 158 ||
+        keyboard.takePress(VK_F8, 168))
+        return false;
+
+    ManualTransmissionInput input;
+    input.selectSource(TransmissionSource::keyboard);
+    const auto twoTaps = input.update(false, {}, true, {}, false, false, {}, VK_F8, false, false, 0, 2);
+    const auto oneTap = input.update(false, {}, true, {}, false, false, {}, VK_F8, false, false, 0, 1);
+    if (twoTaps.manual || !twoTaps.toggledByKey || !oneTap.manual)
+        return false;
+    input.suspend();
+    input.selectSource(TransmissionSource::keyboard);
+    if (!input.hasSource() || !input.manualSelected())
+        return false;
+    input.selectSource(TransmissionSource::none);
+    return !input.hasSource() && !input.manualSelected();
+}
+
 bool simulationPollsAfterAccessoryKeysAreReleased()
 {
     ManualTransmissionInput input;
@@ -339,7 +367,8 @@ int main()
         std::cerr << "A held or injected key changed the transmission\n";
         return 1;
     }
-    if (!physicalPressRequiresFreshDrivingContext() || !physicalPressOverridesLevelArmingInSimulation()) {
+    if (!physicalPressRequiresFreshDrivingContext() || !physicalPressOverridesLevelArmingInSimulation() ||
+        !consumesBothTapsAndClearsDisabledSource()) {
         std::cerr << "A physical shortcut lost an accepted press or accepted a stale driving context\n";
         return 1;
     }

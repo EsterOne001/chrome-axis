@@ -608,11 +608,17 @@ bool AccessoryReader::ready() const noexcept
     return !profile_.empty();
 }
 
-AccessoryReadiness AccessoryReader::readiness() const noexcept
+void removeDisabledDrivingAccessories(AccessoryProfile& profile)
+{
+    std::erase_if(profile, [](const AccessoryBinding& binding) { return binding.clutchMode == ClutchMode::off; });
+}
+
+AccessoryReadiness AccessoryReader::readiness(bool nativeSelectorUsable) const noexcept
 {
     AccessoryReadiness result;
-    for (const auto& state : std::span(states_).first(profile_.size())) {
-        result.armed += state.status == AccessoryStatus::armed;
+    for (std::size_t i = 0; i < profile_.size(); ++i) {
+        const auto& state = states_[i];
+        result.armed += state.status == AccessoryStatus::armed && (nativeSelectorUsable || !profile_[i].nativeShifter);
         result.deviceUnavailable |= state.status == AccessoryStatus::deviceUnavailable;
         result.inputUnavailable |= state.status == AccessoryStatus::inputUnavailable;
         result.temporarilyUnavailable |= state.status == AccessoryStatus::temporarilyUnavailable;
@@ -643,7 +649,11 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryOb
 float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
                               DeviceReadStatus status, AccessoryObservation* observation, bool* neutral)
 {
-    if (!sample && status == DeviceReadStatus::pending) {
+    if (status == DeviceReadStatus::resumed)
+        state = {};
+    const bool probePending = sample && (binding.kind == AccessoryKind::Button ? sample->buttonsPending[binding.index]
+        : binding.kind == AccessoryKind::Pov ? sample->povsPending[binding.index] : sample->axesPending[binding.index]);
+    if ((!sample && status == DeviceReadStatus::pending) || probePending) {
         if (state.neutralPolls < requiredNeutralPolls)
             state.neutralPolls = 0;
         else
@@ -652,8 +662,6 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
         state.status = AccessoryStatus::temporarilyUnavailable;
         return 0.0f;
     }
-    if (status == DeviceReadStatus::resumed)
-        state = {};
     const auto level = sample ? readLevel(binding, *sample, state.active, observation ? &observation->travel : nullptr)
                               : std::nullopt;
     if (!level) {
@@ -804,6 +812,9 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
 
     if (!hasNativePositions)
         return keys;
+
+    if (transmission)
+        transmission->selectorAmbiguous = activePositions > 1;
 
     if (!nativeAvailable) {
         nativeShifter_ = {};

@@ -268,8 +268,9 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     const std::wstring name = L"Pédales été";
     const auto named = root / L"Profils" / name;
     const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
-    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f}, {wheel, 1, 0, 0, 1000, 0.03f},
-        {wheel, 2, 0, 0, 1000, 0.03f}, {-40, 75}, {-30, 80}, {60, 90}};
+    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f},
+        {wheel, 1, 0, 0, 1001, static_cast<float>(34.0 / 1001.0)},
+        {wheel, 1, 34, 34, -967, static_cast<float>(36.0 / 1001.0)}, {-40, 75}, {-30, 80}, {60, 90}};
     const AccessoryProfile bindings{
         {wheel, AccessoryKind::Button, 1, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
         {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}},
@@ -374,6 +375,8 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     const auto axes = loadProfile(named / profileFilename, error);
     if (!check(activePreset(root).name == name && listPresets(root) == std::vector{name}
                && axes && axes->steering.deadzone == calibration.steering.deadzone
+               && axes->throttle.deadzone == calibration.throttle.deadzone
+               && axes->brake.deadzone == calibration.brake.deadzone
                && axes->brakeResponse == calibration.brakeResponse
                && axes->steeringResponse == calibration.steeringResponse
                && axes->throttleResponse == calibration.throttleResponse

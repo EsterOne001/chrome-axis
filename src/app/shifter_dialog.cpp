@@ -1,5 +1,7 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "app_text.hpp"
+#include "device_inventory.hpp"
+#include "transmission_shortcut.hpp"
 #include "dialog_theme.hpp"
 
 #include "chrome_axis/calibration.hpp"
@@ -22,7 +24,7 @@ constexpr UINT_PTR captureTimer = 1;
 constexpr UINT captureInterval = 20;
 constexpr ULONGLONG captureTimeout = 30000;
 constexpr UINT_PTR inventoryTimer = 2;
-constexpr UINT inventoryDebounceMs = 300;
+constexpr UINT inventoryWatchMs = 80;
 constexpr UINT_PTR previewTimer = 3;
 constexpr UINT previewInterval = 50;
 
@@ -60,10 +62,11 @@ enum class Stage { Setup, Neutral, Position, Paused, AnalogReady, AnalogMeasure,
 
 class ShifterDialog {
 public:
-    ShifterDialog(DirectInput& input, AccessoryProfile& bindings, std::span<const DeviceInfo> devices,
-                  const std::filesystem::path& profileRoot, std::function<bool(HWND, const AccessoryProfile&)> save)
-        : input_(input), bindings_(bindings), profileRoot_(profileRoot), save_(std::move(save)),
-          devices_(devices.begin(), devices.end()), edited_(bindings) {}
+    ShifterDialog(DirectInput& input, DeviceInventory& inventory, AccessoryProfile& bindings,
+                  const std::filesystem::path& profileRoot, TransmissionShortcut& shortcut,
+                  std::function<bool(HWND, const AccessoryProfile&)> save)
+        : input_(input), inventory_(inventory), bindings_(bindings), profileRoot_(profileRoot),
+          shortcut_(shortcut), save_(std::move(save)), edited_(bindings) {}
 
     void initialise(HWND window);
     void start();
@@ -113,11 +116,14 @@ private:
     const ModeOption& selectedMode() const;
     bool replacesSetup(const AccessoryBinding& binding) const;
     std::size_t initialMode() const;
-    void showShortcut(unsigned int shortcut) const;
+    void showShortcut() const;
+    bool legacyNativeMode() const;
 
     DirectInput& input_;
+    DeviceInventory& inventory_;
     AccessoryProfile& bindings_;
     const std::filesystem::path& profileRoot_;
+    TransmissionShortcut& shortcut_;
     std::function<bool(HWND, const AccessoryProfile&)> save_;
     HWND window_{};
     std::vector<DeviceInfo> devices_;
@@ -144,14 +150,19 @@ private:
     ULONGLONG deadline_{};
     bool analog_{};
     bool native_{};
-    bool inventoryDirty_{};
+    std::optional<std::uint64_t> inventoryRevision_;
 };
 
 void ShifterDialog::initialise(HWND window)
 {
     window_ = window;
-    showShortcut(loadTransmissionHotkey(profileRoot_));
-    SetDlgItemTextW(window_, IDC_SHIFTER_SHORTCUT_HINT, tr(Text::DlgShifterShortcutHint));
+    shortcut_.refresh(profileRoot_);
+    showShortcut();
+    SetTimer(window_, inventoryTimer, inventoryWatchMs, nullptr);
+    if (const auto result = inventory_.current()) {
+        inventoryRevision_ = result->revision;
+        devices_ = result->devices;
+    }
     SetDlgItemTextW(window_, IDOK, tr(Text::DlgSave));
     auto saved = std::ranges::find_if(edited_, isNativeTransmissionBinding);
     if (saved == edited_.end()) {
@@ -160,16 +171,22 @@ void ShifterDialog::initialise(HWND window)
         });
     }
     fillDevices(saved == edited_.end() ? std::string_view{} : saved->deviceId);
+    const auto initial = initialMode();
     for (std::size_t i = 0; i < modes.size(); ++i) {
-        const auto row = send(IDC_SHIFTER_MODE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(modes[i].label)));
-        if (row >= 0 && send(IDC_SHIFTER_MODE, CB_SETITEMDATA, static_cast<WPARAM>(row),
-                             static_cast<LPARAM>(i)) == CB_ERR)
+        const auto& mode = modes[i];
+        if (mode.native && mode.forward == 8 && initial != i)
+            continue;
+        const auto row = send(IDC_SHIFTER_MODE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(mode.label)));
+        if (row < 0)
+            continue;
+        if (send(IDC_SHIFTER_MODE, CB_SETITEMDATA, static_cast<WPARAM>(row), static_cast<LPARAM>(i)) == CB_ERR)
             send(IDC_SHIFTER_MODE, CB_DELETESTRING, static_cast<WPARAM>(row));
+        else if (i == initial)
+            send(IDC_SHIFTER_MODE, CB_SETCURSEL, static_cast<WPARAM>(row));
     }
     for (const auto* signal : {tr(Text::DlgDigital), tr(Text::DlgAnalog)})
         send(IDC_SHIFTER_SIGNAL, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(signal));
     populateAccessoryActivation(window_, IDC_SHIFTER_ACTIVATION);
-    send(IDC_SHIFTER_MODE, CB_SETCURSEL, initialMode());
     send(IDC_SHIFTER_SIGNAL, CB_SETCURSEL, 0);
     selectDevice();
 }
@@ -214,20 +231,20 @@ void ShifterDialog::fillDevices(std::string_view preferredDevice)
 
 void ShifterDialog::deviceTopologyChanged()
 {
-    inventoryDirty_ = true;
-    if (!SetTimer(window_, inventoryTimer, inventoryDebounceMs, nullptr))
-        refreshDevices();
+    inventory_.refreshAfterDeviceChange();
 }
 
 bool ShifterDialog::refreshDevices()
 {
-    KillTimer(window_, inventoryTimer);
-    if (!inventoryDirty_ || stage_ != Stage::Setup || !IsWindowEnabled(window_))
+    if (stage_ != Stage::Setup || !IsWindowEnabled(window_))
+        return false;
+    const auto result = inventory_.current();
+    if (!result || inventoryRevision_ == result->revision)
         return false;
     const auto* selected = selectedDevice();
     const auto preferred = selected ? selected->id : std::string{};
-    inventoryDirty_ = false;
-    devices_ = input_.devices();
+    inventoryRevision_ = result->revision;
+    devices_ = result->devices;
     fillDevices(preferred);
     selectDevice();
     return true;
@@ -253,7 +270,7 @@ void ShifterDialog::updateControls()
     if (setup && !sequential)
         send(IDC_SHIFTER_SIGNAL, CB_SETCURSEL, 0);
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_SIGNAL), setup && canCapture && sequential);
-    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_START), !setup || canCapture);
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_START), !setup || (canCapture && !legacyNativeMode()));
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_ADVANCE), canAdvance);
     const bool nativeMode = setup ? selectedMode().native : native_;
     for (const int control : {IDC_MODAL_KEY_LABEL, IDC_SHIFTER_KEY})
@@ -438,7 +455,7 @@ void ShifterDialog::previewFocusChanged(bool active)
 
 void ShifterDialog::pollPreview()
 {
-    if (!previewRunning_ || !preview_)
+    if (!previewRunning_ || !preview_ || !inventory_.current())
         return;
     if (GetForegroundWindow() != window_ || !IsWindowEnabled(window_)) {
         previewFocusChanged(false);
@@ -506,8 +523,18 @@ void ShifterDialog::selectMode()
     updateControls();
 }
 
+bool ShifterDialog::legacyNativeMode() const
+{
+    const auto& mode = selectedMode();
+    return mode.native && mode.forward > 7;
+}
+
 Text ShifterDialog::setupStatus() const
 {
+    if (legacyNativeMode())
+        return Text::DlgShifterNativeH8Limit;
+    if (!inventory_.current())
+        return Text::mainScanningDevices;
     if (edited_ != bindings_)
         return Text::DlgShifterEditSave;
     if (devices_.empty())
@@ -580,8 +607,12 @@ void ShifterDialog::start()
         return;
     }
     refreshDevices();
+    if (!inventory_.current()) {
+        status(tr(Text::mainScanningDevices));
+        return;
+    }
     const auto* device = selectedDevice(true);
-    if (!device)
+    if (!device || legacyNativeMode())
         return;
     const auto& mode = selectedMode();
     analog_ = mode.forward == 0 && send(IDC_SHIFTER_SIGNAL, CB_GETCURSEL) == 1;
@@ -635,10 +666,15 @@ void ShifterDialog::chooseKey()
     }
 }
 
-void ShifterDialog::showShortcut(unsigned int shortcut) const
+void ShifterDialog::showShortcut() const
 {
-    const auto label = std::wstring(tr(Text::mainMenuTransmissionKey)) + L" (" + accessoryKeyLabel(shortcut) + L")…";
+    auto label = std::wstring(tr(Text::mainMenuTransmissionKey));
+    if (const auto key = shortcut_.display())
+        label += L" (" + accessoryKeyLabel(*key) + L")";
+    label += L"…";
     SetDlgItemTextW(window_, IDC_SHIFTER_SHORTCUT, label.c_str());
+    SetDlgItemTextW(window_, IDC_SHIFTER_SHORTCUT_HINT, tr(shortcut_.saved() ? Text::DlgShifterShortcutHint
+        : Text::DlgShifterShortcutUnreadable));
     InvalidateRect(GetDlgItem(window_, IDC_SHIFTER_SHORTCUT), nullptr, FALSE);
 }
 
@@ -646,23 +682,8 @@ void ShifterDialog::chooseShortcut()
 {
     if (stage_ != Stage::Setup && stage_ != Stage::Done)
         return;
-    if (isTemporaryProfileDirectory(profileRoot_)) {
-        MessageBoxW(window_, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::mainTransmissionKeyTitle),
-                    MB_OK | MB_ICONWARNING);
-        return;
-    }
-    const auto current = loadTransmissionHotkey(profileRoot_);
-    const auto choice = chooseTransmissionKey(window_, current);
-    if (!choice || *choice == current)
-        return;
-    std::string error;
-    if (!saveInstallationSettings(profileRoot_,
-            [&] { return saveTransmissionHotkey(profileRoot_, *choice, error); })) {
-        const auto message = std::wstring(tr(Text::mainTransmissionKeySaveFailed)) + localizedError(error);
-        MessageBoxW(window_, message.c_str(), tr(Text::mainTransmissionKeyTitle), MB_OK | MB_ICONERROR);
-        return;
-    }
-    showShortcut(*choice);
+    editTransmissionShortcut(window_, profileRoot_, shortcut_);
+    showShortcut();
 }
 
 void ShifterDialog::editSavedKey()
@@ -808,6 +829,8 @@ void ShifterDialog::poll()
                          Text::DlgShifterCaptureExpired);
         return;
     }
+    if (!inventory_.current())
+        return;
     input_.beginPoll();
     const auto sample = input_.sample(deviceId_);
     if (GetTickCount64() >= deadline_) {
@@ -1122,11 +1145,32 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 
 } // namespace
 
-bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings,
-                 std::span<const DeviceInfo> devices, const std::filesystem::path& profileRoot,
+bool editTransmissionShortcut(HWND owner, const std::filesystem::path& root, TransmissionShortcut& shortcut)
+{
+    if (isTemporaryProfileDirectory(root)) {
+        MessageBoxW(owner, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::mainTransmissionKeyTitle),
+                    MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    shortcut.refresh(root);
+    const auto choice = chooseTransmissionKey(owner, shortcut.display().value_or(0));
+    if (!choice || shortcut.saved() == choice)
+        return false;
+    std::string error;
+    if (!saveInstallationSettings(root, [&] { return saveTransmissionHotkey(root, *choice, error); })) {
+        const auto message = std::wstring(tr(Text::mainTransmissionKeySaveFailed)) + L"\n" + localizedError(error);
+        MessageBoxW(owner, message.c_str(), tr(Text::mainTransmissionKeyTitle), MB_OK | MB_ICONERROR);
+        return false;
+    }
+    shortcut.refresh(root, choice);
+    return true;
+}
+
+bool editShifter(HWND owner, DirectInput& input, DeviceInventory& inventory, AccessoryProfile& bindings,
+                 const std::filesystem::path& profileRoot, TransmissionShortcut& shortcut,
                  std::function<bool(HWND, const AccessoryProfile&)> save)
 {
-    ShifterDialog dialog(input, bindings, devices, profileRoot, std::move(save));
+    ShifterDialog dialog(input, inventory, bindings, profileRoot, shortcut, std::move(save));
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SHIFTER), owner,
         shifterProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)

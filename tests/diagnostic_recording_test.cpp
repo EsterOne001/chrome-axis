@@ -42,6 +42,7 @@ int run()
     PerformanceReport performance;
     publisher->publish(snapshot);
     DiagnosticRecorder recorder(session.path, profile);
+    DiagnosticRecorder contender(session.path, profile);
     if (!recorder.start())
         return 1;
 
@@ -69,37 +70,50 @@ int run()
         std::this_thread::sleep_for(28ms);
     };
 
-    const auto until = [&](auto predicate) {
+    const auto until = [&](const DiagnosticRecorder& target, auto predicate) {
         const auto deadline = std::chrono::steady_clock::now() + 6s;
         while (std::chrono::steady_clock::now() < deadline) {
             pump();
-            if (predicate(recorder.status()))
+            if (predicate(target.status()))
                 return true;
         }
         return false;
     };
 
     // No diagnostic window or UI timer participates in the capture.
-    if (!until([](const DiagnosticRecordingStatus& status) {
+    if (!until(recorder, [](const DiagnosticRecordingStatus& status) {
             return status.state == DiagnosticRecordingState::recording && status.rows >= 3 &&
                 !status.file.empty() && std::filesystem::is_regular_file(status.file);
         }))
         return 2;
+    const auto first = recorder.status();
+    if (!contender.start() || !until(contender, [](const DiagnosticRecordingStatus& status) {
+            return status.state == DiagnosticRecordingState::slotOccupied;
+        }))
+        return 7;
+    contender.stop();
+    if (!until(contender, [](const DiagnosticRecordingStatus& status) {
+            return status.state == DiagnosticRecordingState::complete && status.rows == 0;
+        }) || !until(recorder, [&](const DiagnosticRecordingStatus& status) {
+            return status.state == DiagnosticRecordingState::recording && status.rows > first.rows &&
+                status.file == first.file;
+        }))
+        return 8;
     const auto beforeRestart = recorder.status();
     publisher.reset();
-    if (!until([](const DiagnosticRecordingStatus& status) {
+    if (!until(recorder, [](const DiagnosticRecordingStatus& status) {
             return status.state == DiagnosticRecordingState::waitingForGame;
         }))
         return 3;
     performance = {};
     publisher.emplace(session.path);
-    if (!until([&](const DiagnosticRecordingStatus& status) {
+    if (!until(recorder, [&](const DiagnosticRecordingStatus& status) {
             return status.state == DiagnosticRecordingState::recording && status.rows > beforeRestart.rows &&
                 status.file == beforeRestart.file;
         }))
         return 4;
     recorder.stop();
-    if (!until([](const DiagnosticRecordingStatus& status) {
+    if (!until(recorder, [](const DiagnosticRecordingStatus& status) {
             return status.state == DiagnosticRecordingState::complete;
         }))
         return 5;

@@ -25,7 +25,8 @@ constexpr std::size_t batchSize = 256;
 bool active(DiagnosticRecordingState state) noexcept
 {
     return state == DiagnosticRecordingState::starting || state == DiagnosticRecordingState::recording ||
-        state == DiagnosticRecordingState::waitingForGame || state == DiagnosticRecordingState::stopping;
+        state == DiagnosticRecordingState::waitingForGame || state == DiagnosticRecordingState::slotOccupied ||
+        state == DiagnosticRecordingState::stopping;
 }
 
 class CaptureFile {
@@ -288,8 +289,15 @@ private:
 
             if (!session.flushIfDue())
                 return DiagnosticRecordingFailure::file;
-            reportProgress(current, connected && captureId ? DiagnosticRecordingState::recording :
-                DiagnosticRecordingState::waitingForGame);
+            auto state = DiagnosticRecordingState::waitingForGame;
+            if (connected) {
+                state = DiagnosticRecordingState::starting;
+                if (captureId)
+                    state = DiagnosticRecordingState::recording;
+                else if (session.reader.captureSlotOccupied())
+                    state = DiagnosticRecordingState::slotOccupied;
+            }
+            reportProgress(current, state);
             if (batch.count < batchSize && !stop.stop_requested())
                 std::this_thread::sleep_for(pollInterval);
         }

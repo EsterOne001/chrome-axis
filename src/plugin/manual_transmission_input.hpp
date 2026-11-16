@@ -3,133 +3,118 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 
 namespace chrome_axis {
 
 class PhysicalModeKey {
 public:
-    explicit PhysicalModeKey(unsigned int key) noexcept : state_(key & keyMask) {}
+    static constexpr std::size_t pressCapacity = 8;
 
-    unsigned int key() const noexcept { return keyOf(state_.load(std::memory_order_relaxed)); }
+    explicit PhysicalModeKey(unsigned int key) noexcept : key_(key) {}
+
+    unsigned int key() const noexcept { return key_.load(std::memory_order_relaxed); }
 
     void select(unsigned int key) noexcept {
-        if (key > keyMask)
+        if (key > 0xff)
             return;
-        auto state = state_.load(std::memory_order_relaxed);
-        while (keyOf(state) != key) {
-            if (state_.compare_exchange_weak(state, nextContext(state, key, eligible(state)), std::memory_order_relaxed))
-                return;
+        std::scoped_lock lock(mutex_);
+        if (key != this->key()) {
+            key_.store(key, std::memory_order_relaxed);
+            rearm();
         }
     }
 
     void setContext(bool active, std::uint64_t now) noexcept {
-        const auto previous = contextAt_.exchange(active ? now : 0, std::memory_order_relaxed);
-        if (!active || !contextFresh(previous, now))
-            setEligible(false);
-        if (active)
-            setEligible(true);
+        std::scoped_lock lock(mutex_);
+        if (contextAt_ && (!active || !contextFresh(now)))
+            rearm();
+        contextAt_ = active ? now : 0;
     }
 
     std::optional<std::uint64_t> initialState(unsigned int key) const noexcept {
-        const auto state = state_.load(std::memory_order_relaxed);
-        if (keyOf(state) == key && eligible(state) && phaseOf(state) == Phase::initial)
-            return state;
+        std::scoped_lock lock(mutex_);
+        if (key == this->key() && contextAt_ && phase_ == Phase::initial)
+            return revision_;
         return std::nullopt;
     }
 
-    // Sample only whether the new key is up. Never infer a press from Windows' merged key state.
+    // Windows' merged state can establish that the key is up. Only a physical event records a press.
     void primeReleased(std::uint64_t initial) noexcept {
-        state_.compare_exchange_strong(initial, withPhase(initial, Phase::released), std::memory_order_relaxed);
+        std::scoped_lock lock(mutex_);
+        if (initial == revision_ && contextAt_ && phase_ == Phase::initial)
+            phase_ = Phase::released;
     }
 
     void update(unsigned int key, bool pressed, bool injected, std::uint64_t tick) noexcept {
-        if (injected || !contextFresh(contextAt_.load(std::memory_order_relaxed), tick))
+        if (injected)
             return;
-        auto state = state_.load(std::memory_order_relaxed);
-        const auto revision = state & revisionMask;
-        while (eligible(state) && keyOf(state) == key && (state & revisionMask) == revision) {
-            const auto old = phaseOf(state);
-            if (pressed && (old == Phase::pressed || old == Phase::waitingForRelease))
-                return;
-            const bool edge = pressed && old == Phase::released;
-            const auto phase = !pressed ? Phase::released : edge ? Phase::pressed : Phase::waitingForRelease;
-            auto next = withPhase(state, phase);
-            if (edge)
-                next = (next & ~pressMask) | pendingBit | ((tick & tickMask) << tickShift);
-            if (state_.compare_exchange_weak(state, next, std::memory_order_relaxed))
-                return;
+        std::scoped_lock lock(mutex_);
+        if (key != this->key() || !contextFresh(tick))
+            return;
+
+        if (!pressed) {
+            phase_ = Phase::released;
+        } else if (phase_ == Phase::initial) {
+            phase_ = Phase::waitingForRelease;
+        } else if (phase_ == Phase::released) {
+            phase_ = Phase::pressed;
+            discardExpired(tick);
+            if (count_ < presses_.size()) {
+                presses_[(head_ + count_) % presses_.size()] = tick;
+                ++count_;
+            }
         }
     }
 
     std::optional<std::uint64_t> takePress(unsigned int key, std::uint64_t now) noexcept {
-        if (!contextFresh(contextAt_.load(std::memory_order_relaxed), now))
+        std::scoped_lock lock(mutex_);
+        if (key != this->key() || !contextFresh(now))
             return std::nullopt;
-        auto state = state_.load(std::memory_order_relaxed);
-        const auto revision = state & revisionMask;
-        while (eligible(state) && keyOf(state) == key && (state & revisionMask) == revision && (state & pendingBit)) {
-            const auto age = (now - (state >> tickShift)) & tickMask;
-            // The hook can publish just after the caller reads the clock. Leave that press for the next update.
-            if (age > tickMask / 2)
-                return std::nullopt;
-            if (state_.compare_exchange_weak(state, state & ~pressMask, std::memory_order_relaxed)) {
-                return age <= pressLifetime && age <= now ? std::optional{now - age} : std::nullopt;
-            }
-        }
-        return std::nullopt;
+        discardExpired(now);
+        // A press can arrive in the interval between reading the clock and taking this lock.
+        if (!count_ || presses_[head_] > now)
+            return std::nullopt;
+        const auto press = presses_[head_];
+        pop();
+        return press;
     }
 
 private:
-    enum class Phase : unsigned int { initial, waitingForRelease, released, pressed };
+    enum class Phase { initial, waitingForRelease, released, pressed };
     static constexpr std::uint64_t contextLifetime = 100; // ms
     static constexpr std::uint64_t pressLifetime = 200; // ms
-    // Keep the key, rearm state, context revision and its pending press in one atomic word.
-    // The timestamp wraps after almost nine years; the revision detects concurrent rebinds and suspensions.
-    static constexpr std::uint64_t keyMask = 0xff;
-    static constexpr unsigned int phaseShift = 8;
-    static constexpr std::uint64_t phaseMask = 3ull << phaseShift;
-    static constexpr std::uint64_t eligibleBit = 1ull << 10;
-    static constexpr std::uint64_t pendingBit = 1ull << 11;
-    static constexpr std::uint64_t revisionStep = 1ull << 12;
-    static constexpr unsigned int tickShift = 26;
-    static constexpr std::uint64_t revisionMask = (1ull << tickShift) - revisionStep;
-    static constexpr std::uint64_t tickMask = (1ull << (64 - tickShift)) - 1;
-    static constexpr std::uint64_t pressMask = (tickMask << tickShift) | pendingBit;
 
-    static constexpr unsigned int keyOf(std::uint64_t state) noexcept {
-        return static_cast<unsigned int>(state & keyMask);
+    bool contextFresh(std::uint64_t now) const noexcept {
+        return contextAt_ && now >= contextAt_ && now - contextAt_ <= contextLifetime;
     }
 
-    static constexpr bool eligible(std::uint64_t state) noexcept { return (state & eligibleBit) != 0; }
-
-    static constexpr bool contextFresh(std::uint64_t last, std::uint64_t now) noexcept {
-        return last && now >= last && now - last <= contextLifetime;
+    void rearm() noexcept {
+        ++revision_;
+        phase_ = Phase::initial;
+        head_ = count_ = 0;
     }
 
-    void setEligible(bool active) noexcept {
-        auto state = state_.load(std::memory_order_relaxed);
-        while (eligible(state) != active) {
-            if (state_.compare_exchange_weak(state, nextContext(state, keyOf(state), active), std::memory_order_relaxed))
-                return;
-        }
+    void pop() noexcept {
+        head_ = (head_ + 1) % presses_.size();
+        --count_;
     }
 
-    static constexpr std::uint64_t nextContext(std::uint64_t state, unsigned int key, bool active) noexcept {
-        const auto revision = ((state & revisionMask) + revisionStep) & revisionMask;
-        return revision | key | (active ? eligibleBit : 0);
+    void discardExpired(std::uint64_t now) noexcept {
+        while (count_ && now >= presses_[head_] && now - presses_[head_] > pressLifetime)
+            pop();
     }
 
-    static constexpr std::uint64_t withPhase(std::uint64_t state, Phase phase) noexcept {
-        return (state & ~phaseMask) | (static_cast<std::uint64_t>(phase) << phaseShift);
-    }
-
-    static constexpr Phase phaseOf(std::uint64_t state) noexcept {
-        return static_cast<Phase>((state & phaseMask) >> phaseShift);
-    }
-
-    std::atomic<std::uint64_t> state_;
-    std::atomic<std::uint64_t> contextAt_{};
+    std::atomic<unsigned int> key_;
+    mutable std::mutex mutex_;
+    std::uint64_t contextAt_{};
+    std::uint64_t revision_{};
+    Phase phase_{Phase::initial};
+    std::array<std::uint64_t, pressCapacity> presses_{};
+    std::size_t head_{}, count_{};
 };
 
 struct DirectGearKeys {
@@ -305,27 +290,39 @@ struct TransmissionIntent {
     bool toggledByKey{};
 };
 
+enum class TransmissionSource { none, keyboard, hPattern, paddles };
+
+constexpr TransmissionSource transmissionSource(bool simulation, bool hardware, bool sequential) noexcept {
+    if (simulation)
+        return TransmissionSource::keyboard;
+    if (hardware)
+        return TransmissionSource::hPattern;
+    return sequential ? TransmissionSource::paddles : TransmissionSource::none;
+}
+
 // Used on the game thread. Hardware input is already debounced and rearmed by AccessoryReader.
 class ManualTransmissionInput {
 public:
+    void selectSource(TransmissionSource source) noexcept {
+        if (source != source_) {
+            *this = {};
+            source_ = source;
+            manualSelected_ = source == TransmissionSource::hPattern || source == TransmissionSource::paddles;
+        }
+    }
+
     TransmissionIntent update(bool hardware, std::optional<int> hardwareGear, bool simulation,
                               std::optional<bool> toggle, bool up, bool down, DirectGearKeys keyboard,
                               unsigned int toggleKey = 0, bool sequential = false,
                               bool sequentialArmed = false, int nativeDelta = 0,
-                              bool physicalTogglePressed = false) noexcept {
-        if (hardware != hardware_ || simulation != simulation_ || sequential != sequential_) {
-            *this = {};
-            hardware_ = hardware;
-            simulation_ = simulation;
-            sequential_ = sequential;
-            manualSelected_ = hardware || sequential;
-        }
+                              unsigned int physicalPresses = 0) noexcept {
+        selectSource(transmissionSource(simulation, hardware, sequential));
 
         if (toggleKey != toggleKey_) {
             toggleKey_ = toggleKey;
             toggleArmed_ = false;
         }
-        bool toggledByKey = physicalTogglePressed && (simulation || hardware || sequential);
+        bool toggledByKey = physicalPresses && hasSource();
         if (toggledByKey || !toggle) {
             toggleArmed_ = false;
         } else if (!*toggle) {
@@ -334,7 +331,7 @@ public:
             toggleArmed_ = false;
             toggledByKey = true;
         }
-        if (toggledByKey)
+        if (toggledByKey && (!physicalPresses || physicalPresses % 2 != 0))
             manualSelected_ = !manualSelected_;
 
         const int delta = sequentialShift(up, down);
@@ -362,6 +359,7 @@ public:
     }
 
     bool manualSelected() const noexcept { return manualSelected_; }
+    bool hasSource() const noexcept { return source_ != TransmissionSource::none; }
 
     void suspend() noexcept {
         toggleArmed_ = false;
@@ -385,9 +383,7 @@ private:
         return delta;
     }
 
-    bool hardware_{};
-    bool sequential_{};
-    bool simulation_{};
+    TransmissionSource source_{};
     bool manualSelected_{};
     unsigned int toggleKey_{};
     bool toggleArmed_{};

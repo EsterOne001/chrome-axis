@@ -160,6 +160,8 @@ const wchar_t* accessoryText(DiagnosticAccessoryState state)
     case DiagnosticAccessoryState::axisConflict: return tr(Text::DlgDiagnosticsAccessoryAxisConflict);
     case DiagnosticAccessoryState::inactive: return tr(Text::DlgDiagnosticsInactive);
     case DiagnosticAccessoryState::blocked: return tr(Text::DlgDiagnosticsAccessoriesBlocked);
+    case DiagnosticAccessoryState::modifierBlocked: return tr(Text::DlgDiagnosticsAccessoriesModifier);
+    case DiagnosticAccessoryState::selectorAmbiguous: return tr(Text::DlgDiagnosticsTransmissionAmbiguous);
     case DiagnosticAccessoryState::deviceUnavailable: return tr(Text::DlgDiagnosticsDeviceUnavailable);
     case DiagnosticAccessoryState::inputUnavailable: return tr(Text::DlgDiagnosticsAccessoryInputUnavailable);
     case DiagnosticAccessoryState::sampleExpired: return tr(Text::DlgDiagnosticsSampleExpired);
@@ -483,10 +485,21 @@ std::wstring milliseconds(double micros)
     return formatted + L" ms";
 }
 
-const wchar_t* usbEventTitle(DiagnosticUsbEventKind kind)
+std::string_view usbOperation(const DiagnosticUsbEvent& event)
 {
-    switch (kind) {
-    case DiagnosticUsbEventKind::deviceSlow: return tr(Text::DlgDiagnosticsUsbEventSlow);
+    return {event.operation.begin(), std::ranges::find(event.operation, '\0')};
+}
+
+bool slowFeedbackEvent(const DiagnosticUsbEvent& event)
+{
+    return event.kind == DiagnosticUsbEventKind::deviceSlow && usbOperation(event).starts_with("FFB ");
+}
+
+const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
+{
+    switch (event.kind) {
+    case DiagnosticUsbEventKind::deviceSlow:
+        return tr(slowFeedbackEvent(event) ? Text::DlgDiagnosticsFeedbackEventSlow : Text::DlgDiagnosticsUsbEventSlow);
     case DiagnosticUsbEventKind::devicePending: return tr(Text::DlgDiagnosticsUsbEventPending);
     case DiagnosticUsbEventKind::deviceUnavailable: return tr(Text::DlgDiagnosticsDeviceUnavailable);
     case DiagnosticUsbEventKind::deviceRecovered: return tr(Text::DlgDiagnosticsUsbEventRecovered);
@@ -539,7 +552,7 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     const auto bounded = [](const auto& text) {
         return std::string_view(text.begin(), std::ranges::find(text, '\0'));
     };
-    const auto operation = bounded(event.operation);
+    const auto operation = usbOperation(event);
     switch (event.kind) {
     case DiagnosticUsbEventKind::deviceSlow:
     case DiagnosticUsbEventKind::devicePending:
@@ -702,7 +715,7 @@ bool recordingAvailable(const DialogState& state)
 bool canStopRecording(DiagnosticRecordingState state)
 {
     return state == DiagnosticRecordingState::starting || state == DiagnosticRecordingState::recording ||
-        state == DiagnosticRecordingState::waitingForGame;
+        state == DiagnosticRecordingState::waitingForGame || state == DiagnosticRecordingState::slotOccupied;
 }
 
 bool canExportRecording(const DiagnosticRecordingStatus& recording)
@@ -720,6 +733,7 @@ const wchar_t* recordingStateText(const DiagnosticRecordingStatus& recording, bo
     case DiagnosticRecordingState::starting: return tr(Text::DlgDiagnosticsPerformanceStarting);
     case DiagnosticRecordingState::recording: return tr(Text::DlgDiagnosticsPerformanceActive);
     case DiagnosticRecordingState::waitingForGame: return tr(Text::DlgDiagnosticsRecordingWaitingForGame);
+    case DiagnosticRecordingState::slotOccupied: return tr(Text::DlgDiagnosticsRecordingSlotOccupied);
     case DiagnosticRecordingState::stopping: return tr(Text::DlgDiagnosticsPerformanceStopping);
     case DiagnosticRecordingState::complete:
         return tr(recording.rows ? Text::DlgDiagnosticsPerformanceComplete : Text::DlgDiagnosticsPerformanceNoData);
@@ -762,6 +776,7 @@ const wchar_t* transmissionStatus(const DiagnosticTransmission& transmission)
     case DiagnosticShiftState::expired: return tr(Text::DlgDiagnosticsTransmissionExpired);
     case DiagnosticShiftState::recalibrationNeeded: return tr(Text::DlgDiagnosticsTransmissionRecalibration);
     case DiagnosticShiftState::selectorUnavailable: return tr(Text::DlgDiagnosticsTransmissionSelector);
+    case DiagnosticShiftState::selectorAmbiguous: return tr(Text::DlgDiagnosticsTransmissionAmbiguous);
     case DiagnosticShiftState::pending: return tr(Text::DlgDiagnosticsTransmissionPending);
     case DiagnosticShiftState::clutchRequired: return tr(Text::DlgDiagnosticsTransmissionClutchRequired);
     }
@@ -1030,7 +1045,7 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
     if (!usbEvents.empty()) {
         report += L"\r\n" + std::wstring(tr(Text::DlgDiagnosticsUsbEvents)) + L"\r\n";
         for (const auto& event : usbEvents) {
-            report += L"- " + eventAge(event.sampledAt, now) + L" — " + usbEventTitle(event.kind) +
+            report += L"- " + eventAge(event.sampledAt, now) + L" — " + usbEventTitle(event) +
                 usbEventDetails(event, state.devices) + L"\r\n";
         }
     }
@@ -1234,8 +1249,17 @@ void refresh(HWND window, DialogState& state)
         if (read.usbEventCount) {
             const auto& latest = read.usbEvents[read.usbEventCount - 1];
             auto detail = std::wstring(tr(Text::DlgDiagnosticsLatestUsb)) +
-                L" · " + usbEventTitle(latest.kind) + L" · " + eventAge(latest.sampledAt, now);
-            if (latest.kind == DiagnosticUsbEventKind::commandsWaiting && latest.blockerCount) {
+                L" · " + usbEventTitle(latest);
+            if (slowFeedbackEvent(latest)) {
+                detail += usbEventDetails(latest, state.devices);
+            } else {
+                detail += L" · " + eventAge(latest.sampledAt, now);
+            }
+            if (latest.kind == DiagnosticUsbEventKind::commandsWaiting &&
+                (latest.accessories == DiagnosticAccessoryState::modifierBlocked ||
+                 latest.accessories == DiagnosticAccessoryState::selectorAmbiguous)) {
+                detail += L" · " + std::wstring(accessoryText(latest.accessories));
+            } else if (latest.kind == DiagnosticUsbEventKind::commandsWaiting && latest.blockerCount) {
                 detail += L" · " + usbBlockerName(latest.blockers.front());
                 if (latest.blockerCount > 1)
                     detail += L" +" + std::to_wstring(latest.blockerCount - 1);

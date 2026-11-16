@@ -11,9 +11,12 @@
 #include "chrome_axis/simulation.hpp"
 #include "app_text.hpp"
 #include "calibration_guide.hpp"
+#include "device_inventory.hpp"
 #include "diagnostic_recording.hpp"
 #include "diagnostics_dialog.hpp"
+#include "transmission_shortcut.hpp"
 #include "ui_theme.hpp"
+#include "usb_game_status.hpp"
 
 #include <commctrl.h>
 #include <dbt.h>
@@ -46,7 +49,6 @@ constexpr wchar_t windowClass[] = L"ChromeAxisCalibration";
 constexpr wchar_t title[] = L"Chrome Axis";
 constexpr wchar_t nexusModUrl[] = L"https://www.nexusmods.com/cyberpunk2077/mods/38104";
 constexpr UINT_PTR inputTimer = 1;
-constexpr UINT_PTR deviceTimer = 2;
 constexpr int contentWidthLimit = 1120;
 constexpr int languageButtonSize = 36;
 constexpr int languageButtonSpace = languageButtonSize + 12;
@@ -69,7 +71,7 @@ enum Command {
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
     backupProfiles, restoreProfiles, openModInfo, reassignDevice, configureBrake, leaveSimulation,
     openWheelSettings, openPedalSettings, openTransmissionSettings, configureSteering, configureThrottle,
-    configureTransmission, configureClutch, configureHandbrake, calibrateWheel, calibratePedals,
+    configureTransmission, configureClutch, configureHandbrake, calibrateWheel, calibratePedals, configureTransmissionKey,
     deadzoneFirst = 200, meterFirst = 210, brakeResponseMeter = meterFirst + commands.size(), retryAxisFirst = 220
 };
 
@@ -101,6 +103,7 @@ constexpr std::array pedalCommands{
 };
 constexpr std::array transmissionCommands{
     ControlCommand{configureTransmission, Text::mainMenuTransmission},
+    ControlCommand{configureTransmissionKey, Text::mainMenuTransmissionKey},
     ControlCommand{configureClutch, Text::mainClutchSettings}
 };
 
@@ -289,17 +292,14 @@ public:
         }
         case WM_DEVICECHANGE:
             if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
-                if (!SetTimer(window, deviceTimer, 300, nullptr))
-                    deviceRefreshPending_ = true;
+                inventory_.refreshAfterDeviceChange();
+                if (hardware_)
+                    updateHardwareStatus();
             }
             return TRUE;
         case WM_TIMER:
-            if (wp == deviceTimer) {
-                KillTimer(window, deviceTimer);
-                deviceRefreshPending_ = true;
-            } else if (wp == inputTimer) {
+            if (wp == inputTimer)
                 tick();
-            }
             return 0;
         case WM_INITMENUPOPUP:
             if (reinterpret_cast<HMENU>(wp) == deviceMenu_) {
@@ -385,7 +385,6 @@ public:
             return 0;
         case WM_DESTROY:
             KillTimer(window, inputTimer);
-            KillTimer(window, deviceTimer);
             input_.reset();
             publisher_.disable();
             PostQuitMessage(0);
@@ -842,7 +841,7 @@ private:
         const bool highContrast = isHighContrast();
         const bool disabled = (state & ODS_DISABLED) != 0;
         const bool modeLabel = simulationTitle || id == hardwareTab;
-        const bool active = id == toggleUsb ? usbEnabled_ : id == toggleSimulation && publisher_.enabled();
+        const bool active = id == toggleUsb ? usbActive_ : id == toggleSimulation && publisher_.enabled();
         const bool pressed = (state & ODS_SELECTED) != 0;
         const auto accent = modeLabel ? yellow : cyan;
         fill(item.hDC, item.rcItem, highContrast ? GetSysColor(COLOR_WINDOW) : background);
@@ -905,6 +904,8 @@ private:
 
     void action(int command, int notification);
     void scanDevices();
+    void consumeDeviceInventory();
+    void updateHardwareStatus();
     void fillDeviceCombo(std::size_t channel);
     void selectDevice(std::size_t channel);
     void readProfile();
@@ -999,11 +1000,13 @@ private:
     {
         return !simulation_ && !calibrating_ && dirty_ && (previewProfile_ || clearAnalogProfile());
     }
-    const wchar_t* usbActionLabel() const
+    const wchar_t* usbActionLabel(bool header = true) const
     {
         if (!usbEnabled_)
             return tr(Text::mainEnableUsb);
-        return installed_ ? tr(Text::mainDisableUsb) : tr(Text::mainClearLocalUsb);
+        if (!installed_)
+            return tr(Text::mainClearLocalUsb);
+        return tr(header && !usbActive_ ? Text::mainCancelWaitingUsb : Text::mainDisableUsb);
     }
     const std::filesystem::path& activeDirectory() const { return preset_.directory; }
 
@@ -1035,6 +1038,9 @@ private:
     std::array<HWND, 3> reviewStatuses_{};
     HWND reviewBrakeMeter_{}, reviewBrakeValue_{};
     std::unique_ptr<chrome_axis::DirectInput> input_;
+    chrome_axis::DeviceInventory inventory_;
+    std::optional<std::uint64_t> inventoryRevision_;
+    bool inventoryAvailable_{};
     std::vector<chrome_axis::DeviceInfo> devices_;
     std::array<std::vector<std::string>, 3> deviceChoices_;
     std::array<std::string, 3> deviceSelections_;
@@ -1050,8 +1056,9 @@ private:
     bool loadingControls_{}, saved_{}, dirty_{};
     chrome_axis::AccessoryProfile accessoryBindings_;
     bool temporaryDirectory_{};
-    bool deviceRefreshPending_{};
     bool usbEnabled_{};
+    bool usbActive_{};
+    std::optional<Text> usbWaitingStatus_;
     bool installed_{};
     std::wstring profileMessage_;
 
@@ -1083,7 +1090,8 @@ private:
     std::uint64_t simulationRequestedAt_{};
     std::uint64_t nextSimulationStatus_{};
     chrome_axis::Simulator simulator_;
-    unsigned int transmissionKey_{chrome_axis::defaultTransmissionHotkey};
+    chrome_axis::TransmissionShortcut transmissionShortcut_;
+    unsigned int transmissionKey_{};
     std::chrono::steady_clock::time_point previewTime_{};
     std::chrono::steady_clock::time_point nextUsbRefresh_{};
 };
@@ -1168,6 +1176,13 @@ void App::action(int command, int notification)
         configureAxisResponse(static_cast<std::size_t>(option - axisSettingsOptions.begin()));
         break;
     }
+    case configureTransmissionKey:
+        if (canEditControl(configureTransmissionKey)) {
+            refreshTransmissionKey();
+            chrome_axis::editTransmissionShortcut(window_, directory_, transmissionShortcut_);
+            refreshTransmissionKey();
+        }
+        break;
     case configureAccessories:
     case configureHandbrake:
     case configureClutch:
@@ -1177,8 +1192,8 @@ void App::action(int command, int notification)
             const auto section = command == configureClutch ? AccessorySection::clutch
                 : command == configureHandbrake ? AccessorySection::handbrake : AccessorySection::keys;
             const bool changed = command == configureTransmission
-                ? chrome_axis::editProfileShifter(window_, *input_, directory_, preset_, devices_)
-                : chrome_axis::editAccessories(window_, *input_, directory_, preset_, section);
+                ? chrome_axis::editProfileShifter(window_, *input_, inventory_, directory_, preset_, transmissionShortcut_)
+                : chrome_axis::editAccessories(window_, *input_, inventory_, directory_, preset_, section);
             refreshTransmissionKey();
             if (changed) {
                 readAccessories();
@@ -1288,22 +1303,47 @@ void App::action(int command, int notification)
 
 void App::scanDevices()
 {
-    deviceRefreshPending_ = false;
     installed_ = chrome_axis::isInstalledPluginDirectory(directory_.parent_path());
     temporaryDirectory_ = chrome_axis::isTemporaryProfileDirectory(directory_);
-    if (!input_->ready())
+    inventory_.refresh();
+    refreshUsbToggle();
+    updateHardwareStatus();
+}
+
+void App::consumeDeviceInventory()
+{
+    const auto result = inventory_.current();
+    if (!result || result->revision == inventoryRevision_)
+        return;
+    inventoryRevision_ = result->revision;
+    inventoryAvailable_ = result->available;
+    devices_ = result->devices;
+    if (!input_->ready() && inventoryAvailable_)
         input_ = std::make_unique<chrome_axis::DirectInput>(window_);
-    devices_ = input_->devices();
+    for (std::size_t channel = 0; channel < deviceCombos_.size(); ++channel)
+        fillDeviceCombo(channel);
+    updateHardwareStatus();
+    if (capture_ && !availableCalibrationScope()[steps_[step_].channel]) {
+        capture_.reset();
+        calibrationMessage_ = tr(Text::guideCaptureInterrupted);
+    }
+    updateCalibrationView();
+}
+
+void App::updateHardwareStatus()
+{
     bool disconnected = false;
     for (std::size_t i = 0; i < deviceCombos_.size(); ++i) {
-        fillDeviceCombo(i);
         const auto& id = deviceId(i);
         disconnected = disconnected || (!id.empty() && !device(id));
     }
 
     std::wstring hardwareStatus;
     std::wstring_view advice;
-    if (!input_->ready()) {
+    const auto inventory = inventory_.current();
+    if (!inventory || inventoryRevision_ != inventory->revision) {
+        hardwareStatus = tr(Text::mainScanningDevices);
+    } else if (!inventoryAvailable_) {
         hardwareStatus = tr(Text::mainDirectInputUnavailable);
         advice = tr(Text::mainTryRefresh);
     } else if (devices_.empty()) {
@@ -1327,16 +1367,15 @@ void App::scanDevices()
             hardwareStatus += transmission;
         }
     }
+    if (usbWaitingStatus_) {
+        hardwareStatus += L" · ";
+        hardwareStatus += tr(*usbWaitingStatus_);
+    }
     if (!advice.empty()) {
         hardwareStatus += L". ";
         hardwareStatus += advice;
     }
     setText(hardware_, hardwareStatus);
-    if (capture_ && !availableCalibrationScope()[steps_[step_].channel]) {
-        capture_.reset();
-        calibrationMessage_.clear();
-    }
-    updateCalibrationView();
 }
 
 void App::fillDeviceCombo(std::size_t channel)
@@ -1759,9 +1798,12 @@ void App::reassignStoredDevice()
         MessageBoxW(window_, tr(Text::mainReassignInvalidProfile), title, MB_OK | MB_ICONERROR);
         return;
     }
-    scanDevices();
-    const auto connected = devices_;
-    const auto choice = chrome_axis::chooseDeviceReassignment(window_, profile, accessories, connected);
+    const auto connected = inventory_.current();
+    if (!connected) {
+        MessageBoxW(window_, tr(Text::mainScanningDevices), title, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    const auto choice = chrome_axis::chooseDeviceReassignment(window_, profile, accessories, connected->devices);
     if (!choice)
         return;
 
@@ -1773,11 +1815,13 @@ void App::reassignStoredDevice()
 
     if (!confirmCurrentPreset())
         return;
-    scanDevices();
     chrome_axis::Profile currentProfile;
     chrome_axis::AccessoryProfile currentAccessories;
-    const auto target = device(choice->target);
-    if (!target || !readSavedBindings(currentProfile, currentAccessories) ||
+    const auto currentInventory = inventory_.current();
+    const auto target = currentInventory ? std::ranges::find(currentInventory->devices, choice->target, &chrome_axis::DeviceInfo::id)
+        : std::vector<chrome_axis::DeviceInfo>::const_iterator{};
+    if (!currentInventory || target == currentInventory->devices.end() ||
+        !readSavedBindings(currentProfile, currentAccessories) ||
         !chrome_axis::supportsReassignment(choice->source, *target, currentProfile, currentAccessories)) {
         MessageBoxW(window_, tr(Text::mainReassignChanged), title, MB_OK | MB_ICONWARNING);
         return;
@@ -1976,7 +2020,23 @@ void App::persist()
 void App::refreshUsbToggle()
 {
     usbEnabled_ = chrome_axis::usbEnabled(directory_);
+    const bool previouslyActive = usbActive_;
+    const auto previousWaiting = usbWaitingStatus_;
+    usbActive_ = false;
+    usbWaitingStatus_.reset();
+    if (usbEnabled_ && installed_) {
+        using namespace chrome_axis;
+        const auto state = usbGameStatus(usbEnabled_, installed_, drivingDiagnostics_.read());
+        usbActive_ = state == UsbGameStatus::active;
+        if (!usbActive_)
+            usbWaitingStatus_ = state == UsbGameStatus::waitingForControls ? Text::mainUsbWaitingDriving
+                : Text::mainUsbWaitingGame;
+    }
     setText(usbToggle_, usbActionLabel());
+    if (previouslyActive != usbActive_)
+        InvalidateRect(usbToggle_, nullptr, FALSE);
+    if (previousWaiting != usbWaitingStatus_)
+        updateHardwareStatus();
     const bool enabled = canToggleUsb();
     if ((IsWindowEnabled(usbToggle_) != FALSE) != enabled)
         EnableWindow(usbToggle_, enabled);
@@ -1985,7 +2045,13 @@ void App::refreshUsbToggle()
 
 void App::refreshTransmissionKey()
 {
-    const auto key = chrome_axis::loadTransmissionHotkey(directory_);
+    transmissionShortcut_.refresh(directory_);
+    if (!transmissionShortcut_.saved()) {
+        const auto report = drivingDiagnostics_.read();
+        if (report.connection == chrome_axis::DiagnosticConnection::connected)
+            transmissionShortcut_.refresh(directory_, report.snapshot.transmission.shortcutKey);
+    }
+    const auto key = transmissionShortcut_.display().value_or(0);
     if (key != transmissionKey_)
         simulator_.reset();
     transmissionKey_ = key;
@@ -2002,7 +2068,11 @@ void App::refreshTransmissionKey()
         : std::wstring(tr(Text::mainSteeringKeys)));
     setText(simKeys_[1], keyPair(VK_NUMPAD8, VK_F8, L"  ·  "));
     setText(simKeys_[2], keyPair(VK_NUMPAD2, VK_F10, L"  ·  "));
-    setText(simTransmission_, chrome_axis::accessoryKeyLabel(key) + tr(Text::mainSimulationTransmissionKeys));
+    auto transmission = key ? chrome_axis::accessoryKeyLabel(key) : std::wstring(L"—");
+    transmission += tr(Text::mainSimulationTransmissionKeys);
+    if (!transmissionShortcut_.saved())
+        transmission += L" · " + std::wstring(tr(Text::mainTransmissionKeyUnreadable));
+    setText(simTransmission_, transmission);
     constexpr std::array<unsigned int, 5> clutchKeys{VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD3, VK_NUMPAD5, VK_NUMPAD7};
     const bool clutchKeyOverlap = std::ranges::find(clutchKeys, key) != clutchKeys.end();
     setText(simClutch_, clutchKeyOverlap ? tr(Text::mainSimulationClutchKeysOverlap) : tr(Text::mainSimulationClutchKeys));
@@ -2675,24 +2745,25 @@ void App::tick()
     if (simulation_ && publisher_.enabled() && GetTickCount64() >= nextSimulationStatus_)
         updateSimulationStatus();
     const bool foreground = GetForegroundWindow() == window_ && !IsIconic(window_);
-    if (!simulation_ && foreground) {
-        if (deviceRefreshPending_)
-            scanDevices();
-        else if (std::chrono::steady_clock::now() >= nextUsbRefresh_)
+    if (!simulation_) {
+        consumeDeviceInventory();
+        if (std::chrono::steady_clock::now() >= nextUsbRefresh_)
             refreshUsbToggle();
     }
     updateCalibrationMotion(foreground);
     if (capture_ && foreground) {
-        updateCapture();
+        if (inventory_.current())
+            updateCapture();
         return;
     }
     if (reviewPreview_) {
         updateCalibrationReview(foreground);
     } else {
-        if (foreground && !simulation_ && !calibrating_ && preview_)
+        const bool hardwarePreview = foreground && !simulation_ && !calibrating_ && preview_ && inventory_.current();
+        if (hardwarePreview)
             input_->beginPoll();
         updateLiveControls(simulation_ ? previewSimulation()
-            : foreground && !calibrating_ && preview_ ? preview_->poll(*input_) : chrome_axis::ControlState{});
+            : hardwarePreview ? preview_->poll(*input_) : chrome_axis::ControlState{});
     }
 }
 
@@ -2778,7 +2849,7 @@ void App::contextMenu(int x, int y)
         AppendMenuW(menu, MF_STRING, leaveSimulation, tr(Text::mainShowUsbHardware));
     } else {
         refreshUsbToggle();
-        AppendMenuW(menu, MF_STRING | (canToggleUsb() ? MF_ENABLED : MF_GRAYED), toggleUsb, usbActionLabel());
+        AppendMenuW(menu, MF_STRING | (canToggleUsb() ? MF_ENABLED : MF_GRAYED), toggleUsb, usbActionLabel(false));
         AppendMenuW(menu, MF_STRING, refreshDevices, tr(Text::mainRefreshDevices));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         appendControlGroups(menu);

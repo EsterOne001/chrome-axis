@@ -38,6 +38,9 @@ struct DeviceSample {
     std::array<std::uint16_t, povCount> povs{povCentered, povCentered, povCentered, povCentered};
     std::bitset<buttonCount> buttonsPresent{};
     std::array<bool, povCount> povsPresent{};
+    std::bitset<axisCount> axesPending{};
+    std::bitset<buttonCount> buttonsPending{};
+    std::bitset<povCount> povsPending{};
 };
 
 const char* axisName(std::size_t index) noexcept;
@@ -96,7 +99,7 @@ public:
     // Output is limited to the calibrated actuator and expires if calls stop.
     // The optional guard is called synchronously to recheck context around driver calls.
     // Only a newly submitted effect returns an accepted signed fraction of nominal force.
-    std::optional<float> setWheelForce(const std::string& id, std::size_t axis, float force,
+    std::optional<float> setWheelForce(std::string_view id, std::size_t axis, float force,
                                       bool (*stillCurrent)(const void*) noexcept = nullptr, const void* context = nullptr);
     WheelForceState wheelForceState() const noexcept;
     void stopWheelForce() noexcept;

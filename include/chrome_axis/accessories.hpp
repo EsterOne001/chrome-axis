@@ -78,6 +78,8 @@ struct AccessoryBinding {
 
 using AccessoryProfile = std::vector<AccessoryBinding>;
 
+void removeDisabledDrivingAccessories(AccessoryProfile& profile);
+
 struct Profile;
 
 // Match analog accessories against the driving axes in the same preset.
@@ -107,6 +109,7 @@ struct AccessoryTransmissionSample {
     bool sequentialArmed{};
     int shiftDelta{}; // -1 or +1 on a new, unambiguous paddle press.
     std::optional<float> clutch; // 0 released, 1 fully depressed, nullopt until armed.
+    bool selectorAmbiguous{};
 };
 
 bool isAccessoryKey(unsigned int key) noexcept;
@@ -130,7 +133,7 @@ public:
     void resetKeyboardBindings() noexcept;
     // All bindings have a usable sample and passed the neutral check.
     bool ready() const noexcept;
-    AccessoryReadiness readiness() const noexcept;
+    AccessoryReadiness readiness(bool nativeSelectorUsable = true) const noexcept;
 
     // Samples follow binding order. Bindings on the same device share a sample.
     std::bitset<256> update(std::span<const DeviceSample* const> samples, std::span<const DeviceReadStatus> statuses = {},

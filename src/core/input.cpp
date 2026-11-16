@@ -2,6 +2,8 @@
 
 #include <chrome_axis/input.hpp>
 
+#include "device_object_probe.hpp"
+
 #include <dinput.h>
 #include <objbase.h>
 
@@ -9,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <iterator>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -68,7 +71,7 @@ std::string deviceId(const GUID& guid) {
     return utf8(buffer);
 }
 
-HRESULT parseDeviceId(const std::string& id, GUID& guid) {
+HRESULT parseDeviceId(std::string_view id, GUID& guid) {
     if (!isDeviceId(id)) {
         return E_INVALIDARG;
     }
@@ -189,8 +192,9 @@ struct OpenDevice {
         }
         acquired = false;
         continuity.reset();
-        buttonsChecked.reset();
-        buttonsPresent.reset();
+        axes = {};
+        povs = {};
+        buttons = {};
     }
 
     void report(DirectInputDiagnostic diagnostic, std::string_view id, std::string_view stage,
@@ -204,10 +208,9 @@ struct OpenDevice {
     }
 
     DevicePtr device;
-    std::array<bool, axisCount> axes{};
-    std::array<bool, povCount> povs{};
-    std::bitset<buttonCount> buttonsChecked;
-    std::bitset<buttonCount> buttonsPresent;
+    DeviceObjectProbe<axisCount> axes;
+    DeviceObjectProbe<povCount> povs;
+    DeviceObjectProbe<buttonCount> buttons;
     bool acquired{};
     Clock::time_point retryAfter{};
     Clock::time_point pendingSince{};
@@ -284,21 +287,54 @@ private:
     std::uint64_t micros_{};
 };
 
+template <std::size_t Count, class Offset>
+void refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& wanted,
+                    IDirectInputDevice8W& device, ReadObserver& observer, std::string_view operation,
+                    DWORD type, Offset offset) {
+    layout.refresh(wanted, Clock::now(), [&](std::size_t index) {
+        bool present = false;
+        const auto result = observer.measure(operation, [&] {
+            HRESULT status{};
+            present = hasObject(device, offset(index), type, &status);
+            return status;
+        });
+        return std::tuple{result, present, Clock::now()};
+    });
+}
+
 struct WheelOutput {
+    WheelOutput(DirectInputReadObserver observer, void* context) noexcept
+        : observer(observer), observerContext(context) {}
+
     ~WheelOutput() { close(); }
+
+    template <class Call>
+    HRESULT measure(std::string_view operation, Call&& call) const noexcept {
+        if (!observer)
+            return call();
+        const auto start = Clock::now();
+        const auto result = call();
+        const auto elapsed = Clock::now() - start;
+        if (elapsed >= slowInputOperation) {
+            const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            observer(observerContext, {DirectInputReadEventKind::slow, id, operation, result,
+                static_cast<std::uint64_t>(micros)});
+        }
+        return result;
+    }
 
     void close() noexcept {
         if (effect) {
-            effect->Stop();
+            measure("FFB Stop", [&] { return effect->Stop(); });
             effect.reset();
         }
         playing = false;
         neutral = false;
         if (device) {
-            device->Unacquire();
+            measure("FFB Unacquire", [&] { return device->Unacquire(); });
             if (autocenter) {
                 DIPROPDWORD property{{sizeof(DIPROPDWORD), sizeof(DIPROPHEADER), 0, DIPH_DEVICE}, *autocenter};
-                device->SetProperty(DIPROP_AUTOCENTER, &property.diph);
+                measure("FFB RestoreAutoCenter", [&] { return device->SetProperty(DIPROP_AUTOCENTER, &property.diph); });
             }
             device.reset();
         }
@@ -319,12 +355,15 @@ struct WheelOutput {
     std::string id;
     std::size_t axis{axisCount};
     Clock::time_point retryAfter{};
+    std::chrono::seconds retryDelay{2};
     Clock::time_point submitted{};
     std::string_view lastStage;
     HRESULT lastResult{};
     long magnitude{};
     bool playing{};
     bool neutral{};
+    DirectInputReadObserver observer{};
+    void* observerContext{};
 };
 
 } // namespace
@@ -350,7 +389,7 @@ void DeviceReadContinuity::reset() noexcept {
 struct DirectInput::Impl {
     Impl(HWND windowHandle, DirectInputDiagnostic callback, DirectInputReadObserver readObserver, void* observerContext)
         : window(windowHandle), diagnostic(callback), input(createDirectInput(callback)),
-          readObserver(readObserver), observerContext(observerContext) {}
+          readObserver(readObserver), observerContext(observerContext), wheel(readObserver, observerContext) {}
 
     std::optional<DeviceSample> read(OpenDevice& opened, const std::string& id);
 
@@ -446,11 +485,6 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         });
         if (FAILED(result))
             return retry("SetCooperativeLevel", result);
-        observer.measure("ProbeAxisAndPovLayout", [&] {
-            opened.axes = availableAxes(*device);
-            opened.povs = availablePovs(*device);
-            return DI_OK;
-        });
         opened.device = std::move(device);
     }
     if (!opened.acquired) {
@@ -498,17 +532,25 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     opened.report(diagnostic, id, stage, result, true);
     observer.recovered(stage, result);
 
+    refreshObjects(opened.axes, std::bitset<axisCount>{}.set(), *opened.device, observer,
+        "GetObjectInfo axis", DIDFT_ABSAXIS, [](std::size_t index) { return axisOffsets[index]; });
+    refreshObjects(opened.povs, std::bitset<povCount>{}.set(), *opened.device, observer,
+        "GetObjectInfo POV", DIDFT_POV, [](std::size_t index) { return static_cast<DWORD>(DIJOFS_POV(index)); });
+
     DeviceSample sample;
     sample.axes = {state.lX, state.lY, state.lZ, state.lRx, state.lRy, state.lRz,
         state.rglSlider[0], state.rglSlider[1]};
-    sample.axesPresent = opened.axes;
-    sample.povsPresent = opened.povs;
+    sample.axesPending = opened.axes.pending();
+    sample.povsPending = opened.povs.pending();
+    for (std::size_t index = 0; index < axisCount; ++index)
+        sample.axesPresent[index] = opened.axes.present()[index];
     for (std::size_t index = 0; index < buttonCount; ++index) {
         if ((state.rgbButtons[index] & 0x80) != 0)
             sample.buttons.set(index);
     }
     for (std::size_t index = 0; index < povCount; ++index) {
-        if (opened.povs[index] && state.rgdwPOV[index] < 36000)
+        sample.povsPresent[index] = opened.povs.present()[index];
+        if (sample.povsPresent[index] && state.rgdwPOV[index] < 36000)
             sample.povs[index] = static_cast<std::uint16_t>(state.rgdwPOV[index]);
     }
     return sample;
@@ -530,53 +572,43 @@ std::optional<DeviceSample> DirectInput::sample(const std::string& id, const std
     if (status)
         *status = opened.readStatus;
     if (opened.cachedSample) {
-        const auto unchecked = buttons & ~opened.buttonsChecked;
-        if (unchecked.any()) {
-            ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext);
-            for (DWORD index = 0; index < buttonCount; ++index) {
-                if (unchecked.test(index)) {
-                    observer.measure("GetObjectInfo", [&] {
-                        HRESULT result{};
-                        opened.buttonsPresent[index] = hasObject(*opened.device, DIJOFS_BUTTON(index), DIDFT_BUTTON, &result);
-                        return result;
-                    });
-                }
-            }
-            opened.buttonsChecked |= unchecked;
-        }
-        opened.cachedSample->buttonsPresent = opened.buttonsPresent;
+        ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext);
+        refreshObjects(opened.buttons, buttons, *opened.device, observer,
+            "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); });
+        opened.cachedSample->buttonsPresent = opened.buttons.present();
+        opened.cachedSample->buttonsPending = buttons & opened.buttons.pending();
     }
     return opened.cachedSample;
 }
 
-std::optional<float> DirectInput::setWheelForce(const std::string& id, std::size_t axis, float force,
+std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t axis, float force,
     bool (*stillCurrent)(const void*) noexcept, const void* context) {
     const auto started = Clock::now();
     const auto allowed = [&] {
         return GetForegroundWindow() == impl_->window && (!stillCurrent || stillCurrent(context));
     };
-    if (!ready() || id.empty() || axis >= axisCount || !std::isfinite(force) || !allowed()) {
-        stopWheelForce();
+    if (!ready() || id.empty() || axis >= axisCount || !std::isfinite(force) || !allowed())
         return std::nullopt;
-    }
     auto& wheel = impl_->wheel;
     if (wheel.id != id || wheel.axis != axis) {
         wheel.close();
         wheel.id = id;
         wheel.axis = axis;
         wheel.retryAfter = {};
+        wheel.retryDelay = std::chrono::seconds(2);
         wheel.lastStage = {};
     }
     const auto magnitude = std::lround(std::clamp(force, -1.0f, 1.0f) * DI_FFNOMINALMAX);
     wheel.neutral = false;
     const auto fail = [&](std::string_view stage, HRESULT result) {
         wheel.close();
-        wheel.retryAfter = Clock::now() + std::chrono::seconds(2);
+        wheel.retryAfter = Clock::now() + wheel.retryDelay;
+        wheel.retryDelay = std::min(wheel.retryDelay * 2, std::chrono::seconds(30));
         wheel.report(impl_->diagnostic, stage, result, false);
     };
     if (std::abs(magnitude) < 10) {
         if (wheel.effect && wheel.playing) {
-            const auto result = wheel.effect->Stop();
+            const auto result = wheel.measure("FFB Stop", [&] { return wheel.effect->Stop(); });
             if (FAILED(result)) {
                 fail("force feedback Stop", result);
                 return std::nullopt;
@@ -603,29 +635,64 @@ std::optional<float> DirectInput::setWheelForce(const std::string& id, std::size
             fail("force feedback GUID", result);
             return std::nullopt;
         }
-        wheel.device = createDevice(*impl_->input, guid, &result);
+        result = wheel.measure("FFB CreateDevice", [&] {
+            HRESULT status{};
+            wheel.device = createDevice(*impl_->input, guid, &status);
+            return status;
+        });
         if (!wheel.device) {
             fail("force feedback CreateDevice", result);
             return std::nullopt;
         }
-        result = wheel.device->SetDataFormat(&c_dfDIJoystick2);
-        if (FAILED(result) || !supportsConstantForce(*wheel.device) || !forceActuator(*wheel.device, axis)) {
+        result = wheel.measure("FFB SetDataFormat", [&] { return wheel.device->SetDataFormat(&c_dfDIJoystick2); });
+        if (FAILED(result)) {
+            fail("force feedback SetDataFormat", result);
+            return std::nullopt;
+        }
+        DIDEVCAPS caps{};
+        caps.dwSize = sizeof(caps);
+        result = wheel.measure("FFB GetCapabilities", [&] { return wheel.device->GetCapabilities(&caps); });
+        if (FAILED(result) || !(caps.dwFlags & DIDC_FORCEFEEDBACK)) {
+            fail("force feedback GetCapabilities", FAILED(result) ? result : DIERR_UNSUPPORTED);
+            return std::nullopt;
+        }
+        DIEFFECTINFOW info{};
+        info.dwSize = sizeof(info);
+        result = wheel.measure("FFB GetEffectInfo", [&] {
+            return wheel.device->GetEffectInfo(&info, GUID_ConstantForce);
+        });
+        if (FAILED(result)) {
+            fail("force feedback GetEffectInfo", result);
+            return std::nullopt;
+        }
+        DIDEVICEOBJECTINSTANCEW actuator{};
+        actuator.dwSize = sizeof(actuator);
+        result = wheel.measure("FFB GetObjectInfo", [&] {
+            return wheel.device->GetObjectInfo(&actuator, axisOffsets[axis], DIPH_BYOFFSET);
+        });
+        if (FAILED(result) || !(actuator.dwFlags & DIDOI_FFACTUATOR) || !(actuator.dwType & DIDFT_ABSAXIS)) {
             fail("force feedback actuator", FAILED(result) ? result : DIERR_UNSUPPORTED);
             return std::nullopt;
         }
-        result = wheel.device->SetCooperativeLevel(impl_->window, DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+        result = wheel.measure("FFB SetCooperativeLevel", [&] {
+            return wheel.device->SetCooperativeLevel(impl_->window, DISCL_EXCLUSIVE | DISCL_FOREGROUND);
+        });
         if (FAILED(result)) {
             fail("force feedback SetCooperativeLevel", result);
             return std::nullopt;
         }
         DIPROPDWORD property{{sizeof(DIPROPDWORD), sizeof(DIPROPHEADER), 0, DIPH_DEVICE}, 0};
-        if (SUCCEEDED(wheel.device->GetProperty(DIPROP_AUTOCENTER, &property.diph))) {
+        if (SUCCEEDED(wheel.measure("FFB GetAutoCenter", [&] {
+                return wheel.device->GetProperty(DIPROP_AUTOCENTER, &property.diph);
+            }))) {
             const auto original = property.dwData;
             property.dwData = DIPROPAUTOCENTER_OFF;
-            if (SUCCEEDED(wheel.device->SetProperty(DIPROP_AUTOCENTER, &property.diph)))
+            if (SUCCEEDED(wheel.measure("FFB SetAutoCenter", [&] {
+                    return wheel.device->SetProperty(DIPROP_AUTOCENTER, &property.diph);
+                })))
                 wheel.autocenter = original;
         }
-        result = wheel.device->Acquire();
+        result = wheel.measure("FFB Acquire", [&] { return wheel.device->Acquire(); });
         if (FAILED(result)) {
             fail("force feedback Acquire", result);
             return std::nullopt;
@@ -642,24 +709,26 @@ std::optional<float> DirectInput::setWheelForce(const std::string& id, std::size
         parameters.rgdwAxes = &offset;
         parameters.rglDirection = &direction;
         IDirectInputEffect* effect = nullptr;
-        result = wheel.device->CreateEffect(GUID_ConstantForce, &parameters, &effect, nullptr);
+        result = wheel.measure("FFB CreateEffect", [&] {
+            return wheel.device->CreateEffect(GUID_ConstantForce, &parameters, &effect, nullptr);
+        });
+        EffectPtr initialized(effect);
         if (FAILED(result) || !effect) {
             fail("force feedback CreateEffect", FAILED(result) ? result : E_FAIL);
             return std::nullopt;
         }
-        wheel.effect.reset(effect);
+        wheel.effect = std::move(initialized);
+        wheel.retryDelay = std::chrono::seconds(2);
     }
 
-    if (Clock::now() - started > std::chrono::milliseconds(70)) {
-        fail("force feedback driver timeout", HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+    // Opening an effect does not play it. Keep a successfully initialized effect
+    // for the next fresh request if initialization outlasted this sample.
+    if (!allowed())
         return std::nullopt;
-    }
-    if (!allowed()) {
-        stopWheelForce();
-        return std::nullopt;
-    }
     const auto submitted = Clock::now();
-    const auto result = wheel.effect->SetParameters(&parameters, DIEP_TYPESPECIFICPARAMS | DIEP_START);
+    const auto result = wheel.measure("FFB SetParameters", [&] {
+        return wheel.effect->SetParameters(&parameters, DIEP_TYPESPECIFICPARAMS | DIEP_START);
+    });
     if (FAILED(result) || result == DI_DOWNLOADSKIPPED) {
         fail("force feedback SetParameters", result);
         return std::nullopt;
