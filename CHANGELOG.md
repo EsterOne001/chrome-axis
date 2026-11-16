@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.52
+
+- **HUD de conduite.** Le badge est plus haut pour espacer les textes du liseré et séparer les deux lignes dans chaque colonne. Le fond bleu est plus transparent.
+
+[ZIP Vortex](out/Chromaxis-0.4.52.zip)
+
 ## Chrome Axis 0.4.51
 
 - **HUD de conduite.** Le liseré gris intérieur est davantage espacé du contour extérieur et des équerres du volant. Le rapport est légèrement relevé pour dégager le bas du badge.

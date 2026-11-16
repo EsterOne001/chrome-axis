@@ -630,7 +630,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
 
     let badge = new inkCanvas();
     badge.SetName(n"ChromeAxisStatusBadge");
-    badge.SetSize(Vector2(236.0, 48.0));
+    badge.SetSize(Vector2(236.0, 60.0));
     badge.SetAnchor(inkEAnchor.TopLeft);
     badge.SetAnchorPoint(0.0, 0.0);
     badge.SetTranslation(36.0, 176.0);
@@ -643,16 +643,16 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     logo.SetInteractive(false);
     logo.SetAtlasResource(r"chrome_axis\\hud\\logo.inkatlas");
     logo.SetSize(Vector2(20.0, 20.0));
-    logo.SetTranslation(16.0, 12.0);
+    logo.SetTranslation(16.0, 19.0);
     logo.Reparent(badge);
 
-    let shadow = this.CreateHudLabel(badge, 43.0, 5.0, 130.0, 21.0, 17, textHorizontalAlignment.Left);
+    let shadow = this.CreateHudLabel(badge, 43.0, 12.0, 130.0, 20.0, 17, textHorizontalAlignment.Left);
     shadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
-    let label = this.CreateHudLabel(badge, 42.0, 4.0, 130.0, 21.0, 17, textHorizontalAlignment.Left);
+    let label = this.CreateHudLabel(badge, 42.0, 11.0, 130.0, 20.0, 17, textHorizontalAlignment.Left);
 
-    let modeLabel = this.CreateHudLabel(badge, 42.0, 24.0, 130.0, 17.0, 13, textHorizontalAlignment.Left);
-    let gearCaption = this.CreateHudLabel(badge, 180.0, 5.0, 44.0, 14.0, 10, textHorizontalAlignment.Center);
-    let gearLabel = this.CreateHudLabel(badge, 180.0, 14.0, 44.0, 29.0, 27, textHorizontalAlignment.Center);
+    let modeLabel = this.CreateHudLabel(badge, 42.0, 32.0, 130.0, 16.0, 13, textHorizontalAlignment.Left);
+    let gearCaption = this.CreateHudLabel(badge, 178.0, 11.0, 44.0, 14.0, 10, textHorizontalAlignment.Center);
+    let gearLabel = this.CreateHudLabel(badge, 178.0, 25.0, 44.0, 23.0, 25, textHorizontalAlignment.Center);
 
     this.hudBadge = badge;
     this.hudLogo = logo;
@@ -697,20 +697,20 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   }
 
   private func BuildHudFrame(badge: ref<inkCanvas>) -> Void {
-    let panel = HDRColor(0.024, 0.039, 0.059, 0.72);
-    this.CreateHudRect(badge, 0.0, 2.0, 227.0, 44.0).SetTintColor(panel);
-    this.CreateHudRect(badge, 227.0, 2.0, 9.0, 36.0).SetTintColor(panel);
-    this.hudInnerFrame = this.CreateHudDetail(badge, Vector2(5.0, 7.0), Vector2(217.0, 34.0), 0.44, true);
-    this.hudLogoFrame = this.CreateHudDetail(badge, Vector2(15.0, 11.0), Vector2(22.0, 22.0), 0.38, false);
+    let panel = HDRColor(0.024, 0.039, 0.059, 0.52);
+    this.CreateHudRect(badge, 0.0, 2.0, 227.0, 56.0).SetTintColor(panel);
+    this.CreateHudRect(badge, 227.0, 2.0, 9.0, 48.0).SetTintColor(panel);
+    this.hudInnerFrame = this.CreateHudDetail(badge, Vector2(5.0, 7.0), Vector2(217.0, 46.0), 0.44, true);
+    this.hudLogoFrame = this.CreateHudDetail(badge, Vector2(15.0, 18.0), Vector2(22.0, 22.0), 0.38, false);
     ArrayClear(this.hudBorder);
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 2.0, 236.0, 1.0));
-    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 3.0, 1.0, 42.0));
-    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 45.0, 228.0, 1.0));
-    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 235.0, 3.0, 1.0, 34.0));
-    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 37.0, 9.0, 1.0));
-    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 38.0, 1.0, 7.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 3.0, 1.0, 54.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 57.0, 228.0, 1.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 235.0, 3.0, 1.0, 46.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 49.0, 9.0, 1.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 50.0, 1.0, 7.0));
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 12.0, 0.0, 16.0, 2.0));
-    this.hudDivider = this.CreateHudRect(badge, 173.0, 10.0, 1.0, 28.0);
+    this.hudDivider = this.CreateHudRect(badge, 173.0, 12.0, 1.0, 36.0);
   }
 
   private func CreateHudDetail(badge: ref<inkCanvas>, position: Vector2, size: Vector2, opacity: Float, nineSlice: Bool) -> ref<inkImage> {
