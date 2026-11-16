@@ -231,12 +231,15 @@ bool testProfileBackups(const std::filesystem::path& fixture)
         {wheel, AccessoryKind::Axis, 3, 0, 1000, VK_SPACE, {40, 20}},
         {wheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 18}};
     const FeedbackSettings feedback{true, 17, false, true, 165, 75};
+    constexpr unsigned int exportedHotkey = VK_F9;
+    constexpr unsigned int newerHotkey = 'K';
     std::string error;
     ProfileBackupError backupError{};
     if (!check(std::filesystem::create_directory(root), "Could not set up a profile folder")
         || !check(saveProfile(root / profileFilename, calibration, error)
                   && saveAccessoryProfile(root / accessoryFilename, bindings, error)
                   && saveFeedbackSettings(root / feedbackFilename, feedback, error)
+                  && saveTransmissionHotkey(root, exportedHotkey, error)
                   && setUsbEnabled(root, true, error) && createPreset(root, name, error),
                   "Could not seed all profile settings"))
         return false;
@@ -265,8 +268,10 @@ bool testProfileBackups(const std::filesystem::path& fixture)
 
     std::filesystem::create_directories(root / profileBackupsFolder / L"Older");
     if (!check(createProfileBackup(root, backup, backupError, "fr")
-               && readProfileLanguage(backup) == "fr" && !readProfileLanguage(root),
-               "Export must include the fallback language without modifying the original")
+               && readProfileLanguage(backup) == "fr" && !readProfileLanguage(root)
+               && readTransmissionHotkey(backup) == exportedHotkey
+               && !std::filesystem::exists(named / transmissionHotkeyFilename),
+               "Export must include the fallback language and installation shortcut without copying it to a named profile")
         || !check(!std::filesystem::exists(backup / L"Lisez-moi.txt")
                   && !std::filesystem::exists(backup / profileBackupsFolder),
                   "Deployed files and older backups must not be copied")
@@ -278,6 +283,7 @@ bool testProfileBackups(const std::filesystem::path& fixture)
         return false;
 
     if (!check(setUsbEnabled(root, false, error) && writeProfileLanguage(root, "en")
+               && saveTransmissionHotkey(root, newerHotkey, error)
                && selectPreset(root, L"", error) && saveAccessoryProfile(root / accessoryFilename, {}, error)
                && createPreset(root, L"Plus récent", error), "Could not update the live profiles"))
         return false;
@@ -294,6 +300,13 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     if (!check(!restoreProfileBackup(root, corrupt, backupError) && backupError == ProfileBackupError::invalidBackup,
                "A folder containing only a language preference must not clear the profiles"))
         return false;
+    if (!check(saveProfile(corrupt / profileFilename, calibration, error), "Could not set up a corrupt snapshot"))
+        return false;
+    std::ofstream(corrupt / transmissionHotkeyFilename) << "version=1\nkey=78\n";
+    if (!check(!restoreProfileBackup(root, corrupt, backupError) && backupError == ProfileBackupError::invalidBackup
+               && readTransmissionHotkey(root) == newerHotkey && activePreset(root).name == L"Plus récent",
+               "A saved shortcut using a reserved gear key must not overwrite the live settings"))
+        return false;
 
     const auto locked = CreateFileW((root / profileFilename).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -303,7 +316,8 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     CloseHandle(locked);
     if (!check(!restoredWhileLocked && backupError == ProfileBackupError::ioError
                && activePreset(root).name == L"Plus récent" && readProfileLanguage(root) == "en"
-               && !usbEnabled(root) && loadAccessoryProfile(root / accessoryFilename, error) == AccessoryProfile{},
+               && !usbEnabled(root) && loadAccessoryProfile(root / accessoryFilename, error) == AccessoryProfile{}
+               && readTransmissionHotkey(root) == newerHotkey,
                "A blocked file must roll back all settings moved before the failure"))
         return false;
 
@@ -322,12 +336,13 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                && loadAccessoryProfile(root / accessoryFilename, error) == bindings
                && loadAccessoryProfile(named / accessoryFilename, error) == bindings
                && loadFeedbackSettings(named / feedbackFilename, error) == feedback
-               && usbEnabled(root) && readProfileLanguage(root) == "fr",
-               "Restore must apply the default and named settings, selection, USB and language")
+               && usbEnabled(root) && readProfileLanguage(root) == "fr" && readTransmissionHotkey(root) == exportedHotkey,
+               "Restore must apply the default and named settings, selection, USB, language and shortcut")
         || !check(std::filesystem::exists(root / L"Lisez-moi.txt")
                   && std::filesystem::is_directory(root / profileBackupsFolder / L"Older")
                   && activePreset(recovery).name == L"Plus récent"
-                  && readProfileLanguage(recovery) == "en" && !usbEnabled(recovery),
+                  && readProfileLanguage(recovery) == "en" && !usbEnabled(recovery)
+                  && readTransmissionHotkey(recovery) == newerHotkey,
                   "Restore must retain unrelated live files and the previous settings"))
         return false;
 
@@ -337,8 +352,9 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                && restoreProfileBackup(root, legacy, backupError)
                && activePreset(root).name.empty() && listPresets(root).empty() && !usbEnabled(root)
                && !std::filesystem::exists(root / accessoryFilename)
-               && !std::filesystem::exists(root / feedbackFilename) && readProfileLanguage(root) == "fr",
-               "Manual legacy backups must restore absent settings while preserving language"))
+               && !std::filesystem::exists(root / feedbackFilename) && readProfileLanguage(root) == "fr"
+               && readTransmissionHotkey(root) == exportedHotkey,
+               "Manual legacy backups must restore absent driving settings while preserving language and shortcut"))
         return false;
 
     const auto selectedEmpty = fixture / L"Profil sélectionné";
@@ -385,8 +401,10 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                  && restoreProfileBackup(root, internal, backupError),
                  "Backups under the installed Profil directory must round-trip")
         && check(createProfileBackup(empty, emptyBackup, backupError)
+                 && readTransmissionHotkey(emptyBackup) == defaultTransmissionHotkey
                  && restoreProfileBackup(root, emptyBackup, backupError) && activePreset(root).name.empty()
-                 && !std::filesystem::exists(root / profileFilename) && readProfileLanguage(root) == "fr",
+                 && !std::filesystem::exists(root / profileFilename) && readProfileLanguage(root) == "fr"
+                 && readTransmissionHotkey(root) == defaultTransmissionHotkey,
                  "An empty snapshot must be valid and restore empty driving settings");
 }
 

@@ -668,7 +668,7 @@ void suspendTransmission() noexcept {
         manual_backend::publish(nullptr, false, 0);
 }
 
-chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleased) noexcept {
+chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleased, unsigned int hotkey) noexcept {
     using chrome_axis::PedalRouting;
     if (!transmissionAvailable)
         return PedalRouting::standard;
@@ -677,7 +677,7 @@ chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleas
     const bool hardware = inputFrame.nativeShifterVerified;
     const bool enabled = simulated || hardware;
     const auto intent = transmissionInput.update(hardware, inputFrame.nativeGear, simulated,
-        enabled ? chrome_axis::transmissionHotkey() : std::nullopt,
+        enabled ? chrome_axis::transmissionHotkey(hotkey) : std::nullopt,
         simulated && keyDown(VK_PRIOR), simulated && keyDown(VK_NEXT),
         simulated ? keyboardGear() : chrome_axis::DirectGearKeys{});
     manual_backend::publish(vehicle, intent.manual, intent.delta, intent.manual ? intent.gear : std::nullopt);
@@ -1270,6 +1270,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     HWND window{};
     Clock::time_point retryInitialization{};
     Clock::time_point nextConfigurationPoll{};
+    Clock::time_point nextHotkeyPoll{};
+    WatchedProfile watchedHotkey;
+    const auto hotkeyPath = configurationDirectory / chrome_axis::transmissionHotkeyFilename;
     std::uint64_t lastGeneration{};
     std::uint64_t lastDrivingSession{};
     bool wasDriving{};
@@ -1280,6 +1283,11 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
 
     while (!stop.stop_requested()) {
         const auto start = Clock::now();
+        if (start >= nextHotkeyPoll) {
+            if (watchedHotkey.changed(hotkeyPath, start, nextHotkeyPoll == Clock::time_point{}))
+                chrome_axis::selectTransmissionHotkey(chrome_axis::loadTransmissionHotkey(configurationDirectory));
+            nextHotkeyPoll = start + configurationPollInterval;
+        }
         DrivingContext current;
         {
             std::scoped_lock lock(stateMutex);
@@ -1790,6 +1798,7 @@ void updateVehicle(Vehicle* vehicle) {
 
     auto controls = inputFrame.state;
     const bool simulated = inputFrame.simulated;
+    const auto hotkey = transmissionAvailable ? chrome_axis::transmissionHotkeyBinding() : 0;
     if (simulated) {
         // Advance only while the driving hook runs. A paused or stalled game
         // cannot build up a simulated pedal position in the input thread.
@@ -1800,10 +1809,11 @@ void updateVehicle(Vehicle* vehicle) {
             ? 0.0f
             : std::chrono::duration<float>(now - lastSimulationStep).count();
         lastSimulationStep = now;
-        const auto values = simulator.update(chrome_axis::simulationKeys(), seconds);
+        const auto values = simulator.update(chrome_axis::simulationKeys(hotkey), seconds);
         controls = {values, values.steering != 0.0f, values.throttle > 0.0f, values.brake > 0.0f};
     }
-    const auto routing = updateTransmission(vehicle, controls.values.throttle == 0.0f && controls.values.brake == 0.0f);
+    const bool pedalsReleased = controls.values.throttle == 0.0f && controls.values.brake == 0.0f;
+    const auto routing = updateTransmission(vehicle, pedalsReleased, hotkey);
     const bool reversePedals = routing == chrome_axis::PedalRouting::reverse;
     if (routing == chrome_axis::PedalRouting::suspended) {
         controls.throttleReady = false;
@@ -1979,7 +1989,7 @@ bool startPlugin() {
     if (!transmissionAvailable)
         warn("Native transmission unavailable. Standard controls remain available.");
     else if (!chrome_axis::startTransmissionHotkey(plugin))
-        warn("The physical F8 transmission shortcut is unavailable.");
+        warn("The physical AUTO/MANUAL shortcut is unavailable.");
     active.store(true, std::memory_order_release);
     info("Vehicle input hook attached for Cyberpunk 2077 2.5. Waiting for the local driver context.");
     return true;

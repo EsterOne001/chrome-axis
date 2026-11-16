@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.41
+
+- **Raccourci AUTO / MANUEL.** Choisissez la touche dans le menu **Périphériques**. Le réglage concerne l’installation, s’applique sans relancer le jeu et suit les sauvegardes de profils. F8 est la valeur par défaut.
+- **Simulation clavier.** Les commandes réservées aux rapports sont désactivées dans le sélecteur. La touche choisie ne déclenche aucun axe simulé et l’autre commande de l’axe reste disponible.
+
+[ZIP Vortex](out/Chromaxis-0.4.41.zip)
+
 ## Chrome Axis 0.4.40
 
 - **Marche arrière.** Le routage des pédales suit le rapport engagé lors de la bascule AUTO/MANUEL ou de la perte du levier. Le contrôle d’arrêt suit également le dernier sens engagé à travers le point mort.

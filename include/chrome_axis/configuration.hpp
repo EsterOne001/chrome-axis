@@ -3,12 +3,15 @@
 #include <windows.h>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace chrome_axis {
 
 inline constexpr wchar_t usbMarkerFilename[] = L"usb.enabled";
+inline constexpr wchar_t transmissionHotkeyFilename[] = L"transmission-hotkey.ini";
+inline constexpr unsigned int defaultTransmissionHotkey = VK_F8;
 
 // These lookups do not create directories or write files.
 std::filesystem::path modulePath(HMODULE module);
@@ -34,5 +37,11 @@ bool usbEnabled(const std::filesystem::path& directory) noexcept;
 
 // The USB opt-in is independent of the calibration profile.
 bool setUsbEnabled(const std::filesystem::path& directory, bool enabled, std::string& error);
+
+bool isTransmissionHotkey(unsigned int key) noexcept;
+// Unlike the runtime load, this distinguishes a valid stored key from a missing or invalid file.
+std::optional<unsigned int> readTransmissionHotkey(const std::filesystem::path& profileRoot);
+unsigned int loadTransmissionHotkey(const std::filesystem::path& profileRoot);
+bool saveTransmissionHotkey(const std::filesystem::path& profileRoot, unsigned int key, std::string& error);
 
 } // namespace chrome_axis

@@ -1,6 +1,7 @@
 #include "chrome_axis/keyboard_dialog.hpp"
 
 #include "chrome_axis/accessories_dialog.hpp"
+#include "chrome_axis/configuration.hpp"
 #include "app_text.hpp"
 #include "dialog_theme.hpp"
 #include "ui_theme.hpp"
@@ -85,9 +86,20 @@ std::wstring keyLegend(UINT key)
     }
 }
 
+struct KeyPicker {
+    UINT currentKey;
+    bool transmission;
+};
+
+bool isPickerKey(UINT key, bool transmission)
+{
+    return transmission ? isTransmissionHotkey(key) : isAccessoryKey(key);
+}
+
 class Keyboard {
 public:
-    explicit Keyboard(HWND window) : window_(window), instance_(GetModuleHandleW(nullptr)) {}
+    Keyboard(HWND window, bool transmission)
+        : window_(window), instance_(GetModuleHandleW(nullptr)), transmission_(transmission) {}
 
     bool build(HKL layout);
 
@@ -96,15 +108,17 @@ private:
 
     HWND window_;
     HINSTANCE instance_;
+    bool transmission_;
     std::bitset<256> added_;
     bool complete_{true};
 };
 
 void Keyboard::add(UINT key, const wchar_t* inactive, int x, int y, int width, int height)
 {
-    const bool enabled = isAccessoryKey(key) && !added_.test(key);
+    const bool enabled = isPickerKey(key, transmission_) && !added_.test(key);
     // Keep the full, distinct name for assistive technology. Paint a short legend on the keycap.
-    const auto label = enabled ? accessoryKeyLabel(key) : std::wstring(inactive);
+    const auto label = enabled || (transmission_ && isAccessoryKey(key))
+        ? accessoryKeyLabel(key) : std::wstring(inactive);
     RECT bounds{x, y, x + width, y + height};
     MapDialogRect(window_, &bounds);
     const auto id = static_cast<INT_PTR>(enabled ? firstKeyId + key : inactiveKeyId);
@@ -182,7 +196,7 @@ bool Keyboard::build(HKL layout)
     add(0, L".", 362, 176);
 
     for (UINT key = 0; key < added_.size(); ++key) {
-        if (isAccessoryKey(key) && !added_.test(key))
+        if (isPickerKey(key, transmission_) && !added_.test(key))
             return false;
     }
     return complete_;
@@ -222,21 +236,25 @@ void drawKey(const DRAWITEMSTRUCT& item, UINT key, UINT selected)
 
 INT_PTR CALLBACK keyboardProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    const auto* picker = reinterpret_cast<const KeyPicker*>(GetWindowLongPtrW(window, DWLP_USER));
     switch (message) {
     case WM_INITDIALOG: {
+        const auto& settings = *reinterpret_cast<const KeyPicker*>(lParam);
         SetWindowLongPtrW(window, DWLP_USER, lParam);
-        SetWindowTextW(window, tr(Text::DlgKeyboardTitle));
-        SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgKeyboardIntro));
+        SetWindowTextW(window, tr(settings.transmission ? Text::mainTransmissionKeyTitle : Text::DlgKeyboardTitle));
+        SetDlgItemTextW(window, IDC_MODAL_INTRO,
+                        tr(settings.transmission ? Text::mainTransmissionKeyIntro : Text::DlgKeyboardIntro));
         SetDlgItemTextW(window, IDC_KEYBOARD_NAVIGATION_LABEL, tr(Text::DlgKeyboardNavigation));
         SetDlgItemTextW(window, IDC_KEYBOARD_NUMPAD_LABEL, tr(Text::DlgKeyboardNumpad));
         SetDlgItemTextW(window, IDC_KEYBOARD_NUMLOCK_HINT, tr(Text::DlgKeypadNumLockHint));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
-        DialogTheme::attach(window, tr(Text::DlgKeyboardHeading), 0, 0, {});
-        if (!Keyboard(window).build(GetKeyboardLayout(0))) {
+        DialogTheme::attach(window, tr(settings.transmission ? Text::mainMenuTransmissionKey : Text::DlgKeyboardHeading),
+                            0, 0, {});
+        if (!Keyboard(window, settings.transmission).build(GetKeyboardLayout(0))) {
             EndDialog(window, -1);
             return TRUE;
         }
-        const auto current = GetDlgItem(window, firstKeyId + static_cast<int>(lParam));
+        const auto current = GetDlgItem(window, firstKeyId + static_cast<int>(settings.currentKey));
         SetFocus(current ? current : GetDlgItem(window, IDCANCEL));
         return FALSE;
     }
@@ -246,8 +264,8 @@ INT_PTR CALLBACK keyboardProc(HWND window, UINT message, WPARAM wParam, LPARAM l
             drawKey(item, 0, 0);
             return TRUE;
         }
-        if (item.CtlID >= firstKeyId && isAccessoryKey(item.CtlID - firstKeyId)) {
-            drawKey(item, item.CtlID - firstKeyId, static_cast<UINT>(GetWindowLongPtrW(window, DWLP_USER)));
+        if (picker && item.CtlID >= firstKeyId && isPickerKey(item.CtlID - firstKeyId, picker->transmission)) {
+            drawKey(item, item.CtlID - firstKeyId, picker->currentKey);
             return TRUE;
         }
         break;
@@ -258,7 +276,7 @@ INT_PTR CALLBACK keyboardProc(HWND window, UINT message, WPARAM wParam, LPARAM l
             EndDialog(window, IDCANCEL);
             return TRUE;
         }
-        if (HIWORD(wParam) == BN_CLICKED && id >= firstKeyId && isAccessoryKey(id - firstKeyId)) {
+        if (picker && HIWORD(wParam) == BN_CLICKED && id >= firstKeyId && isPickerKey(id - firstKeyId, picker->transmission)) {
             EndDialog(window, id - firstKeyId);
             return TRUE;
         }
@@ -268,17 +286,28 @@ INT_PTR CALLBACK keyboardProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     return FALSE;
 }
 
+std::optional<unsigned int> chooseKey(HWND owner, UINT currentKey, bool transmission)
+{
+    const KeyPicker picker{isPickerKey(currentKey, transmission) ? currentKey : 0, transmission};
+    const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORY_KEYBOARD),
+        owner, keyboardProc, reinterpret_cast<LPARAM>(&picker));
+    if (result == -1)
+        MessageBoxW(owner, tr(Text::DlgKeyboardOpenError), L"Chrome Axis", MB_OK | MB_ICONERROR);
+    if (result > 0 && isPickerKey(static_cast<UINT>(result), transmission))
+        return static_cast<unsigned int>(result);
+    return std::nullopt;
+}
+
 } // namespace
 
 std::optional<unsigned int> chooseAccessoryKey(HWND owner, unsigned int currentKey)
 {
-    const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORY_KEYBOARD),
-        owner, keyboardProc, isAccessoryKey(currentKey) ? currentKey : 0);
-    if (result == -1)
-        MessageBoxW(owner, tr(Text::DlgKeyboardOpenError), L"Chrome Axis", MB_OK | MB_ICONERROR);
-    if (result > 0 && isAccessoryKey(static_cast<unsigned int>(result)))
-        return static_cast<unsigned int>(result);
-    return std::nullopt;
+    return chooseKey(owner, currentKey, false);
+}
+
+std::optional<unsigned int> chooseTransmissionKey(HWND owner, unsigned int currentKey)
+{
+    return chooseKey(owner, currentKey, true);
 }
 
 } // namespace chrome_axis

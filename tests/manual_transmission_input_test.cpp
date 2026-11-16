@@ -1,5 +1,7 @@
 #include "manual_transmission_input.hpp"
 
+#include <windows.h>
+
 #include <iostream>
 
 using chrome_axis::ManualTransmissionInput;
@@ -76,30 +78,62 @@ bool ambiguousKeysNeedFullRelease()
         && selected.gear == 1 && overlap.gear == 1 && heldThird.gear == 1;
 }
 
-bool injectedF8DoesNotToggleTransmission()
+bool injectedKeyDoesNotToggleTransmission()
 {
     ManualTransmissionInput input;
-    PhysicalModeKey keyboard;
-    const auto update = [&] { return input.update(true, -1, false, keyboard.down(), false, false, {}).manual; };
+    PhysicalModeKey keyboard{VK_F8};
+    keyboard.primeReleased(VK_F8);
+    const auto update = [&] { return input.update(true, -1, false, keyboard.down(VK_F8), false, false, {}).manual; };
     if (!update())
         return false;
-    keyboard.update(true, true); // Sent by a held or pulsed USB accessory.
+    keyboard.update(VK_F8, true, true); // Sent by a held or pulsed USB accessory.
     if (!update())
         return false;
-    keyboard.update(false, true);
+    keyboard.update(VK_F8, false, true);
     if (!update())
         return false;
-    keyboard.update(true, false);
+    keyboard.update(VK_F8, true, false);
     if (update())
         return false;
-    keyboard.update(false, true); // A simulated release must not rearm the held physical key.
+    keyboard.update(VK_F8, false, true); // An injected release must not rearm the physical key.
     if (update())
         return false;
-    keyboard.update(false, false);
+    keyboard.update(VK_F8, false, false);
     if (update())
         return false;
-    keyboard.update(true, false);
+    keyboard.update(VK_F8, true, false);
     return update();
+}
+
+bool changingShortcutRearmsWithoutChangingModes()
+{
+    ManualTransmissionInput input;
+    PhysicalModeKey keyboard{VK_F8};
+    const auto update = [&] { return input.update(true, -1, false, keyboard.down(keyboard.key()), false, false, {}).manual; };
+    keyboard.primeReleased(VK_F8);
+    if (!update())
+        return false;
+    keyboard.select(VK_F9);
+    if (!update() || keyboard.key() != VK_F9 || keyboard.down(VK_F8).has_value())
+        return false;
+
+    keyboard.update(VK_F9, true, false); // The new key was held during reassignment.
+    keyboard.primeReleased(VK_F9);      // A stale sample claiming it was up must be discarded.
+    if (keyboard.down(VK_F9).has_value() || !update())
+        return false;
+    keyboard.update(VK_F9, false, true);
+    keyboard.update(VK_F8, false, false);
+    if (keyboard.down(VK_F9).has_value() || !update())
+        return false;
+
+    keyboard.update(VK_F9, false, false);
+    if (!update())
+        return false;
+    keyboard.update(VK_F9, true, false);
+    if (update())
+        return false;
+    keyboard.select(VK_F9);             // Saving the same value must preserve a held key's state.
+    return keyboard.down(VK_F9) == true && !update();
 }
 
 bool retainsManualReversePedalsDuringHandoff()
@@ -135,7 +169,8 @@ int main()
         std::cerr << "Transmission simulation used a held or disabled command\n";
         return 1;
     }
-    if (!ambiguousKeysNeedFullRelease() || !injectedF8DoesNotToggleTransmission()) {
+    if (!ambiguousKeysNeedFullRelease() || !injectedKeyDoesNotToggleTransmission() ||
+        !changingShortcutRearmsWithoutChangingModes()) {
         std::cerr << "A held or injected key changed the transmission\n";
         return 1;
     }

@@ -1,5 +1,6 @@
 #include "chrome_axis/simulation.hpp"
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -44,6 +45,34 @@ int testControls()
     if (!neutral(simulator.update(pressing, 0.1f)) || !neutral(simulator.update({}, 0.1f)))
         return 6;
     return equal(simulator.update({.right = true}, 0.1f).steering, 0.3f) ? 0 : 7;
+}
+
+bool testSimulationKeyExclusion()
+{
+    using chrome_axis::SimulationKeys;
+    using chrome_axis::detail::readSimulationKeys;
+    struct AliasPair {
+        bool SimulationKeys::* action;
+        int numpad;
+        int function;
+    };
+    constexpr std::array cases{
+        AliasPair{&SimulationKeys::left, VK_NUMPAD4, VK_F6},
+        AliasPair{&SimulationKeys::right, VK_NUMPAD6, VK_F7},
+        AliasPair{&SimulationKeys::throttle, VK_NUMPAD8, VK_F8},
+        AliasPair{&SimulationKeys::brake, VK_NUMPAD2, VK_F10},
+    };
+    for (const auto& [action, numpad, function] : cases) {
+        const auto onlyNumpad = [numpad](int key) { return key == numpad; };
+        const auto onlyFunction = [function](int key) { return key == function; };
+        if (!(readSimulationKeys(0, onlyNumpad).*action) || !(readSimulationKeys(0, onlyFunction).*action) ||
+            (readSimulationKeys(numpad, onlyNumpad).*action) || (readSimulationKeys(function, onlyFunction).*action) ||
+            !(readSimulationKeys(function, onlyNumpad).*action) || !(readSimulationKeys(numpad, onlyFunction).*action))
+            return false;
+    }
+
+    const auto defaultToggleAndBrake = readSimulationKeys(VK_F8, [](int key) { return key == VK_F8 || key == VK_F10; });
+    return !defaultToggleAndBrake.throttle && defaultToggleAndBrake.brake;
 }
 
 int testSession()
@@ -117,6 +146,8 @@ int testSession()
 int main()
 {
     int result = testControls();
+    if (result == 0 && !testSimulationKeyExclusion())
+        result = 18;
     if (result == 0)
         result = testSession();
     if (result != 0)

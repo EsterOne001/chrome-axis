@@ -13,6 +13,7 @@
 namespace chrome_axis {
 
 std::optional<unsigned int> chooseAccessoryKey(HWND owner, unsigned int currentKey);
+std::optional<unsigned int> chooseTransmissionKey(HWND owner, unsigned int currentKey);
 
 } // namespace chrome_axis
 #endif

@@ -6,9 +6,11 @@
 
 namespace chrome_axis {
 
-// Observe only the physical F8 state. The keyboard message continues to its destination.
+// Observe only the selected physical key. The input event continues to its destination.
 bool startTransmissionHotkey(HMODULE module);
 void stopTransmissionHotkey() noexcept;
-std::optional<bool> transmissionHotkey() noexcept;
+void selectTransmissionHotkey(unsigned int key) noexcept;
+unsigned int transmissionHotkeyBinding() noexcept;
+std::optional<bool> transmissionHotkey(unsigned int key) noexcept;
 
 } // namespace chrome_axis

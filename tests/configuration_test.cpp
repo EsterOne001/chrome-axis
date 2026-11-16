@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <fstream>
 #include <iostream>
 
@@ -30,6 +31,43 @@ void createFile(const std::filesystem::path& path)
     std::ofstream file(path);
     file.exceptions(std::ios::badbit | std::ios::failbit);
     file.close();
+}
+
+bool testTransmissionHotkey(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto root = fixture / L"Transmission" / L"Profil";
+    const auto settings = root / transmissionHotkeyFilename;
+    const auto other = fixture / L"Autre installation" / L"Profil";
+    std::string error;
+    if (!check(loadTransmissionHotkey(root) == VK_F8 && !std::filesystem::exists(root),
+               "An absent shortcut must default to F8 without writing")
+        || !check(saveTransmissionHotkey(root, VK_F10, error) && loadTransmissionHotkey(root) == VK_F10
+                  && loadTransmissionHotkey(other) == VK_F8,
+                  "The selected shortcut must persist only for this installation"))
+        return false;
+    for (const auto key : std::array<unsigned int, 8>{'N', 'R', '1', '7', VK_PRIOR, VK_NEXT, VK_TAB, 0}) {
+        if (!check(!isTransmissionHotkey(key) && !saveTransmissionHotkey(root, key, error)
+                   && loadTransmissionHotkey(root) == VK_F10, "Invalid or reserved keys must preserve the current shortcut"))
+            return false;
+    }
+    if (!check(isTransmissionHotkey('K') && isTransmissionHotkey('8') && isTransmissionHotkey(VK_NUMPAD1),
+               "Other supported keyboard keys must remain usable"))
+        return false;
+    for (const auto invalid : {"version=2\nkey=121\n", "version=1\nkey=1\n", "version=1\nkey=78\n",
+                               "version=1\nkey=121suffix\n", "version=1\nkey=4294967296\n"}) {
+        std::ofstream(settings, std::ios::binary | std::ios::trunc) << invalid;
+        if (!check(!readTransmissionHotkey(root) && loadTransmissionHotkey(root) == VK_F8,
+                   "Malformed or unsupported shortcut files must safely default to F8"))
+            return false;
+    }
+    if (!check(saveTransmissionHotkey(root, VK_F8, error) && readTransmissionHotkey(root) == defaultTransmissionHotkey,
+               "Reset must explicitly restore the default shortcut"))
+        return false;
+    std::filesystem::remove(settings);
+    std::filesystem::create_directory(settings);
+    return check(loadTransmissionHotkey(root) == VK_F8 && !saveTransmissionHotkey(root, 'K', error)
+                 && std::filesystem::is_directory(settings), "A directory must never be used as the shortcut file");
 }
 
 std::filesystem::path createPluginLayout(const std::filesystem::path& gameRoot)
@@ -190,5 +228,5 @@ int main()
         !check(!chrome_axis::setUsbEnabled(directory, false, error), "Do not remove a directory on disable") ||
         !check(std::filesystem::is_directory(impostor), "Non-file marker must be preserved"))
         return 1;
-    return testDeploymentProfiles(directory) && testTemporaryProfiles() ? 0 : 1;
+    return testDeploymentProfiles(directory) && testTemporaryProfiles() && testTransmissionHotkey(directory) ? 0 : 1;
 }

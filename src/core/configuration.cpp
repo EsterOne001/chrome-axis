@@ -1,12 +1,18 @@
 #include "chrome_axis/configuration.hpp"
 
+#include "chrome_axis/accessories.hpp"
+#include "settings_replace.hpp"
+
+#include <array>
+#include <charconv>
+#include <fstream>
 #include <memory>
 #include <system_error>
 
 namespace chrome_axis {
 namespace {
 
-bool validMarker(DWORD attributes) noexcept
+bool plainFile(DWORD attributes) noexcept
 {
     return attributes != INVALID_FILE_ATTRIBUTES &&
         (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
@@ -166,7 +172,7 @@ bool isTemporaryProfileDirectory(const std::filesystem::path& directory)
 bool usbEnabled(const std::filesystem::path& directory) noexcept
 {
     try {
-        return directory.is_absolute() && validMarker(GetFileAttributesW((directory / usbMarkerFilename).c_str()));
+        return directory.is_absolute() && plainFile(GetFileAttributesW((directory / usbMarkerFilename).c_str()));
     } catch (...) {
         return false;
     }
@@ -199,12 +205,101 @@ bool setUsbEnabled(const std::filesystem::path& directory, bool enabled, std::st
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (file != INVALID_HANDLE_VALUE) {
         BY_HANDLE_FILE_INFORMATION data{};
-        const bool valid = GetFileInformationByHandle(file, &data) && validMarker(data.dwFileAttributes);
+        const bool valid = GetFileInformationByHandle(file, &data) && plainFile(data.dwFileAttributes);
         CloseHandle(file);
         if (valid)
             return true;
     }
     error = "Could not enable USB input. Check access to the configuration directory.";
+    return false;
+}
+
+bool isTransmissionHotkey(unsigned int key) noexcept
+{
+    return isAccessoryKey(key) && key != 'N' && key != 'R' && (key < '1' || key > '7')
+        && key != VK_PRIOR && key != VK_NEXT;
+}
+
+std::optional<unsigned int> readTransmissionHotkey(const std::filesystem::path& profileRoot)
+{
+    if (!profileRoot.is_absolute())
+        return std::nullopt;
+    const auto path = profileRoot / transmissionHotkeyFilename;
+    const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return std::nullopt;
+    const std::unique_ptr<void, decltype(&CloseHandle)> file(handle, &CloseHandle);
+    BY_HANDLE_FILE_INFORMATION information{};
+    std::array<char, 64> bytes{};
+    DWORD count{};
+    if (!GetFileInformationByHandle(handle, &information) || !plainFile(information.dwFileAttributes)
+        || !ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr) || count == bytes.size())
+        return std::nullopt;
+
+    std::string_view text(bytes.data(), count);
+    if (text.starts_with("\xEF\xBB\xBF"))
+        text.remove_prefix(3);
+    const auto line = text.find('\n');
+    if (line == text.npos || (text.substr(0, line) != "version=1" && text.substr(0, line) != "version=1\r"))
+        return std::nullopt;
+    text.remove_prefix(line + 1);
+    if (!text.starts_with("key="))
+        return std::nullopt;
+    text.remove_prefix(4);
+    if (text.ends_with('\n'))
+        text.remove_suffix(1);
+    if (text.ends_with('\r'))
+        text.remove_suffix(1);
+
+    unsigned int key{};
+    const auto end = text.data() + text.size();
+    const auto number = std::from_chars(text.data(), end, key);
+    if (number.ec != std::errc{} || number.ptr != end || !isTransmissionHotkey(key))
+        return std::nullopt;
+    return key;
+}
+
+unsigned int loadTransmissionHotkey(const std::filesystem::path& profileRoot)
+{
+    return readTransmissionHotkey(profileRoot).value_or(defaultTransmissionHotkey);
+}
+
+bool saveTransmissionHotkey(const std::filesystem::path& profileRoot, unsigned int key, std::string& error)
+{
+    error.clear();
+    if (!profileRoot.is_absolute()) {
+        error = "The Chrome Axis profile directory is unavailable.";
+        return false;
+    }
+    if (!isTransmissionHotkey(key)) {
+        error = "Invalid or reserved transmission hotkey.";
+        return false;
+    }
+
+    std::error_code directoryError;
+    std::filesystem::create_directories(profileRoot, directoryError);
+    if (directoryError) {
+        error = "Could not create the configuration directory.";
+        return false;
+    }
+    const auto path = profileRoot / transmissionHotkeyFilename;
+    const auto attributes = GetFileAttributesW(path.c_str());
+    if (!plainFile(attributes) && (attributes != INVALID_FILE_ATTRIBUTES || !missing(GetLastError()))) {
+        error = "The transmission hotkey settings file is unavailable.";
+        return false;
+    }
+
+    const auto temporary = detail::stagedSettingsPath(path);
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    file << "version=1\nkey=" << std::to_string(key) << '\n';
+    file.close();
+    if (file && detail::replaceSettingsFile(temporary, path))
+        return true;
+
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+    error = "Could not save the transmission hotkey.";
     return false;
 }
 

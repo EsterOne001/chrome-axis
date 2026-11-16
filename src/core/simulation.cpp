@@ -150,14 +150,9 @@ SimulationSession SimulationReceiver::session() noexcept
     return changed ? SimulationSession::restarted : SimulationSession::active;
 }
 
-SimulationKeys simulationKeys() noexcept
+SimulationKeys simulationKeys(unsigned int excludedVirtualKey) noexcept
 {
-    return {
-        keyDown(VK_NUMPAD4) || keyDown(VK_F6),
-        keyDown(VK_NUMPAD6) || keyDown(VK_F7),
-        keyDown(VK_NUMPAD8) || keyDown(VK_F8),
-        keyDown(VK_NUMPAD2) || keyDown(VK_F10)
-    };
+    return detail::readSimulationKeys(excludedVirtualKey, keyDown);
 }
 
 Controls Simulator::update(SimulationKeys keys, float seconds) noexcept

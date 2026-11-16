@@ -7,15 +7,63 @@ namespace chrome_axis {
 
 class PhysicalModeKey {
 public:
-    void update(bool pressed, bool injected) noexcept {
-        if (!injected)
-            pressed_.store(pressed, std::memory_order_relaxed);
+    explicit PhysicalModeKey(unsigned int key) noexcept : state_(pack(key, Phase::initial)) {}
+
+    unsigned int key() const noexcept { return state_.load(std::memory_order_relaxed) >> phaseBits; }
+
+    void select(unsigned int key) noexcept {
+        if (key != this->key())
+            state_.store(pack(key, Phase::initial), std::memory_order_relaxed);
     }
 
-    bool down() const noexcept { return pressed_.load(std::memory_order_relaxed); }
+    bool needsInitialState(unsigned int key) const noexcept {
+        return state_.load(std::memory_order_relaxed) == pack(key, Phase::initial);
+    }
+
+    // Sample only whether the new key is up. Never infer a press from Windows' merged key state.
+    void primeReleased(unsigned int key) noexcept {
+        auto initial = pack(key, Phase::initial);
+        state_.compare_exchange_strong(initial, pack(key, Phase::released), std::memory_order_relaxed);
+    }
+
+    void update(unsigned int key, bool pressed, bool injected) noexcept {
+        if (injected)
+            return;
+        auto state = state_.load(std::memory_order_relaxed);
+        while ((state >> phaseBits) == key) {
+            const auto old = phase(state);
+            const bool armed = old == Phase::released || old == Phase::pressed;
+            const auto next = !pressed ? Phase::released : armed ? Phase::pressed : Phase::waitingForRelease;
+            if (state_.compare_exchange_weak(state, pack(key, next), std::memory_order_relaxed))
+                return;
+        }
+    }
+
+    std::optional<bool> down(unsigned int key) const noexcept {
+        const auto state = state_.load(std::memory_order_relaxed);
+        if ((state >> phaseBits) != key)
+            return std::nullopt;
+        switch (phase(state)) {
+        case Phase::released: return false;
+        case Phase::pressed: return true;
+        default: return std::nullopt;
+        }
+    }
 
 private:
-    std::atomic<bool> pressed_{};
+    enum class Phase : unsigned int { initial, waitingForRelease, released, pressed };
+    static constexpr unsigned int phaseBits = 2;
+    static constexpr unsigned int phaseMask = (1u << phaseBits) - 1;
+
+    static constexpr unsigned int pack(unsigned int key, Phase phase) noexcept {
+        return (key << phaseBits) | static_cast<unsigned int>(phase);
+    }
+
+    static constexpr Phase phase(unsigned int state) noexcept {
+        return static_cast<Phase>(state & phaseMask);
+    }
+
+    std::atomic<unsigned int> state_;
 };
 
 struct DirectGearKeys {

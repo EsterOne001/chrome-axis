@@ -55,8 +55,25 @@ struct SimulationKeys {
     bool brake{};
 };
 
+namespace detail {
+
+template<class KeyDown>
+constexpr SimulationKeys readSimulationKeys(unsigned int excludedVirtualKey, KeyDown keyDown) noexcept
+{
+    const auto down = [&](int key) { return static_cast<unsigned int>(key) != excludedVirtualKey && keyDown(key); };
+    return {
+        down(VK_NUMPAD4) || down(VK_F6),
+        down(VK_NUMPAD6) || down(VK_F7),
+        down(VK_NUMPAD8) || down(VK_F8),
+        down(VK_NUMPAD2) || down(VK_F10)
+    };
+}
+
+} // namespace detail
+
 // Call only while the application or game owns the foreground window.
-SimulationKeys simulationKeys() noexcept;
+// Reserve the active transmission shortcut while leaving each other alias available.
+SimulationKeys simulationKeys(unsigned int excludedVirtualKey = 0) noexcept;
 
 class Simulator {
 public:

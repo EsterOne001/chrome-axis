@@ -24,10 +24,11 @@ constexpr wchar_t originalFiles[] = L"Fichiers-originaux";
 constexpr std::string_view backupVersion = "Chrome Axis profile backup 1";
 constexpr std::size_t maxNameLength = 64;
 constexpr std::array settingsFiles{profileFilename, accessoryFilename, feedbackFilename};
-constexpr std::array globalFiles{selectionFile, profileLanguageFilename, usbMarkerFilename};
+constexpr std::array globalFiles{selectionFile, profileLanguageFilename, transmissionHotkeyFilename, usbMarkerFilename};
 // Apply the USB marker last. Move it away first when taking out the previous settings.
 constexpr std::array restoreEntries{profileFilename, accessoryFilename, feedbackFilename, presetsFolder,
-                                    selectionFile, profileLanguageFilename, usbMarkerFilename};
+                                    selectionFile, profileLanguageFilename, transmissionHotkeyFilename,
+                                    usbMarkerFilename};
 std::atomic<unsigned long> temporaryId{};
 
 bool missing(DWORD error) noexcept
@@ -396,9 +397,10 @@ bool validSavedSettings(const std::filesystem::path& path)
 bool validSnapshot(const std::filesystem::path& path)
 {
     const auto selected = readSelection(path / selectionFile);
-    bool hasLanguage{};
+    bool hasLanguage{}, hasHotkey{};
     if (!selected || presetDirectory(path, *selected).empty() || !validSavedSettings(path)
-        || !optionalEntry(path / profileLanguageFilename, false, hasLanguage) || (hasLanguage && !readProfileLanguage(path)))
+        || !optionalEntry(path / profileLanguageFilename, false, hasLanguage) || (hasLanguage && !readProfileLanguage(path))
+        || !optionalEntry(path / transmissionHotkeyFilename, false, hasHotkey) || (hasHotkey && !readTransmissionHotkey(path)))
         return false;
     return std::ranges::all_of(listPresets(path), [&](const auto& name) {
         return validSavedSettings(path / presetsFolder / name);
@@ -926,8 +928,11 @@ bool createProfileBackup(const std::filesystem::path& profileRoot, const std::fi
         error = ProfileBackupError::invalidBackup;
         return false;
     }
+    std::string details;
     if ((!fallbackLanguage.empty() && !readProfileLanguage(temporary.path)
          && !writeProfileLanguage(temporary.path, fallbackLanguage))
+        || (!readTransmissionHotkey(temporary.path)
+            && !saveTransmissionHotkey(temporary.path, defaultTransmissionHotkey, details))
         || !writeTextFile(temporary.path / backupMarker, backupVersion)) {
         error = ProfileBackupError::ioError;
         return false;
@@ -981,6 +986,7 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     }
     std::array<RestoreEntry, restoreEntries.size()> entries{};
     bool previousLanguage = false;
+    bool previousHotkey = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {
         auto& entry = entries[i];
         const auto filename = restoreEntries[i];
@@ -990,12 +996,13 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
             error = ProfileBackupError::ioError;
             return false;
         }
-        if (filename == profileLanguageFilename) {
+        if (filename == profileLanguageFilename)
             previousLanguage = entry.present;
-            // A manually saved Profil folder from an older version lacks the language choice.
-            if (!entry.incoming)
-                entry.present = false;
-        }
+        else if (filename == transmissionHotkeyFilename)
+            previousHotkey = entry.present;
+        // Older backups can lack these installation preferences.
+        if (!entry.incoming && (filename == profileLanguageFilename || filename == transmissionHotkeyFilename))
+            entry.present = false;
     }
 
     TemporaryDirectory recovery{createRecoveryDirectory(backups)};
@@ -1007,8 +1014,10 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     if (error != ProfileBackupError::none)
         return false;
     const auto originals = recovery.path / originalFiles;
+    std::string details;
     if (!CreateDirectoryW(originals.c_str(), nullptr)
         || !writeTextFile(recovery.path / backupMarker, backupVersion)
+        || (!previousHotkey && !saveTransmissionHotkey(recovery.path, defaultTransmissionHotkey, details))
         || (!previousLanguage && !fallbackLanguage.empty() && !writeProfileLanguage(recovery.path, fallbackLanguage))) {
         error = ProfileBackupError::ioError;
         return false;

@@ -1,5 +1,6 @@
 #include "transmission_hotkey.hpp"
 #include "manual_transmission_input.hpp"
+#include "chrome_axis/configuration.hpp"
 
 #include <atomic>
 #include <future>
@@ -9,7 +10,7 @@
 namespace chrome_axis {
 namespace {
 
-PhysicalModeKey modeKey;
+PhysicalModeKey modeKey{defaultTransmissionHotkey};
 std::atomic<bool> available{};
 HANDLE stopEvent{};
 std::thread keyboardThread;
@@ -17,8 +18,7 @@ std::thread keyboardThread;
 LRESULT CALLBACK observeKey(int code, WPARAM message, LPARAM data) noexcept {
     if (code == HC_ACTION) {
         const auto& key = *reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
-        if (key.vkCode == VK_F8)
-            modeKey.update((key.flags & LLKHF_UP) == 0, (key.flags & LLKHF_INJECTED) != 0);
+        modeKey.update(key.vkCode, (key.flags & LLKHF_UP) == 0, (key.flags & LLKHF_INJECTED) != 0);
     }
     return CallNextHookEx(nullptr, code, message, data);
 }
@@ -32,7 +32,6 @@ void observeKeyboard(HMODULE module, HANDLE stop, std::promise<bool> started) no
         return;
     }
 
-    modeKey.update((GetAsyncKeyState(VK_F8) & 0x8000) != 0, false);
     available.store(true, std::memory_order_release);
     started.set_value(true);
     while (MsgWaitForMultipleObjects(1, &stop, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0 + 1) {
@@ -77,8 +76,21 @@ void stopTransmissionHotkey() noexcept {
     stopEvent = nullptr;
 }
 
-std::optional<bool> transmissionHotkey() noexcept {
-    return available.load(std::memory_order_acquire) ? std::optional{modeKey.down()} : std::nullopt;
+void selectTransmissionHotkey(unsigned int key) noexcept {
+    modeKey.select(key);
+}
+
+unsigned int transmissionHotkeyBinding() noexcept {
+    return modeKey.key();
+}
+
+std::optional<bool> transmissionHotkey(unsigned int key) noexcept {
+    if (!available.load(std::memory_order_acquire))
+        return std::nullopt;
+
+    if (modeKey.needsInitialState(key) && (GetAsyncKeyState(static_cast<int>(key)) & 0x8000) == 0)
+        modeKey.primeReleased(key);
+    return modeKey.down(key);
 }
 
 } // namespace chrome_axis

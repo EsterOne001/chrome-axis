@@ -6,6 +6,7 @@
 #include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/feedback_dialog.hpp"
+#include "chrome_axis/keyboard_dialog.hpp"
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/profiles_dialog.hpp"
 #include "chrome_axis/simulation.hpp"
@@ -67,7 +68,7 @@ enum Command {
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
     backupProfiles, restoreProfiles, openModInfo, reassignDevice, configureBrake, leaveSimulation,
-    chooseAxisSettings, configureSteering, configureThrottle,
+    chooseAxisSettings, configureSteering, configureThrottle, configureTransmissionKey,
     deadzoneFirst = 200, meterFirst = 210, brakeResponseMeter = meterFirst + commands.size(), retryAxisFirst = 220
 };
 
@@ -279,6 +280,12 @@ public:
                 tick();
             }
             return 0;
+        case WM_INITMENUPOPUP:
+            if (reinterpret_cast<HMENU>(wp) == deviceMenu_) {
+                refreshTransmissionKey();
+                return 0;
+            }
+            break;
         case WM_COMMAND:
             action(LOWORD(wp), HIWORD(wp));
             return 0;
@@ -419,6 +426,7 @@ private:
         for (const auto& option : axisSettingsOptions)
             AppendMenuW(deviceMenu_, MF_STRING, option.command, tr(option.label));
         AppendMenuW(deviceMenu_, MF_STRING, configureFeedback, tr(Text::mainMenuFeedback));
+        AppendMenuW(deviceMenu_, MF_STRING, configureTransmissionKey, transmissionKeyMenuLabel().c_str());
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(deviceMenu_), tr(Text::mainMenuDevices));
         helpMenu_ = CreatePopupMenu();
         languageMenu_ = CreatePopupMenu();
@@ -894,6 +902,9 @@ private:
     void updateCalibrationMotion(bool foreground);
     void refreshUsbToggle();
     void changeUsbMode();
+    void chooseTransmissionShortcut();
+    void refreshTransmissionKey();
+    std::wstring transmissionKeyMenuLabel() const;
     void setMode(bool simulation);
     void applyMode();
     void updateSimulationView();
@@ -1040,6 +1051,7 @@ private:
     std::uint64_t simulationRequestedAt_{};
     std::uint64_t nextSimulationStatus_{};
     chrome_axis::Simulator simulator_;
+    unsigned int transmissionKey_{chrome_axis::defaultTransmissionHotkey};
     std::chrono::steady_clock::time_point previewTime_{};
     std::chrono::steady_clock::time_point nextUsbRefresh_{};
 };
@@ -1101,6 +1113,9 @@ void App::action(int command, int notification)
         break;
     case reassignDevice:
         reassignStoredDevice();
+        break;
+    case configureTransmissionKey:
+        chooseTransmissionShortcut();
         break;
     case chooseAxisSettings:
         openAxisSettingsMenu();
@@ -1371,6 +1386,7 @@ void App::readProfile()
     setText(profileName_, activeDirectory().empty() ? tr(Text::mainProfileUnavailable)
         : preset_.name.empty() ? tr(Text::mainDefaultProfile) : tr(Text::mainProfilePrefix) + preset_.name);
     readAccessories();
+    refreshTransmissionKey();
     updateProfileView();
 }
 
@@ -1831,6 +1847,60 @@ void App::refreshUsbToggle()
     nextUsbRefresh_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
 }
 
+std::wstring App::transmissionKeyMenuLabel() const
+{
+    return std::wstring(tr(Text::mainMenuTransmissionKey)) + L" (" + chrome_axis::accessoryKeyLabel(transmissionKey_) + L")…";
+}
+
+void App::refreshTransmissionKey()
+{
+    const auto key = chrome_axis::loadTransmissionHotkey(directory_);
+    if (key != transmissionKey_)
+        simulator_.reset();
+    transmissionKey_ = key;
+    ModifyMenuW(deviceMenu_, configureTransmissionKey, MF_BYCOMMAND | MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
+                configureTransmissionKey, transmissionKeyMenuLabel().c_str());
+
+    const auto keyPair = [key](unsigned int first, unsigned int second, const wchar_t* separator) {
+        if (key == first)
+            return chrome_axis::accessoryKeyLabel(second);
+        if (key == second)
+            return chrome_axis::accessoryKeyLabel(first);
+        return chrome_axis::accessoryKeyLabel(first) + separator + chrome_axis::accessoryKeyLabel(second);
+    };
+    const bool steeringChanged = key == VK_NUMPAD4 || key == VK_NUMPAD6 || key == VK_F6 || key == VK_F7;
+    setText(simKeys_[0], steeringChanged
+        ? L"← " + keyPair(VK_NUMPAD4, VK_F6, L" / ") + L"  ·  → " + keyPair(VK_NUMPAD6, VK_F7, L" / ")
+        : std::wstring(tr(Text::mainSteeringKeys)));
+    setText(simKeys_[1], keyPair(VK_NUMPAD8, VK_F8, L"  ·  "));
+    setText(simKeys_[2], keyPair(VK_NUMPAD2, VK_F10, L"  ·  "));
+}
+
+void App::chooseTransmissionShortcut()
+{
+    if (calibrating_ || !confirmPersistentDirectory())
+        return;
+    refreshTransmissionKey();
+    const auto choice = chrome_axis::chooseTransmissionKey(window_, transmissionKey_);
+    if (!choice)
+        return;
+
+    std::string error;
+    if (!chrome_axis::saveTransmissionHotkey(directory_, *choice, error)) {
+        MessageBoxW(window_, tr(Text::mainTransmissionKeySaveFailed), title, MB_OK | MB_ICONERROR);
+        return;
+    }
+    refreshTransmissionKey();
+    const auto message = tr(Text::mainTransmissionKeySaved) + chrome_axis::accessoryKeyLabel(transmissionKey_);
+    if (simulation_) {
+        setText(status_, message);
+        nextSimulationStatus_ = GetTickCount64() + 2000;
+    } else {
+        profileMessage_ = message;
+        rebuildPreview();
+    }
+}
+
 void App::changeUsbMode()
 {
     readAccessories();
@@ -1911,6 +1981,7 @@ void App::updateCalibrationView()
     EnableMenuItem(deviceMenu_, reassignDevice, MF_BYCOMMAND |
         (calibrating_ || activeDirectory().empty() || temporaryDirectory_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
+    EnableMenuItem(deviceMenu_, configureTransmissionKey, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, reloadProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, selectProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, backupProfiles, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
@@ -2048,6 +2119,8 @@ void App::setMode(bool simulation)
     previewTime_ = {};
     suspendHardware();
     simulation_ = simulation;
+    if (simulation_)
+        refreshTransmissionKey();
     applyMode();
     layout();
     if (simulation_) {
@@ -2139,7 +2212,7 @@ chrome_axis::ControlState App::previewSimulation()
     const float seconds = previewTime_ == std::chrono::steady_clock::time_point{}
         ? 0.0f : std::chrono::duration<float>(now - previewTime_).count();
     previewTime_ = now;
-    return {simulator_.update(chrome_axis::simulationKeys(), seconds), true, true, true};
+    return {simulator_.update(chrome_axis::simulationKeys(transmissionKey_), seconds), true, true, true};
 }
 
 CalibrationScope App::assignedCalibrationScope() const
