@@ -2,7 +2,7 @@
 
 Cette expérimentation vise Chrome Axis 0.4.38 et Cyberpunk 2077 2.5, exécutable 3.0.88.46235. La base exacte est le commit Git a2577b406597cfcda0474d7925516df44e2522ba. [Code de la base](https://github.com/EsterOne001/chrome-axis/tree/a2577b406597cfcda0474d7925516df44e2522ba)
 
-Le dossier [src/manual](src/manual) contient les six fichiers du prototype. Le [patch d’intégration](integration.patch) raccorde l’essai au plugin et ajoute son test à CTest. La DLL expérimentale reçoit le contexte de conduite du script standard. Le [guide d’essai](packaging/README-Prototype.fr.md) détaille les commandes clavier et les mesures.
+Le dossier [src/manual](src/manual) contient les six fichiers du prototype. Le [patch d’intégration](integration.patch) raccorde l’essai au plugin et ajoute son test à CTest. Le patch ajoute l’affichage du rapport dans le script de conduite de la R2. Le [guide d’essai](packaging/README-Prototype.fr.md) détaille les commandes clavier et les mesures.
 
 ## Reconstruire les sources
 
@@ -40,13 +40,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Échec des tests CTest.' }
 
 ## Générer le ZIP Vortex
 
-Le script vérifie l’empreinte SHA-256 de la 0.4.38 stable corrigée et celle de la DLL Release validée. Il remplace le plugin dans une nouvelle archive et ajoute les deux guides. Le ZIP de travail est créé sous build. Le script nécessite Python 3.11 ou une version ultérieure.
+Le script vérifie l’empreinte SHA-256 de la 0.4.38 stable corrigée, de la DLL Release et du REDscript vérifié. Il remplace la DLL et le script de conduite à leurs emplacements habituels et ajoute les deux guides. Le ZIP de travail est créé sous build. Le script nécessite Python 3.11 ou une version ultérieure.
 
 ```powershell
 $dll = "$work/build/Release/ChromeAxis.dll"
 $dllHash = (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash
+$drivingScript = "$source/scripts/driving_context.reds"
+$scriptHash = (Get-FileHash -LiteralPath $drivingScript -Algorithm SHA256).Hash
 $standardHash = '338F31627227953F73426829B9B243DAEC87B610798612E5E73EEDFEAF931FA3'
-python "$experiment/packaging/package.py" --standard 'out/Chromaxis-0.4.38.zip' --standard-sha256 $standardHash --dll $dll --dll-sha256 $dllHash --output-dir "$work/packages"
+python "$experiment/packaging/package.py" --standard 'out/Chromaxis-0.4.38.zip' --standard-sha256 $standardHash --dll $dll --dll-sha256 $dllHash --driving-script $drivingScript --driving-script-sha256 $scriptHash --output-dir "$work/packages"
 ```
 
 La compilation et le contrôle du ZIP se font hors du jeu. Le test de conduite en jeu reste nécessaire pour valider le comportement de la boîte.

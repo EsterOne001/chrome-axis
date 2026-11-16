@@ -3,6 +3,8 @@
 #include <RED4ext/Common.hpp>
 #include <RED4ext/Api/v1/Sdk.hpp>
 
+#include <cstdint>
+
 namespace manual_backend {
 
 struct Snapshot {
@@ -10,6 +12,7 @@ struct Snapshot {
     int targetGear{-1};
     int requestedGear{-1};
     int gearCount{};
+    std::uint64_t sampledAt{};
     float speedMetersPerSecond{-1.0f};
     float engineRpm{-1.0f};
     unsigned shiftSerial{};

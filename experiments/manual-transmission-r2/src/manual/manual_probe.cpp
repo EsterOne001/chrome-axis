@@ -275,6 +275,24 @@ void heartbeat(Vehicle* vehicle, bool foreground) noexcept {
     }
 }
 
+std::int32_t displayGear(Vehicle* vehicle) noexcept {
+    constexpr std::int32_t unavailable = -2;
+    constexpr int maximumDisplayGear = 8;
+    constexpr auto maximumDisplayAgeMs = 250ULL;
+    const std::unique_lock lock(probe.mutex, std::try_to_lock);
+    if (!lock || !vehicle || !probe.initialized || !probe.recording || probe.vehicle != vehicle ||
+        Clock::now() - probe.lastHeartbeat > maximumSampleGap)
+        return unavailable;
+
+    const auto native = manual_backend::snapshot();
+    if (!native.sampledAt || GetTickCount64() - native.sampledAt >= maximumDisplayAgeMs ||
+        native.gearCount < 2 || native.engagedGear < -1 || native.engagedGear > maximumDisplayGear ||
+        native.engagedGear >= native.gearCount)
+        return unavailable;
+
+    return static_cast<std::int32_t>(native.engagedGear);
+}
+
 void shutdown() noexcept {
     std::scoped_lock lock(probe.mutex);
     manual_backend::detach();

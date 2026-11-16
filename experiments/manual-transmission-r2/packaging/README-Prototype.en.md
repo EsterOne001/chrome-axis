@@ -1,6 +1,6 @@
 # Chrome Axis 0.4.38 · Manual transmission prototype R2
 
-This package lets you test Cyberpunk 2077’s forward gears with a keyboard. The prototype receives its driving context through the standard Chrome Axis script. The prototype controls are integrated into this revision’s DLL.
+This package lets you test Cyberpunk 2077’s forward gears with a keyboard. The DLL handles shifting, and the prototype’s driving context script displays the engaged gear in the HUD.
 
 The prototype targets **Cyberpunk 2077 2.5** (executable **3.0.88.46235**). Use **RED4ext 1.31.1** and **REDscript 0.5.32**. [Chrome Axis guide](../README.en.md) · [French instructions](README-Prototype.fr.md)
 
@@ -21,6 +21,8 @@ If the old DLL is still present, R2 manual mode remains disabled and the new `st
 3. While moving forward above about **4.5 mph (7 km/h)**, hold **F8** for about **0.2 seconds**, then release it. Use **Page Up** to shift up and **Page Down** to shift down. Release each key before entering the next command. The prototype may refuse a downshift based on speed and projected engine RPM.
 4. Press **F8** again to resume automatic shifting. After a driving interruption or a return to the game, use **F8** to enable manual mode again.
 5. Quit the game normally. Copy `trials.csv` and `status.txt` from the folder containing `arm.txt`, then remove `arm.txt` before the next launch. The first time the prototype is armed after a game restart replaces the previous CSV.
+
+Under the Chrome Axis logo, the HUD shows the engaged gear in automatic and manual driving. It can display gears 1 through 8 as reported by the vehicle. R2 manual shifting supports up to seven forward gears. Compare the engaged gear with the target gear and shift outcome in the CSV.
 
 The CSV records the engaged gear, target gear, shift request outcome, engine RPM and speed. Each session can last up to 20 minutes.
 

@@ -237,6 +237,7 @@ int takeRequest(const void* owner, std::uint64_t generation, int engaged, int ta
     state.view.engagedGear = engaged;
     state.view.targetGear = target;
     state.view.gearCount = entries;
+    state.view.sampledAt = GetTickCount64();
     state.view.speedMetersPerSecond = speedMetersPerSecond;
     state.view.engineRpm = rpm;
     return state.enabled ? std::exchange(state.delta, 0) : 0;
@@ -402,6 +403,7 @@ void publish(void* vehicle, bool enabled, int delta) noexcept {
         state.view.engagedGear = -1;
         state.view.targetGear = -1;
         state.view.gearCount = 0;
+        state.view.sampledAt = 0;
         state.view.speedMetersPerSecond = -1.0f;
         state.view.engineRpm = -1.0f;
         state.view.requestedGear = -1;
@@ -422,6 +424,7 @@ Snapshot snapshot() noexcept {
         view.engagedGear = -1;
         view.targetGear = -1;
         view.gearCount = 0;
+        view.sampledAt = 0;
         view.speedMetersPerSecond = -1.0f;
         view.engineRpm = -1.0f;
     }

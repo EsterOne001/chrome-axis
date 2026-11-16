@@ -1,6 +1,6 @@
 # Chrome Axis 0.4.38 · Prototype de boîte manuelle R2
 
-Ce paquet permet de tester les rapports de marche avant de Cyberpunk 2077 au clavier. Le prototype reçoit le contexte de conduite via le script standard de Chrome Axis. Les commandes du prototype sont intégrées à la DLL de cette révision.
+Ce paquet permet de tester les rapports de marche avant de Cyberpunk 2077 au clavier. La DLL gère les commandes de boîte et le script de conduite du prototype affiche le rapport engagé dans le HUD.
 
 Le prototype cible **Cyberpunk 2077 2.5** (exécutable **3.0.88.46235**). Utilisez **RED4ext 1.31.1** et **REDscript 0.5.32**. [Guide de Chrome Axis](../README.md) · [Instructions en anglais](README-Prototype.en.md)
 
@@ -21,6 +21,8 @@ Si l’ancienne DLL est encore présente, le mode manuel R2 reste désactivé et
 3. En marche avant au-dessus d’environ **7 km/h (4,5 mph)**, appuyez sur **F8** pendant environ **0,2 seconde**, puis relâchez. Utilisez **Page précédente** pour monter un rapport et **Page suivante** pour descendre. Laissez chaque touche revenir au repos avant la commande suivante. Le prototype peut refuser un rétrogradage en fonction de la vitesse et du régime estimé.
 4. Appuyez de nouveau sur **F8** pour reprendre les passages automatiques. Après une interruption de conduite ou un retour au jeu, réactivez le mode manuel avec **F8**.
 5. Quittez le jeu normalement. Copiez `trials.csv` et `status.txt` depuis le dossier où se trouve `arm.txt`, puis retirez `arm.txt` avant le prochain lancement. Le premier armement après un redémarrage remplace l’ancien CSV.
+
+Sous le logo Chrome Axis, le HUD affiche le rapport engagé en automatique comme en manuel. Il peut afficher de 1 à 8 selon les rapports indiqués par le véhicule. La commande manuelle de la R2 couvre au maximum sept rapports avant. Comparez le rapport engagé avec le rapport cible et le résultat de la commande dans le CSV.
 
 Le CSV contient le rapport engagé, le rapport cible, le résultat des demandes de changement, le régime moteur et la vitesse. Une session dure jusqu’à 20 minutes.
 

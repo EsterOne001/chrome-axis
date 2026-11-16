@@ -32,7 +32,7 @@ def verify_archive(candidate, baseline, replacements, guides):
         files = [entry.filename for entry in result.infolist() if not entry.is_dir()]
         require(len(files) == 12, "Unexpected number of packaged files")
         require([path for path in files if path.lower().endswith(".reds")] == [SCRIPT_ENTRY],
-                "R2 must contain exactly the standard driving context script")
+                "R2 must contain exactly one driving context script")
         require([path for path in files if path.lower().endswith(".dll")] == [DLL_ENTRY],
                 "R2 must contain exactly one Chrome Axis DLL")
 
@@ -45,14 +45,18 @@ def verify_archive(candidate, baseline, replacements, guides):
             require(result.read(path) == contents, f"Guide differs from source: {path}")
 
 
-def package(standard, dll, target, work, approved_standard_hash, approved_dll_hash):
+def package(standard, target, work, approved_standard_hash, dll, approved_dll_hash,
+            driving_script, approved_script_hash):
     require(archive_hash(standard) == approved_standard_hash, "Unexpected standard archive SHA-256")
     require(not target.exists(), "R2 archive already exists")
 
     dll_contents = dll.read_bytes()
     require(sha256(dll_contents).hexdigest().upper() == approved_dll_hash, "Unexpected Release DLL SHA-256")
+    script_contents = driving_script.read_bytes()
+    require(sha256(script_contents).hexdigest().upper() == approved_script_hash,
+            "Unexpected prototype driving script SHA-256")
     guides = {GUIDE_FOLDER + name: (work / name).read_bytes() for name in GUIDE_NAMES}
-    replacements = {DLL_ENTRY: dll_contents}
+    replacements = {DLL_ENTRY: dll_contents, SCRIPT_ENTRY: script_contents}
 
     with TemporaryDirectory(prefix="package-", dir=target.parent) as stage:
         candidate = Path(stage) / target.name
@@ -63,7 +67,9 @@ def package(standard, dll, target, work, approved_standard_hash, approved_dll_ha
                     "Unexpected standard file count")
             require(DLL_ENTRY in names and SCRIPT_ENTRY in names, "Standard DLL or script missing")
             require(not set(guides).intersection(names), "A guide would replace a standard file")
-            require(dll_contents != baseline.read(DLL_ENTRY), "R2 must contain the rebuilt DLL")
+            require(dll_contents and dll_contents != baseline.read(DLL_ENTRY), "R2 must contain the rebuilt DLL")
+            require(script_contents and script_contents != baseline.read(SCRIPT_ENTRY),
+                    "R2 must contain the revised driving context script")
 
             with ZipFile(candidate, "x", compression=ZIP_DEFLATED, compresslevel=9) as result:
                 result.comment = baseline.comment
@@ -84,7 +90,7 @@ def package(standard, dll, target, work, approved_standard_hash, approved_dll_ha
     print(f"Archive: {target}")
     print(f"Bytes: {target.stat().st_size}")
     print(f"SHA-256: {candidate_hash}")
-    print("12 files: 9 original payloads, 1 replacement DLL, 2 guides")
+    print("12 files: 8 original payloads, 1 replacement DLL, 1 replacement REDscript, 2 guides")
     print(f"Standard SHA-256: {approved_standard_hash}")
 
 
@@ -94,10 +100,12 @@ if __name__ == "__main__":
     parser.add_argument("--standard-sha256", required=True, help="SHA-256 of the verified stable ZIP")
     parser.add_argument("--dll", type=Path, required=True, help="Built Release ChromeAxis.dll")
     parser.add_argument("--dll-sha256", required=True, help="SHA-256 of the verified Release ChromeAxis.dll")
+    parser.add_argument("--driving-script", type=Path, required=True, help="Prototype driving_context.reds")
+    parser.add_argument("--driving-script-sha256", required=True, help="SHA-256 of the verified REDscript")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for the resulting R2 ZIP")
     args = parser.parse_args()
 
     work = Path(__file__).resolve().parent
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    package(args.standard, args.dll, args.output_dir / TARGET_NAME, work,
-            args.standard_sha256.upper(), args.dll_sha256.upper())
+    package(args.standard, args.output_dir / TARGET_NAME, work, args.standard_sha256.upper(),
+            args.dll, args.dll_sha256.upper(), args.driving_script, args.driving_script_sha256.upper())
