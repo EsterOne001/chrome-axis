@@ -1,5 +1,7 @@
 #include "../src/plugin/manual_transmission_backend.hpp"
 
+#include <limits>
+
 namespace {
 using namespace manual_backend::detail;
 
@@ -107,6 +109,32 @@ constexpr bool requiresStopWhenReverseMayHaveEngagedDuringPause() {
 
 static_assert(requiresStopWhenReverseMayHaveEngagedDuringPause());
 
+constexpr bool forwardRatiosAfterMenu() {
+    for (const auto prior : {Direction::unknown, Direction::forward, Direction::reverse}) {
+        for (int gear = 1; gear < eightEntries; ++gear) {
+            if (planShift(neutralGear, gear, eightEntries, prior, Direction::forward) != ShiftPlan::direct)
+                return false;
+        }
+    }
+    return true;
+}
+
+static_assert(forwardRatiosAfterMenu());
+static_assert(planShift(neutralGear, 7, 6, Direction::unknown, Direction::forward) == ShiftPlan::unsupported);
+static_assert(planShift(neutralGear, 3, eightEntries, Direction::forward, Direction::reverse) == ShiftPlan::stoppedDirect);
+static_assert(planShift(neutralGear, reverseGear, eightEntries, Direction::unknown, Direction::forward) == ShiftPlan::stoppedDirect);
+static_assert(planShift(reverseGear, 3, eightEntries, Direction::reverse, Direction::forward) == ShiftPlan::stoppedThroughNeutral);
+
+constexpr bool checksHeadingTimeAndVehicle() {
+    int vehicle{}, otherVehicle{};
+    const VehicleHeading heading{&vehicle, {0.0f, 1.0f, 0.0f}, 100};
+    return heading.current(&vehicle, 100) && heading.current(&vehicle, 300)
+        && !heading.current(&vehicle, 301) && !heading.current(&vehicle, 99)
+        && !heading.current(&otherVehicle, 100) && !VehicleHeading{}.current(&vehicle, 100);
+}
+
+static_assert(checksHeadingTimeAndVehicle());
+
 static_assert(suppressAutomatic(2, 3, eightEntries, false, std::nullopt));
 static_assert(!suppressAutomatic(2, 3, eightEntries, true, std::nullopt));
 static_assert(!suppressAutomatic(2, neutralGear, eightEntries, false, std::nullopt));
@@ -117,4 +145,16 @@ static_assert(suppressAutomatic(reverseGear, 1, eightEntries, true, reverseGear)
 static_assert(!suppressAutomatic(reverseGear, 1, eightEntries, true, 8));
 } // namespace
 
-int main() {}
+int main() {
+    constexpr std::array forward{0.0f, 1.0f, 0.0f};
+    constexpr std::array uphillForward{0.0f, 0.8f, 0.6f};
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    return movementDirection({0.0f, 10.0f, 0.0f}, forward) == Direction::forward
+        && movementDirection({0.0f, 8.0f, 6.0f}, uphillForward) == Direction::forward
+        && movementDirection({0.0f, -10.0f, 0.0f}, forward) == Direction::reverse
+        && movementDirection({10.0f, 0.6f, 0.0f}, forward) == Direction::unknown
+        && movementDirection({0.0f, 0.5f, 0.0f}, forward) == Direction::unknown
+        && movementDirection({0.0f, 10.0f, 0.0f}, {}) == Direction::unknown
+        && movementDirection({0.0f, 10.0f, 0.0f}, {0.0f, nan, 0.0f}) == Direction::unknown
+        && movementDirection({0.0f, nan, 0.0f}, forward) == Direction::unknown ? 0 : 1;
+}

@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.54
+
+- **Boîte manuelle.** Au point mort après un menu, le déplacement vers l’avant permet de sélectionner directement tout rapport avant disponible, même si le dernier rapport est inconnu. La marche arrière et les changements de sens conservent leur protection.
+
+[ZIP Vortex](out/Chromaxis-0.4.54.zip)
+
 ## Chrome Axis 0.4.53
 
 - **Boîte manuelle.** Après la fermeture de la carte ou d’un menu, un rapport avant peut être réengagé en roulant si la boîte est passée au point mort depuis un rapport avant. Le changement entre marche avant et marche arrière exige toujours une vitesse proche de zéro.

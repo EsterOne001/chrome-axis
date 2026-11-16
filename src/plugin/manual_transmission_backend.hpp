@@ -3,6 +3,8 @@
 #include <RED4ext/Common.hpp>
 #include <RED4ext/Api/v1/Sdk.hpp>
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 
@@ -30,7 +32,7 @@ struct Snapshot {
 bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexcept;
 void detach() noexcept;
 bool available() noexcept;
-void setDriverVehicle(const void* vehicle) noexcept;
+void setDriverVehicle(const void* vehicle, std::optional<std::array<float, 3>> forward = std::nullopt) noexcept;
 // The absolute value is a selector level; delta is a single sequential input.
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute = std::nullopt,
              bool captureTelemetry = false) noexcept;
@@ -42,10 +44,42 @@ constexpr int neutralGear = -1;
 constexpr int reverseGear = 0;
 constexpr int unavailableGear = -2;
 constexpr std::uint64_t gearboxObservationLifetimeMs = 100;
+constexpr std::uint64_t headingLifetimeMs = 200;
+constexpr float directionChangeSpeed = 0.5f; // m/s
 
 enum class Direction { unknown, forward, reverse };
 enum class ShiftPlan { unsupported, alreadyEngaged, direct, stoppedDirect, stoppedThroughNeutral };
 enum class Engagement { pending, confirmed, unconfirmed };
+
+struct VehicleHeading {
+    const void* vehicle{};
+    std::array<float, 3> forward{};
+    std::uint64_t sampledAt{};
+
+    constexpr std::optional<std::array<float, 3>> current(const void* owner, std::uint64_t now) const noexcept {
+        if (!owner || vehicle != owner || !sampledAt || now < sampledAt || now - sampledAt > headingLifetimeMs)
+            return std::nullopt;
+        return forward;
+    }
+};
+
+inline Direction movementDirection(const std::array<float, 3>& velocity,
+                                   const std::array<float, 3>& forward) noexcept {
+    const float alignment = forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2];
+    if (!std::isfinite(alignment) || alignment < 0.9f || alignment > 1.1f)
+        return Direction::unknown;
+    const float longitudinal = velocity[0] * forward[0] + velocity[1] * forward[1] + velocity[2] * forward[2];
+    if (!std::isfinite(longitudinal))
+        return Direction::unknown;
+    if (longitudinal < -directionChangeSpeed)
+        return Direction::reverse;
+    if (longitudinal <= directionChangeSpeed)
+        return Direction::unknown;
+
+    // Sideways slides alone cannot establish that the car is rolling forwards.
+    const float speed = std::hypot(velocity[0], velocity[1], velocity[2]);
+    return longitudinal >= speed * 0.5f ? Direction::forward : Direction::unknown;
+}
 
 constexpr Engagement observeEngagement(int requested, int engaged, bool settled, std::uint64_t now,
                                         std::uint64_t expiresAt) noexcept {
@@ -118,7 +152,8 @@ private:
     Direction direction_{Direction::unknown};
 };
 
-constexpr ShiftPlan planShift(int engaged, int requested, int entries, Direction previous) noexcept {
+constexpr ShiftPlan planShift(int engaged, int requested, int entries, Direction previous,
+                              Direction movement = Direction::unknown) noexcept {
     if (!supportedGear(engaged, entries) || !supportedGear(requested, entries))
         return ShiftPlan::unsupported;
     if (requested == engaged)
@@ -127,7 +162,8 @@ constexpr ShiftPlan planShift(int engaged, int requested, int entries, Direction
         return ShiftPlan::direct;
     if (engaged == reverseGear || (requested == reverseGear && engaged != neutralGear))
         return ShiftPlan::stoppedThroughNeutral;
-    if (requested == reverseGear || (engaged == neutralGear && previous != Direction::forward))
+    const auto direction = movement == Direction::unknown ? previous : movement;
+    if (requested == reverseGear || (engaged == neutralGear && direction != Direction::forward))
         return ShiftPlan::stoppedDirect;
     return ShiftPlan::direct;
 }

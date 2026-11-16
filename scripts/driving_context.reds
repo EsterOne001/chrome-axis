@@ -525,7 +525,7 @@ class ChromeAxisHudPainterSection extends inkComponent {
   }
 }
 
-public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>, canDrive: Bool) -> Int32;
+public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>, canDrive: Bool, forward: Vector4) -> Int32;
 public static native func ChromeAxis_CaptureEnabled() -> Bool;
 public static native func ChromeAxis_CaptureVehicleRecord(vehicle: ref<VehicleObject>, record: TweakDBID) -> Void;
 public static native func ChromeAxis_TransmissionState(vehicle: ref<VehicleObject>) -> Int32;
@@ -562,7 +562,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.generation += 1;
     this.driverVehicle = null;
     this.feedbackPolling = false;
-    ChromeAxis_DriverHeartbeat(null, false);
+    ChromeAxis_DriverHeartbeat(null, false, new Vector4(0.0, 0.0, 0.0, 0.0));
     this.Refresh(this.generation);
   }
 
@@ -579,7 +579,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.generation += 1;
     this.driverVehicle = null;
     this.feedbackPolling = false;
-    ChromeAxis_DriverHeartbeat(null, false);
+    ChromeAxis_DriverHeartbeat(null, false, new Vector4(0.0, 0.0, 0.0, 0.0));
     if IsDefined(this.hudBadge) {
       let parent = this.hudBadge.GetParentWidget() as inkCompoundWidget;
       if IsDefined(parent) {
@@ -938,7 +938,11 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
         vehicle = null;
       }
     }
-    let status = ChromeAxis_DriverHeartbeat(vehicle, canDrive);
+    let forward: Vector4;
+    if canDrive && IsDefined(vehicle) {
+      forward = vehicle.GetWorldForward();
+    }
+    let status = ChromeAxis_DriverHeartbeat(vehicle, canDrive, forward);
     this.driverVehicle = vehicle;
     if !canDrive {
       vehicle = null;
@@ -977,7 +981,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       if !paused {
         vehicle = null;
       }
-      ChromeAxis_DriverHeartbeat(vehicle, false);
+      ChromeAxis_DriverHeartbeat(vehicle, false, new Vector4(0.0, 0.0, 0.0, 0.0));
       return;
     }
 
@@ -1067,7 +1071,7 @@ protected cb func OnUnmountingEvent(evt: ref<UnmountingEvent>) -> Bool {
     let game: GameInstance = vehicle.GetGame();
     let actor: ref<GameObject> = GameInstance.FindEntityByID(game, evt.request.lowLevelMountingInfo.childId) as GameObject;
     if IsDefined(actor) && actor.IsPlayer() {
-      ChromeAxis_DriverHeartbeat(null, false);
+      ChromeAxis_DriverHeartbeat(null, false, new Vector4(0.0, 0.0, 0.0, 0.0));
     }
   }
   return wrappedMethod(evt);

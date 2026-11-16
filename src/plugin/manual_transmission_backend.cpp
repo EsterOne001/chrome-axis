@@ -65,7 +65,6 @@ constexpr auto leaseDurationMs = 250ULL;
 constexpr auto requestLifetimeMs = 900ULL;
 constexpr auto engagementLifetimeMs = 2500ULL;
 constexpr auto telemetryIntervalMs = 50ULL;
-constexpr float directionChangeSpeed = 0.5f; // m/s
 
 using Step = void (*)(void*, float);
 using Shift = bool (*)(void*, int, bool, bool);
@@ -100,6 +99,7 @@ struct SharedState {
     std::uint64_t engagementExpiresAt{};
     // Still mounted during menus even when the input lease and its observations are invalid.
     DirectionHistory directionHistory;
+    VehicleHeading heading;
     bool enabled{};
     bool captureTelemetry{};
     Snapshot view{};
@@ -215,19 +215,19 @@ bool filterAutomatic(void* gearbox, int target, bool immediate, bool bypassCoold
     return original(gearbox, target, immediate, bypassCooldown);
 }
 
-std::optional<float> vehicleSpeed(const void* vehicle) noexcept {
+std::optional<std::array<float, 3>> vehicleVelocity(const void* vehicle) noexcept {
     const auto* driveBody = readField<void*>(vehicle, vehicleDriveBodyOffset);
     if (!driveBody)
         return std::nullopt;
     // The native planar speed routine reads this same velocity vector before projecting it.
-    const auto velocity = readField<std::array<float, 3>>(driveBody, bodyVelocityOffset);
-    const float absoluteSpeed = std::hypot(velocity[0], velocity[1], velocity[2]);
-    return std::isfinite(absoluteSpeed) ? std::optional{absoluteSpeed} : std::nullopt;
+    return readField<std::array<float, 3>>(driveBody, bodyVelocityOffset);
 }
 
-bool nearStop(const void* vehicle) noexcept {
-    const auto speed = vehicleSpeed(vehicle);
-    return speed && *speed <= directionChangeSpeed;
+std::optional<float> speedOf(const std::optional<std::array<float, 3>>& velocity) noexcept {
+    if (!velocity)
+        return std::nullopt;
+    const float absoluteSpeed = std::hypot((*velocity)[0], (*velocity)[1], (*velocity)[2]);
+    return std::isfinite(absoluteSpeed) ? std::optional{absoluteSpeed} : std::nullopt;
 }
 
 void sampleTelemetry(const void* vehicle, std::uint64_t now) noexcept {
@@ -236,7 +236,7 @@ void sampleTelemetry(const void* vehicle, std::uint64_t now) noexcept {
         return;
 
     state.view.telemetrySampledAt = now;
-    state.view.speedMetersPerSecond = vehicleSpeed(vehicle);
+    state.view.speedMetersPerSecond = speedOf(vehicleVelocity(vehicle));
     state.view.engineRpm.reset();
     if (const auto* engine = engineRpmAvailable ? readField<void*>(vehicle, vehicleEngineOffset) : nullptr) {
         const float rpm = readField<float>(engine, engineRpmOffset);
@@ -287,6 +287,7 @@ struct ReadyRequest {
     ShiftRequest request;
     std::uint64_t selectionRevision{};
     Direction lastDirection{Direction::unknown};
+    std::optional<std::array<float, 3>> forward;
 };
 
 std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t generation,
@@ -334,7 +335,8 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
     if (!settled || (!cooldownReady && state.request->absolute != engaged))
         return std::nullopt;
     state.dispatchExpiresAt = state.request->expiresAt;
-    return ReadyRequest{*std::exchange(state.request, std::nullopt), state.selectionRevision, direction};
+    return ReadyRequest{*std::exchange(state.request, std::nullopt), state.selectionRevision, direction,
+                        state.heading.current(owner, now)};
 }
 
 bool liveRequest(const void* owner, std::uint64_t generation, const ReadyRequest& command) noexcept {
@@ -416,15 +418,21 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
 
     const auto& request = command->request;
     const int requested = request.absolute.value_or(sequentialDestination(engaged, request.delta, entries));
-    const auto plan = planShift(engaged, requested, entries, command->lastDirection);
+    const bool forwardFromNeutral = engaged == neutralGear && forwardGear(requested, entries);
+    const auto velocity = forwardFromNeutral ? vehicleVelocity(owner) : std::nullopt;
+    const auto motion = velocity && command->forward ? movementDirection(*velocity, *command->forward) : Direction::unknown;
+    const auto plan = planShift(engaged, requested, entries, command->lastDirection, motion);
     if (plan == ShiftPlan::unsupported || (!request.absolute && !forwardGear(requested, entries))) {
         recordRequest(owner, generation, *command, requested, "outside_supported_range", gearbox);
         return;
     }
     const bool throughNeutral = plan == ShiftPlan::stoppedThroughNeutral;
-    if ((throughNeutral || plan == ShiftPlan::stoppedDirect) && !nearStop(owner)) {
-        recordRequest(owner, generation, *command, requested, "direction_change_requires_stop", gearbox);
-        return;
+    if (throughNeutral || plan == ShiftPlan::stoppedDirect) {
+        const auto speed = speedOf(forwardFromNeutral ? velocity : vehicleVelocity(owner));
+        if (!speed || *speed > directionChangeSpeed) {
+            recordRequest(owner, generation, *command, requested, "direction_change_requires_stop", gearbox);
+            return;
+        }
     }
     if (plan == ShiftPlan::alreadyEngaged) {
         recordRequest(owner, generation, *command, requested, "already_engaged", gearbox, request.absolute);
@@ -521,9 +529,10 @@ bool available() noexcept {
     return installed.load(std::memory_order_acquire);
 }
 
-void setDriverVehicle(const void* vehicle) noexcept {
+void setDriverVehicle(const void* vehicle, std::optional<std::array<float, 3>> forward) noexcept {
     StateGuard guard;
     state.directionHistory.setVehicle(vehicle);
+    state.heading = vehicle && forward ? VehicleHeading{vehicle, *forward, GetTickCount64()} : VehicleHeading{};
 }
 
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute, bool captureTelemetry) noexcept {

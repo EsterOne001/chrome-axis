@@ -763,8 +763,10 @@ chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleas
 void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
     RED4ext::Handle<RED4ext::ISerializable> vehicle;
     bool canDrive{};
+    RED4ext::Vector4 forward{};
     RED4ext::GetParameter(frame, &vehicle);
     RED4ext::GetParameter(frame, &canDrive);
+    RED4ext::GetParameter(frame, &forward);
     ++frame->code; // ParamEnd
 
     const auto now = Clock::now();
@@ -775,8 +777,10 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
     bool invalidated;
     {
         std::scoped_lock lock(stateMutex);
-        if (transmissionAvailable)
-            manual_backend::setDriverVehicle(mounted);
+        if (transmissionAvailable) {
+            const auto heading = foreground ? std::optional{std::array{forward.X, forward.Y, forward.Z}} : std::nullopt;
+            manual_backend::setDriverVehicle(mounted, heading);
+        }
         const bool vehicleChanged = context.vehicle != current;
         invalidated = vehicleChanged || (current && now - context.refreshed > contextLifetime);
         if (invalidated) {
@@ -868,6 +872,7 @@ void registerNative() {
     heartbeat->flags = {.isNative = true, .isStatic = true};
     heartbeat->AddParam("handle:vehicleBaseObject", "vehicle");
     heartbeat->AddParam("Bool", "canDrive");
+    heartbeat->AddParam("Vector4", "forward");
     heartbeat->SetReturnType("Int32");
     rtti->RegisterFunction(heartbeat);
 
