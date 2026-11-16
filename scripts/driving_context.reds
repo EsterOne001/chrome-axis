@@ -50,7 +50,6 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   private let storage: ref<FileSystemStorage>;
   private let palette: ref<ChromeAxisHudPalette>;
   private let menuController: wref<inkGameController>;
-  private let paletteListProperty: ref<ReflectionProp>;
 
   public static func Get() -> ref<ChromeAxisHudPainterMenu> {
     return GameInstance.GetScriptableServiceContainer().GetService(n"ChromeAxisHudPainterMenu") as ChromeAxisHudPainterMenu;
@@ -62,7 +61,8 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     this.palette = this.ReadPalette();
     GameInstance.GetCallbackSystem()
       .RegisterCallback(n"InkWidget/Spawn", this, n"OnHudPainterWidgetSpawn")
-      .AddTarget(inkWidgetTarget.Library(r"base\\gameplay\\gui\\hud_painter.inkwidget"));
+      .AddTarget(inkWidgetTarget.Library(r"base\\gameplay\\gui\\hud_painter.inkwidget", n"ColorPicker"))
+      .AddTarget(inkWidgetTarget.Controller(n"HudPainter.CustomColorPickerController"));
   }
 
   public func GetPalette() -> ref<ChromeAxisHudPalette> {
@@ -139,43 +139,81 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     return values;
   }
 
+  public func OpenMenu(controller: wref<inkGameController>) -> Void {
+    this.menuController = controller;
+    this.MountSection();
+  }
+
   private cb func OnHudPainterWidgetSpawn(event: ref<inkWidgetSpawnEvent>) {
-    // HUD Painter rebuilds the color list before spawning its picker.
-    if Equals(event.GetItemName(), n"ColorPicker") {
-      this.MountSection();
-      return;
-    }
-    let instance = event.GetItemInstance();
-    if !IsDefined(instance) {
-      return;
-    }
-    let controller = instance.gameController as inkGameController;
-    if !IsDefined(controller) {
-      return;
-    }
-    let controllerClass = Reflection.GetClassOf(ToVariant(controller), true);
-    if IsDefined(controllerClass) {
-      let listProperty = controllerClass.GetProperty(n"m_colorsListContainer");
-      if IsDefined(listProperty) {
-        this.menuController = controller;
-        this.paletteListProperty = listProperty;
-      }
-    }
+    // HUD Painter recreates the picker after rebuilding its color list.
+    this.MountSection();
   }
 
   private func MountSection() -> Void {
-    if !IsDefined(this.menuController) || !IsDefined(this.paletteListProperty) {
+    if !IsDefined(this.menuController) {
       return;
     }
-    let listRef = FromVariant<inkWidgetRef>(this.paletteListProperty.GetValue(ToVariant(this.menuController)));
-    let list = inkWidgetRef.Get(listRef) as inkCompoundWidget;
+    let root = this.menuController.GetRootCompoundWidget();
+    let list = this.FindColorList(root);
     if !IsDefined(list) || IsDefined(list.GetWidgetByPathName(n"ChromeAxisColors")) {
       return;
     }
-    // HUD Painter serializes direct color-row children. Our two rows live inside this panel.
+    // HUD Painter serializes direct color-row children. Our rows live in this subpanel.
     let section = new ChromeAxisHudPainterSection();
     section.Reparent(list, 0);
   }
+
+  private func FindColorList(root: wref<inkCompoundWidget>) -> wref<inkCompoundWidget> {
+    if !IsDefined(root) {
+      return null;
+    }
+    let index = 0;
+    while index < root.GetNumChildren() {
+      let child = root.GetWidgetByIndex(index);
+      if Equals(child.GetName(), n"ChromeAxisColors") || IsDefined(child.GetController() as ComponentColorItem) {
+        return root;
+      }
+      let list = this.FindColorList(child as inkCompoundWidget);
+      if IsDefined(list) {
+        return list;
+      }
+      index += 1;
+    }
+    return null;
+  }
+}
+
+@if(ModuleExists("HudPainter"))
+class ChromeAxisHudPainterMenuReady extends Event {}
+
+@if(ModuleExists("HudPainter"))
+@wrapMethod(gameuiMenuGameController)
+protected cb func OnSetMenuEventDispatcher(menuEventDispatcher: wref<inkMenuEventDispatcher>) -> Bool {
+  let result = wrappedMethod(menuEventDispatcher);
+  if this.IsA(n"HudPainter.HudPainterController") {
+    this.ChromeAxisMountHudPainterSection();
+    // The dispatcher may be set before the existing color rows are initialized.
+    this.QueueEvent(new ChromeAxisHudPainterMenuReady());
+  }
+  return result;
+}
+
+@if(ModuleExists("HudPainter"))
+@addMethod(gameuiMenuGameController)
+private func ChromeAxisMountHudPainterSection() -> Void {
+  let menu = ChromeAxisHudPainterMenu.Get();
+  if IsDefined(menu) {
+    menu.OpenMenu(this);
+  }
+}
+
+@if(ModuleExists("HudPainter"))
+@addMethod(gameuiMenuGameController)
+protected cb func OnChromeAxisHudPainterMenuReady(evt: ref<ChromeAxisHudPainterMenuReady>) -> Bool {
+  if this.IsA(n"HudPainter.HudPainterController") {
+    this.ChromeAxisMountHudPainterSection();
+  }
+  return false;
 }
 
 @if(ModuleExists("HudPainter"))
