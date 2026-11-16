@@ -1,3 +1,17 @@
+@if(ModuleExists("HudPainter"))
+import HudPainter.HudPainterStorage
+
+@if(ModuleExists("HudPainter"))
+private func ChromeAxis_UsesHudPainterPreset() -> Bool {
+  let storage = HudPainterStorage.Get();
+  return IsDefined(storage) && NotEquals(storage.GetActivePresetName(), storage.GetDefaultPresetName());
+}
+
+@if(!ModuleExists("HudPainter"))
+private func ChromeAxis_UsesHudPainterPreset() -> Bool {
+  return false;
+}
+
 public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>) -> Int32;
 public static native func ChromeAxis_CaptureEnabled() -> Bool;
 public static native func ChromeAxis_CaptureVehicleRecord(vehicle: ref<VehicleObject>, record: TweakDBID) -> Void;
@@ -12,6 +26,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let feedbackVehicle: wref<VehicleObject>;
   private let feedbackPolling: Bool;
   private let hudBadge: wref<inkCanvas>;
+  private let hudBorder: array<wref<inkRectangle>>;
+  private let hudDivider: wref<inkRectangle>;
+  private let hudUsesPainterPreset: Bool;
   private let hudLogo: wref<inkImage>;
   private let hudLogoReady: Bool;
   private let hudLogoRetry: Int32;
@@ -56,6 +73,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       }
     }
     this.hudBadge = null;
+    ArrayClear(this.hudBorder);
+    this.hudDivider = null;
+    this.hudUsesPainterPreset = false;
     this.hudLogo = null;
     this.hudLogoReady = false;
     this.hudLogoRetry = 0;
@@ -114,13 +134,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     shadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
     let label = this.CreateHudLabel(badge, 42.0, 4.0, 130.0, 21.0, 17, textHorizontalAlignment.Left);
 
-    let secondary = HDRColor(0.65, 0.78, 0.82, 1.0);
     let modeLabel = this.CreateHudLabel(badge, 42.0, 24.0, 130.0, 17.0, 13, textHorizontalAlignment.Left);
-    modeLabel.SetTintColor(secondary);
     let gearCaption = this.CreateHudLabel(badge, 180.0, 5.0, 44.0, 14.0, 10, textHorizontalAlignment.Center);
-    gearCaption.SetTintColor(secondary);
     let gearLabel = this.CreateHudLabel(badge, 180.0, 16.0, 44.0, 29.0, 27, textHorizontalAlignment.Center);
-    gearLabel.SetTintColor(HDRColor(0.87, 0.96, 1.0, 1.0));
 
     this.hudBadge = badge;
     this.hudLogo = logo;
@@ -130,6 +146,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudGearLabel = gearLabel;
     this.hudGearCaption = gearCaption;
     this.hudModeLabel = modeLabel;
+    this.ApplyHudPalette();
     this.ApplyHudStatus();
     this.ApplyHudGear();
     this.TryShowHudLogo();
@@ -150,26 +167,59 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
 
   private func BuildHudFrame(badge: ref<inkCanvas>) -> Void {
     let panel = HDRColor(0.024, 0.039, 0.059, 0.72);
-    this.AddHudRect(badge, 0.0, 2.0, 227.0, 44.0, panel);
-    this.AddHudRect(badge, 227.0, 2.0, 9.0, 36.0, panel);
-    let border = HDRColor(1.0, 0.32, 0.40, 0.86);
-    this.AddHudRect(badge, 0.0, 2.0, 236.0, 1.0, border);
-    this.AddHudRect(badge, 0.0, 3.0, 1.0, 42.0, border);
-    this.AddHudRect(badge, 0.0, 45.0, 228.0, 1.0, border);
-    this.AddHudRect(badge, 235.0, 3.0, 1.0, 34.0, border);
-    this.AddHudRect(badge, 227.0, 37.0, 9.0, 1.0, border);
-    this.AddHudRect(badge, 227.0, 38.0, 1.0, 7.0, border);
-    this.AddHudRect(badge, 12.0, 0.0, 16.0, 2.0, border);
-    this.AddHudRect(badge, 173.0, 8.0, 1.0, 31.0, HDRColor(0.42, 0.65, 0.69, 0.45));
+    this.CreateHudRect(badge, 0.0, 2.0, 227.0, 44.0).SetTintColor(panel);
+    this.CreateHudRect(badge, 227.0, 2.0, 9.0, 36.0).SetTintColor(panel);
+    ArrayClear(this.hudBorder);
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 2.0, 236.0, 1.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 3.0, 1.0, 42.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 45.0, 228.0, 1.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 235.0, 3.0, 1.0, 34.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 37.0, 9.0, 1.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 38.0, 1.0, 7.0));
+    ArrayPush(this.hudBorder, this.CreateHudRect(badge, 12.0, 0.0, 16.0, 2.0));
+    this.hudDivider = this.CreateHudRect(badge, 173.0, 8.0, 1.0, 31.0);
   }
 
-  private func AddHudRect(badge: ref<inkCanvas>, x: Float, y: Float, width: Float, height: Float, color: HDRColor) -> Void {
+  public func ApplyHudPalette() -> Void {
+    if !IsDefined(this.hudBadge) {
+      return;
+    }
+    let usePainter = ChromeAxis_UsesHudPainterPreset();
+    let borderColor = HDRColor(0.286, 0.871, 0.933, 1.0);
+    let transmissionColor = HDRColor(1.0, 0.322, 0.369, 1.0);
+    // Opacity stays independent of the tint supplied by the theme.
+    for line in this.hudBorder {
+      this.ApplyHudTint(line, borderColor, n"MainColors.Blue", 0.86, usePainter);
+    }
+    this.ApplyHudTint(this.hudDivider, transmissionColor, n"MainColors.Red", 0.45, usePainter);
+    this.ApplyHudTint(this.hudModeLabel, transmissionColor, n"MainColors.Red", 1.0, usePainter);
+    this.ApplyHudTint(this.hudGearCaption, transmissionColor, n"MainColors.Red", 1.0, usePainter);
+    this.ApplyHudTint(this.hudGearLabel, transmissionColor, n"MainColors.Red", 1.0, usePainter);
+    this.hudUsesPainterPreset = usePainter;
+  }
+
+  private func ApplyHudTint(widget: wref<inkWidget>, color: HDRColor, themeColor: CName, opacity: Float, usePainter: Bool) -> Void {
+    if !IsDefined(widget) {
+      return;
+    }
+    if this.hudUsesPainterPreset {
+      widget.UnbindProperty(n"tintColor");
+    }
+    widget.SetTintColor(color);
+    widget.SetOpacity(opacity);
+    if usePainter {
+      widget.SetStyle(r"base\\gameplay\\gui\\common\\main_colors.inkstyle");
+      widget.BindProperty(n"tintColor", themeColor);
+    }
+  }
+
+  private func CreateHudRect(badge: ref<inkCanvas>, x: Float, y: Float, width: Float, height: Float) -> ref<inkRectangle> {
     let rectangle = new inkRectangle();
     rectangle.SetInteractive(false);
     rectangle.SetSize(Vector2(width, height));
     rectangle.SetTranslation(x, y);
-    rectangle.SetTintColor(color);
     rectangle.Reparent(badge);
+    return rectangle;
   }
 
   private func CreateHudLabel(badge: ref<inkCanvas>, x: Float, y: Float, width: Float, height: Float, fontSize: Int32, alignment: textHorizontalAlignment) -> ref<inkText> {
@@ -422,6 +472,21 @@ public class ChromeAxisAttachHudEvent extends Event {
 protected cb func OnChromeAxisAttachHudEvent(evt: ref<ChromeAxisAttachHudEvent>) -> Bool {
   if this.IsA(n"gameuiRootHudGameController") && !evt.attached && IsDefined(evt.context) {
     evt.attached = evt.context.AttachHud(this.GetRootCompoundWidget(), evt.generation);
+  }
+  return false;
+}
+
+@if(ModuleExists("HudPainter"))
+@addMethod(inkGameController)
+protected cb func OnHudPainterInkStyleRefreshed(evt: ref<HudPainterInkStyleRefreshed>) -> Bool {
+  if this.IsA(n"gameuiRootHudGameController") {
+    let systems = GameInstance.GetScriptableSystemsContainer(GetGameInstance());
+    if IsDefined(systems) {
+      let context = systems.Get(n"ChromeAxisDrivingContext") as ChromeAxisDrivingContext;
+      if IsDefined(context) {
+        context.ApplyHudPalette();
+      }
+    }
   }
   return false;
 }

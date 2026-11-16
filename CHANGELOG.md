@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.47
+
+- **HUD de conduite.** Le cadre passe au cyan. Le mode de boîte et le rapport engagé apparaissent en rouge, avec un séparateur rouge discret entre les deux colonnes. Le logo et le libellé gardent les couleurs des états USB.
+
+- **HUD Painter.** Les préréglages personnalisés peuvent recolorer le cadre et la transmission depuis la palette du jeu. La compatibilité est facultative.
+
+[ZIP Vortex](out/Chromaxis-0.4.47.zip)
+
 ## Chrome Axis 0.4.46
 
 - **HUD de conduite.** Le badge compact reprend le trait rouge, le décroché et le fond translucide de l’interface de Cyberpunk 2077. L’état et le mode de boîte figurent à gauche, avec le rapport engagé en grand à droite. Le pictogramme et le libellé conservent les couleurs des états.

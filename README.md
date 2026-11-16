@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.46** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.47** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -157,6 +157,8 @@ Chrome Axis lit jusqu’à huit axes, 128 boutons et quatre croix par périphér
 L’USB en jeu est désactivé par défaut. Depuis l’application installée dans le dossier du jeu, enregistrez une calibration ou des affectations, puis cliquez sur **Activer l’USB en jeu** dans le bandeau, à droite de **Matériel USB**. Fermez Chrome Axis, installez V au siège conducteur et laissez le jeu au premier plan. Centrez le volant et relâchez les pédales et les palettes pour armer les commandes.
 
 Le logo et le libellé du HUD changent de couleur ensemble selon l’état des commandes. Le badge utilise un fond sombre translucide et affiche le rapport engagé dans une colonne dédiée. La conduite USB utilise le profil enregistré et fonctionne avec l’application fermée.
+
+Avec [HUD Painter](https://www.nexusmods.com/cyberpunk2077/mods/14935), ouvrez son menu depuis la pause. Dans la palette principale, réglez `MainColors.Blue` pour le contour et `MainColors.Red` pour la transmission, puis enregistrez et activez le préréglage. Le préréglage `DEFAULT` rétablit le cyan et le rouge de Chrome Axis. Les couleurs du logo et du libellé indiquent l’état des commandes.
 
 | Couleur | État en jeu |
 | --- | --- |
