@@ -520,6 +520,7 @@ bool replaceDeviceTokens(std::string& bytes, bool accessories, std::string_view 
         if (equals != line.npos) {
             const auto name = trimSettings(line.substr(0, equals));
             const bool deviceEntry = accessories ? name == "binding" || line.starts_with(progressiveHandbrakePrefix)
+                    || line.starts_with(nativeShifterPrefix)
                 : name == "steering.device" || name == "throttle.device" || name == "brake.device";
             if (deviceEntry) {
                 auto value = line.substr(equals + 1);

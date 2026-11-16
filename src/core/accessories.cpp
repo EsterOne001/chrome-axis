@@ -15,6 +15,8 @@ namespace chrome_axis {
 namespace {
 
 constexpr auto requiredNeutralPolls = 3u;
+constexpr auto nativeGearDebouncePolls = 3u;
+constexpr auto nativeNeutralDebouncePolls = 8u;
 constexpr double neutralThreshold = 0.15;
 constexpr double handbrakeDeadZone = 0.03;
 constexpr AccessoryThresholds defaultThresholds{};
@@ -34,6 +36,30 @@ std::string_view trim(std::string_view value)
     if (first == std::string_view::npos)
         return {};
     return value.substr(first, value.find_last_not_of(whitespace) - first + 1);
+}
+
+int nativeGearNumber(ShifterRole role) noexcept
+{
+    if (role == ShifterRole::Reverse)
+        return 0;
+    if (role >= ShifterRole::Gear1 && role <= ShifterRole::Gear8)
+        return static_cast<int>(role) - static_cast<int>(ShifterRole::Gear1) + 1;
+    return -1;
+}
+
+bool sameNativeInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept
+{
+    if (first.deviceId != second.deviceId || first.kind != second.kind || first.index != second.index)
+        return false;
+    switch (first.kind) {
+    case AccessoryKind::Button:
+        return true;
+    case AccessoryKind::Pov:
+        return first.engaged == second.engaged;
+    case AccessoryKind::Axis:
+        return (first.engaged > first.rest) == (second.engaged > second.rest);
+    }
+    return false;
 }
 
 ShifterRole parseRole(std::string_view entry)
@@ -136,12 +162,32 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
         return false;
     }
     std::bitset<256> keys;
+    std::array<const AccessoryBinding*, 9> nativePositions{};
+    std::string_view nativeDevice;
     bool hasProgressiveHandbrake = false;
     for (const auto& binding : profile) {
         if (!validInput(binding) || static_cast<std::size_t>(binding.role) >= roleNames.size()
             || (binding.activation != AccessoryActivation::hold && binding.activation != AccessoryActivation::pulse)) {
             error = "Invalid accessory input";
             return false;
+        }
+        if (binding.nativeShifter) {
+            const int gear = nativeGearNumber(binding.role);
+            if (gear < 0 || binding.key != 0 || binding.activation != AccessoryActivation::hold
+                || binding.handbrakeCeilingPercent != 0 || (!nativeDevice.empty() && binding.deviceId != nativeDevice)) {
+                error = "Invalid accessory input";
+                return false;
+            }
+            auto& position = nativePositions[static_cast<std::size_t>(gear)];
+            if (position || std::ranges::any_of(nativePositions, [&](const AccessoryBinding* other) {
+                return other && sameNativeInput(binding, *other);
+            })) {
+                error = "Invalid accessory input";
+                return false;
+            }
+            position = &binding;
+            nativeDevice = binding.deviceId;
+            continue;
         }
         if (binding.handbrakeCeilingPercent != 0) {
             if (hasProgressiveHandbrake || !validHandbrakeCeilingPercent(binding.handbrakeCeilingPercent)
@@ -252,6 +298,18 @@ std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path
             role = ShifterRole::None;
             continue;
         }
+        if (entry.starts_with(nativeShifterPrefix)) {
+            AccessoryBinding binding;
+            binding.nativeShifter = true;
+            binding.role = std::exchange(role, ShifterRole::None);
+            if (!version || profile.size() == maxAccessoryBindings
+                || !parseBinding(entry.substr(nativeShifterPrefix.size()), binding, version)) {
+                error = "Invalid accessory profile entry";
+                return std::nullopt;
+            }
+            profile.push_back(std::move(binding));
+            continue;
+        }
         if (entry.empty() || entry.starts_with('#')) {
             role = parseRole(entry);
             continue;
@@ -300,9 +358,11 @@ bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProf
         // Accessory versions 1 and 2 already ignore comment lines.
         if (binding.role != ShifterRole::None)
             file << rolePrefix << roleNames[static_cast<std::size_t>(binding.role)] << '\n';
-        // Older versions skip the analog row and still read the keyboard bindings.
+        // Older versions skip these comment rows and still read the keyboard bindings.
         const bool progressive = binding.handbrakeCeilingPercent != 0;
-        file << (progressive ? progressiveHandbrakePrefix : "binding=")
+        const auto prefix = binding.nativeShifter ? nativeShifterPrefix
+                          : progressive ? progressiveHandbrakePrefix : "binding=";
+        file << prefix
              << binding.deviceId << ',' << kindNames[static_cast<std::size_t>(binding.kind)]
              << ',' << binding.index << ',' << binding.rest << ',' << binding.engaged << ',' << binding.key;
         if (progressive)
@@ -331,9 +391,12 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
         return first.has_value() == second.has_value();
     const auto mapping = [](const AccessoryBinding& binding) {
         return std::tie(binding.deviceId, binding.kind, binding.index, binding.rest, binding.engaged, binding.key,
-                        binding.thresholds, binding.activation, binding.handbrakeCeilingPercent);
+                        binding.thresholds, binding.activation, binding.handbrakeCeilingPercent,
+                        binding.nativeShifter);
     };
-    return std::ranges::equal(*first, *second, std::ranges::equal_to{}, mapping, mapping);
+    return std::ranges::equal(*first, *second, [&](const AccessoryBinding& left, const AccessoryBinding& right) {
+        return mapping(left) == mapping(right) && (!left.nativeShifter || left.role == right.role);
+    });
 }
 
 AccessoryReader::AccessoryReader(const AccessoryProfile& profile)
@@ -355,12 +418,13 @@ AccessoryReader::AccessoryReader(const AccessoryProfile& profile)
 void AccessoryReader::reset() noexcept
 {
     states_.fill({});
+    nativeShifter_ = {};
 }
 
 void AccessoryReader::resetKeyboardBindings() noexcept
 {
     for (std::size_t i = 0; i < profile_.size(); ++i) {
-        if (profile_[i].handbrakeCeilingPercent == 0)
+        if (profile_[i].handbrakeCeilingPercent == 0 && !profile_[i].nativeShifter)
             states_[i] = {};
     }
 }
@@ -387,7 +451,8 @@ AccessoryReadiness AccessoryReader::readiness() const noexcept
 }
 
 std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryObservation> observations,
-                                      std::bitset<256>* pulses, std::optional<float>* progressiveHandbrake)
+                                      std::bitset<256>* pulses, std::optional<float>* progressiveHandbrake,
+                                      std::optional<int>* nativeGear)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
@@ -402,11 +467,11 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryOb
             samples[i] = &*storage[owner];
     }
     return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()),
-                  observations, pulses, progressiveHandbrake);
+                  observations, pulses, progressiveHandbrake, nativeGear);
 }
 
 float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
-                              DeviceReadStatus status, AccessoryObservation* observation)
+                              DeviceReadStatus status, AccessoryObservation* observation, bool* neutral)
 {
     if (!sample && status == DeviceReadStatus::pending) {
         if (state.neutralPolls < requiredNeutralPolls)
@@ -428,6 +493,8 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
     }
     if (observation)
         observation->engaged = level->engaged;
+    if (neutral)
+        *neutral = level->neutral;
     if (state.neutralPolls < requiredNeutralPolls) {
         state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
         state.status = state.neutralPolls == requiredNeutralPolls
@@ -447,27 +514,52 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
 std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> samples,
                                        std::span<const DeviceReadStatus> statuses,
                                        std::span<AccessoryObservation> observations, std::bitset<256>* pulses,
-                                       std::optional<float>* progressiveHandbrake)
+                                       std::optional<float>* progressiveHandbrake, std::optional<int>* nativeGear)
 {
     std::bitset<256> keys;
+    bool hasNativePositions = false;
+    bool nativeAvailable = true;
+    bool nativeArmed = true;
+    bool allNativeNeutral = true;
+    unsigned int activePositions{};
+    int selectedGear{};
     if (pulses)
         pulses->reset();
     if (progressiveHandbrake)
         progressiveHandbrake->reset();
+    if (nativeGear)
+        nativeGear->reset();
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto& binding = profile_[i];
         auto& state = states_[i];
         const auto* sample = i < samples.size() ? samples[i] : nullptr;
         const auto status = i < statuses.size() ? statuses[i] : DeviceReadStatus::unavailable;
+        if (binding.nativeShifter && i < statuses.size() &&
+            (status == DeviceReadStatus::pending || status == DeviceReadStatus::unavailable))
+            sample = nullptr;
         auto* observation = i < observations.size() ? &observations[i] : nullptr;
         if (observation)
             *observation = {};
         const bool wasActive = state.active;
-        const auto handbrake = advance(binding, state, sample, status, observation);
+        bool neutral = false;
+        const auto handbrake = advance(binding, state, sample, status, observation,
+                                       binding.nativeShifter ? &neutral : nullptr);
         if (observation) {
             observation->status = state.status;
             observation->active = state.active;
             observation->key = binding.key;
+        }
+        if (binding.nativeShifter) {
+            hasNativePositions = true;
+            nativeAvailable &= status != DeviceReadStatus::resumed &&
+                (state.status == AccessoryStatus::armed || state.status == AccessoryStatus::waitingForNeutral);
+            nativeArmed &= state.status == AccessoryStatus::armed;
+            allNativeNeutral &= neutral;
+            if (state.active) {
+                ++activePositions;
+                selectedGear = nativeGearNumber(binding.role);
+            }
+            continue;
         }
         if (binding.handbrakeCeilingPercent != 0) {
             if (progressiveHandbrake && state.status == AccessoryStatus::armed)
@@ -481,6 +573,51 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         else if (!wasActive && pulses)
             pulses->set(binding.key);
     }
+
+    if (!hasNativePositions)
+        return keys;
+
+    if (!nativeAvailable) {
+        nativeShifter_ = {};
+    } else if (nativeShifter_.neutralPolls < requiredNeutralPolls) {
+        // All configured positions must pass through true neutral together after a loss.
+        nativeShifter_.neutralPolls = allNativeNeutral ? nativeShifter_.neutralPolls + 1 : 0;
+    }
+
+    if (nativeShifter_.neutralPolls < requiredNeutralPolls) {
+        for (std::size_t i = 0; i < profile_.size(); ++i) {
+            if (!profile_[i].nativeShifter || states_[i].status != AccessoryStatus::armed)
+                continue;
+            states_[i].status = AccessoryStatus::waitingForNeutral;
+            if (i < observations.size()) {
+                observations[i].status = AccessoryStatus::waitingForNeutral;
+                observations[i].active = false;
+            }
+        }
+        return keys;
+    }
+
+    if (!nativeArmed || activePositions > 1) {
+        nativeShifter_.candidate.reset();
+        nativeShifter_.stable.reset();
+        nativeShifter_.candidatePolls = 0;
+        return keys;
+    }
+
+    // A brief gap or partial signal keeps the last stable gear. Only true rest can become neutral.
+    const std::optional<int> candidate = activePositions == 1 ? std::optional{selectedGear}
+        : allNativeNeutral ? std::optional{-1} : std::nullopt;
+    const auto required = candidate && *candidate != -1 ? nativeGearDebouncePolls : nativeNeutralDebouncePolls;
+    if (nativeShifter_.candidate != candidate) {
+        nativeShifter_.candidate = candidate;
+        nativeShifter_.candidatePolls = 1;
+    } else if (nativeShifter_.candidatePolls < required) {
+        ++nativeShifter_.candidatePolls;
+    }
+    if (nativeShifter_.candidatePolls == required)
+        nativeShifter_.stable = candidate;
+    if (nativeGear)
+        *nativeGear = nativeShifter_.stable;
     return keys;
 }
 

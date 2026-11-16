@@ -79,6 +79,7 @@ std::wstring accessoryKeyLabel(unsigned int key);
 std::wstring accessoryInputLabel(const AccessoryBinding& binding);
 std::wstring shifterRoleLabel(ShifterRole role);
 std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding);
+std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding);
 const wchar_t* accessoryActivationLabel(AccessoryActivation activation);
 void populateAccessoryActivation(HWND window, int control);
 enum class BindingKeyEdit { unchanged, changed, occupied, handbrakeInputConflict };

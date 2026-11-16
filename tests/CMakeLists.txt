@@ -6,3 +6,16 @@ foreach(component IN ITEMS controls calibration simulation configuration accesso
   target_link_libraries(${test_target} PRIVATE chrome_axis_input)
   add_test(NAME ${test_name} COMMAND ${test_target})
 endforeach()
+
+add_executable(chrome_axis_manual_transmission_input_test manual_transmission_input_test.cpp)
+target_include_directories(chrome_axis_manual_transmission_input_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
+target_compile_options(chrome_axis_manual_transmission_input_test PRIVATE /W4 /utf-8)
+add_test(NAME chrome_axis_manual_transmission_input COMMAND chrome_axis_manual_transmission_input_test)
+
+if(CHROME_AXIS_BUILD_PLUGIN)
+  add_executable(chrome_axis_manual_transmission_backend_test manual_transmission_backend_test.cpp)
+  target_include_directories(chrome_axis_manual_transmission_backend_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
+  target_compile_options(chrome_axis_manual_transmission_backend_test PRIVATE /W4 /utf-8)
+  target_link_libraries(chrome_axis_manual_transmission_backend_test PRIVATE RED4ext::SDK)
+  add_test(NAME chrome_axis_manual_transmission_backend COMMAND chrome_axis_manual_transmission_backend_test)
+endif()

@@ -39,7 +39,7 @@ std::wstring accessoryKeyLabel(unsigned int key)
 BindingKeyEdit chooseBindingKey(HWND owner, AccessoryProfile& bindings, std::size_t row)
 {
     auto& binding = bindings[row];
-    if (binding.handbrakeCeilingPercent)
+    if (binding.handbrakeCeilingPercent || binding.nativeShifter)
         return BindingKeyEdit::unchanged;
     const auto key = chooseAccessoryKey(owner, binding.key);
     if (!key || *key == binding.key)
@@ -119,6 +119,11 @@ std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding)
     if (binding.role != ShifterRole::None)
         input = shifterRoleLabel(binding.role) + L" · " + input;
     return input;
+}
+
+std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding)
+{
+    return binding.nativeShifter ? std::wstring(tr(Text::DlgShifterNativeOutput)) : accessoryKeyLabel(binding.key);
 }
 
 const wchar_t* accessoryActivationLabel(AccessoryActivation activation)
@@ -549,15 +554,16 @@ void AccessoryDialog::refreshActions()
         refreshHandbrakeActions(idle, capture.has_value());
     } else {
         const auto* binding = row ? &bindings_[*row] : capture ? &captured_[*capture] : nullptr;
-        const bool canEdit = idle && binding;
+        const bool native = binding && binding->nativeShifter;
+        const bool canEdit = idle && binding && !native;
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ACTIVATION), canEdit);
         send(IDC_ACCESSORY_ACTIVATION, CB_SETCURSEL, !canEdit ? static_cast<WPARAM>(-1)
             : binding->activation == AccessoryActivation::pulse ? 1 : 0);
-        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_KEY), idle);
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_KEY), idle && !native);
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_ADD), idle && capture.has_value() && isAccessoryKey(key_));
-        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_EDIT), idle && row.has_value());
+        EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_EDIT), idle && row.has_value() && !native);
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_THRESHOLDS),
-            idle && row.has_value() && bindings_[*row].kind == AccessoryKind::Axis);
+            idle && row.has_value() && !native && bindings_[*row].kind == AccessoryKind::Axis);
         EnableWindow(GetDlgItem(window_, IDC_ACCESSORY_REMOVE), idle && row.has_value());
     }
     selectPreview();
@@ -591,7 +597,7 @@ void AccessoryDialog::selectPreview()
         preview_.reset();
         if (previewBinding_) {
             auto mapping = *previewBinding_;
-            if (!mapping.handbrakeCeilingPercent && !isAccessoryKey(mapping.key))
+            if (!mapping.nativeShifter && !mapping.handbrakeCeilingPercent && !isAccessoryKey(mapping.key))
                 mapping.key = VK_SPACE; // Use a valid internal key to evaluate an unassigned draft.
             preview_.emplace(AccessoryProfile{std::move(mapping)});
         }
@@ -676,6 +682,9 @@ void AccessoryDialog::pollPreview()
         case AccessoryStatus::armed:
             if (progressive)
                 return Text::DlgAccessoryPreviewHandbrake;
+            if (previewBinding_->nativeShifter)
+                return observation.engaged.value_or(false) ? Text::DlgAccessoryPreviewNativeEngaged
+                                                          : Text::DlgAccessoryPreviewNativeReleased;
             if (!isAccessoryKey(previewBinding_->key))
                 return Text::DlgAccessoryPreviewUnassigned;
             if (previewBinding_->activation == AccessoryActivation::pulse)
@@ -685,8 +694,12 @@ void AccessoryDialog::pollPreview()
         return Text::DlgAccessoryPreviewInput;
     }();
     auto message = std::wstring(tr(status));
-    if (isAccessoryKey(previewBinding_->key) && observation.status == AccessoryStatus::armed)
-        message = accessoryKeyLabel(previewBinding_->key) + message;
+    if (observation.status == AccessoryStatus::armed) {
+        if (previewBinding_->nativeShifter)
+            message = shifterRoleLabel(previewBinding_->role) + message;
+        else if (isAccessoryKey(previewBinding_->key))
+            message = accessoryKeyLabel(previewBinding_->key) + message;
+    }
     const auto output = handbrake ? std::optional{static_cast<int>(std::lround(*handbrake * 1000.0f))} : std::nullopt;
     renderPreview(std::move(message), travel, output);
 }
@@ -752,6 +765,8 @@ void AccessoryDialog::chooseKey()
 {
     if (handbrakePage() || stage_ != CaptureStage::Idle)
         return;
+    if (const auto row = selectedBinding(); row && bindings_[*row].nativeShifter)
+        return;
     if (const auto key = chooseAccessoryKey(window_, key_)) {
         key_ = *key;
         const auto label = accessoryKeyLabel(key_) + L"…";
@@ -773,7 +788,7 @@ void AccessoryDialog::changeActivation()
     const auto activation = selected == 1 ? AccessoryActivation::pulse : AccessoryActivation::hold;
     if (const auto row = selectedBinding()) {
         auto& binding = bindings_[*row];
-        if (binding.activation != activation) {
+        if (!binding.nativeShifter && binding.activation != activation) {
             binding.activation = activation;
             modified_ = true;
             refreshBindings(row);
@@ -947,8 +962,9 @@ void AccessoryDialog::refreshBindings(std::optional<std::size_t> selection)
         const auto& binding = bindings_[i];
         if (binding.handbrakeCeilingPercent)
             continue;
-        auto label = accessoryKeyLabel(binding.key) + L"  ←  " + accessoryBindingInputLabel(binding)
-            + L"  ·  " + accessoryActivationLabel(binding.activation);
+        auto label = accessoryBindingOutputLabel(binding) + L"  ←  " + accessoryBindingInputLabel(binding);
+        if (!binding.nativeShifter)
+            label += L"  ·  " + std::wstring(accessoryActivationLabel(binding.activation));
         if (binding.kind == AccessoryKind::Axis) {
             label += L" · " + std::to_wstring(binding.thresholds.press) + L"% / "
                 + std::to_wstring(binding.thresholds.release) + L"%";
@@ -980,6 +996,12 @@ void AccessoryDialog::add()
         return;
     }
     auto binding = captured_[*input];
+    if (std::ranges::any_of(bindings_, [&](const auto& saved) {
+            return saved.nativeShifter && sameShifterInput(binding, saved);
+        })) {
+        setStatus(tr(Text::DlgAccessoryNativeInputConflict));
+        return;
+    }
     if (key_ == VK_SPACE && std::ranges::any_of(bindings_, [&](const auto& saved) {
             return saved.handbrakeCeilingPercent && sameShifterInput(binding, saved);
         })) {
@@ -1026,7 +1048,7 @@ void AccessoryDialog::editThresholds()
     if (!selection)
         return;
     auto& binding = bindings_[*selection];
-    if (binding.kind != AccessoryKind::Axis)
+    if (binding.nativeShifter || binding.kind != AccessoryKind::Axis)
         return;
     auto values = binding.thresholds;
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_ACCESSORY_THRESHOLDS),
@@ -1043,6 +1065,12 @@ void AccessoryDialog::editThresholds()
 
 void AccessoryDialog::applyHandbrake(AccessoryBinding binding)
 {
+    if (std::ranges::any_of(bindings_, [&](const auto& saved) {
+            return saved.nativeShifter && sameShifterInput(binding, saved);
+        })) {
+        setStatus(tr(Text::DlgAccessoryNativeInputConflict));
+        return;
+    }
     auto target = handbrakeBinding();
     const auto space = std::ranges::find(bindings_, static_cast<unsigned int>(VK_SPACE), &AccessoryBinding::key);
     if (space != bindings_.end() && sameShifterInput(binding, *space)) {

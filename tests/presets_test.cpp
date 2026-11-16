@@ -116,7 +116,8 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
         {oldWheel, AccessoryKind::Pov, 0, povCentered, 0, VK_SUBTRACT, {}, ShifterRole::Downshift},
         {newWheel, AccessoryKind::Pov, 0, povCentered, 18000, VK_SPACE},
         {oldWheel, AccessoryKind::Axis, 3, 0, 1000, VK_F8, {65, 30}, ShifterRole::Gear3},
-        {oldWheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 19}};
+        {oldWheel, AccessoryKind::Axis, 4, 1000, 0, 0, {}, ShifterRole::None, AccessoryActivation::hold, 19},
+        {oldWheel, AccessoryKind::Button, 5, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true}};
     const FeedbackSettings feedback{true, 19, false, true};
     std::string details;
     if (!check(saveProfile(root / profileFilename, calibration, details)
@@ -171,6 +172,7 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
     replaceAfter(expectedDigital, "binding=");
     replaceAfter(expectedDigital, "binding=");
     replaceAfter(expectedDigital, progressiveHandbrakePrefix);
+    replaceAfter(expectedDigital, nativeShifterPrefix);
     if (!check(replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery)
                && error == Error::none && recovery.empty() && readBytes(analog) == expectedAnalog
                && readBytes(digital) == expectedDigital && readBytes(note) == "preserve\r\n"

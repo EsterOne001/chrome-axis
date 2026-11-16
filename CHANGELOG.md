@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.39
+
+- **Boîte en H native.** L’assistant Chrome Axis enregistre les positions du levier dans le profil actif et les transmet directement à Cyberpunk. Il conserve un mode par touches pour les configurations existantes. La sélection directe inclut le point mort et les rapports autorisés par le véhicule.
+- **Bascule et diagnostic.** F8 bascule entre AUTO et MANUEL à l’arrêt. Le HUD affiche N, R ou le rapport engagé et le rapport copié distingue la sélection, la demande et le résultat côté jeu. Après une perte d’entrée, réarmez le levier au point mort.
+- **Essai clavier.** La simulation permet la sélection directe d’un rapport et l’essai du point mort ainsi que la montée et la descente séquentielles.
+
+[ZIP Vortex](out/Chromaxis-0.4.39.zip)
+
 ## Chrome Axis 0.4.38 · 15 novembre 2026
 
 - **Réarmement après Alt+Tab.** La direction se réarme après trois lectures consécutives d’au plus 1,5 % après application de la zone morte. Un volant relâché qui indique environ 1 % peut ainsi reprendre la direction et permettre la reprise du retour de force. La zone morte du profil, y compris 0 %, s’applique à la conduite.

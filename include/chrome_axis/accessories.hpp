@@ -9,6 +9,7 @@ namespace chrome_axis {
 
 inline constexpr wchar_t accessoryFilename[] = L"accessories.ini";
 inline constexpr std::string_view progressiveHandbrakePrefix = "# progressive-handbrake=";
+inline constexpr std::string_view nativeShifterPrefix = "# native-shifter=";
 inline constexpr unsigned int defaultHandbrakeCeilingPercent = 15;
 inline constexpr unsigned int maxHandbrakeCeilingPercent = 100;
 
@@ -55,6 +56,7 @@ struct AccessoryBinding {
     ShifterRole role{};
     AccessoryActivation activation{AccessoryActivation::hold};
     unsigned int handbrakeCeilingPercent{}; // A nonzero value makes this an analog output.
+    bool nativeShifter{};
 
     bool operator==(const AccessoryBinding&) const = default;
 };
@@ -87,10 +89,12 @@ bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
 class AccessoryReader {
 public:
     explicit AccessoryReader(const AccessoryProfile& profile);
-    // Returns held keys, with optional pulse requests and a fresh, armed handbrake command.
+    // Returns held keys and optional pulse, handbrake and H-pattern outputs.
+    // Native gears are -1 neutral, 0 reverse and 1–8 forward; nullopt is unavailable.
     std::bitset<256> poll(DirectInput& input, std::span<AccessoryObservation> observations = {},
                          std::bitset<256>* pulses = nullptr,
-                         std::optional<float>* progressiveHandbrake = nullptr);
+                         std::optional<float>* progressiveHandbrake = nullptr,
+                         std::optional<int>* nativeGear = nullptr);
     void reset() noexcept;
     void resetKeyboardBindings() noexcept;
     // All bindings have a usable sample and passed the neutral check.
@@ -100,7 +104,8 @@ public:
     // Samples follow binding order. Bindings on the same device share a sample.
     std::bitset<256> update(std::span<const DeviceSample* const> samples, std::span<const DeviceReadStatus> statuses = {},
                             std::span<AccessoryObservation> observations = {}, std::bitset<256>* pulses = nullptr,
-                            std::optional<float>* progressiveHandbrake = nullptr);
+                            std::optional<float>* progressiveHandbrake = nullptr,
+                            std::optional<int>* nativeGear = nullptr);
 
 private:
     struct BindingState {
@@ -110,10 +115,18 @@ private:
         AccessoryStatus status{AccessoryStatus::waitingForNeutral};
     };
 
+    struct NativeShifterState {
+        unsigned int neutralPolls{};
+        unsigned int candidatePolls{};
+        std::optional<int> candidate;
+        std::optional<int> stable;
+    };
+
     static float advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
-                        DeviceReadStatus status, AccessoryObservation* observation);
+                         DeviceReadStatus status, AccessoryObservation* observation, bool* neutral);
 
     AccessoryProfile profile_;
+    NativeShifterState nativeShifter_;
     std::array<std::size_t, maxAccessoryBindings> sampleOwners_{};
     std::array<std::bitset<buttonCount>, maxAccessoryBindings> requiredButtons_{};
     std::array<BindingState, maxAccessoryBindings> states_{};

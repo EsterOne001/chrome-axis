@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ChromeAxis VERSION 0.4.38 LANGUAGES CXX)
+project(ChromeAxis VERSION 0.4.39 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Chrome Axis requires a Windows x64 MSVC build.")
@@ -78,6 +78,7 @@ if(CHROME_AXIS_BUILD_PLUGIN)
 
   add_library(ChromeAxis SHARED
     src/plugin/plugin.cpp
+    src/plugin/manual_transmission_backend.cpp
     assets/windows/product_version.rc
   )
   target_compile_options(ChromeAxis PRIVATE /W4 /utf-8)
@@ -101,6 +102,6 @@ if(CHROME_AXIS_BUILD_PLUGIN)
   set(CPACK_GENERATOR ZIP)
   set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
   set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
-  set(CPACK_PACKAGE_FILE_NAME "ChromeAxis-${PROJECT_VERSION}-Cyberpunk-2.5")
+  set(CPACK_PACKAGE_FILE_NAME "Chromaxis-${PROJECT_VERSION}")
   include(CPack)
 endif()

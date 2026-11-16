@@ -1,4 +1,6 @@
 public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>) -> Int32;
+public static native func ChromeAxis_ManualGear(vehicle: ref<VehicleObject>) -> Int32;
+public static native func ChromeAxis_ManualModeActive(vehicle: ref<VehicleObject>) -> Bool;
 public static native func ChromeAxis_FeedbackEnabled() -> Bool;
 public static native func ChromeAxis_FeedbackMotion(vehicle: ref<VehicleObject>, velocity: Vector4, forward: Vector4, right: Vector4, mass: Float, simTime: Float, skidding: Bool, airborne: Bool) -> Void;
 public static native func ChromeAxis_VehicleImpact(vehicle: ref<VehicleObject>, velocityChange: Float, lateral: Float) -> Void;
@@ -14,6 +16,10 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let hudLogoRetry: Int32;
   private let hudLabel: wref<inkText>;
   private let hudLabelShadow: wref<inkText>;
+  private let hudGearLabel: wref<inkText>;
+  private let hudGearLabelShadow: wref<inkText>;
+  private let hudGear: Int32;
+  private let hudManualMode: Bool;
   private let hudStatus: Int32;
   private let hudRetry: Int32;
   private let hudFrench: Bool;
@@ -53,6 +59,10 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudLogoRetry = 0;
     this.hudLabel = null;
     this.hudLabelShadow = null;
+    this.hudGearLabel = null;
+    this.hudGearLabelShadow = null;
+    this.hudGear = -2;
+    this.hudManualMode = false;
     this.hudStatus = 0;
     this.hudRetry = 0;
     this.hudFrench = false;
@@ -81,7 +91,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
 
     let badge = new inkCanvas();
     badge.SetName(n"ChromeAxisStatusBadge");
-    badge.SetSize(Vector2(176.0, 34.0));
+    badge.SetSize(Vector2(242.0, 63.0));
     badge.SetAnchor(inkEAnchor.TopLeft);
     badge.SetAnchorPoint(0.0, 0.0);
     badge.SetTranslation(36.0, 176.0);
@@ -94,16 +104,24 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     logo.SetSize(Vector2(34.0, 34.0));
     logo.Reparent(badge);
 
-    let shadow = this.CreateHudLabel(badge, 1.0);
+    let shadow = this.CreateHudLabel(badge, 0.0, 1.0, 134.0);
     shadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
-    let label = this.CreateHudLabel(badge, 0.0);
+    let label = this.CreateHudLabel(badge, 0.0, 0.0, 134.0);
+
+    let gearShadow = this.CreateHudLabel(badge, 28.0, 1.0, 200.0);
+    gearShadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
+    let gearLabel = this.CreateHudLabel(badge, 28.0, 0.0, 200.0);
+    gearLabel.SetTintColor(HDRColor(1.0, 0.84, 0.18, 1.0));
 
     this.hudBadge = badge;
     this.hudLogo = logo;
     this.hudLogoRetry = 30;
     this.hudLabel = label;
     this.hudLabelShadow = shadow;
+    this.hudGearLabel = gearLabel;
+    this.hudGearLabelShadow = gearShadow;
     this.ApplyHudStatus();
+    this.ApplyHudGear();
     this.TryShowHudLogo();
     return true;
   }
@@ -120,23 +138,66 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     }
   }
 
-  private func CreateHudLabel(badge: ref<inkCanvas>, offset: Float) -> ref<inkText> {
+  private func CreateHudLabel(badge: ref<inkCanvas>, row: Float, offset: Float, width: Float) -> ref<inkText> {
     let label = new inkText();
     label.SetFontFamily("base\\gameplay\\gui\\fonts\\raj\\raj.inkfontfamily");
     label.SetFontStyle(n"Bold");
     label.SetFontSize(18);
     label.SetHorizontalAlignment(textHorizontalAlignment.Left);
     label.SetVerticalAlignment(textVerticalAlignment.Center);
-    label.SetSize(Vector2(134.0, 34.0));
-    label.SetTranslation(40.0 + offset, offset);
+    label.SetSize(Vector2(width, 34.0));
+    label.SetTranslation(40.0 + offset, row + offset);
     label.Reparent(badge);
     return label;
   }
 
-  private func UpdateHud(game: GameInstance, status: Int32) -> Void {
+  private func ReadHudGear(vehicle: wref<VehicleObject>) -> Int32 {
+    let nativeGear = ChromeAxis_ManualGear(vehicle);
+    if nativeGear >= -1 && nativeGear <= 8 {
+      return nativeGear;
+    }
+
+    let board = vehicle.GetBlackboard();
+    if IsDefined(board) {
+      let gear = board.GetInt(GetAllBlackboardDefs().Vehicle.GearValue);
+      if gear >= 1 && gear <= 8 {
+        return gear;
+      }
+    }
+    return -2;
+  }
+
+  private func ApplyHudGear() -> Void {
+    if !IsDefined(this.hudGearLabel) || !IsDefined(this.hudGearLabelShadow) {
+      return;
+    }
+    let visible = this.hudStatus != 0;
+    this.hudGearLabel.SetVisible(visible);
+    this.hudGearLabelShadow.SetVisible(visible);
+    if !visible {
+      return;
+    }
+    let value = this.hudGear > 0 ? IntToString(this.hudGear) : (this.hudGear == 0 ? "R" : (this.hudGear == -1 ? "N" : "—"));
+    let mode = this.hudManualMode ? (this.hudFrench ? "MANUEL" : "MANUAL") : "AUTO";
+    let text = (this.hudFrench ? "RAPPORT " : "GEAR ") + value + " · " + mode;
+    this.hudGearLabel.SetText(text);
+    this.hudGearLabelShadow.SetText(text);
+  }
+
+  private func UpdateHud(game: GameInstance, status: Int32, vehicle: wref<VehicleObject>) -> Void {
     if status != 0 && this.hudStatus == 0 {
       this.hudFrench = this.IsFrenchInterface(game);
     }
+    let gear: Int32 = -2;
+    let manualMode: Bool = false;
+    if status != 0 && IsDefined(vehicle) {
+      gear = this.ReadHudGear(vehicle);
+      manualMode = ChromeAxis_ManualModeActive(vehicle);
+    }
+    let modeChanged = this.hudManualMode ? !manualMode : manualMode;
+    let gearLineChanged = this.hudGear != gear || modeChanged;
+    this.hudGear = gear;
+    this.hudManualMode = manualMode;
     let changed = this.hudStatus != status;
     this.hudStatus = status;
     if status == 0 {
@@ -152,6 +213,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
         if !this.hudLogoReady {
           this.hudLogoRetry = 30;
         }
+      }
+      if changed || gearLineChanged {
+        this.ApplyHudGear();
       }
       this.TryShowHudLogo();
     }
@@ -264,7 +328,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     next.context = this;
     next.generation = generation;
     GameInstance.GetDelaySystem(game).DelayCallback(next, 0.10, false);
-    this.UpdateHud(game, status);
+    this.UpdateHud(game, status, vehicle);
   }
 
   public func RefreshFeedback(generation: Int32) -> Void {

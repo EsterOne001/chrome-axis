@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.38** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.39** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -98,8 +98,14 @@ To change the key for an already captured input, select the binding and click **
 
 1. Open **USB Hardware → Accessories…**, select the DirectInput device and click **Shifter / paddles…**. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
 2. In **Sequential / paddles**, capture **Shift up** and **Shift down**. Select **Button or D-pad** for digital inputs. For an analog axis, capture neutral and full travel in each direction. Bind the same keys in your transmission mod.
-3. For an **H-pattern**, select 6, 7 or 8 forward gears plus reverse. Capture each position, returning to neutral between gears. Assign a different key to each gear. If you use the suggested numpad digits, turn on **Num Lock** or choose other keys in both mods. The transmission mod needs a separate command for each gear to use these bindings in Cyberpunk.
-4. Click **Apply** in the wizard and **Save** in **Accessories**. Then enable USB in game. Bindings are saved in the active profile’s `accessories.ini` and work without an axis calibration. New captures keep the gear or paddle label when you reopen the wizard or change its key. Older bindings keep their physical input label.
+3. To control Cyberpunk’s transmission directly, choose **Native H · 6 + R**, **Native H · 7 + R**, or **Native H · 8 + R** to match your shifter. Start in neutral, capture all usable positions, and return to neutral between them. The wizard records the physical position without assigning a key. Applying a new pattern replaces the profile’s native pattern and any key-based gear bindings for that lever. Paddle and other accessory settings are kept.
+4. Click **Apply**, then **Save** in **Accessories…**, and **Enable USB in game**. The pattern is saved in the active profile’s `accessories.ini` and works with the app closed. Take the driver’s seat with the shifter in neutral to arm it. The HUD displays **N**, **R**, or the engaged gear alongside **AUTO** or **MANUAL**. Press **F8** to toggle the mode, including when stopped.
+
+Native mode uses the gears available on the vehicle. The supported Cyberpunk build exposes up to seven forward gears and reverse. Bring the vehicle to a stop before selecting reverse or returning to a forward gear. When R is engaged in MANUAL, the throttle pedal commands reverse and the brake pedal keeps its braking role. After unplugging or switching windows, return the lever to neutral to rearm it. An analog clutch is outside this feature. Disable other mods that directly control the transmission when testing native mode.
+
+Choose **H via keys** to keep using an external transmission mod. Assign one key per position and mirror the assignments in that mod. Turn on **Num Lock** if you use the numpad. Existing key-based profiles still work.
+
+To test without hardware, open **Help → Test tools → Keyboard simulation**, then click **Enable in game**. In a vehicle, press **F8**, then use the number row **1–7** to select a gear, **N** for neutral, and **R** when stopped. **Page Up** and **Page Down** still shift sequentially. Release each key between commands. The copied **Diagnostics** report includes the selected, requested, and engaged gears.
 
 **Manual Transmission V10 4.3** offers rebindable sequential shift commands. Chrome Axis suggests **Numpad + / Numpad −** to avoid the **↑ / ↓** keys used by Cyberpunk for throttle and brake. Set the same keys in V10. To use a clutch pedal, capture it as an accessory axis, assign a key without modifiers, and set the same key in V10. Testing the two mods together is still pending. [V10 controls](https://www.nexusmods.com/cyberpunk2077/mods/28342) · [V10 discussion about sequential and H-pattern shifting](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts)
 

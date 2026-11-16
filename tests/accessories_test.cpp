@@ -448,6 +448,159 @@ int testProgressiveHandbrake(const std::filesystem::path& path, const std::strin
     return 0;
 }
 
+int testNativeShifterProfile(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    const AccessoryProfile profile{
+        {deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Axis, 1, 0, 1000, 0, {62, 35}, ShifterRole::Gear2, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Pov, 0, povCentered, 18000, 0, {}, ShifterRole::Reverse, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Button, 2, 0, 1, VK_NUMPAD6, {}, ShifterRole::Gear6},
+        {deviceId, AccessoryKind::Button, 3, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
+    };
+    std::string error;
+    if (!saveAccessoryProfile(path, profile, error) || loadAccessoryProfile(path, error) != profile)
+        return 94;
+    {
+        std::ifstream file(path);
+        std::string line;
+        std::getline(file, line);
+        std::getline(file, line);
+        if (line != "version=3")
+            return 95;
+        std::getline(file, line);
+        if (line != "# shifter-role=gear-1")
+            return 95;
+        std::getline(file, line);
+        if (line != std::string(nativeShifterPrefix) + deviceId + ",button,0,0,1,0")
+            return 95;
+    }
+
+    auto edited = profile;
+    edited.front().role = ShifterRole::Gear3;
+    if (sameAccessoryInputProfile(profile, edited))
+        return 96;
+    edited = profile;
+    edited.front().nativeShifter = false;
+    if (sameAccessoryInputProfile(profile, edited))
+        return 96;
+
+    const auto rejected = [&](const auto& change) {
+        edited = profile;
+        change(edited);
+        return !saveAccessoryProfile(path, edited, error);
+    };
+    if (!rejected([](auto& items) { items[0].key = VK_F1; })
+        || !rejected([](auto& items) { items[0].activation = AccessoryActivation::pulse; })
+        || !rejected([](auto& items) { items[0].role = ShifterRole::Downshift; })
+        || !rejected([](auto& items) { items[0].role = items[1].role; })
+        || !rejected([](auto& items) { items[0].deviceId = "{44444444-4444-4444-4444-444444444444}"; })
+        || !rejected([](auto& items) { items[1].handbrakeCeilingPercent = 15; })
+        || !rejected([](auto& items) {
+            items[1] = items[0];
+            items[1].role = ShifterRole::Gear2;
+        })
+        || loadAccessoryProfile(path, error) != profile)
+        return 97;
+    return 0;
+}
+
+int testNativeShifterPolling(const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    using Status = DeviceReadStatus;
+    AccessoryReader reader({
+        {deviceId, AccessoryKind::Button, 0, 0, 1, 0, {}, ShifterRole::Gear1, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Button, 1, 0, 1, 0, {}, ShifterRole::Gear2, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Pov, 0, povCentered, 18000, 0, {}, ShifterRole::Reverse, AccessoryActivation::hold, 0, true},
+        {deviceId, AccessoryKind::Button, 2, 0, 1, VK_ADD, {}, ShifterRole::Upshift, AccessoryActivation::pulse},
+    });
+    DeviceSample sample;
+    sample.buttonsPresent.set(0).set(1).set(2);
+    sample.povsPresent[0] = true;
+    const std::array<const DeviceSample*, 4> connected{&sample, &sample, &sample, &sample};
+    const std::array<const DeviceSample*, 4> disconnected{};
+    const std::array pending{Status::pending, Status::pending, Status::pending, Status::pending};
+    const std::array resumed{Status::resumed, Status::resumed, Status::resumed, Status::resumed};
+    std::bitset<256> pulses;
+    std::optional<int> gear;
+    const auto expect = [&](std::optional<int> expected, int polls = 1) {
+        for (int i = 0; i < polls; ++i) {
+            if (reader.update(connected, {}, {}, &pulses, nullptr, &gear).any() || gear != expected)
+                return false;
+        }
+        return true;
+    };
+
+    sample.buttons.set(0);
+    if (!expect(std::nullopt, 5) || reader.ready())
+        return 98;
+    sample.buttons.reset(0).set(1);
+    if (!expect(std::nullopt, 5) || reader.ready())
+        return 98;
+    sample.buttons.reset(1);
+    if (!expect(std::nullopt, 9) || !expect(-1) || !reader.ready())
+        return 99;
+
+    sample.buttons.set(0);
+    if (!expect(-1, 2) || !expect(1) || pulses.any())
+        return 100;
+    reader.resetKeyboardBindings();
+    if (!expect(1))
+        return 100;
+    sample.buttons.reset(0);
+    if (!expect(1, 2))
+        return 101;
+    sample.buttons.set(1);
+    if (!expect(1, 2) || !expect(2))
+        return 101;
+
+    sample.buttons.set(0);
+    if (!expect(std::nullopt, 4))
+        return 102;
+    sample.buttons.reset(0);
+    if (!expect(std::nullopt, 2) || !expect(2))
+        return 102;
+    sample.buttons.reset(1);
+    if (!expect(2, 7) || !expect(-1))
+        return 103;
+    sample.povs[0] = 18000;
+    if (!expect(-1, 2) || !expect(0))
+        return 104;
+    sample.povs[0] = 9000;
+    if (!expect(0, 7) || !expect(std::nullopt))
+        return 105;
+    sample.povs[0] = povCentered;
+    if (!expect(std::nullopt, 7) || !expect(-1))
+        return 105;
+
+    sample.buttons.set(1);
+    if (!expect(-1, 2) || !expect(2))
+        return 106;
+    sample.buttonsPresent.reset(0);
+    sample.buttons.set(2);
+    if (!expect(std::nullopt) || !pulses.test(VK_ADD) || pulses.count() != 1)
+        return 106;
+    sample.buttonsPresent.set(0);
+    if (!expect(std::nullopt, 5) || reader.ready())
+        return 107;
+    if (reader.update(disconnected, pending, {}, &pulses, nullptr, &gear).any() || gear
+        || reader.update(connected, resumed, {}, &pulses, nullptr, &gear).any() || gear
+        || !expect(std::nullopt, 5))
+        return 107;
+    sample.buttons.reset();
+    if (!expect(std::nullopt, 9) || !expect(-1) || !reader.ready())
+        return 108;
+
+    sample.buttons.set(0);
+    if (!expect(-1, 2) || !expect(1)
+        || reader.update(connected, pending, {}, &pulses, nullptr, &gear).any() || gear)
+        return 109;
+
+    reader.reset();
+    return expect(std::nullopt, 4) && !reader.ready() ? 0 : 109;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -483,6 +636,7 @@ int run()
     const auto pulseResult = testPulseBindings(path, wheelId);
     const auto handbrakeResult = testProgressiveHandbrake(path, handbrakeId);
     const auto replacementResult = testProfileReplacement(path, wheelId);
+    const auto nativeShifterProfileResult = testNativeShifterProfile(path, wheelId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey
         || !loaded || *loaded != profile || !savedEmpty || !empty || !empty->empty())
@@ -497,6 +651,10 @@ int run()
         return handbrakeResult;
     if (replacementResult != 0)
         return replacementResult;
+    if (nativeShifterProfileResult != 0)
+        return nativeShifterProfileResult;
+    if (const auto result = testNativeShifterPolling(wheelId); result != 0)
+        return result;
     if (const auto result = testPreviewReadings(wheelId); result != 0)
         return result;
 

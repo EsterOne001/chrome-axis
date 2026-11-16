@@ -85,6 +85,20 @@ struct DiagnosticFeedbackTelemetry {
     std::uint8_t skidding{};
 };
 
+enum class DiagnosticShiftState : std::uint8_t {
+    automatic, ready, unavailable, outsideRange, stopToChangeDirection, alreadyEngaged,
+    rejected, accepted, neutralTransition, expired
+};
+
+struct DiagnosticTransmission {
+    bool configured{};
+    bool manual{};
+    int selectedGear{-2};
+    int requestedGear{-2};
+    int engagedGear{-2};
+    DiagnosticShiftState shift{};
+};
+
 struct DiagnosticSnapshot {
     DiagnosticMode mode{DiagnosticMode::waitingForDriver};
     std::array<DiagnosticAxis, 3> axes{}; // Steering, throttle, brake.
@@ -99,6 +113,7 @@ struct DiagnosticSnapshot {
     DiagnosticAccessoryState accessories{DiagnosticAccessoryState::inactive};
     DiagnosticFeedbackState feedback{DiagnosticFeedbackState::disabled};
     DiagnosticFeedbackTelemetry feedbackData{};
+    DiagnosticTransmission transmission{};
 };
 
 enum class DiagnosticConnection { unavailable, disconnected, stale, connected };

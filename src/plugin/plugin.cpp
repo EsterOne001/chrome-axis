@@ -6,6 +6,8 @@
 #include "chrome_axis/input.hpp"
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/simulation.hpp"
+#include "manual_transmission_backend.hpp"
+#include "manual_transmission_input.hpp"
 
 #include <RED4ext/RED4ext.hpp>
 #include <RED4ext/Scripting/Natives/vehicleBaseObject.hpp>
@@ -118,6 +120,8 @@ struct InputFrame {
     Clock::time_point sampled{};
     bool simulated{};
     std::optional<float> handbrake;
+    bool nativeShifter{};
+    std::optional<int> nativeGear;
 };
 
 struct HudFrame {
@@ -166,10 +170,12 @@ InputAgeCapture inputAgeCapture;
 HudFrame hudFrame;
 Clock::time_point lastUsbSignal{};
 chrome_axis::Simulator simulator;
+chrome_axis::ManualTransmissionInput transmissionInput;
 Clock::time_point lastSimulationStep{};
 std::jthread readerThread;
 std::atomic<bool> active{};
 std::atomic<bool> feedbackRequested{};
+std::atomic<bool> transmissionAvailable{};
 std::atomic<Vehicle*> drivingVehicle{};
 std::atomic<std::uint64_t> drivingGeneration{};
 std::atomic<bool> appliedInput{};
@@ -635,6 +641,47 @@ void receiveImpact(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, st
     vehicleMotion.impacted = now;
 }
 
+std::optional<int> keyboardGear() noexcept {
+    constexpr std::array keys{static_cast<int>('N'), static_cast<int>('R'),
+                              static_cast<int>('1'), static_cast<int>('2'), static_cast<int>('3'),
+                              static_cast<int>('4'), static_cast<int>('5'), static_cast<int>('6'),
+                              static_cast<int>('7')};
+    std::optional<int> gear;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (keyDown(keys[i])) {
+            if (gear)
+                return std::nullopt;
+            gear = static_cast<int>(i) - 1;
+        }
+    }
+    return gear;
+}
+
+// Caller holds stateMutex. A stale USB frame cannot request a gear in a new vehicle or session.
+void suspendTransmission() noexcept {
+    transmissionInput.suspend();
+    if (transmissionAvailable)
+        manual_backend::publish(nullptr, false, 0);
+}
+
+bool updateTransmission(Vehicle* vehicle) noexcept {
+    if (!transmissionAvailable)
+        return false;
+
+    const bool simulated = inputFrame.simulated;
+    const bool enabled = simulated || inputFrame.nativeShifter;
+    const auto intent = transmissionInput.update(inputFrame.nativeShifter, inputFrame.nativeGear, simulated,
+        enabled && keyDown(VK_F8), simulated && keyDown(VK_PRIOR), simulated && keyDown(VK_NEXT),
+        simulated ? keyboardGear() : std::nullopt);
+    manual_backend::publish(vehicle, intent.manual, intent.delta, intent.manual ? intent.gear : std::nullopt);
+    if (!intent.manual)
+        return false;
+
+    const auto gearbox = manual_backend::snapshot(vehicle);
+    return gearbox.manualActive && gearbox.gearCount > 0 && gearbox.engagedGear == 0 &&
+        gearbox.sampledAt && GetTickCount64() - gearbox.sampledAt <= static_cast<std::uint64_t>(inputLifetime / 1ms);
+}
+
 void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
     RED4ext::Handle<RED4ext::ISerializable> vehicle;
     RED4ext::GetParameter(frame, &vehicle);
@@ -649,6 +696,7 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
         std::scoped_lock lock(stateMutex);
         invalidated = context.vehicle != current || (current && now - context.refreshed > contextLifetime);
         if (invalidated) {
+            transmissionInput = {};
             advanceDrivingGeneration();
             context.vehicleUpdated = {};
             invalidateFrames();
@@ -660,6 +708,8 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
         context.vehicle = current;
         context.refreshed = now;
         drivingVehicle.store(current, std::memory_order_release);
+        if (invalidated || !foreground)
+            suspendTransmission();
         if (foreground) {
             status = HudStatus::loaded;
             if (hudFrame.generation == context.generation) {
@@ -686,6 +736,25 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
     }
 }
 
+void manualGearForHud(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
+    RED4ext::Handle<RED4ext::ISerializable> vehicle;
+    RED4ext::GetParameter(frame, &vehicle);
+    ++frame->code;
+    if (out) {
+        const auto state = vehicle.instance && transmissionAvailable ? manual_backend::snapshot(vehicle.instance)
+                                                                     : manual_backend::Snapshot{};
+        *out = state.gearCount > 0 ? state.engagedGear : -2;
+    }
+}
+
+void manualModeForHud(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* out, std::int64_t) {
+    RED4ext::Handle<RED4ext::ISerializable> vehicle;
+    RED4ext::GetParameter(frame, &vehicle);
+    ++frame->code;
+    if (out)
+        *out = vehicle.instance && transmissionAvailable && manual_backend::snapshot(vehicle.instance).manualActive;
+}
+
 void registerNative() {
     auto* rtti = RED4ext::CRTTISystem::Get();
     constexpr auto name = "ChromeAxis_DriverHeartbeat";
@@ -694,6 +763,20 @@ void registerNative() {
     heartbeat->AddParam("handle:vehicleBaseObject", "vehicle");
     heartbeat->SetReturnType("Int32");
     rtti->RegisterFunction(heartbeat);
+
+    constexpr auto gearName = "ChromeAxis_ManualGear";
+    auto* manualGear = RED4ext::CGlobalFunction::Create(gearName, gearName, &manualGearForHud);
+    manualGear->flags = {.isNative = true, .isStatic = true};
+    manualGear->AddParam("handle:vehicleBaseObject", "vehicle");
+    manualGear->SetReturnType("Int32");
+    rtti->RegisterFunction(manualGear);
+
+    constexpr auto modeName = "ChromeAxis_ManualModeActive";
+    auto* manualMode = RED4ext::CGlobalFunction::Create(modeName, modeName, &manualModeForHud);
+    manualMode->flags = {.isNative = true, .isStatic = true};
+    manualMode->AddParam("handle:vehicleBaseObject", "vehicle");
+    manualMode->SetReturnType("Bool");
+    rtti->RegisterFunction(manualMode);
 
     auto* enabled = RED4ext::CGlobalFunction::Create("ChromeAxis_FeedbackEnabled", "ChromeAxis_FeedbackEnabled", &feedbackEnabled);
     enabled->flags = {.isNative = true, .isStatic = true};
@@ -763,6 +846,7 @@ public:
     }
 
     bool enabled{};
+    bool nativeShifter{};
     std::optional<chrome_axis::Profile> profile;
     std::optional<chrome_axis::ControlReader> reader;
     std::optional<chrome_axis::AccessoryProfile> accessoryProfile;
@@ -842,6 +926,7 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
             watchedAccessories_.readFinished(updated.has_value(), now);
             changes.accessories = !chrome_axis::sameAccessoryInputProfile(accessoryProfile, updated);
             accessoryProfile = std::move(updated);
+            nativeShifter = accessoryProfile && std::ranges::any_of(*accessoryProfile, &chrome_axis::AccessoryBinding::nativeShifter);
             if (changes.accessories) {
                 accessories.reset();
                 if (accessoryProfile && !accessoryProfile->empty()) {
@@ -868,6 +953,7 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
         accessories.reset();
         profile.reset();
         accessoryProfile.reset();
+        nativeShifter = false;
         clearWatches();
         feedbackSettings = {};
         lastFeedbackWarning_.clear();
@@ -983,6 +1069,40 @@ void updatePerformanceCapture(chrome_axis::PerformanceReport& report, std::uint6
     }
 }
 
+chrome_axis::DiagnosticTransmission diagnosticTransmission(const DrivingContext& driving) noexcept {
+    using chrome_axis::DiagnosticShiftState;
+    if (!inputFrame.nativeShifter && !inputFrame.simulated)
+        return {};
+
+    chrome_axis::DiagnosticTransmission result{.configured = true};
+    if (!transmissionAvailable) {
+        result.shift = DiagnosticShiftState::unavailable;
+        return result;
+    }
+
+    const auto state = manual_backend::snapshot(driving.vehicle);
+    result.manual = state.manualActive;
+    result.selectedGear = state.selectedGear.value_or(inputFrame.nativeGear.value_or(-2));
+    result.requestedGear = state.requestedGear;
+    result.engagedGear = state.gearCount > 0 ? state.engagedGear : -2;
+    constexpr std::array outcomes{
+        std::pair{"manual_ready", DiagnosticShiftState::ready},
+        std::pair{"outside_supported_range", DiagnosticShiftState::outsideRange},
+        std::pair{"direction_change_requires_stop", DiagnosticShiftState::stopToChangeDirection},
+        std::pair{"already_engaged", DiagnosticShiftState::alreadyEngaged},
+        std::pair{"native_rejected", DiagnosticShiftState::rejected},
+        std::pair{"native_accepted", DiagnosticShiftState::accepted},
+        std::pair{"neutral_transition", DiagnosticShiftState::neutralTransition},
+        std::pair{"request_expired", DiagnosticShiftState::expired},
+    };
+    const auto outcome = std::ranges::find_if(outcomes, [&](const auto& entry) {
+        return std::string_view(state.outcome) == entry.first;
+    });
+    if (outcome != outcomes.end())
+        result.shift = outcome->second;
+    return result;
+}
+
 void pollInput(std::stop_token stop, const std::filesystem::path& configurationDirectory) {
     const auto executable = chrome_axis::modulePath(nullptr);
     const auto gameRoot = executable.parent_path().parent_path().parent_path();
@@ -1039,6 +1159,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 snapshot.feedbackData = {};
                 diagnostic.feedbackData = {};
             }
+            snapshot.transmission = drivingSession ? diagnosticTransmission(context) : chrome_axis::DiagnosticTransmission{};
             const bool hasDelivery = drivingSession && vehicleDelivery.sampled != Clock::time_point{} &&
                 now - vehicleDelivery.sampled <= inputLifetime;
             const bool hasPedalDelivery = hasDelivery && snapshot.mode == DiagnosticMode::usb &&
@@ -1232,6 +1353,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         std::bitset<256> requestedKeys;
         std::bitset<256> pulseKeys;
         std::optional<float> handbrake;
+        std::optional<int> nativeGear;
         std::array<chrome_axis::AccessoryObservation, chrome_axis::maxAccessoryBindings> accessoryObservations{};
         bool readAccessories = false;
         const bool measuring = performance.state == chrome_axis::PerformanceState::capturing;
@@ -1269,7 +1391,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     requestedKeys = usb.accessories->poll(*input,
                         diagnostics ? std::span<chrome_axis::AccessoryObservation>{accessoryObservations}
                                     : std::span<chrome_axis::AccessoryObservation>{},
-                        &pulseKeys, &handbrake);
+                        &pulseKeys, &handbrake, &nativeGear);
                 } else if (usb.accessories) {
                     usb.accessories->reset();
                 }
@@ -1285,6 +1407,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 requestedKeys.reset();
                 pulseKeys.reset();
                 handbrake.reset();
+                nativeGear.reset();
             }
         }
         const bool axesReady = usb.reader && std::ranges::all_of(usb.reader->axisStatuses(), [](chrome_axis::AxisStatus status) {
@@ -1334,8 +1457,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     if (!accessoryContextLive)
                         handbrake.reset();
                 }
-                if (simulated || usb.reader || handbrake) {
-                    inputFrame = {controls, readings, current.generation, sampledAt, simulated, handbrake};
+                const bool nativeShifter = !simulated && usb.nativeShifter;
+                if (simulated || usb.reader || handbrake || nativeShifter) {
+                    inputFrame = {controls, readings, current.generation, sampledAt, simulated, handbrake,
+                                  nativeShifter, nativeGear};
                 } else {
                     inputFrame = {};
                 }
@@ -1535,7 +1660,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                        .index = static_cast<std::uint32_t>(binding.index), .key = key,
                        .rest = binding.rest, .engaged = binding.engaged,
                        .handbrakeCeilingPercent = binding.handbrakeCeilingPercent};
-                const bool keyboard = !binding.handbrakeCeilingPercent;
+                const bool keyboard = !binding.handbrakeCeilingPercent && !binding.nativeShifter;
                 if (keyboard) {
                     const auto& history = accessoryHistory[key];
                     row.lastSentAt = history.sentAt;
@@ -1595,30 +1720,36 @@ void updateVehicle(Vehicle* vehicle) {
     std::unique_lock lock(stateMutex);
     const auto now = Clock::now();
     if (vehicle != context.vehicle || now - context.refreshed > contextLifetime) {
+        suspendTransmission();
         resetSimulator();
         vehicleDelivery = {};
         return;
     }
     // A report can arrive just before the game hook resumes after a vehicle-input gap.
     // Invalidate it so the worker waits for neutral before using the lever again.
-    const bool resumedWithHandbrake = inputFrame.handbrake && !vehicleInputFresh(context, now);
+    const bool resumedWithLever = (inputFrame.handbrake || inputFrame.nativeShifter) && !vehicleInputFresh(context, now);
     context.vehicleUpdated = now;
-    if (resumedWithHandbrake) {
+    if (resumedWithLever) {
+        suspendTransmission();
         advanceDrivingGeneration();
         invalidateFrames();
         return;
     }
     if (inputFrame.generation != context.generation || now - inputFrame.sampled > inputLifetime) {
+        suspendTransmission();
         resetSimulator();
         vehicleDelivery = {};
         return;
     }
     if (!foregroundGameWindow()) {
+        suspendTransmission();
         advanceDrivingGeneration();
         context.vehicleUpdated = {};
         invalidateFrames();
         return;
     }
+
+    const bool reversePedals = updateTransmission(vehicle);
 
     auto controls = inputFrame.state;
     const bool simulated = inputFrame.simulated;
@@ -1652,8 +1783,10 @@ void updateVehicle(Vehicle* vehicle) {
 
     const bool axesRequested = controls.steeringReady || controls.throttleReady || controls.brakeReady;
     const float gameSteering = axesRequested ? readField(*vehicle, steeringOffset) : 0.0f;
-    const float gameThrottle = axesRequested ? vehicle->acceleration : 0.0f;
-    const float gameBrake = axesRequested ? vehicle->deceleration : 0.0f;
+    // In reverse, Cyberpunk uses the deceleration channel for propulsion and the
+    // acceleration channel for service braking. Keep the configured pedals logical.
+    const float gameThrottle = axesRequested ? (reversePedals ? vehicle->deceleration : vehicle->acceleration) : 0.0f;
+    const float gameBrake = axesRequested ? (reversePedals ? vehicle->acceleration : vehicle->deceleration) : 0.0f;
     const bool axesAvailable = axesRequested && std::isfinite(gameSteering) && std::isfinite(gameThrottle) &&
         std::isfinite(gameBrake);
     if (!axesAvailable) {
@@ -1686,10 +1819,11 @@ void updateVehicle(Vehicle* vehicle) {
         writeField(*vehicle, steeringOffset, compensated);
     }
     if (pedals) {
-        vehicle->acceleration = throttle;
-        vehicle->deceleration = brake;
-        writeField(*vehicle, driveOffset, throttle - brake);
-        writeField(*vehicle, secondaryDriveOffset, throttle - brake);
+        vehicle->acceleration = reversePedals ? brake : throttle;
+        vehicle->deceleration = reversePedals ? throttle : brake;
+        const float drive = vehicle->acceleration - vehicle->deceleration;
+        writeField(*vehicle, driveOffset, drive);
+        writeField(*vehicle, secondaryDriveOffset, drive);
     }
     const bool applied = steer || pedals || handbrakeWritten;
     if (applied) {
@@ -1726,6 +1860,8 @@ void stopPlugin() {
         readerThread.request_stop();
         readerThread.join();
     }
+    transmissionAvailable = false;
+    manual_backend::detach();
     if (hookTarget) {
         if (sdk->hooking->Detach(plugin, hookTarget)) {
             hookTarget = nullptr;
@@ -1794,6 +1930,9 @@ bool startPlugin() {
         return false;
     }
     rtti->AddPostRegisterCallback(&registerNative);
+    transmissionAvailable = manual_backend::attach(plugin, sdk);
+    if (!transmissionAvailable)
+        warn("Native transmission unavailable. Standard controls remain available.");
     active.store(true, std::memory_order_release);
     info("Vehicle input hook attached for Cyberpunk 2077 2.5. Waiting for the local driver context.");
     return true;
