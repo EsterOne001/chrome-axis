@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.46
+
+- **HUD de conduite.** Le badge compact reprend le trait rouge, le décroché et le fond translucide de l’interface de Cyberpunk 2077. L’état et le mode de boîte figurent à gauche, avec le rapport engagé en grand à droite. Le pictogramme et le libellé conservent les couleurs des états.
+
+[ZIP Vortex](out/Chromaxis-0.4.46.zip)
+
 ## Chrome Axis 0.4.45
 
 - **Boîte et pédales USB.** Le retour en AUTO libère les pédales après une observation de boîte indisponible lorsque le routage est sûr. Les demandes de rapport expirent même si le jeu ne met plus la boîte à jour. Le réarmement en marche arrière reste pris en compte.

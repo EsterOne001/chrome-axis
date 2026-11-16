@@ -18,7 +18,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let hudLabel: wref<inkText>;
   private let hudLabelShadow: wref<inkText>;
   private let hudGearLabel: wref<inkText>;
-  private let hudGearLabelShadow: wref<inkText>;
+  private let hudGearCaption: wref<inkText>;
+  private let hudModeLabel: wref<inkText>;
   private let hudGear: Int32;
   private let hudManualMode: Bool;
   private let hudStatus: Int32;
@@ -61,7 +62,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudLabel = null;
     this.hudLabelShadow = null;
     this.hudGearLabel = null;
-    this.hudGearLabelShadow = null;
+    this.hudGearCaption = null;
+    this.hudModeLabel = null;
     this.hudGear = -2;
     this.hudManualMode = false;
     this.hudStatus = 0;
@@ -92,27 +94,33 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
 
     let badge = new inkCanvas();
     badge.SetName(n"ChromeAxisStatusBadge");
-    badge.SetSize(Vector2(242.0, 63.0));
+    badge.SetSize(Vector2(236.0, 48.0));
     badge.SetAnchor(inkEAnchor.TopLeft);
     badge.SetAnchorPoint(0.0, 0.0);
     badge.SetTranslation(36.0, 176.0);
     badge.SetInteractive(false);
     badge.Reparent(root);
+    this.BuildHudFrame(badge);
 
     let logo = new inkImage();
     logo.SetVisible(false);
+    logo.SetInteractive(false);
     logo.SetAtlasResource(r"chrome_axis\\hud\\logo.inkatlas");
-    logo.SetSize(Vector2(34.0, 34.0));
+    logo.SetSize(Vector2(26.0, 26.0));
+    logo.SetTranslation(9.0, 10.0);
     logo.Reparent(badge);
 
-    let shadow = this.CreateHudLabel(badge, 0.0, 1.0, 134.0);
+    let shadow = this.CreateHudLabel(badge, 43.0, 5.0, 130.0, 21.0, 17, textHorizontalAlignment.Left);
     shadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
-    let label = this.CreateHudLabel(badge, 0.0, 0.0, 134.0);
+    let label = this.CreateHudLabel(badge, 42.0, 4.0, 130.0, 21.0, 17, textHorizontalAlignment.Left);
 
-    let gearShadow = this.CreateHudLabel(badge, 28.0, 1.0, 200.0);
-    gearShadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
-    let gearLabel = this.CreateHudLabel(badge, 28.0, 0.0, 200.0);
-    gearLabel.SetTintColor(HDRColor(1.0, 0.84, 0.18, 1.0));
+    let secondary = HDRColor(0.65, 0.78, 0.82, 1.0);
+    let modeLabel = this.CreateHudLabel(badge, 42.0, 24.0, 130.0, 17.0, 13, textHorizontalAlignment.Left);
+    modeLabel.SetTintColor(secondary);
+    let gearCaption = this.CreateHudLabel(badge, 180.0, 5.0, 44.0, 14.0, 10, textHorizontalAlignment.Center);
+    gearCaption.SetTintColor(secondary);
+    let gearLabel = this.CreateHudLabel(badge, 180.0, 16.0, 44.0, 29.0, 27, textHorizontalAlignment.Center);
+    gearLabel.SetTintColor(HDRColor(0.87, 0.96, 1.0, 1.0));
 
     this.hudBadge = badge;
     this.hudLogo = logo;
@@ -120,7 +128,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudLabel = label;
     this.hudLabelShadow = shadow;
     this.hudGearLabel = gearLabel;
-    this.hudGearLabelShadow = gearShadow;
+    this.hudGearCaption = gearCaption;
+    this.hudModeLabel = modeLabel;
     this.ApplyHudStatus();
     this.ApplyHudGear();
     this.TryShowHudLogo();
@@ -139,15 +148,40 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     }
   }
 
-  private func CreateHudLabel(badge: ref<inkCanvas>, row: Float, offset: Float, width: Float) -> ref<inkText> {
+  private func BuildHudFrame(badge: ref<inkCanvas>) -> Void {
+    let panel = HDRColor(0.024, 0.039, 0.059, 0.72);
+    this.AddHudRect(badge, 0.0, 2.0, 227.0, 44.0, panel);
+    this.AddHudRect(badge, 227.0, 2.0, 9.0, 36.0, panel);
+    let border = HDRColor(1.0, 0.32, 0.40, 0.86);
+    this.AddHudRect(badge, 0.0, 2.0, 236.0, 1.0, border);
+    this.AddHudRect(badge, 0.0, 3.0, 1.0, 42.0, border);
+    this.AddHudRect(badge, 0.0, 45.0, 228.0, 1.0, border);
+    this.AddHudRect(badge, 235.0, 3.0, 1.0, 34.0, border);
+    this.AddHudRect(badge, 227.0, 37.0, 9.0, 1.0, border);
+    this.AddHudRect(badge, 227.0, 38.0, 1.0, 7.0, border);
+    this.AddHudRect(badge, 12.0, 0.0, 16.0, 2.0, border);
+    this.AddHudRect(badge, 173.0, 8.0, 1.0, 31.0, HDRColor(0.42, 0.65, 0.69, 0.45));
+  }
+
+  private func AddHudRect(badge: ref<inkCanvas>, x: Float, y: Float, width: Float, height: Float, color: HDRColor) -> Void {
+    let rectangle = new inkRectangle();
+    rectangle.SetInteractive(false);
+    rectangle.SetSize(Vector2(width, height));
+    rectangle.SetTranslation(x, y);
+    rectangle.SetTintColor(color);
+    rectangle.Reparent(badge);
+  }
+
+  private func CreateHudLabel(badge: ref<inkCanvas>, x: Float, y: Float, width: Float, height: Float, fontSize: Int32, alignment: textHorizontalAlignment) -> ref<inkText> {
     let label = new inkText();
+    label.SetInteractive(false);
     label.SetFontFamily("base\\gameplay\\gui\\fonts\\raj\\raj.inkfontfamily");
     label.SetFontStyle(n"Bold");
-    label.SetFontSize(18);
-    label.SetHorizontalAlignment(textHorizontalAlignment.Left);
+    label.SetFontSize(fontSize);
+    label.SetHorizontalAlignment(alignment);
     label.SetVerticalAlignment(textVerticalAlignment.Center);
-    label.SetSize(Vector2(width, 34.0));
-    label.SetTranslation(40.0 + offset, row + offset);
+    label.SetSize(Vector2(width, height));
+    label.SetTranslation(x, y);
     label.Reparent(badge);
     return label;
   }
@@ -168,20 +202,14 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   }
 
   private func ApplyHudGear() -> Void {
-    if !IsDefined(this.hudGearLabel) || !IsDefined(this.hudGearLabelShadow) {
-      return;
-    }
-    let visible = this.hudStatus != 0;
-    this.hudGearLabel.SetVisible(visible);
-    this.hudGearLabelShadow.SetVisible(visible);
-    if !visible {
+    if !IsDefined(this.hudGearLabel) || !IsDefined(this.hudGearCaption) || !IsDefined(this.hudModeLabel) {
       return;
     }
     let value = this.hudGear > 0 ? IntToString(this.hudGear) : (this.hudGear == 0 ? "R" : (this.hudGear == -1 ? "N" : "—"));
     let mode = this.hudManualMode ? (this.hudFrench ? "MANUEL" : "MANUAL") : "AUTO";
-    let text = (this.hudFrench ? "RAPPORT " : "GEAR ") + value + " · " + mode;
-    this.hudGearLabel.SetText(text);
-    this.hudGearLabelShadow.SetText(text);
+    this.hudGearCaption.SetText(this.hudFrench ? "RAPPORT" : "GEAR");
+    this.hudGearLabel.SetText(value);
+    this.hudModeLabel.SetText(mode);
   }
 
   private func UpdateHud(game: GameInstance, status: Int32, vehicle: wref<VehicleObject>) -> Void {
