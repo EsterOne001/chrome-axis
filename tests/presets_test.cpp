@@ -42,6 +42,22 @@ bool testStaleWrites(const std::filesystem::path& fixture)
     std::filesystem::create_directory(parent);
     const auto preset = activePreset(root);
     const auto axesFile = root / profileFilename;
+    bool installationWriteRan = false;
+    if (!check(saveInstallationSettings(root, [&] {
+                   return savePresetSettings(root, preset, {}, [&] {
+                       installationWriteRan = true;
+                       return true;
+                   }) == PresetSaveResult::ioError;
+               }) && !installationWriteRan,
+               "An installation preference write must exclude a profile transaction")
+        || !check(savePresetSettings(root, preset, {}, [&] {
+                      return !saveInstallationSettings(root, [&] {
+                          installationWriteRan = true;
+                          return true;
+                      });
+                  }) == PresetSaveResult::saved && !installationWriteRan,
+                  "A profile transaction must exclude an installation preference write"))
+        return false;
     const auto accessoriesFile = root / accessoryFilename;
     const auto feedbackFile = root / feedbackFilename;
     auto axesBaseline = profileFileRevision(axesFile);
@@ -203,6 +219,25 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
                && !replacePresetDevice(root, selected, oldWheel, newWheel, error) && error == Error::conflict
                && loadAccessoryProfile(digital, details) == conflictingDigital,
                "Merging two devices must not put two commands on one button"))
+        return false;
+
+    auto sharedAxes = calibration;
+    sharedAxes.throttle = {newWheel, 1, 500, 500, 1000, 0.04f};
+    AccessoryBinding sharedClutch{.deviceId = oldWheel, .kind = AccessoryKind::Axis, .index = 1,
+        .rest = 500, .engaged = 1000, .clutchMode = ClutchMode::experiment};
+    if (!check(saveProfile(analog, sharedAxes, details) && saveAccessoryProfile(digital, {sharedClutch}, details)
+               && !replacePresetDevice(root, selected, oldWheel, newWheel, error) && error == Error::conflict
+               && loadAccessoryProfile(digital, details) == AccessoryProfile{sharedClutch},
+               "Reassignment must reject an overlapping pedal and clutch"))
+        return false;
+    sharedClutch.engaged = 0;
+    if (!check(saveAccessoryProfile(digital, {sharedClutch}, details)
+               && replacePresetDevice(root, selected, oldWheel, newWheel, error),
+               "Reassignment should keep opposite, centered clutch and throttle travel"))
+        return false;
+    sharedClutch.deviceId = newWheel;
+    if (!check(loadAccessoryProfile(digital, details) == AccessoryProfile{sharedClutch},
+               "Reassignment should preserve opposed axis calibration"))
         return false;
 
     std::filesystem::remove(analog);

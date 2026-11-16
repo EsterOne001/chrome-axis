@@ -360,6 +360,7 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
     const bool canRead = !simulated && GetForegroundWindow() == window && !IsIconic(GetWindow(window, GW_OWNER));
     if (canRead)
         input.beginPoll();
+    const auto sampledAt = PedalStabilizer::Clock::now();
     const AxisCalibration simulatedCalibration{.deviceId = {}, .positive = 100};
     for (std::size_t pedal = 0; pedal < pedalAxes.size(); ++pedal) {
         const bool editing = pedalAxes[pedal] == axis;
@@ -385,7 +386,8 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
         }
         if (raw && response) {
             const auto preview = previewAxisResponse(pedalAxes[pedal], *binding, *raw, *response);
-            const auto adjusted = response->stabilization ? pedalStabilizers[pedal].update(preview.adjusted) : preview.adjusted;
+            const auto adjusted = response->stabilization
+                ? pedalStabilizers[pedal].update(preview.adjusted, sampledAt) : preview.adjusted;
             local.pedals[pedal] = {preview.raw, adjusted, std::nullopt};
             if (response->stabilization)
                 continue;

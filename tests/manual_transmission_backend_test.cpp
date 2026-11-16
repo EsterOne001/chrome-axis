@@ -12,6 +12,17 @@ static_assert(!supportedGear(4, 4));
 static_assert(!supportedGear(unavailableGear, eightEntries));
 static_assert(!supportedGear(reverseGear, 0));
 
+constexpr manual_backend::Snapshot gearbox{
+    .engagedGear = 1, .targetGear = 1, .gearCount = eightEntries, .sampledAt = 500,
+};
+static_assert(!freshGearbox({}, 500));
+static_assert(!freshGearbox(gearbox, 499));
+static_assert(freshGearbox(gearbox, 600));
+static_assert(!freshGearbox(gearbox, 601));
+static_assert(!requestExpired(0, 1000));
+static_assert(!requestExpired(900, 899));
+static_assert(requestExpired(900, 900));
+
 static_assert(observeEngagement(3, neutralGear, false, 100, 200) == Engagement::pending);
 static_assert(observeEngagement(3, 3, false, 180, 200) == Engagement::pending);
 static_assert(observeEngagement(3, 3, true, 181, 200) == Engagement::confirmed);

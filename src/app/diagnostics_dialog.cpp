@@ -52,7 +52,7 @@ struct PerformanceCommand {
 };
 
 struct DialogState {
-    DiagnosticReader reader;
+    DiagnosticReader& reader;
     const std::filesystem::path& gameRoot;
     const std::filesystem::path& profileRoot;
     std::wstring models;
@@ -162,6 +162,7 @@ const wchar_t* accessoryText(DiagnosticAccessoryState state)
     case DiagnosticAccessoryState::waiting: return tr(Text::DlgDiagnosticsAccessoriesWaiting);
     case DiagnosticAccessoryState::ready: return tr(Text::DlgDiagnosticsAccessoriesReady);
     case DiagnosticAccessoryState::profileError: return tr(Text::DlgDiagnosticsAccessoriesError);
+    case DiagnosticAccessoryState::axisConflict: return tr(Text::DlgDiagnosticsAccessoryAxisConflict);
     case DiagnosticAccessoryState::inactive: return tr(Text::DlgDiagnosticsInactive);
     case DiagnosticAccessoryState::blocked: return tr(Text::DlgDiagnosticsAccessoriesBlocked);
     case DiagnosticAccessoryState::deviceUnavailable: return tr(Text::DlgDiagnosticsDeviceUnavailable);
@@ -583,7 +584,7 @@ std::wstring performanceStatus(const DiagnosticRead& read, ULONGLONG now)
     auto end = performance.endedAt;
     if (performance.state == PerformanceState::capturing) {
         const bool driving = read.connection == DiagnosticConnection::connected &&
-            (read.snapshot.mode == DiagnosticMode::usb || read.snapshot.mode == DiagnosticMode::simulation);
+            isDrivingCaptureMode(read.snapshot.mode);
         label = driving ? Text::DlgDiagnosticsPerformanceActive : Text::DlgDiagnosticsPerformancePaused;
         end = read.connection == DiagnosticConnection::connected ? now : read.sampledAt;
     } else {
@@ -1145,6 +1146,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             break;
         [[fallthrough]];
     case WM_CLOSE:
+        if (state && state->reader.ownsPerformanceCapture())
+            state->reader.requestPerformanceCapture(false);
         EndDialog(window, IDCANCEL);
         return TRUE;
     case WM_DESTROY:
@@ -1157,11 +1160,12 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 } // namespace
 
-void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::span<const DeviceInfo> devices)
+void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::span<const DeviceInfo> devices,
+                     DiagnosticReader& reader)
 {
     const auto pluginDirectory = profileRoot.parent_path();
     const auto gameRoot = installedGameRoot(pluginDirectory);
-    DialogState state{DiagnosticReader(gameRoot), gameRoot, profileRoot, detectedModels(devices)};
+    DialogState state{reader, gameRoot, profileRoot, detectedModels(devices)};
     if (!gameRoot.empty()) {
         const auto files = pluginFiles(pluginDirectory);
         state.missingFiles = missingPluginFilesText(files);

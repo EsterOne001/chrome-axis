@@ -67,7 +67,10 @@ struct DeviceInfo;
 struct PluginFiles;
 
 const wchar_t* missingPluginFilesText(PluginFiles files) noexcept;
-void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::span<const DeviceInfo> devices);
+class DiagnosticReader;
+
+void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::span<const DeviceInfo> devices,
+                     DiagnosticReader& reader);
 
 } // namespace chrome_axis
 #endif

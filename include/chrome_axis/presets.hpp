@@ -40,6 +40,9 @@ enum class PresetSaveResult { saved, changed, ioError };
 PresetSaveResult savePresetSettings(const std::filesystem::path& root, const ProfilePreset& expected,
                                     std::span<const ProfileFileCheck> checks, const std::function<bool()>& save);
 
+// Serialize writes such as the USB marker, language and transmission shortcut with profile restoration.
+bool saveInstallationSettings(const std::filesystem::path& root, const std::function<bool()>& save);
+
 // The original profile has an empty name. An invalid selection has an empty directory.
 ProfilePreset activePreset(const std::filesystem::path& root);
 std::vector<std::wstring> listPresets(const std::filesystem::path& root);

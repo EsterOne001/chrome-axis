@@ -78,6 +78,14 @@ struct AccessoryBinding {
 
 using AccessoryProfile = std::vector<AccessoryBinding>;
 
+struct Profile;
+
+// Match analog accessories against the driving axes in the same preset.
+bool analogAccessoryAxisConflict(const Profile& axes, const AccessoryBinding& binding) noexcept;
+// Older profiles can already contain conflicts. Allow editing unrelated settings and resolving conflicts one at a time.
+bool introducesAnalogAccessoryAxisConflict(const Profile* previousAxes, std::span<const AccessoryBinding> previousBindings,
+                                           const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept;
+
 enum class AccessoryStatus { waitingForNeutral, deviceUnavailable, inputUnavailable, armed, temporarilyUnavailable };
 
 struct AccessoryReadiness {

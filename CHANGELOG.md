@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.45
+
+- **Boîte et pédales USB.** Le retour en AUTO libère les pédales après une observation de boîte indisponible lorsque le routage est sûr. Les demandes de rapport expirent même si le jeu ne met plus la boîte à jour. Le réarmement en marche arrière reste pris en compte.
+- **Affectations analogiques.** Les conflits entre axes de conduite, embrayage et frein à main sont signalés. Les réglages d’un ancien profil sont conservés pour permettre leur correction. Les pédales combinées de sens opposés restent compatibles.
+- **Stabilisation.** L’état du filtre est visible et l’aperçu utilise la même évolution dans le temps que le jeu.
+- **Diagnostic et profils.** La capture relève la conduite avec l’USB désactivé et reste exportable après réouverture de Diagnostic dans la même instance de l’application. L’activation USB, le raccourci AUTO / MANUEL et la langue partagent le verrou de restauration des profils.
+
+[ZIP Vortex](out/Chromaxis-0.4.45.zip)
+
 ## Chrome Axis 0.4.44
 
 - **Périphériques.** Les réglages sont regroupés dans Volant, Pédales, Transmission, Frein à main et Accessoires.

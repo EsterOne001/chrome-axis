@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.44** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.45** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -186,7 +186,7 @@ After the test, click **Copy diagnostics** at the bottom of the panel. The clipb
 
 To measure delays, click **Measure performance** in **Diagnostics…**, switch to Cyberpunk, and drive with USB enabled. Switch back, click **Stop measurement**, and choose **Copy diagnostics**. The report summarizes USB read and force feedback call durations, the age of input when it was applied in game, and the number of expired reads. The capture also reports vehicle data age, the number of effects accepted by the driver, and the fraction of force commands that were clipped. The report separates clipping from continuous force and clipping caused by collisions or landings, and shows the calculated, limited, and driver-accepted peaks. Force percentages represent DirectInput commands. These measurements cover the mod’s input path. Use the manual validation procedure to measure frame time.
 
-To keep a time series from the game, start and stop a **drive capture** in **Diagnostics**, then select **Export CSV**. The capture stays in memory until export. It records vehicle, speed, RPM, pedals and gear changes where available. P95 and P99 timings are estimates. The report counts missed USB and force feedback update intervals.
+To keep a time series from the game, start and stop a **drive capture** in **Diagnostics**, then select **Export CSV**. Recording also supports driving with USB disabled. While Chrome Axis stays open, you can reopen **Diagnostics** to export the last capture started in that app instance before starting another. It records vehicle, speed, RPM, pedals and gear changes where available. P95 and P99 timings are estimates. The report counts missed USB and force feedback update intervals.
 
 ## Project folders
 

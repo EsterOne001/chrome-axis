@@ -682,6 +682,11 @@ chrome_axis::DirectGearKeys keyboardGear() noexcept {
     return {.gear = gear};
 }
 
+chrome_axis::PedalGear pedalGear(const manual_backend::Snapshot& gearbox) noexcept {
+    return chrome_axis::observePedalGear(gearbox.engagedGear, gearbox.targetGear, gearbox.gearCount,
+                                         gearbox.reverseIssued);
+}
+
 // Caller holds stateMutex. A stale USB frame cannot request a gear in a new vehicle or session.
 void suspendTransmission(Vehicle* captureVehicle = nullptr) noexcept {
     transmissionInput.suspend();
@@ -691,9 +696,16 @@ void suspendTransmission(Vehicle* captureVehicle = nullptr) noexcept {
     probePosition.reset();
     clutchAssist = {};
     clutchShiftBlocked = false;
-    transmissionPedals.update(false, std::nullopt, false);
-    if (transmissionAvailable)
+    if (transmissionAvailable) {
+        if (context.vehicle) {
+            const auto gearbox = manual_backend::snapshot(context.vehicle);
+            const auto gear = pedalGear(gearbox);
+            if (gear == chrome_axis::PedalGear::reverse || gear == chrome_axis::PedalGear::reversePending)
+                transmissionPedals.update(gearbox.manualRequested || gearbox.reverseIssued, gear, false);
+        }
         manual_backend::publish(captureVehicle, false, 0, std::nullopt, captureVehicle != nullptr);
+    }
+    transmissionPedals.update(false, chrome_axis::PedalGear::unavailable, false);
 }
 
 chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleased, unsigned int hotkey,
@@ -740,16 +752,12 @@ chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleas
     manual_backend::publish(vehicle, intent.manual, intent.delta,
                             intent.manual ? intent.gear : std::nullopt, captureTelemetry);
     if (simulated && intent.toggledByKey)
-        info(intent.manual ? "Keyboard simulation transmission: MANUAL." : "Keyboard simulation transmission: AUTO.");
+        info(intent.manual ? "Keyboard simulation transmission: MANUAL requested." : "Keyboard simulation transmission: AUTO.");
     if (!intent.manual && !transmissionPedals.tracking())
         return PedalRouting::standard;
 
     const auto gearbox = manual_backend::snapshot(vehicle);
-    const bool fresh = gearbox.sampledAt &&
-        GetTickCount64() - gearbox.sampledAt <= static_cast<std::uint64_t>(inputLifetime / 1ms);
-    const auto reverse = fresh
-        ? chrome_axis::reversePedalGear(gearbox.engagedGear, gearbox.targetGear, gearbox.gearCount) : std::nullopt;
-    return transmissionPedals.update(intent.manual, reverse, pedalsReleased);
+    return transmissionPedals.update(intent.manual || gearbox.reverseIssued, pedalGear(gearbox), pedalsReleased);
 }
 
 void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
@@ -764,10 +772,12 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
     bool invalidated;
     {
         std::scoped_lock lock(stateMutex);
-        invalidated = context.vehicle != current || (current && now - context.refreshed > contextLifetime);
+        const bool vehicleChanged = context.vehicle != current;
+        invalidated = vehicleChanged || (current && now - context.refreshed > contextLifetime);
         if (invalidated) {
             transmissionInput = {};
-            transmissionPedals = {};
+            if (vehicleChanged)
+                transmissionPedals = {};
             advanceDrivingGeneration();
             context.vehicleUpdated = {};
             invalidateFrames();
@@ -939,10 +949,11 @@ public:
     bool hasProfileDirectory() const noexcept { return !directory_.empty(); }
     bool hasAccessoryError() const noexcept { return !accessoryError_.empty(); }
     bool profilesValid() const noexcept {
-        return (!watchedProfile_.stamp || profileError_.empty()) && !hasAccessoryError();
+        return (!watchedProfile_.stamp || profileError_.empty()) && !hasAccessoryError() && !accessoryAxisConflict;
     }
 
     bool enabled{};
+    bool accessoryAxisConflict{};
     bool nativeShifter{};
     bool nativeShifterVerified{};
     bool nativeSequential{};
@@ -962,8 +973,9 @@ private:
 
     std::filesystem::path directory_;
     WatchedProfile watchedProfile_, watchedAccessories_, watchedFeedback_;
+    std::optional<chrome_axis::AccessoryProfile> savedAccessories_;
     std::string profileError_, accessoryError_;
-    std::string lastProfileWarning_, lastAccessoryWarning_, lastFeedbackWarning_;
+    std::string lastProfileWarning_, lastAccessoryWarning_, lastFeedbackWarning_, lastAxisConflictWarning_;
     bool reportedUsbState_{};
     bool reportedAccessoriesOnly_{};
 };
@@ -1019,11 +1031,19 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
             }
         }
         const auto accessoryPath = directory_ / chrome_axis::accessoryFilename;
-        if (watchedAccessories_.changed(accessoryPath, now, force)) {
+        const bool readAccessories = watchedAccessories_.changed(accessoryPath, now, force);
+        if (readAccessories) {
             accessoryError_.clear();
-            auto updated = watchedAccessories_.stamp
+            savedAccessories_ = watchedAccessories_.stamp
                 ? chrome_axis::loadAccessoryProfile(accessoryPath, accessoryError_) : std::nullopt;
-            watchedAccessories_.readFinished(updated.has_value(), now);
+            watchedAccessories_.readFinished(savedAccessories_.has_value(), now);
+        }
+        if (readAccessories || changes.calibration) {
+            auto updated = savedAccessories_;
+            // Preserve old settings on disk. Only conflicting analog accessory outputs are suppressed.
+            accessoryAxisConflict = profile && updated && std::erase_if(*updated, [&](const auto& binding) {
+                return chrome_axis::analogAccessoryAxisConflict(*profile, binding);
+            }) != 0;
             changes.accessories = !chrome_axis::sameAccessoryInputProfile(accessoryProfile, updated);
             accessoryProfile = std::move(updated);
             nativeShifter = accessoryProfile && std::ranges::any_of(*accessoryProfile, &chrome_axis::AccessoryBinding::nativeShifter);
@@ -1063,6 +1083,8 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
         accessories.reset();
         profile.reset();
         accessoryProfile.reset();
+        savedAccessories_.reset();
+        accessoryAxisConflict = false;
         nativeShifter = false;
         nativeShifterVerified = false;
         nativeSequential = false;
@@ -1083,6 +1105,9 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
         ? std::string_view{} : std::string_view(profileError_);
     reportChangedWarning(lastProfileWarning_, analogWarning);
     reportChangedWarning(lastAccessoryWarning_, accessoryError_);
+    reportChangedWarning(lastAxisConflictWarning_, accessoryAxisConflict
+        ? "A clutch or handbrake axis conflicts with a driving axis. Conflicting analog accessory commands were disabled."
+        : "");
     enabled = requested;
     return changes;
 }
@@ -1213,7 +1238,7 @@ chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend:
         result.shift = DiagnosticShiftState::expired;
         return result;
     }
-    if ((state.requestPending || paddleRequests.pending()) && result.manual) {
+    if (state.requestPending || (state.manualRequested && paddleRequests.pending())) {
         result.shift = DiagnosticShiftState::pending;
         return result;
     }
@@ -1234,6 +1259,10 @@ chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend:
     });
     if (outcome != outcomes.end())
         result.shift = outcome->second;
+    if (result.shift != DiagnosticShiftState::expired &&
+        ((state.manualRequested && !state.manualActive) ||
+         (transmissionPedals.tracking() && pedalGear(state) == chrome_axis::PedalGear::unavailable)))
+        result.shift = DiagnosticShiftState::unavailable;
     return result;
 }
 
@@ -1308,8 +1337,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 snapshot.mode = DiagnosticMode::waitingForDriver;
             } else {
                 drivingSession = context.session;
-                if ((snapshot.mode == DiagnosticMode::usb || snapshot.mode == DiagnosticMode::simulation) &&
-                    (context.vehicleUpdated == Clock::time_point{} || now - context.vehicleUpdated > inputLifetime)) {
+                if (chrome_axis::isDrivingCaptureMode(snapshot.mode) && !vehicleInputFresh(context, now)) {
                     snapshot.mode = DiagnosticMode::waitingForVehicleInput;
                 }
             }
@@ -1341,12 +1369,12 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 .probeActive = inputFrame.clutchMode == chrome_axis::ClutchMode::experiment ||
                     (inputFrame.simulated && probePosition.has_value()),
             };
-            if (capturing) {
+            if (capturing && drivingSession && vehicleInputFresh(context, now)) {
                 const bool finalPedals = hasDelivery && vehicleDelivery.pedalTick;
                 captureSample = chrome_axis::DrivingCaptureSample{
                     .sampledAt = tick,
                     .mode = snapshot.mode,
-                    .vehicle = drivingSession ? captureVehicleLabel : std::array<char, 64>{},
+                    .vehicle = captureVehicleLabel,
                     .speedMps = gearbox.speedMetersPerSecond.value_or(0.0f),
                     .rpm = gearbox.engineRpm.value_or(0.0f),
                     .throttle = finalPedals ? vehicleDelivery.finalPedals[0] : 0.0f,
@@ -1907,6 +1935,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 diagnostic.accessories = diagnosticAccessoryState(readiness, accessoriesReady, input && input->ready(),
                                                                    sampleExpired, start < accessoryBlockedUntil);
             }
+            if (!simulated && usb.enabled && usb.accessoryAxisConflict)
+                diagnostic.accessories = DiagnosticAccessoryState::axisConflict;
             for (std::size_t i = 0; i < diagnostic.accessoryCount; ++i) {
                 const auto& binding = (*usb.accessoryProfile)[i];
                 const auto key = binding.key;
@@ -2056,9 +2086,7 @@ void updateVehicle(Vehicle* vehicle) {
     auto attenuation = std::optional<float>{};
     if (probePosition && routing == chrome_axis::PedalRouting::standard) {
         const auto gearbox = manual_backend::snapshot(vehicle);
-        if (gearbox.manualActive && gearbox.sampledAt &&
-            GetTickCount64() - gearbox.sampledAt <= static_cast<std::uint64_t>(inputLifetime / 1ms) &&
-            manual_backend::detail::forwardGear(gearbox.engagedGear, gearbox.gearCount) &&
+        if (gearbox.manualActive && manual_backend::detail::forwardGear(gearbox.engagedGear, gearbox.gearCount) &&
             manual_backend::detail::forwardGear(gearbox.targetGear, gearbox.gearCount)) {
             attenuation = *probePosition;
         }
@@ -2171,6 +2199,7 @@ void stopPlugin() {
     context = {};
     appliedAxes = {};
     inputAgeCapture = {};
+    drivingCaptureActive.store(false, std::memory_order_relaxed);
     invalidateFrames();
 }
 
@@ -2220,6 +2249,7 @@ bool startPlugin() {
             warn("Chrome Axis input reader stopped. Vanilla input remains available.");
             std::scoped_lock lock(stateMutex);
             inputAgeCapture = {};
+            drivingCaptureActive.store(false, std::memory_order_relaxed);
             invalidateFrames();
         }
     });

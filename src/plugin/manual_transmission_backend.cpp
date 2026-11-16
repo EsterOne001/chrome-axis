@@ -92,9 +92,11 @@ struct SharedState {
     ULONGLONG expiresAt{};
     std::uint64_t generation{};
     std::uint64_t selectionRevision{};
+    std::uint64_t reverseIssueSerial{};
     std::optional<int> selectedGear;
     std::optional<int> heldGear;
     std::optional<ShiftRequest> request;
+    std::uint64_t dispatchExpiresAt{};
     std::uint64_t engagementExpiresAt{};
     Direction lastDirection{Direction::unknown};
     bool enabled{};
@@ -247,11 +249,27 @@ void resetSelection() noexcept {
     state.selectedGear.reset();
     state.heldGear.reset();
     state.request.reset();
+    state.dispatchExpiresAt = 0;
     state.engagementExpiresAt = 0;
     if (state.view.requestPending) {
         state.view.requestPending = false;
         state.view.outcome = "request_cancelled";
     }
+}
+
+// The input and status callbacks keep timeouts working when the gearbox callback is absent.
+void expireRequests(std::uint64_t now) noexcept {
+    const bool engagementExpired = requestExpired(state.engagementExpiresAt, now);
+    const auto requestDeadline = state.request ? state.request->expiresAt : state.dispatchExpiresAt;
+    if (!engagementExpired && !requestExpired(requestDeadline, now))
+        return;
+
+    ++state.selectionRevision;
+    state.request.reset();
+    state.dispatchExpiresAt = 0;
+    state.engagementExpiresAt = 0;
+    state.view.requestPending = false;
+    state.view.outcome = engagementExpired ? "engagement_unconfirmed" : "request_expired";
 }
 
 void queueShift(std::optional<int> absolute, int delta, std::uint64_t now) noexcept {
@@ -277,8 +295,9 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
         return std::nullopt;
 
     const auto now = GetTickCount64();
+    const bool observedBeforeStep = freshGearbox(state.view, now);
     const bool validGear = supportedGear(engaged, entries);
-    if (!state.view.sampledAt || now - state.view.sampledAt >= leaseDurationMs)
+    if (!observedBeforeStep)
         state.lastDirection = Direction::unknown;
     state.lastDirection = observeDirection(state.lastDirection, engaged, entries);
     state.view.engagedGear = validGear ? engaged : unavailableGear;
@@ -286,7 +305,10 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
     state.view.gearCount = validGear ? entries : 0;
     state.view.sampledAt = validGear ? now : 0;
     sampleTelemetry(owner, now);
-    if (!state.enabled || (!state.request && !state.engagementExpiresAt))
+    expireRequests(now);
+    if (!state.enabled && !state.view.reverseIssued)
+        return std::nullopt;
+    if (!state.request && !state.engagementExpiresAt && !state.view.reverseIssued)
         return std::nullopt;
 
     const float shiftTime = readField<float>(gearbox, shiftTimeOffset);
@@ -302,19 +324,17 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
         state.view.requestPending = false;
         state.engagementExpiresAt = 0;
     }
-    if (!state.request)
+    if (settled && engaged != reverseGear && !state.dispatchExpiresAt)
+        state.view.reverseIssued = false;
+
+    // First acquire a current gearbox observation. A held selector can wait within its request deadline.
+    if (!state.enabled || !state.request || !observedBeforeStep)
         return std::nullopt;
-    if (now >= state.request->expiresAt) {
-        state.view.requestedGear = state.request->absolute.value_or(unavailableGear);
-        state.view.outcome = "request_expired";
-        state.view.requestPending = false;
-        state.request.reset();
-        return std::nullopt;
-    }
     const float cooldown = readField<float>(gearbox, shiftCooldownOffset);
     const bool cooldownReady = std::isfinite(cooldown) && cooldown < 0.0f;
     if (!settled || (!cooldownReady && state.request->absolute != engaged))
         return std::nullopt;
+    state.dispatchExpiresAt = state.request->expiresAt;
     return ReadyRequest{*std::exchange(state.request, std::nullopt), state.selectionRevision, state.lastDirection};
 }
 
@@ -336,6 +356,7 @@ void recordRequest(const void* owner, std::uint64_t generation, const ReadyReque
     state.view.engagedGear = readField<int>(gearbox, engagedGearOffset);
     state.view.targetGear = readField<int>(gearbox, targetGearOffset);
     state.view.outcome = outcome;
+    state.dispatchExpiresAt = 0;
     if (command.request.absolute && held)
         state.heldGear = held;
     state.view.requestPending = followUp != FollowUp::none;
@@ -361,7 +382,7 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
         StateGuard guard;
         generation = state.generation;
         leased = liveLease(owner, generation);
-        enabled = state.enabled;
+        enabled = state.enabled && freshGearbox(state.view, GetTickCount64());
     }
     if (!leased) {
         original(gearbox, deltaTime);
@@ -411,19 +432,32 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
         return;
     }
 
-    {
-        StateGuard guard;
-        if (!liveRequest(owner, generation, *command))
-            return;
-    }
     if (!gameForeground())
         return;
+    std::uint64_t newReverseIssue{};
+    {
+        StateGuard guard;
+        expireRequests(GetTickCount64());
+        if (!liveRequest(owner, generation, *command))
+            return;
+        // Remember an issued R shift across mode toggles and missing observations.
+        if (requested == reverseGear && !throughNeutral) {
+            const auto issue = ++state.reverseIssueSerial;
+            if (!std::exchange(state.view.reverseIssued, true))
+                newReverseIssue = issue;
+        }
+    }
 
     // For a direction change, wait for the native neutral shift to finish before requesting
     // the opposite gear. A direct reversing request can also be interpreted as neutral by the game.
     const auto shift = std::bit_cast<Shift>(originalShift);
     const bool accepted = shift(gearbox, throughNeutral ? neutralGear : requested, false, false);
     if (!accepted) {
+        if (newReverseIssue) {
+            StateGuard guard;
+            if (state.vehicle == owner && state.reverseIssueSerial == newReverseIssue)
+                state.view.reverseIssued = false;
+        }
         recordRequest(owner, generation, *command, requested, "native_rejected", gearbox);
     } else if (throughNeutral) {
         recordRequest(owner, generation, *command, requested, "neutral_transition", gearbox, neutralGear, FollowUp::afterNeutral);
@@ -498,8 +532,9 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
         ++state.generation;
         resetSelection();
         if (newVehicle) {
+            const bool reverseIssued = state.vehicle == vehicle && state.view.reverseIssued;
             state.lastDirection = Direction::unknown;
-            state.view = {};
+            state.view = {.reverseIssued = reverseIssued};
         }
         state.view.requestedGear = unavailableGear;
         state.view.requestedAt = 0;
@@ -516,6 +551,7 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
         state.view.speedMetersPerSecond.reset();
     }
     state.captureTelemetry = vehicle && captureTelemetry;
+    expireRequests(now);
     if (enabled) {
         if (absolute != state.selectedGear) {
             const bool keepNeutral = absolute && state.heldGear == neutralGear;
@@ -526,7 +562,7 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
             if (absolute)
                 queueShift(absolute, 0, now);
         }
-        if (!absolute && !state.request && (delta == -1 || delta == 1))
+        if (!absolute && !state.view.requestPending && (delta == -1 || delta == 1))
             queueShift(std::nullopt, delta, now);
     }
     publishedVehicle.store(vehicle, std::memory_order_release);
@@ -535,22 +571,26 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
 Snapshot snapshot(void* vehicle) noexcept {
     StateGuard guard;
     const auto now = GetTickCount64();
-    if ((vehicle && state.vehicle != vehicle) || !state.vehicle || now >= state.expiresAt)
+    if ((vehicle && state.vehicle != vehicle) || !state.vehicle)
         return {};
+    if (now >= state.expiresAt)
+        return {.reverseIssued = state.view.reverseIssued};
 
+    expireRequests(now);
     auto view = state.view;
+    view.manualRequested = state.enabled;
+    view.manualActive = state.enabled && freshGearbox(view, now);
     if (!view.telemetrySampledAt || now - view.telemetrySampledAt >= leaseDurationMs) {
         view.telemetrySampledAt = 0;
         view.engineRpm.reset();
         view.speedMetersPerSecond.reset();
     }
-    if (!view.sampledAt || now - view.sampledAt >= leaseDurationMs) {
+    if (!view.sampledAt || now < view.sampledAt || now - view.sampledAt > gearboxObservationLifetimeMs) {
         view.engagedGear = neutralGear;
         view.targetGear = neutralGear;
         view.gearCount = 0;
         view.sampledAt = 0;
     }
-    view.manualActive = state.enabled;
     view.selectedGear = state.selectedGear;
     return view;
 }

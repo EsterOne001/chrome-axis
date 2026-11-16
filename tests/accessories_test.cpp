@@ -1,4 +1,5 @@
 #include "chrome_axis/accessories.hpp"
+#include "chrome_axis/controls.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -780,6 +781,65 @@ int testNativeSequentialAndClutch(const std::filesystem::path& path, const std::
     return sample().none() && transmission.clutch == 1.0f ? 0 : 126;
 }
 
+int testAnalogAccessoryAxisConflicts(const std::string& wheelId, const std::string& pedalId)
+{
+    using namespace chrome_axis;
+    Profile axes{
+        .steering = {wheelId, 0, 500, 0, 1000, 0.0f},
+        .throttle = {pedalId, 1, 500, 500, 1000, 0.04f},
+        .brake = {pedalId, 2, 500, 500, 1000, 0.04f},
+    };
+    AccessoryBinding clutch{.deviceId = pedalId, .kind = AccessoryKind::Axis, .index = 1,
+        .rest = 500, .engaged = 1000, .clutchMode = ClutchMode::experiment};
+    AccessoryBinding handbrake{.deviceId = pedalId, .kind = AccessoryKind::Axis, .index = 2,
+        .rest = 500, .engaged = 1000, .handbrakeCeilingPercent = 19};
+    const AccessoryBinding button{pedalId, AccessoryKind::Button, 1, 0, 1, VK_SPACE};
+    const AccessoryProfile bindings{clutch, handbrake, button};
+    if (!analogAccessoryAxisConflict(axes, clutch) || !analogAccessoryAxisConflict(axes, handbrake)
+        || analogAccessoryAxisConflict(axes, button))
+        return 180;
+
+    auto opposite = clutch;
+    opposite.engaged = 0;
+    opposite.rest = 505;
+    if (analogAccessoryAxisConflict(axes, opposite))
+        return 181;
+    auto offset = opposite;
+    offset.rest = 550;
+    if (!analogAccessoryAxisConflict(axes, offset))
+        return 182;
+
+    auto combined = axes;
+    combined.brake = {pedalId, 1, 500, 500, 0, 0.04f};
+    if (!compatibleAxisPair(combined.throttle, combined.brake)
+        || !analogAccessoryAxisConflict(combined, opposite))
+        return 183;
+    auto steeringOverlap = opposite;
+    steeringOverlap.deviceId = wheelId;
+    steeringOverlap.index = 0;
+    if (!analogAccessoryAxisConflict(axes, steeringOverlap))
+        return 184;
+
+    auto oldAxes = axes;
+    oldAxes.throttle.axis = 3;
+    const AccessoryProfile oldBindings{handbrake, button};
+    auto changedSettings = bindings;
+    changedSettings[0].clutchMode = ClutchMode::off;
+    changedSettings[1].handbrakeCeilingPercent = 50;
+    if (!introducesAnalogAccessoryAxisConflict(&axes, oldBindings, axes, bindings)
+        || !introducesAnalogAccessoryAxisConflict(&oldAxes, bindings, axes, bindings)
+        || introducesAnalogAccessoryAxisConflict(&axes, bindings, axes, bindings)
+        || introducesAnalogAccessoryAxisConflict(&axes, bindings, axes, changedSettings)
+        || introducesAnalogAccessoryAxisConflict(&axes, bindings, axes, oldBindings))
+        return 185;
+
+    auto effective = bindings;
+    if (std::erase_if(effective, [&](const auto& binding) { return analogAccessoryAxisConflict(axes, binding); }) != 2
+        || effective != AccessoryProfile{button})
+        return 186;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -817,6 +877,8 @@ int run()
     const auto replacementResult = testProfileReplacement(path, wheelId);
     const auto nativeShifterProfileResult = testNativeShifterProfile(path, wheelId);
     const auto unverifiedShifterResult = testUnverifiedNativeShifter(path, wheelId);
+    if (const auto result = testAnalogAccessoryAxisConflicts(wheelId, handbrakeId); result != 0)
+        return result;
     const auto nativeSequentialResult = testNativeSequentialAndClutch(path, wheelId, handbrakeId);
     std::filesystem::remove(path);
     if (!saved || !rejectedDuplicate || !rejectedZeroTravel || !rejectedDisallowedKey

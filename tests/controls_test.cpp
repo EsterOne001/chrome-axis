@@ -14,11 +14,28 @@ bool approximatelyEqual(float actual, float expected)
 int testPedalStabilization(chrome_axis::Profile profile, const std::filesystem::path& path)
 {
     using namespace chrome_axis;
+    using namespace std::chrono_literals;
+    const PedalStabilizer::Clock::time_point start{};
     PedalStabilizer stabilizer;
-    if (stabilizer.update(0.50f) != 0.50f || stabilizer.update(0.51f) >= 0.505f ||
-        stabilizer.update(0.10f) != 0.10f || stabilizer.update(0.0f) != 0.0f ||
-        stabilizer.update(1.0f) != 1.0f)
+    if (stabilizer.update(0.50f, start) != 0.50f
+        || !approximatelyEqual(stabilizer.update(0.51f, start + 5ms), 0.5022f)
+        || stabilizer.update(0.10f, start + 10ms) != 0.10f
+        || stabilizer.update(0.0f, start + 10ms) != 0.0f
+        || stabilizer.update(1.0f, start + 10ms) != 1.0f)
         return 70;
+
+    for (const auto target : {0.51f, 0.525f}) {
+        PedalStabilizer usb;
+        PedalStabilizer chart;
+        usb.update(0.5f, start);
+        chart.update(0.5f, start);
+        float usbOutput{};
+        for (const auto elapsed : {5ms, 10ms, 15ms, 20ms, 25ms, 30ms, 35ms, 40ms, 45ms, 50ms})
+            usbOutput = usb.update(target, start + elapsed);
+        const float chartOutput = chart.update(target, start + 50ms);
+        if (!approximatelyEqual(usbOutput, chartOutput) || chartOutput <= 0.5f || chartOutput >= target)
+            return 76;
+    }
 
     profile.throttleResponse.stabilization = true;
     profile.brakeResponse.stabilization = true;
@@ -44,6 +61,27 @@ int testPedalStabilization(chrome_axis::Profile profile, const std::filesystem::
     const auto released = reader.update(samples);
     if (!released.throttleReady || released.values.throttle != 0.0f)
         return 74;
+
+    DeviceSample brake{};
+    const auto& calibration = loaded->brake;
+    const auto brakePosition = [&](double travel) {
+        return std::lround(std::lerp(static_cast<double>(calibration.neutral), static_cast<double>(calibration.positive), travel));
+    };
+    brake.axesPresent[calibration.axis] = true;
+    brake.axes[calibration.axis] = brakePosition(0.0);
+    const std::array<const DeviceSample*, 3> brakeSamples{nullptr, nullptr, &brake};
+    ControlReader::CalibrationReadings review;
+    for (const auto elapsed : {0ms, 5ms, 10ms})
+        reader.update(brakeSamples, nullptr, {}, &review, start + elapsed);
+    brake.axes[calibration.axis] = brakePosition(0.5);
+    const auto initialBrake = reader.update(brakeSamples, nullptr, {}, &review, start + 15ms);
+    brake.axes[calibration.axis] = brakePosition(0.51);
+    const auto stabilized = reader.update(brakeSamples, nullptr, {}, &review, start + 20ms);
+    const auto shaped = previewBrake(calibration, brake.axes[calibration.axis], loaded->brakeResponse).adjusted;
+    if (!stabilized.brakeReady || !review.adjustedBrake
+        || !approximatelyEqual(*review.adjustedBrake, stabilized.values.brake)
+        || stabilized.values.brake <= initialBrake.values.brake || stabilized.values.brake >= shaped)
+        return 77;
 
     profile.steeringResponse.stabilization = true;
     return validateProfile(profile, error) ? 75 : 0;

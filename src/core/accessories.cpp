@@ -1,4 +1,5 @@
 #include "chrome_axis/accessories.hpp"
+#include "chrome_axis/controls.hpp"
 
 #include "settings_replace.hpp"
 
@@ -312,6 +313,62 @@ std::optional<InputLevel> readLevel(const AccessoryBinding& binding, const Devic
 }
 
 } // namespace
+
+namespace {
+
+unsigned int analogAccessoryConflicts(const Profile& axes, const AccessoryBinding& binding) noexcept
+{
+    if (binding.kind != AccessoryKind::Axis || (!binding.clutchMode && !binding.handbrakeCeilingPercent))
+        return 0;
+
+    const auto samePhysicalAxis = [&](const AxisCalibration& axis) {
+        return binding.index == axis.axis && binding.deviceId == axis.deviceId;
+    };
+    // A steering axis is used in both directions. Pedals can share a centered signal
+    // only if the two measured travels are opposite and the rest points are mutually neutral.
+    const double accessoryTravel = travel(binding);
+    const double accessoryDeadzone = binding.clutchMode ? clutchDeadZone : handbrakeDeadZone;
+    const auto pedalConflicts = [&](const AxisCalibration& axis) {
+        if (!samePhysicalAxis(axis))
+            return false;
+        const double pedalTravel = static_cast<double>(axis.positive) - axis.neutral;
+        const double centerGap = std::abs(static_cast<double>(axis.neutral) - binding.rest);
+        return !(pedalTravel * accessoryTravel < 0.0
+            && centerGap <= std::abs(pedalTravel) * axis.deadzone
+            && centerGap <= std::abs(accessoryTravel) * accessoryDeadzone);
+    };
+
+    return (samePhysicalAxis(axes.steering) ? 1u : 0u)
+        | (pedalConflicts(axes.throttle) ? 2u : 0u) | (pedalConflicts(axes.brake) ? 4u : 0u);
+}
+
+} // namespace
+
+bool analogAccessoryAxisConflict(const Profile& axes, const AccessoryBinding& binding) noexcept
+{
+    return analogAccessoryConflicts(axes, binding) != 0;
+}
+
+bool introducesAnalogAccessoryAxisConflict(const Profile* previousAxes, std::span<const AccessoryBinding> previousBindings,
+                                           const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept
+{
+    for (const auto& binding : bindings) {
+        const auto conflicts = analogAccessoryConflicts(axes, binding);
+        if (!conflicts)
+            continue;
+        if (!previousAxes)
+            return true;
+        const auto previous = std::ranges::find_if(previousBindings, [&](const auto& saved) {
+            return saved.kind == binding.kind && saved.deviceId == binding.deviceId &&
+                saved.index == binding.index && saved.rest == binding.rest && saved.engaged == binding.engaged &&
+                saved.clutchMode.has_value() == binding.clutchMode.has_value() &&
+                (saved.handbrakeCeilingPercent != 0) == (binding.handbrakeCeilingPercent != 0);
+        });
+        if (previous == previousBindings.end() || (conflicts & ~analogAccessoryConflicts(*previousAxes, *previous)))
+            return true;
+    }
+    return false;
+}
 
 bool isAccessoryKey(unsigned int key) noexcept
 {

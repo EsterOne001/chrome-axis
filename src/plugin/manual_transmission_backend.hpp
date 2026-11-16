@@ -16,6 +16,8 @@ struct Snapshot {
     std::uint64_t sampledAt{};
     const char* outcome{"automatic"};
     bool manualActive{};
+    bool manualRequested{};
+    bool reverseIssued{};
     std::optional<int> selectedGear;
     bool requestPending{};
     std::uint64_t requestedAt{};
@@ -38,6 +40,7 @@ namespace detail {
 constexpr int neutralGear = -1;
 constexpr int reverseGear = 0;
 constexpr int unavailableGear = -2;
+constexpr std::uint64_t gearboxObservationLifetimeMs = 100;
 
 enum class Direction { unknown, forward, reverse };
 enum class ShiftPlan { unsupported, alreadyEngaged, direct, stoppedDirect, stoppedThroughNeutral };
@@ -53,6 +56,17 @@ constexpr Engagement observeEngagement(int requested, int engaged, bool settled,
 constexpr bool supportedGear(int gear, int entries) noexcept {
     // The native table contains up to eight entries, including reverse at index zero.
     return entries >= 2 && entries <= 8 && gear >= neutralGear && gear < entries;
+}
+
+constexpr bool freshGearbox(const Snapshot& observation, std::uint64_t now) noexcept {
+    return observation.sampledAt && now >= observation.sampledAt &&
+           now - observation.sampledAt <= gearboxObservationLifetimeMs &&
+           supportedGear(observation.engagedGear, observation.gearCount) &&
+           supportedGear(observation.targetGear, observation.gearCount);
+}
+
+constexpr bool requestExpired(std::uint64_t deadline, std::uint64_t now) noexcept {
+    return deadline && now >= deadline;
 }
 
 constexpr bool forwardGear(int gear, int entries) noexcept {

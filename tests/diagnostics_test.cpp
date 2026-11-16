@@ -108,6 +108,15 @@ int testPerformanceCapture(const std::filesystem::path& root)
         sample.shiftDelayMicros = 9900;
         sample.shiftDelayAvailable = true;
         publisher.recordDrivingSample(start, sample); // Rapid shift transition is retained.
+        sample.sampledAt += 20;
+        sample.mode = DiagnosticMode::usbDisabled;
+        sample.transmission = {};
+        sample.clutch = {};
+        sample.shiftDelayAvailable = false;
+        publisher.recordDrivingSample(start, sample); // Native driving with USB disabled is a valid baseline.
+        sample.sampledAt += 20;
+        sample.mode = DiagnosticMode::waitingForVehicleInput;
+        publisher.recordDrivingSample(start, sample); // A paused vehicle doesn't produce a driving row.
         const auto live = observer.read();
         if (observer.ownsPerformanceCapture() || live.performance.state != PerformanceState::capturing ||
             live.performance.requestId != start || live.performance.usbRead.samples != 2 ||
@@ -121,7 +130,7 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.performance.peakLimitedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f ||
             live.performance.usbIntervalOverruns != 4 || live.performance.feedbackIntervalOverruns != 5 ||
             live.performance.peakContinuousForce != 1.125f || live.performance.referenceFeedbackGain != 130 ||
-            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 2 || !owner.readDrivingCapture().empty())
+            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 3 || !owner.readDrivingCapture().empty())
             return 15;
 
         const auto stop = owner.requestPerformanceCapture(false);
@@ -142,8 +151,9 @@ int testPerformanceCapture(const std::filesystem::path& root)
             finished.clippedSamples != 3 || finished.impactClippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
         const auto records = owner.readDrivingCapture();
-        if (records.size() != 2 || records.front().transmission.shift != DiagnosticShiftState::pending ||
-            records.back().shiftDelayMicros != 9900 || observer.read().drivingCaptureSamples ||
+        if (records.size() != 3 || records.front().transmission.shift != DiagnosticShiftState::pending ||
+            records[1].shiftDelayMicros != 9900 || records.back().mode != DiagnosticMode::usbDisabled ||
+            !records.back().speedAvailable || records.back().speedMps != 12.5f || observer.read().drivingCaptureSamples ||
             !observer.readDrivingCapture().empty())
             return 22;
         std::ostringstream csv;
@@ -154,7 +164,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
         constexpr std::string_view acceptedRow =
             "\r\n10,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,3,accepted,9900,1,0,1,1,1,1,1\r\n";
         if (!text.starts_with("elapsed_ms,mode,vehicle,speed_mps,engine_rpm,") ||
-            text.find(pendingRow) == std::string::npos || !text.ends_with(acceptedRow)) {
+            text.find(pendingRow) == std::string::npos || text.find(acceptedRow) == std::string::npos ||
+            text.find("\r\n30,usb_disabled,") == std::string::npos) {
             std::cerr << text;
             return 23;
         }

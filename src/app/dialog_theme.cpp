@@ -81,6 +81,7 @@ private:
     void updateDpi();
     void paintScene(HDC dc) const;
     void paintButton(HWND window, HDC dc) const;
+    void paintCheckBox(const DRAWITEMSTRUCT& item, COLORREF base) const;
     void paintCombo(HWND window, HDC dc) const;
     void paintListItem(const DRAWITEMSTRUCT& item) const;
     HBRUSH controlColor(HDC dc, HWND control, UINT message) const;
@@ -227,7 +228,68 @@ void ThemeState::paintButton(HWND window, HDC dc) const
     const bool primary = std::ranges::find(primaryButtons_, static_cast<int>(item.CtlID)) != primaryButtons_.end();
     const auto footer = controlBounds(dialog_, IDC_MODAL_RESULTS).bottom;
     const auto box = controlBounds(dialog_, static_cast<int>(item.CtlID));
-    ui::paintAction(item, fonts_[0], dpi_, box.top >= footer ? ui::background : ui::panel, primary);
+    const auto base = box.top >= footer ? ui::background : ui::panel;
+    const auto type = GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK;
+    if (type == BS_CHECKBOX || type == BS_AUTOCHECKBOX || type == BS_3STATE || type == BS_AUTO3STATE)
+        paintCheckBox(item, base);
+    else
+        ui::paintAction(item, fonts_[0], dpi_, base, primary);
+}
+
+void ThemeState::paintCheckBox(const DRAWITEMSTRUCT& item, COLORREF base) const
+{
+    const bool enabled = !(item.itemState & ODS_DISABLED);
+    const bool focused = (item.itemState & (ODS_FOCUS | ODS_NOFOCUSRECT)) == ODS_FOCUS;
+    const bool pressed = (item.itemState & ODS_SELECTED) != 0;
+    const bool highContrast = ui::isHighContrast();
+    const auto check = SendMessageW(item.hwndItem, BM_GETCHECK, 0, 0);
+    const bool marked = check == BST_CHECKED || check == BST_INDETERMINATE;
+    const auto labelColor = highContrast ? GetSysColor(enabled ? COLOR_WINDOWTEXT : COLOR_GRAYTEXT)
+        : enabled ? ui::ink : ui::secondary;
+    const auto accent = highContrast ? GetSysColor(enabled ? COLOR_HIGHLIGHT : COLOR_GRAYTEXT)
+        : enabled ? ui::cyan : ui::secondary;
+    const auto borderColor = marked || focused || pressed ? accent : highContrast ? labelColor : ui::edge;
+    const auto boxColor = highContrast ? GetSysColor(COLOR_WINDOW) : ui::field;
+    ui::fill(item.hDC, item.rcItem, highContrast ? boxColor : base);
+
+    const int side = px(14);
+    const LONG y = (item.rcItem.top + item.rcItem.bottom - side) / 2;
+    const RECT outline{item.rcItem.left + 1, y, item.rcItem.left + 1 + side, y + side};
+    ui::fill(item.hDC, outline, borderColor);
+    ui::fill(item.hDC, {outline.left + 1, outline.top + 1, outline.right - 1, outline.bottom - 1},
+             marked ? accent : boxColor);
+
+    if (marked) {
+        const auto markColor = highContrast ? GetSysColor(enabled ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOW)
+            : ui::background;
+        if (check == BST_CHECKED) {
+            const POINT tick[]{{outline.left + px(3), y + px(7)}, {outline.left + px(6), y + px(10)},
+                               {outline.left + px(11), y + px(4)}};
+            if (const auto pen = CreatePen(PS_SOLID, px(2), markColor)) {
+                const auto previous = SelectObject(item.hDC, pen);
+                Polyline(item.hDC, tick, static_cast<int>(std::size(tick)));
+                SelectObject(item.hDC, previous);
+                DeleteObject(pen);
+            }
+        } else {
+            ui::fill(item.hDC, {outline.left + px(3), y + px(6), outline.right - px(3), y + px(8)}, markColor);
+        }
+    }
+
+    wchar_t label[128]{};
+    GetWindowTextW(item.hwndItem, label, static_cast<int>(std::size(label)));
+    RECT textRect = item.rcItem;
+    textRect.left = outline.right + px(6);
+    const auto font = SelectObject(item.hDC, fonts_[0]);
+    const auto mode = SetBkMode(item.hDC, TRANSPARENT);
+    const auto color = SetTextColor(item.hDC, labelColor);
+    DrawTextW(item.hDC, label, -1, &textRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS
+        | (item.itemState & ODS_NOACCEL ? DT_HIDEPREFIX : 0));
+    SetTextColor(item.hDC, color);
+    SetBkMode(item.hDC, mode);
+    SelectObject(item.hDC, font);
+    if (focused)
+        DrawFocusRect(item.hDC, &item.rcItem);
 }
 
 void ThemeState::paintCombo(HWND window, HDC dc) const
@@ -404,6 +466,7 @@ LRESULT ThemeState::handleControl(HWND window, UINT message, WPARAM wp, LPARAM l
     case WM_SETTEXT:
     case WM_UPDATEUISTATE:
     case WM_SETFONT:
+    case BM_SETCHECK:
     case BM_SETSTATE:
     case BM_SETSTYLE:
     case CB_RESETCONTENT:

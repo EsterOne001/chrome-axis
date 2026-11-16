@@ -19,6 +19,12 @@ enum class DiagnosticMode : std::uint32_t {
     waitingForDriver, gameNotForeground, waitingForVehicleInput, usbDisabled, profileUnavailable, usb, simulation
 };
 
+constexpr bool isDrivingCaptureMode(DiagnosticMode mode) noexcept
+{
+    return mode == DiagnosticMode::usb || mode == DiagnosticMode::simulation ||
+        mode == DiagnosticMode::usbDisabled || mode == DiagnosticMode::profileUnavailable;
+}
+
 enum class DiagnosticAxisState : std::uint32_t {
     unassigned, deviceUnavailable, axisUnavailable, waitingForNeutral, armed, awaitingProfile, inactive, simulated,
     sampleExpired, temporarilyUnavailable
@@ -26,7 +32,7 @@ enum class DiagnosticAxisState : std::uint32_t {
 
 enum class DiagnosticAccessoryState : std::uint32_t {
     unconfigured, waiting, ready, profileError, inactive, blocked, deviceUnavailable, inputUnavailable, sampleExpired,
-    temporarilyUnavailable
+    temporarilyUnavailable, axisConflict
 };
 
 enum class DiagnosticCommandState : std::uint8_t {

@@ -6,6 +6,7 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/calibration.hpp"
 #include "chrome_axis/configuration.hpp"
+#include "chrome_axis/controls.hpp"
 #include "chrome_axis/keyboard_dialog.hpp"
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/shifter.hpp"
@@ -278,8 +279,21 @@ bool saveAccessorySettings(HWND owner, const std::filesystem::path& root, const 
     }
     std::string error;
     bool createFailed = false;
+    bool conflictingAxis = false;
     const std::array checks{ProfileFileCheck{accessoryFilename, revision}};
     const auto result = savePresetSettings(root, preset, checks, [&] {
+        // Read the current calibration under the same lock used by the calibration editor.
+        std::string readError;
+        if (const auto axes = loadProfile(preset.directory / profileFilename, readError)) {
+            auto previous = revision && revision->present ? loadAccessoryProfile(path, error)
+                                                           : std::optional{AccessoryProfile{}};
+            if (!previous)
+                return false;
+            if (introducesAnalogAccessoryAxisConflict(&*axes, *previous, *axes, bindings)) {
+                conflictingAxis = true;
+                return false;
+            }
+        }
         std::error_code directoryError;
         std::filesystem::create_directories(preset.directory, directoryError);
         createFailed = static_cast<bool>(directoryError);
@@ -287,6 +301,10 @@ bool saveAccessorySettings(HWND owner, const std::filesystem::path& root, const 
     });
     if (result == PresetSaveResult::changed) {
         MessageBoxW(owner, tr(Text::DlgAccessoriesChanged), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (conflictingAxis) {
+        MessageBoxW(owner, tr(Text::DlgAccessoryDriveAxisConflict), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
         return false;
     }
     if (result != PresetSaveResult::saved) {
@@ -381,6 +399,7 @@ private:
     HWND window_{};
     std::vector<DeviceInfo> devices_;
     AccessoryProfile bindings_;
+    std::optional<Profile> savedAxes_;
     std::vector<AccessoryBinding> captured_;
     std::optional<AccessoryBinding> previewBinding_;
     std::optional<AccessoryReader> preview_;
@@ -428,6 +447,10 @@ bool AccessoryDialog::initialise(HWND window)
     send(IDC_CLUTCH_MODE, CB_SETCURSEL, static_cast<WPARAM>(mode - clutchOptions.begin()));
     send(IDC_HANDBRAKE_CEILING, EM_SETLIMITTEXT, 3);
     SetDlgItemInt(window_, IDC_HANDBRAKE_CEILING, handbrakeCeiling_, FALSE);
+    if (analogPage()) {
+        std::string error;
+        savedAxes_ = loadProfile(preset_.directory / profileFilename, error);
+    }
     configureSection();
     refreshDevices();
     SetFocus(GetDlgItem(window_, selectedDevice() ? IDC_ACCESSORY_DEVICE : IDC_ACCESSORY_REFRESH));
@@ -632,6 +655,10 @@ void AccessoryDialog::refreshAnalogActions(bool idle, bool captured)
         selectedAxis = accessoryInputLabel(binding) + L" · ";
         selectedAxis += device == devices_.end() ? tr(Text::DlgAccessoryPreviewDevice)
             : wide(device->name.empty() ? binding.deviceId : device->name);
+        if (savedAxes_ && analogAccessoryAxisConflict(*savedAxes_, binding)) {
+            selectedAxis += L"\r\n";
+            selectedAxis += tr(Text::DlgSavedAccessoryDriveAxisConflict);
+        }
     }
     SetDlgItemTextW(window_, IDC_HANDBRAKE_AXIS, selectedAxis.c_str());
     EnableWindow(GetDlgItem(window_, IDC_HANDBRAKE_REMOVE), idle && index.has_value());
@@ -1190,6 +1217,10 @@ void AccessoryDialog::applyHandbrake(AccessoryBinding binding)
     }
 
     binding = asHandbrake(std::move(binding), handbrakeCeiling_);
+    if (savedAxes_ && analogAccessoryAxisConflict(*savedAxes_, binding)) {
+        setStatus(tr(Text::DlgAccessoryDriveAxisConflict));
+        return;
+    }
     deviceId_ = binding.deviceId;
     if (!target) {
         bindings_.push_back(std::move(binding));
@@ -1218,6 +1249,10 @@ void AccessoryDialog::applyClutch(AccessoryBinding binding)
         return;
     }
     binding.clutchMode = clutchMode_;
+    if (savedAxes_ && analogAccessoryAxisConflict(*savedAxes_, binding)) {
+        setStatus(tr(Text::DlgAccessoryDriveAxisConflict));
+        return;
+    }
     deviceId_ = binding.deviceId;
     if (!target) {
         bindings_.push_back(std::move(binding));

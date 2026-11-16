@@ -5,16 +5,18 @@
 #include <iostream>
 
 using chrome_axis::ManualTransmissionInput;
+using chrome_axis::PedalGear;
 using chrome_axis::PedalRouting;
 using chrome_axis::PhysicalModeKey;
 using chrome_axis::TransmissionPedals;
 
 namespace {
 
-static_assert(chrome_axis::reversePedalGear(0, -1, 8) == true);
-static_assert(chrome_axis::reversePedalGear(-1, 0, 8) == std::nullopt);
-static_assert(chrome_axis::reversePedalGear(-1, 1, 8) == false);
-static_assert(chrome_axis::reversePedalGear(-1, -2, 0) == std::nullopt);
+static_assert(chrome_axis::observePedalGear(0, -1, 8) == PedalGear::reverse);
+static_assert(chrome_axis::observePedalGear(-1, 0, 8) == PedalGear::reversePending);
+static_assert(chrome_axis::observePedalGear(-1, 1, 8) == PedalGear::forwardOrNeutral);
+static_assert(chrome_axis::observePedalGear(-1, -2, 0) == PedalGear::unavailable);
+static_assert(chrome_axis::observePedalGear(-1, -2, 0, true) == PedalGear::reversePending);
 
 bool hardwareModeNeedsAValidLever()
 {
@@ -214,25 +216,43 @@ bool nativePaddlesAndClutchRespectArming()
     return probe.update({true, false, false, false, false}) == 0.0f;
 }
 
+bool missingGearboxLeavesOrRestoresStandardPedals()
+{
+    TransmissionPedals pedals;
+    if (pedals.update(true, PedalGear::unavailable, false) != PedalRouting::standard ||
+        pedals.update(false, PedalGear::unavailable, false) != PedalRouting::standard ||
+        pedals.update(false, PedalGear::unavailable, true) != PedalRouting::standard ||
+        pedals.tracking())
+        return false;
+
+    return pedals.update(true, PedalGear::forwardOrNeutral, false) == PedalRouting::standard &&
+        pedals.update(true, PedalGear::unavailable, true) == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::unavailable, false) == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::unavailable, true) == PedalRouting::standard &&
+        !pedals.tracking() &&
+        pedals.update(false, PedalGear::unavailable, false) == PedalRouting::standard;
+}
+
 bool retainsManualReversePedalsDuringHandoff()
 {
     TransmissionPedals pedals;
-    if (pedals.update(false, true, false) != PedalRouting::standard ||
-        pedals.update(true, true, false) != PedalRouting::reverse ||
-        pedals.update(false, true, false) != PedalRouting::reverse ||
-        pedals.update(false, false, false) != PedalRouting::suspended ||
-        pedals.update(false, false, true) != PedalRouting::standard ||
-        pedals.update(false, true, false) != PedalRouting::standard)
+    if (pedals.update(false, PedalGear::reverse, false) != PedalRouting::standard ||
+        pedals.update(true, PedalGear::reverse, false) != PedalRouting::reverse ||
+        pedals.update(false, PedalGear::reverse, false) != PedalRouting::reverse ||
+        pedals.update(false, PedalGear::forwardOrNeutral, false) != PedalRouting::suspended ||
+        pedals.update(false, PedalGear::forwardOrNeutral, true) != PedalRouting::standard ||
+        pedals.update(false, PedalGear::reverse, false) != PedalRouting::standard)
         return false;
 
-    return pedals.update(true, false, false) == PedalRouting::standard &&
-        pedals.update(true, chrome_axis::reversePedalGear(-1, 0, 8), false) == PedalRouting::suspended &&
-        pedals.update(true, true, false) == PedalRouting::suspended &&
-        pedals.update(true, true, true) == PedalRouting::reverse &&
-        pedals.update(false, {}, false) == PedalRouting::suspended &&
-        pedals.update(false, true, false) == PedalRouting::suspended &&
-        pedals.update(false, true, true) == PedalRouting::reverse &&
-        pedals.update(false, false, true) == PedalRouting::standard;
+    return pedals.update(true, PedalGear::forwardOrNeutral, false) == PedalRouting::standard &&
+        pedals.update(true, PedalGear::reversePending, false) == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::unavailable, true) == PedalRouting::suspended &&
+        pedals.update(true, PedalGear::reverse, false) == PedalRouting::suspended &&
+        pedals.update(true, PedalGear::reverse, true) == PedalRouting::reverse &&
+        pedals.update(false, PedalGear::unavailable, true) == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::reverse, false) == PedalRouting::suspended &&
+        pedals.update(false, PedalGear::reverse, true) == PedalRouting::reverse &&
+        pedals.update(false, PedalGear::forwardOrNeutral, true) == PedalRouting::standard;
 }
 
 } // namespace
@@ -258,6 +278,10 @@ int main()
     }
     if (!nativePaddlesAndClutchRespectArming()) {
         std::cerr << "Native transmission input or clutch did not respect rearming and gating\n";
+        return 1;
+    }
+    if (!missingGearboxLeavesOrRestoresStandardPedals()) {
+        std::cerr << "A missing gearbox observation stranded the pedals in AUTO\n";
         return 1;
     }
     if (!retainsManualReversePedalsDuringHandoff()) {

@@ -98,13 +98,27 @@ bool compatibleAxisPair(const AxisCalibration& throttle, const AxisCalibration& 
         && centerGap <= std::abs(brakeTravel) * brake.deadzone;
 }
 
-float PedalStabilizer::update(float pedal) noexcept
+float PedalStabilizer::update(float pedal, Clock::time_point sampledAt) noexcept
 {
-    // Preserve both endpoints. Blend over a narrow band to pass deliberate movement unfiltered.
-    const float difference = pedal - output_;
-    const float correction = std::clamp((std::abs(difference) - 0.012f) / 0.023f, 0.0f, 1.0f);
-    output_ = pedal == 0.0f || pedal == 1.0f ? pedal
-        : std::lerp(output_, pedal, std::lerp(0.22f, 1.0f, correction));
+    constexpr float fastMovement = 0.035f;
+    constexpr float noiseBand = 0.012f;
+    const float movement = std::abs(pedal - output_);
+    if (!previousSample_ || pedal == 0.0f || pedal == 1.0f || movement >= fastMovement) {
+        output_ = pedal;
+    } else if (movement > 0.0f) {
+        // At the USB reference cadence of 5 ms the base filter retains 78% of the
+        // distance. Keep the same decay until the input changes, independent of
+        // how many times the same target is sampled.
+        if (pedal != input_) {
+            const float retention = 0.78f * std::min(1.0f, (fastMovement - movement) / (fastMovement - noiseBand));
+            logRetention_ = std::log(retention);
+        }
+        const float periods = std::chrono::duration<float, std::milli>(sampledAt - *previousSample_).count() / 5.0f;
+        const float fraction = -std::expm1(logRetention_ * std::max(0.0f, periods));
+        output_ = std::lerp(output_, pedal, fraction);
+    }
+    input_ = pedal;
+    previousSample_ = sampledAt;
     return output_;
 }
 
@@ -349,7 +363,8 @@ ControlState ControlReader::poll(DirectInput& input, Readings* readings, Calibra
 }
 
 ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& samples, Readings* readings,
-                                  const std::array<DeviceReadStatus, 3>& statuses, CalibrationReadings* review)
+                                  const std::array<DeviceReadStatus, 3>& statuses, CalibrationReadings* review,
+                                  PedalStabilizer::Clock::time_point sampledAt)
 {
     if (readings)
         *readings = {};
@@ -388,10 +403,16 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         const double position = axisPosition(calibration, raw, steering);
         const auto travel = static_cast<float>(std::clamp(position, steering ? -1.0 : 0.0, 1.0));
         const float calibrated = applyDeadzone(travel, calibration.deadzone);
+        const auto output = [&] {
+            const float adjusted = (response.progressivity == 0 && response.saturation == maximumResponseSaturation)
+                ? calibrated : applyResponse(travel, calibration.deadzone, response, steering);
+            return response.stabilization && !steering
+                ? pedalStabilizers_[i - 1].update(adjusted, sampledAt) : adjusted;
+        };
         if (review) {
             review->travel[i] = travel;
             if (brake)
-                review->adjustedBrake = applyResponse(travel, calibration.deadzone, response, false);
+                review->adjustedBrake = output();
         }
         if (readings)
             (*readings)[i] = calibrated;
@@ -409,9 +430,7 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         *readiness[i] = true;
         if (steering)
             state.calibratedSteering = calibrated;
-        const float adjusted = (response.progressivity == 0 && response.saturation == maximumResponseSaturation)
-            ? calibrated : applyResponse(travel, calibration.deadzone, response, steering);
-        *outputs[i] = response.stabilization && !steering ? pedalStabilizers_[i - 1].update(adjusted) : adjusted;
+        *outputs[i] = review && brake ? *review->adjustedBrake : output();
         axisStatuses_[i] = AxisStatus::armed;
     }
     return state;

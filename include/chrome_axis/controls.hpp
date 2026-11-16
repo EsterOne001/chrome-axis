@@ -3,6 +3,7 @@
 #include "chrome_axis/input.hpp"
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -44,11 +45,16 @@ using BrakeResponse = AxisResponse;
 
 class PedalStabilizer {
 public:
-    float update(float pedal) noexcept;
-    void reset() noexcept { output_ = 0.0f; }
+    using Clock = std::chrono::steady_clock;
+
+    float update(float pedal, Clock::time_point sampledAt) noexcept;
+    void reset() noexcept { previousSample_.reset(); }
 
 private:
+    std::optional<Clock::time_point> previousSample_;
+    float input_{};
     float output_{};
+    float logRetention_{};
 };
 
 struct AxisPreview {
@@ -126,7 +132,8 @@ public:
     // Each channel refers to one sample. Channels on the same device share a sample.
     // Readings and calibration travel are available before the axis arms.
     ControlState update(const std::array<const DeviceSample*, 3>& samples, Readings* readings = nullptr,
-        const std::array<DeviceReadStatus, 3>& statuses = {}, CalibrationReadings* calibration = nullptr);
+        const std::array<DeviceReadStatus, 3>& statuses = {}, CalibrationReadings* calibration = nullptr,
+        PedalStabilizer::Clock::time_point sampledAt = PedalStabilizer::Clock::now());
 
 private:
     ControlState poll(DirectInput& input, Readings* readings, CalibrationReadings* calibration);

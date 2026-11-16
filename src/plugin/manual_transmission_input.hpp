@@ -170,41 +170,53 @@ private:
 };
 
 enum class PedalRouting { standard, reverse, suspended };
+enum class PedalGear { unavailable, forwardOrNeutral, reverse, reversePending };
 
-constexpr std::optional<bool> reversePedalGear(int engaged, int target, int entries) noexcept {
-    if (entries < 2 || engaged < -1 || engaged >= entries)
-        return std::nullopt;
-    if (engaged == 0)
-        return true;
-    // The game can use reverse channels as soon as R is the target. Wait until R engages.
-    if (target < -1 || target >= entries || target == 0)
-        return std::nullopt;
-    return false;
+constexpr PedalGear observePedalGear(int engaged, int target, int entries, bool reverseIssued = false) noexcept {
+    const bool engagedValid = entries >= 2 && engaged >= -1 && engaged < entries;
+    if (engagedValid && engaged == 0)
+        return PedalGear::reverse;
+    // The game can use reverse channels before R engages.
+    if (reverseIssued || (engagedValid && target == 0))
+        return PedalGear::reversePending;
+    if (!engagedValid || target < -1 || target >= entries)
+        return PedalGear::unavailable;
+    return PedalGear::forwardOrNeutral;
 }
 
-// Retain logical pedals across a manual-to-auto handoff while the game is still
-// in R. After a lost observation, require fresh gear data and released pedals.
 class TransmissionPedals {
 public:
-    PedalRouting update(bool manual, std::optional<bool> reverse, bool released) noexcept {
-        tracking_ |= manual;
-        if (!tracking_)
+    PedalRouting update(bool manualRequested, PedalGear gear, bool released) noexcept {
+        // A MANUAL request alone does not change the routing of an unobserved vehicle.
+        if (!tracking_ && (!manualRequested || gear == PedalGear::unavailable))
             return PedalRouting::standard;
+        tracking_ = true;
 
-        if (!reverse)
+        if (gear == PedalGear::reversePending) {
+            reversePossible_ = true;
             waitingForRelease_ = true;
-        if (!reverse || (waitingForRelease_ && !released))
             return PedalRouting::suspended;
-        waitingForRelease_ = false;
-        if (*reverse) {
-            wasReverse_ = true;
-            return PedalRouting::reverse;
+        }
+        if (gear == PedalGear::unavailable) {
+            // In AUTO, a forward-only session can fall back after both pedals are released.
+            if (!manualRequested && !reversePossible_ && released) {
+                *this = {};
+                return PedalRouting::standard;
+            }
+            waitingForRelease_ = true;
+            return PedalRouting::suspended;
         }
 
-        if (!manual && wasReverse_ && !released)
+        if (gear == PedalGear::reverse)
+            reversePossible_ = true;
+        if (!released && (waitingForRelease_ || (!manualRequested && gear != PedalGear::reverse && reversePossible_)))
             return PedalRouting::suspended;
-        wasReverse_ = false;
-        tracking_ = manual;
+        waitingForRelease_ = false;
+        if (gear == PedalGear::reverse)
+            return PedalRouting::reverse;
+
+        reversePossible_ = false;
+        tracking_ = manualRequested;
         return PedalRouting::standard;
     }
 
@@ -213,7 +225,7 @@ public:
 private:
     bool tracking_{};
     bool waitingForRelease_{};
-    bool wasReverse_{};
+    bool reversePossible_{};
 };
 
 // Simulation does not emit accessory keys. A pending release from the USB

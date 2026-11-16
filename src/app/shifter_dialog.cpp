@@ -5,6 +5,7 @@
 #include "chrome_axis/calibration.hpp"
 #include "chrome_axis/configuration.hpp"
 #include "chrome_axis/keyboard_dialog.hpp"
+#include "chrome_axis/presets.hpp"
 #include "chrome_axis/shifter.hpp"
 
 #include <dbt.h>
@@ -655,7 +656,8 @@ void ShifterDialog::chooseShortcut()
     if (!choice || *choice == current)
         return;
     std::string error;
-    if (!saveTransmissionHotkey(profileRoot_, *choice, error)) {
+    if (!saveInstallationSettings(profileRoot_,
+            [&] { return saveTransmissionHotkey(profileRoot_, *choice, error); })) {
         const auto message = std::wstring(tr(Text::mainTransmissionKeySaveFailed)) + localizedError(error);
         MessageBoxW(window_, message.c_str(), tr(Text::mainTransmissionKeyTitle), MB_OK | MB_ICONERROR);
         return;

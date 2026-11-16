@@ -27,7 +27,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 10;
+constexpr LONG64 protocolVersion = 11;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate gear and mode changes.
@@ -39,7 +39,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v10.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v11.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -273,8 +273,7 @@ void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint6
 
 void DiagnosticPublisher::recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept
 {
-    if (!frame_ || !captureId || !sample.sampledAt ||
-        (sample.mode != DiagnosticMode::usb && sample.mode != DiagnosticMode::simulation))
+    if (!frame_ || !captureId || !sample.sampledAt || !isDrivingCaptureMode(sample.mode))
         return;
     if (lastCaptureId_ == captureId) {
         if (sample.sampledAt < lastCaptureSample_.sampledAt)

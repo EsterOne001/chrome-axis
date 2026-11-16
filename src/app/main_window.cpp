@@ -239,7 +239,7 @@ class App {
 public:
     explicit App(std::filesystem::path directory)
         : directory_(std::move(directory)), gameRoot_(chrome_axis::installedGameRoot(directory_.parent_path())),
-          publisher_(gameRoot_), simulationDiagnostics_(gameRoot_) {}
+          publisher_(gameRoot_), simulationDiagnostics_(gameRoot_), drivingDiagnostics_(gameRoot_) {}
     ~App()
     {
         for (const auto font : fonts_)
@@ -1076,6 +1076,8 @@ private:
     bool publisherFailed_{};
     chrome_axis::SimulationPublisher publisher_;
     chrome_axis::DiagnosticReader simulationDiagnostics_;
+    // Keep ownership of a completed driving capture when the dialog closes.
+    chrome_axis::DiagnosticReader drivingDiagnostics_;
     std::uint64_t simulationRequestedAt_{};
     std::uint64_t nextSimulationStatus_{};
     chrome_axis::Simulator simulator_;
@@ -1194,7 +1196,7 @@ void App::action(int command, int notification)
         break;
     case showDiagnostics:
         if (!calibrating_)
-            chrome_axis::showDiagnostics(window_, directory_, devices_);
+            chrome_axis::showDiagnostics(window_, directory_, devices_, drivingDiagnostics_);
         break;
     case startCalibration:
         beginCalibration(assignedCalibrationScope());
@@ -1246,8 +1248,10 @@ void App::action(int command, int notification)
         const int languageCommand = command == frenchFlag ? frenchLanguage : command == englishFlag ? englishLanguage : command;
         const auto option = std::ranges::find(languageOptions, languageCommand, &LanguageOption::command);
         const bool saved = deployedProfileDirectory(directory_)
-            ? ensureProfileDirectory(directory_) &&
-                chrome_axis::writeProfileLanguage(directory_, chrome_axis::languageCode(option->language))
+            ? chrome_axis::saveInstallationSettings(directory_, [&] {
+                return ensureProfileDirectory(directory_) &&
+                    chrome_axis::writeProfileLanguage(directory_, chrome_axis::languageCode(option->language));
+            })
             : chrome_axis::saveLanguageChoice(option->language);
         if (!saved) {
             MessageBoxW(window_, tr(Text::mainLanguageSaveFailed), title, MB_OK | MB_ICONERROR);
@@ -1906,9 +1910,22 @@ void App::persist()
             || savedSteering_->axis != nextSteering->axis));
     bool resetFeedback = false;
     bool feedbackSaveFailed = false;
+    bool conflictingAxis = false;
     const std::array checks{chrome_axis::ProfileFileCheck{chrome_axis::profileFilename, profileRevision_}};
     const auto result = chrome_axis::savePresetSettings(directory_, preset_, checks, [&] {
         std::string error;
+        if (previewProfile_) {
+            // Accessory editors use the same lock, so this validates the current on-disk bindings.
+            const auto accessoryPath = activeDirectory() / chrome_axis::accessoryFilename;
+            if (const auto bindings = chrome_axis::loadAccessoryProfile(accessoryPath, error)) {
+                const auto previous = chrome_axis::loadProfile(path_, error);
+                if (chrome_axis::introducesAnalogAccessoryAxisConflict(previous ? &*previous : nullptr, *bindings,
+                                                                      *previewProfile_, *bindings)) {
+                    conflictingAxis = true;
+                    return false;
+                }
+            }
+        }
         if (changedActuator) {
             const auto settingsPath = activeDirectory() / chrome_axis::feedbackFilename;
             auto settings = chrome_axis::loadFeedbackSettings(settingsPath, error);
@@ -1936,6 +1953,7 @@ void App::persist()
     });
     if (result != chrome_axis::PresetSaveResult::saved) {
         const auto message = result == chrome_axis::PresetSaveResult::changed ? Text::mainSaveProfileChanged
+            : conflictingAxis ? Text::mainSaveDriveAxisConflict
             : feedbackSaveFailed ? Text::mainDisableOldFeedbackFailed
             : resetFeedback ? Text::mainSaveFailedFeedbackDisabled : Text::mainSaveFailedCheckFolder;
         MessageBoxW(window_, tr(message), title, MB_OK | MB_ICONWARNING);
@@ -2020,7 +2038,8 @@ void App::changeUsbMode()
             return;
         }
     }
-    if (!chrome_axis::setUsbEnabled(directory_, enable, error)) {
+    if (!chrome_axis::saveInstallationSettings(directory_,
+            [&] { return chrome_axis::setUsbEnabled(directory_, enable, error); })) {
         MessageBoxW(window_, tr(Text::mainUsbStateFailed),
             title, MB_OK | MB_ICONERROR);
         return;

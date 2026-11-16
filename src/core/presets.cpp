@@ -566,14 +566,27 @@ bool conflictingInputs(const std::optional<Profile>& axes, const std::optional<A
                     return true;
             }
         }
-        if (axes && binding.kind == AccessoryKind::Axis) {
+        if (axes && binding.kind == AccessoryKind::Axis && !binding.clutchMode && !binding.handbrakeCeilingPercent) {
             for (const auto* axis : {&axes->steering, &axes->throttle, &axes->brake}) {
                 if (axis->axis == binding.index && merges(axis->deviceId, binding.deviceId))
                     return true;
             }
         }
     }
-    return false;
+    if (!axes)
+        return false;
+
+    auto movedAxes = *axes;
+    for (auto* axis : {&movedAxes.steering, &movedAxes.throttle, &movedAxes.brake}) {
+        if (axis->deviceId == oldId)
+            axis->deviceId = newId;
+    }
+    auto movedBindings = *accessories;
+    for (auto& binding : movedBindings) {
+        if (binding.deviceId == oldId)
+            binding.deviceId = newId;
+    }
+    return introducesAnalogAccessoryAxisConflict(&*axes, *accessories, movedAxes, movedBindings);
 }
 
 } // namespace
@@ -614,6 +627,15 @@ PresetSaveResult savePresetSettings(const std::filesystem::path& root, const Pro
             return PresetSaveResult::changed;
     }
     return save() ? PresetSaveResult::saved : PresetSaveResult::ioError;
+}
+
+bool saveInstallationSettings(const std::filesystem::path& root, const std::function<bool()>& save)
+{
+    const auto extendedRoot = extendedPath(root);
+    if (extendedRoot.empty())
+        return false;
+    const ProfileLock lock(extendedRoot.parent_path());
+    return lock && save();
 }
 
 std::vector<std::wstring> listPresets(const std::filesystem::path& root)

@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.44** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.45** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -198,7 +198,7 @@ Après l’essai, cliquez sur **Copier le diagnostic** en bas du panneau. Le rap
 
 Pour mesurer les délais, cliquez sur **Mesurer les performances** dans **Diagnostic…**, revenez dans Cyberpunk et conduisez avec l’USB activé. Revenez dans l’application, cliquez sur **Arrêter la mesure**, puis sur **Copier le diagnostic**. Le rapport résume la durée des lectures USB et des appels de retour de force, l’âge des données à leur application en jeu et le nombre de lectures expirées. La mesure inclut aussi l’âge des données de la voiture, le nombre d’effets transmis au pilote et la part des consignes de force écrêtées. Le rapport sépare les saturations de l’effort continu de celles causées par un choc ou une réception, avec les pics calculé, plafonné et accepté par le pilote. Les pourcentages de force désignent des consignes DirectInput. Ces mesures décrivent le chemin des commandes du mod. Pour mesurer le temps de trame, suivez le protocole d’essai manuel.
 
-Pour conserver une série temporelle mesurée en jeu, démarrez et arrêtez la **capture de conduite** dans **Diagnostic**, puis choisissez **Exporter le CSV**. La capture reste en mémoire jusqu’à l’export. Elle relève le véhicule, la vitesse, le régime, les pédales et les passages de rapport selon les données disponibles. Les percentiles P95/P99 sont des estimations. La mesure indique les dépassements de cadence de lecture USB et de retour de force.
+Pour conserver une série temporelle mesurée en jeu, démarrez et arrêtez la **capture de conduite** dans **Diagnostic**, puis choisissez **Exporter le CSV**. La capture peut relever la conduite avec l’USB désactivé. Tant que Chrome Axis reste ouvert, vous pouvez rouvrir **Diagnostic** pour exporter la dernière capture lancée dans cette instance avant d’en démarrer une autre. Elle relève le véhicule, la vitesse, le régime, les pédales et les passages de rapport selon les données disponibles. Les percentiles P95/P99 sont des estimations. La mesure indique les dépassements de cadence de lecture USB et de retour de force.
 
 ## Dossiers du projet
 
