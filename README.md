@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.68** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.69** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -114,7 +114,7 @@ Chrome Axis utilise le mouvement du véhicule, son orientation, le dérapage et 
 
 Ouvrez **Transmission… → Boîte et palettes…** pour choisir la grille en H ou les palettes natives dans le profil actif. Quand les deux matériels sont branchés, Chrome Axis utilise la source native enregistrée dans ce profil. Les anciennes affectations clavier restent utilisables. Relâchez les deux palettes pour les armer. Un appui maintenu demande un seul passage. La touche AUTO / MANUEL se règle dans la même fenêtre et s’applique à cette installation. L’état dans l’application décrit le matériel et le diagnostic indique les rapports sélectionné, demandé et engagé par le jeu.
 
-Dans **Transmission… → Embrayage…**, capturez la position au repos et la fin de course, puis enregistrez. Le profil conserve la calibration et permet d’activer une aide facultative qui demande environ 65 % d’appui pour passer un rapport. Le point mort reste libre. Le réglage expérimental permet de mesurer une atténuation de la commande d’accélérateur en marche avant manuelle. L’embrayage progressif natif et le point de patinage restent à confirmer en jeu. En simulation active, **Verr. Num.** allumé, **Pavé 0/1/3/5/7** sélectionne 0/25/50/75/100 % pour cet essai.
+Dans **Transmission… → Embrayage…**, capturez la position au repos et la fin de course, puis enregistrez. Le profil conserve la calibration et permet d’activer une aide facultative qui exige 65 % sur la valeur d’embrayage après correction de la zone morte pour passer un rapport. Le diagnostic affiche à part la course brute calibrée et sa position par rapport à la zone de repos de ±3 %. Le point mort reste libre. Le réglage expérimental permet de mesurer une atténuation de la commande d’accélérateur en marche avant manuelle. L’embrayage progressif natif et le point de patinage restent à confirmer en jeu. En simulation active, **Verr. Num.** allumé, **Pavé 0/1/3/5/7** sélectionne 0/25/50/75/100 % pour cet essai.
 
 Sélectionnez une affectation dans **Accessoires…** pour voir son état en direct. Pour un axe, la jauge montre la course et les seuils d’appui et de relâchement. L’aperçu indique l’état de l’entrée et le type d’envoi de la touche. Il fonctionne sans lancer Cyberpunk.
 

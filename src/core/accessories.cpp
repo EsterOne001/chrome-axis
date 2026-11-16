@@ -733,8 +733,11 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
         state.status = sample ? AccessoryStatus::inputUnavailable : AccessoryStatus::deviceUnavailable;
         return 0.0f;
     }
-    if (observation)
+    if (observation) {
         observation->engaged = level->engaged;
+        observation->neutral = level->neutral;
+        observation->sampledAt = sample->sampledAt;
+    }
     if (neutral)
         *neutral = level->neutral;
     if (state.neutralPolls < requiredNeutralPolls) {
@@ -855,9 +858,13 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             continue;
         }
         if (binding.clutchMode) {
-            if (transmission && state.status == AccessoryStatus::armed) {
-                transmission->clutch = analogValue;
-                transmission->clutchSampledAt = sample->sampledAt;
+            if (transmission) {
+                if (observation)
+                    transmission->clutchObservation = *observation;
+                if (state.status == AccessoryStatus::armed) {
+                    transmission->clutch = analogValue;
+                    transmission->clutchSampledAt = sample->sampledAt;
+                }
             }
             continue;
         }

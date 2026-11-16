@@ -298,18 +298,27 @@ bool nativePaddlesAndClutchRespectArming()
     int delta = 0;
     if (assist.apply({}, intent.gear, delta) || intent.gear != -1)
         return false;
-    intent.gear = 3;
+    intent = transmission.update(true, 3, false, false, false, false, {}, VK_F8);
     if (!assist.apply(0.649f, intent.gear, delta) || intent.gear != -1)
         return false;
-    intent.gear = 3;
+    // The lever remains at the same position. The next report supplies that
+    // level again and now reaches the clutch threshold without a new gesture.
+    intent = transmission.update(true, 3, false, false, false, false, {}, VK_F8);
     if (assist.apply(0.65f, intent.gear, delta) || intent.gear != 3)
         return false;
     intent.gear = -1;
     if (assist.apply({}, intent.gear, delta) || intent.gear != -1)
         return false;
-    intent.gear.reset();
-    delta = 1;
-    if (!assist.apply({}, intent.gear, delta) || delta != 0)
+    auto paddle = sequential(true, 1);
+    if (!assist.apply({}, paddle.gear, paddle.delta) || paddle.delta != 0)
+        return false;
+    // Reaching the threshold cannot resurrect a consumed paddle press.
+    paddle = sequential(true, 0);
+    if (!chrome_axis::ClutchShiftAssist::pedalQualified(0.65f) ||
+        assist.apply(0.65f, paddle.gear, paddle.delta) || paddle.delta != 0)
+        return false;
+    paddle = sequential(true, 1);
+    if (assist.apply(0.65f, paddle.gear, paddle.delta) || paddle.delta != 1)
         return false;
 
     using namespace std::chrono_literals;

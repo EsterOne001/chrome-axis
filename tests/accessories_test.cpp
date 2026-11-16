@@ -791,6 +791,59 @@ int testNativeSequentialAndClutch(const std::filesystem::path& path, const std::
     return sample().none() && transmission.clutch == 1.0f ? 0 : 126;
 }
 
+int testClutchRestObservation(const std::string& pedalId)
+{
+    using namespace chrome_axis;
+    using ReadStatus = DeviceReadStatus;
+    const AccessoryBinding clutch{.deviceId = pedalId, .kind = AccessoryKind::Axis, .index = 4,
+                                  .rest = 10000, .engaged = 20000, .clutchMode = ClutchMode::assist};
+    AccessoryReader reader({clutch});
+    DeviceSample pedal;
+    pedal.axesPresent[4] = true;
+    const auto start = DeviceReadClock::now();
+    const std::array<const DeviceSample*, 1> samples{&pedal};
+    std::array<AccessoryObservation, 1> observations{};
+    AccessoryTransmissionSample transmission;
+    const auto observe = [&](long raw, ReadStatus status = ReadStatus::available, bool fresh = true) {
+        if (fresh) {
+            ++pedal.sequence;
+            pedal.sampledAt = start + std::chrono::milliseconds(pedal.sequence);
+            pedal.axes[4] = raw;
+        }
+        reader.update(samples, std::array{status}, observations, nullptr, nullptr, nullptr, &transmission);
+        return transmission.clutchObservation.value_or(AccessoryObservation{});
+    };
+    const auto matches = [&](const AccessoryObservation& result, double raw, bool neutral, AccessoryStatus status) {
+        return result.travel == raw && result.neutral == neutral && result.sampledAt == pedal.sampledAt &&
+            result.status == status;
+    };
+
+    for (const auto raw : {10304L, 9696L, 10340L, 9660L}) {
+        const auto fraction = static_cast<double>(raw - clutch.rest) / (clutch.engaged - clutch.rest);
+        if (!matches(observe(raw), fraction, false, AccessoryStatus::waitingForNeutral) || transmission.clutch)
+            return 151;
+    }
+    if (!matches(observe(10300), 0.03, true, AccessoryStatus::waitingForNeutral) || transmission.clutch ||
+        !matches(observe(10300, ReadStatus::available, false), 0.03, true, AccessoryStatus::waitingForNeutral) ||
+        transmission.clutch ||
+        !matches(observe(9700), -0.03, true, AccessoryStatus::waitingForNeutral) || transmission.clutch ||
+        !matches(observe(10000), 0.0, true, AccessoryStatus::armed) || transmission.clutch != 0.0f)
+        return 152;
+
+    reader.reset(); // The driver context was invalidated while the pedal was held.
+    if (!matches(observe(clutch.engaged), 1.0, false, AccessoryStatus::waitingForNeutral) || transmission.clutch)
+        return 153;
+    const auto pending = observe(clutch.engaged, ReadStatus::pending);
+    if (pending.travel || pending.neutral || pending.sampledAt != DeviceReadClock::time_point{} ||
+        pending.status != AccessoryStatus::temporarilyUnavailable || transmission.clutch)
+        return 154;
+    const auto unavailable = observe(clutch.engaged, ReadStatus::unavailable);
+    if (unavailable.travel || unavailable.neutral || unavailable.sampledAt != DeviceReadClock::time_point{} ||
+        unavailable.status != AccessoryStatus::deviceUnavailable || transmission.clutch)
+        return 155;
+    return 0;
+}
+
 int testAnalogAccessoryAxisConflicts(const std::string& wheelId, const std::string& pedalId)
 {
     using namespace chrome_axis;
@@ -888,6 +941,8 @@ int run()
     const auto nativeShifterProfileResult = testNativeShifterProfile(path, wheelId);
     const auto unverifiedShifterResult = testUnverifiedNativeShifter(path, wheelId);
     if (const auto result = testAnalogAccessoryAxisConflicts(wheelId, handbrakeId); result != 0)
+        return result;
+    if (const auto result = testClutchRestObservation(handbrakeId); result != 0)
         return result;
     const auto nativeSequentialResult = testNativeSequentialAndClutch(path, wheelId, handbrakeId);
     std::filesystem::remove(path);

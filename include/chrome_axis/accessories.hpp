@@ -113,6 +113,8 @@ struct AccessoryObservation {
     bool active{};
     std::optional<bool> engaged; // Physical binding state before neutral gating.
     unsigned int key{};
+    std::optional<bool> neutral; // Measured against the binding's actual rest tolerance.
+    DeviceReadClock::time_point sampledAt{};
 };
 
 struct AccessoryTransmissionSample {
@@ -127,6 +129,7 @@ struct AccessoryTransmissionSample {
     DeviceReadClock::time_point clutchSampledAt{};
     DeviceReadClock::time_point shiftSampledAt{};
     DeviceReadClock::time_point oppositePaddleSampledAt{};
+    std::optional<AccessoryObservation> clutchObservation;
 };
 
 using AccessoryKeyTimes = std::array<DeviceReadClock::time_point, 256>;

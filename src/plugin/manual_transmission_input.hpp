@@ -230,12 +230,15 @@ private:
 
 class ClutchShiftAssist {
 public:
+    static bool pedalQualified(std::optional<float> pressure) noexcept {
+        constexpr float minimumClutchTravel = 0.65f;
+        return pressure && *pressure >= minimumClutchTravel;
+    }
+
     // A selector position stays pending while a paddle press is a momentary request.
     bool apply(std::optional<float> pressure, std::optional<int>& gear, int& delta) noexcept {
-        constexpr float minimumClutchTravel = 0.65f;
-        const bool released = pressure && *pressure >= minimumClutchTravel;
         const bool changingGear = gear && *gear >= 0 && gear != acceptedGear_;
-        const bool blocked = !released && (changingGear || delta);
+        const bool blocked = !pedalQualified(pressure) && (changingGear || delta);
         if (blocked) {
             gear = acceptedGear_;
             delta = 0;

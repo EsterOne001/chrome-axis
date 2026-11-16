@@ -22,6 +22,19 @@ namespace fs = std::filesystem;
 constexpr auto device = "{11111111-1111-1111-1111-111111111111}";
 constexpr auto preset = L"Profil \u00e9t\u00e9";
 constexpr auto presetUtf8 = "Profil \xc3\xa9t\xc3\xa9";
+constexpr DiagnosticClutch belowThreshold{
+    .input = 0.649f, .configured = true, .inputAvailable = true, .assistanceEnabled = true,
+    .rawTravel = 0.65953f, .signal = DiagnosticCommandState::ready, .rest = DiagnosticClutchRest::outOfRange,
+    .blocker = DiagnosticClutchBlocker::belowThreshold,
+};
+
+bool matchesClutch(const DiagnosticClutch& clutch)
+{
+    return clutch.configured && clutch.inputAvailable && clutch.assistanceEnabled &&
+        clutch.input == belowThreshold.input && clutch.rawTravel == belowThreshold.rawTravel &&
+        clutch.signal == belowThreshold.signal && clutch.rest == belowThreshold.rest &&
+        clutch.blocker == belowThreshold.blocker;
+}
 
 fs::path pluginDirectory(const fs::path& game)
 {
@@ -110,6 +123,7 @@ int runPluginSide(const fs::path& fixture)
     SimulationReceiver isolated(fixture / L"Game B");
     DiagnosticPublisher diagnostic(game);
     std::uint64_t capturedId{};
+    bool capturedUsb{};
     bool invalidSettings = false;
     const auto finished = waitFor([&] {
         std::string error;
@@ -124,6 +138,7 @@ int runPluginSide(const fs::path& fixture)
 
         const bool simulated = simulation.session() != SimulationSession::inactive;
         const bool enabled = usbEnabled(root);
+        const bool background = !simulated && enabled && fs::exists(fixture / L"background");
         DiagnosticSnapshot current;
         current.mode = simulated ? DiagnosticMode::simulation : enabled ? DiagnosticMode::usb : DiagnosticMode::usbDisabled;
         if (!selected.name.empty()) {
@@ -142,15 +157,26 @@ int runPluginSide(const fs::path& fixture)
         current.transmission = {.configured = true, .manual = true, .selectedGear = 3, .requestedGear = 3,
                                 .engagedGear = 2, .shift = DiagnosticShiftState::pending,
                                 .shortcutKey = loadTransmissionHotkey(root)};
+        if (current.mode == DiagnosticMode::usb) {
+            current.transmission.shift = DiagnosticShiftState::clutchRequired;
+            current.clutch = belowThreshold;
+        }
+        if (background) {
+            current.mode = DiagnosticMode::gameNotForeground;
+            current.clutch = {};
+        }
         PerformanceReport report;
         if (const auto request = diagnostic.performanceRequest(); request && request->enabled) {
             report.state = PerformanceState::capturing;
             report.requestId = request->id;
             report.startedAt = GetTickCount64();
-            if (capturedId != request->id) {
-                diagnostic.recordDrivingSample(request->id, {.sampledAt = GetTickCount64(), .mode = current.mode,
-                    .throttle = 0.35f, .throttleAvailable = true, .transmission = current.transmission});
+            const bool usb = current.mode == DiagnosticMode::usb;
+            if (capturedId != request->id || (usb && !capturedUsb)) {
                 capturedId = request->id;
+                capturedUsb = usb;
+                diagnostic.recordDrivingSample(request->id, {.sampledAt = GetTickCount64(), .mode = current.mode,
+                    .throttle = 0.35f, .throttleAvailable = true, .transmission = current.transmission,
+                    .clutch = current.clutch});
             }
         }
         diagnostic.publish(current, 1, report);
@@ -245,9 +271,30 @@ int runApplicationSide()
         const auto read = application.read();
         return read.connection == DiagnosticConnection::connected && read.snapshot.mode == DiagnosticMode::usb &&
             std::string_view(read.snapshot.profile.data()) == presetUtf8 &&
-            read.snapshot.axes[0].inputValue == 0.13f && read.snapshot.transmission.shortcutKey == VK_F10;
+            read.snapshot.axes[0].inputValue == 0.13f && read.snapshot.transmission.shortcutKey == VK_F10 &&
+            read.snapshot.transmission.shift == DiagnosticShiftState::clutchRequired && matchesClutch(read.snapshot.clutch);
     }))
         return 13;
+    if (!waitFor([&] {
+        const auto batch = application.drainCapture(rows);
+        for (std::size_t i = 0; i < batch.count; ++i) {
+            const auto& row = rows[i];
+            if (!row.usbIncident && row.driving.mode == DiagnosticMode::usb && matchesClutch(row.driving.clutch))
+                return true;
+        }
+        return false;
+    }))
+        return 15;
+
+    std::ofstream(directory / L"background").put('x');
+    if (!waitFor([&] {
+        const auto read = application.read();
+        return read.connection == DiagnosticConnection::connected && read.snapshot.mode == DiagnosticMode::gameNotForeground &&
+            !read.snapshot.clutch.configured && read.lastDriveAt != 0 && read.lastDrive.mode == DiagnosticMode::usb &&
+            read.lastDrive.transmission.shift == DiagnosticShiftState::clutchRequired && matchesClutch(read.lastDrive.clutch);
+    }))
+        return 16;
+
     if (!waitFor([&] { return setUsbEnabled(root, false, error); }) ||
         !waitFor([&] { return application.read().snapshot.mode == DiagnosticMode::usbDisabled; }))
         return 14;

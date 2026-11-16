@@ -109,6 +109,12 @@ int testPerformanceCapture(const std::filesystem::path& root)
         sample.transmission.shortcutPressedAt = sample.sampledAt;
         sample.transmission.gearboxSampledAt = sample.sampledAt - 2;
         publisher.recordDrivingSample(start, sample); // Timestamps alone do not force a row.
+        const auto availableClutch = sample.clutch;
+        sample.clutch.inputAvailable = false;
+        sample.clutch.signal = DiagnosticCommandState::temporarilyUnavailable;
+        sample.clutch.blocker = DiagnosticClutchBlocker::signalPending;
+        publisher.recordDrivingSample(start, sample); // A blocker change keeps its own row.
+        sample.clutch = availableClutch;
         sample.sampledAt += 5;
         sample.transmission.engagedGear = 3;
         sample.transmission.shift = DiagnosticShiftState::accepted;
@@ -149,12 +155,12 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.performance.peakLimitedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f ||
             live.performance.usbIntervalOverruns != 4 || live.performance.feedbackIntervalOverruns != 5 ||
             live.performance.peakContinuousForce != 1.125f || live.performance.referenceFeedbackGain != 130 ||
-            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 3)
+            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 4)
             return 15;
 
-        std::array<DiagnosticCaptureRecord, 7> records;
-        const auto firstBatch = owner.drainCapture(std::span(records).first(2));
-        if (!firstBatch.available || firstBatch.finished || firstBatch.dropped || firstBatch.count != 2 ||
+        std::array<DiagnosticCaptureRecord, 8> records;
+        const auto firstBatch = owner.drainCapture(std::span(records).first(3));
+        if (!firstBatch.available || firstBatch.finished || firstBatch.dropped || firstBatch.count != 3 ||
             observer.drainCapture(records).available)
             return 28;
 
@@ -183,24 +189,26 @@ int testPerformanceCapture(const std::filesystem::path& root)
             finished.usbRead.totalMicros != 800 || finished.motionAge.totalMicros != 23000 ||
             finished.clippedSamples != 3 || finished.impactClippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
-        const auto tail = owner.drainCapture(std::span(records).subspan(2));
+        const auto tail = owner.drainCapture(std::span(records).subspan(3));
         if (!tail.available || !tail.finished || tail.count != 5 || tail.dropped ||
             records.front().driving.transmission.shift != DiagnosticShiftState::pending ||
-            records[1].driving.transmission.shortcutPressedAt != performance.startedAt + 5 ||
-            records[1].driving.shiftDelayMicros != 9900 || records[2].driving.mode != DiagnosticMode::usbDisabled ||
-            !records[2].driving.speedAvailable || records[2].driving.speedMps != 12.5f ||
-            records[3].driving.mode != DiagnosticMode::waitingForVehicleInput ||
+            records[1].driving.clutch.blocker != DiagnosticClutchBlocker::signalPending ||
+            records[1].driving.clutch.inputAvailable ||
+            records[2].driving.transmission.shortcutPressedAt != performance.startedAt + 5 ||
+            records[2].driving.shiftDelayMicros != 9900 || records[3].driving.mode != DiagnosticMode::usbDisabled ||
+            !records[3].driving.speedAvailable || records[3].driving.speedMps != 12.5f ||
             records[4].driving.mode != DiagnosticMode::waitingForVehicleInput ||
-            records[4].driving.transmission.shortcutKey != 'L' ||
-            records[4].driving.transmission.configured || records[5].driving.transmission.engagedGear != 2 ||
-            !records[6].usbIncident || records[6].usb.durationMicros != 52100 ||
+            records[5].driving.mode != DiagnosticMode::waitingForVehicleInput ||
+            records[5].driving.transmission.shortcutKey != 'L' ||
+            records[5].driving.transmission.configured || records[6].driving.transmission.engagedGear != 2 ||
+            !records[7].usbIncident || records[7].usb.durationMicros != 52100 ||
             owner.drainCapture(records).count || observer.read().drivingCaptureSamples ||
             observer.drainCapture(records).available)
             return 22;
         std::ostringstream csv;
         writeDiagnosticCaptureHeader(csv);
-        writeDiagnosticCaptureRows(csv, std::span(records).first(2), performance.startedAt);
-        writeDiagnosticCaptureRows(csv, std::span(records).subspan(2), performance.startedAt);
+        writeDiagnosticCaptureRows(csv, std::span(records).first(3), performance.startedAt);
+        writeDiagnosticCaptureRows(csv, std::span(records).subspan(3), performance.startedAt);
         writeDiagnosticCaptureConnection(csv, performance.startedAt, performance.startedAt + 100, false);
         writeDiagnosticCaptureConnection(csv, performance.startedAt, performance.startedAt + 200, true);
         const auto text = csv.str();
@@ -210,12 +218,13 @@ int testPerformanceCapture(const std::filesystem::path& root)
             "\r\n10,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,3,accepted,9900,1,0,1,1,1,1,1,driving,";
         if (!text.starts_with("elapsed_ms,mode,vehicle,speed_mps,engine_rpm,") ||
             text.find(pendingRow) == std::string::npos || text.find(acceptedRow) == std::string::npos ||
-            text.find(",119,1,0,manual,0\r\n") == std::string::npos ||
-            text.find(",119,1,5,manual,7\r\n") == std::string::npos ||
+            text.find(",119,1,0,manual,0,inactive,,unknown,none\r\n") == std::string::npos ||
+            text.find(",temporarily_unavailable,,unknown,signal_pending\r\n") == std::string::npos ||
+            text.find(",119,1,5,manual,7,inactive,,unknown,none\r\n") == std::string::npos ||
             text.find("\r\n30,usb_disabled,") == std::string::npos ||
             text.find("\r\n50,waiting_for_vehicle_input,") == std::string::npos ||
             text.find("\r\n70,waiting_for_vehicle_input,,,,,,,,,,,,manual,,2,2,2,accepted,,,,,,,,,context,") == std::string::npos ||
-            text.find(",76,0,,manual,\r\n") == std::string::npos ||
+            text.find(",76,0,,manual,,,,,\r\n") == std::string::npos ||
             text.find(",context,") == std::string::npos ||
             text.find(",device_slow,\"Poll\",0x80070005,52100,") == std::string::npos ||
             text.find(privateId) != std::string::npos ||
@@ -259,6 +268,10 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
         .configured = true, .engagedGear = 2, .shortcutKey = VK_F8, .shortcutPressedAt = tick,
         .hasRequestedMode = true, .requestedManual = true, .shortcutAvailable = true,
     };
+    first.transmission.shift = DiagnosticShiftState::clutchRequired;
+    first.clutch = {.configured = true, .assistanceEnabled = true, .rawTravel = -0.034f,
+        .signal = DiagnosticCommandState::waitingForNeutral, .rest = DiagnosticClutchRest::outOfRange,
+        .blocker = DiagnosticClutchBlocker::waitingForNeutral};
     first.axes[1] = {.state = DiagnosticAxisState::armed, .value = 0.6f, .appliedAt = tick};
     publisher.publish(first, 1);
     const auto initial = reader.read();
@@ -267,11 +280,16 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
 
     DiagnosticSnapshot waiting{.mode = DiagnosticMode::waitingForVehicleInput};
     waiting.transmission.shortcutKey = 'L';
+    waiting.clutch = {.configured = true, .assistanceEnabled = true,
+        .signal = DiagnosticCommandState::temporarilyUnavailable, .blocker = DiagnosticClutchBlocker::signalPending};
     publisher.publish(waiting, 1);
     const auto interrupted = reader.read();
     if (interrupted.snapshot.mode != DiagnosticMode::waitingForVehicleInput ||
         interrupted.snapshot.transmission.shortcutKey != 'L' || interrupted.lastDriveAt != initial.lastDriveAt ||
-        interrupted.lastDrive.transmission != first.transmission)
+        interrupted.lastDrive.transmission != first.transmission ||
+        interrupted.snapshot.clutch.blocker != DiagnosticClutchBlocker::signalPending ||
+        interrupted.lastDrive.clutch.blocker != DiagnosticClutchBlocker::waitingForNeutral ||
+        interrupted.lastDrive.clutch.rawTravel != -0.034f || interrupted.lastDrive.clutch.inputAvailable)
         return false;
 
     DiagnosticSnapshot expired{.mode = DiagnosticMode::usb, .accessories = DiagnosticAccessoryState::sampleExpired};
@@ -289,6 +307,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     const auto background = reader.read();
     if (background.lastDrive.transmission.engagedGear != 2 || background.lastDrive.axes[1].value != 0.6f ||
         background.lastDriveAt != initial.lastDriveAt || background.events[2].axes[1] != DiagnosticAxisState::sampleExpired ||
+        background.lastDrive.clutch.rest != DiagnosticClutchRest::outOfRange || background.snapshot.clutch.configured ||
         background.events[3].axes[1] != DiagnosticAxisState::waitingForNeutral)
         return false;
 
@@ -334,7 +353,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
 
     const std::array rows{
         DiagnosticCaptureRecord{.driving = {.sampledAt = tick, .mode = DiagnosticMode::usb,
-                                            .transmission = first.transmission}},
+                                            .transmission = first.transmission, .clutch = first.clutch}},
         DiagnosticCaptureRecord{.usb = resumed.usbEvents[0], .usbIncident = true},
         DiagnosticCaptureRecord{.usb = resumed.usbEvents[1], .usbIncident = true},
         DiagnosticCaptureRecord{.usb = resumed.usbEvents[2], .usbIncident = true},
@@ -357,8 +376,11 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     const auto text = csv.str();
     constexpr std::string_view blockersCell =
         ",5,gear_1:button:2:0:waiting_for_neutral|clutch:axis:3:0:temporarily_unavailable|"
-        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,\r\n";
-    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,,\r\n") == std::string::npos ||
+        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,,,,,\r\n";
+    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,,,,,,\r\n") == std::string::npos ||
+        text.find(",clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker\r\n") == std::string::npos ||
+        text.find(",waiting_for_neutral,-0.034,out_of_range,waiting_for_neutral\r\n") == std::string::npos ||
+        text.find(",clutch_required,") == std::string::npos ||
         text.find(",modifier_blocked,0,5,") == std::string::npos ||
         text.find(",selector_ambiguous,,") == std::string::npos ||
         text.find(",selector_ambiguous,0,0,") == std::string::npos ||
@@ -372,7 +394,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     std::string row;
     while (std::getline(lines, row)) {
         // These fixtures contain no quoted commas, so all row types share the same column count.
-        if (std::ranges::count(row, ',') != 50)
+        if (std::ranges::count(row, ',') != 54)
             return false;
     }
     return true;

@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.69
+
+- **Diagnostic de l’embrayage.** La raison du passage bloqué distingue le réarmement, la détection en cours, le signal indisponible et la valeur lue sous 65 %. En séquentiel, le diagnostic invite à refaire un appui refusé lorsque la pédale atteint le seuil.
+- **Réarmement.** Le diagnostic affiche la course brute calibrée avec son signe au dixième de point, ainsi que sa position par rapport à la zone de repos de ±3 %. Le rapport copié reprend la raison, la valeur lue et la course du même relevé. L’export CSV inclut ces états.
+
+[ZIP Vortex](out/Chromaxis-0.4.69.zip)
+
 ## Chrome Axis 0.4.68
 
 - **Détection DirectInput.** Le sondage reprend après un refus temporaire d’accès, y compris si le pilote change de code d’erreur avant la confirmation. La recherche d’une commande en attente respecte son délai entre les tentatives.

@@ -222,6 +222,15 @@ std::wstring precisePercentText(float value, bool showSign = true)
     return (showSign && percent > 0.0 ? L"+" : L"") + text + tr(Text::mainPercentSuffix);
 }
 
+std::wstring clutchRawTravelText(float value)
+{
+    if (!std::isfinite(value))
+        return unavailableValue;
+    auto text = std::format(L"{:+.1f}", static_cast<double>(value) * 100.0);
+    text[text.find(L'.')] = tr(Text::mainDecimalSeparator)[0];
+    return text + tr(Text::mainPercentSuffix);
+}
+
 std::wstring appliedValue(const DiagnosticAxis& axis, std::uint64_t now)
 {
     if (!axis.appliedAt || !std::isfinite(axis.value))
@@ -478,7 +487,9 @@ std::wstring commandSignal(const DiagnosticAccessoryCommand& command)
 {
     auto text = commandStateWithActivity(command);
     if (command.travelAvailable && std::isfinite(command.travel)) {
-        text += L" · " + std::wstring(tr(Text::DlgDiagnosticsCommandTravel)) + L" " + percentText(command.travel);
+        const bool clutch = clutchCommand(command);
+        text += L" · " + std::wstring(tr(clutch ? Text::DlgDiagnosticsClutchRawTravel : Text::DlgDiagnosticsCommandTravel));
+        text += L" " + (clutch ? clutchRawTravelText(command.travel) : percentText(command.travel));
     }
     return text;
 }
@@ -790,9 +801,37 @@ std::wstring recordingSummary(const DiagnosticRecordingStatus& recording, bool a
     return summary;
 }
 
-const wchar_t* transmissionStatus(const DiagnosticTransmission& transmission)
+std::wstring clutchInputText(float value)
 {
-    switch (transmission.shift) {
+    if (!std::isfinite(value))
+        return unavailableValue;
+    // Round down so a reading just below the shift threshold remains distinguishable.
+    const auto tenths = static_cast<unsigned int>(std::floor(std::clamp(value, 0.0f, 1.0f) * 1000.0f));
+    return std::to_wstring(tenths / 10) + tr(Text::mainDecimalSeparator) +
+        std::to_wstring(tenths % 10) + tr(Text::mainPercentSuffix);
+}
+
+std::wstring clutchBlockerText(const DiagnosticClutch& clutch)
+{
+    switch (clutch.blocker) {
+    case DiagnosticClutchBlocker::waitingForNeutral: return tr(Text::DlgDiagnosticsClutchWaitForNeutral);
+    case DiagnosticClutchBlocker::signalPending: return tr(Text::DlgDiagnosticsClutchSignalPending);
+    case DiagnosticClutchBlocker::signalUnavailable: return tr(Text::DlgDiagnosticsClutchSignalUnavailable);
+    case DiagnosticClutchBlocker::belowThreshold:
+        if (clutch.inputAvailable && std::isfinite(clutch.input)) {
+            return std::wstring(tr(Text::DlgDiagnosticsClutchBelowThreshold)) + L" " + clutchInputText(clutch.input) +
+                L" · " + tr(Text::DlgDiagnosticsClutchThreshold) + L" 65" + tr(Text::mainPercentSuffix);
+        }
+        break;
+    case DiagnosticClutchBlocker::retryPaddle: return tr(Text::DlgDiagnosticsClutchRetryPaddle);
+    case DiagnosticClutchBlocker::none: break;
+    }
+    return tr(Text::DlgDiagnosticsTransmissionClutchRequired);
+}
+
+std::wstring transmissionStatus(const DiagnosticSnapshot& snapshot)
+{
+    switch (snapshot.transmission.shift) {
     case DiagnosticShiftState::automatic: return L"";
     case DiagnosticShiftState::ready: return tr(Text::DlgDiagnosticsTransmissionReady);
     case DiagnosticShiftState::unavailable: return tr(Text::DlgDiagnosticsTransmissionUnavailable);
@@ -807,7 +846,11 @@ const wchar_t* transmissionStatus(const DiagnosticTransmission& transmission)
     case DiagnosticShiftState::selectorUnavailable: return tr(Text::DlgDiagnosticsTransmissionSelector);
     case DiagnosticShiftState::selectorAmbiguous: return tr(Text::DlgDiagnosticsTransmissionAmbiguous);
     case DiagnosticShiftState::pending: return tr(Text::DlgDiagnosticsTransmissionPending);
-    case DiagnosticShiftState::clutchRequired: return tr(Text::DlgDiagnosticsTransmissionClutchRequired);
+    case DiagnosticShiftState::clutchRequired:
+        if (snapshot.transmission.sequential) {
+            return std::wstring(tr(Text::DlgDiagnosticsClutchLastPressBlocked)) + L" · " + clutchBlockerText(snapshot.clutch);
+        }
+        return clutchBlockerText(snapshot.clutch);
     }
     return unavailableValue;
 }
@@ -885,29 +928,40 @@ std::wstring gearboxSampleAge(const DiagnosticTransmission& transmission, std::u
     return std::to_wstring(sampledAt - transmission.gearboxSampledAt) + L" ms";
 }
 
-std::wstring clutchInputText(float value)
+std::wstring clutchSummary(const DiagnosticClutch& clutch, bool fullDetails = false)
 {
-    if (!std::isfinite(value))
-        return unavailableValue;
-    // Round down so a reading just below the shift threshold remains distinguishable.
-    const auto tenths = static_cast<unsigned int>(std::floor(std::clamp(value, 0.0f, 1.0f) * 1000.0f));
-    return std::to_wstring(tenths / 10) + tr(Text::mainDecimalSeparator) +
-        std::to_wstring(tenths % 10) + tr(Text::mainPercentSuffix);
-}
-
-std::wstring clutchSummary(const DiagnosticClutch& clutch)
-{
-    auto text = std::wstring(tr(Text::DlgDiagnosticsReportRead)) + L" " +
+    auto text = std::wstring(tr(Text::DlgDiagnosticsClutchInput)) + L" " +
         (clutch.inputAvailable ? clutchInputText(clutch.input) : unavailableValue);
-    const auto assistance = clutch.assistanceEnabled ? Text::DlgDiagnosticsClutchAssistanceOn
-                                                    : Text::DlgDiagnosticsClutchAssistanceOff;
-    text += L" · " + std::wstring(tr(assistance));
-    if (clutch.probeActive || clutch.appliedAvailable) {
+    const bool experiment = clutch.probeActive || clutch.appliedAvailable;
+    if (!experiment || fullDetails) {
+        appendDiagnosticPart(text, tr(clutch.assistanceEnabled ? Text::DlgDiagnosticsClutchAssistanceOn
+                                                              : Text::DlgDiagnosticsClutchAssistanceOff));
+    }
+    if (experiment) {
         text += L" · " + std::wstring(tr(Text::DlgDiagnosticsClutchApplied)) + L" " +
             (clutch.appliedAvailable ? percentText(clutch.applied) : unavailableValue);
-        text += L" · " + std::wstring(tr(clutch.probeSupported ? Text::DlgDiagnosticsClutchProbeAvailable
-                                                              : Text::DlgDiagnosticsClutchProbeUnavailable));
+        if (fullDetails) {
+            appendDiagnosticPart(text, tr(clutch.probeSupported ? Text::DlgDiagnosticsClutchProbeAvailable
+                                                               : Text::DlgDiagnosticsClutchProbeUnavailable));
+        }
     }
+    return text;
+}
+
+std::wstring clutchTravelSummary(const DiagnosticClutch& clutch)
+{
+    auto text = clutch.rest == DiagnosticClutchRest::unknown
+        ? std::wstring(unavailableValue) : clutchRawTravelText(clutch.rawTravel);
+    appendDiagnosticPart(text, std::wstring(tr(Text::DlgDiagnosticsClutchRestBand)) + L" ±3" + tr(Text::mainPercentSuffix));
+    if (clutch.rest != DiagnosticClutchRest::unknown) {
+        const auto rest = clutch.rest == DiagnosticClutchRest::inRange ? Text::DlgDiagnosticsClutchInRestBand
+                                                                      : Text::DlgDiagnosticsClutchOutsideRestBand;
+        appendDiagnosticPart(text, tr(rest));
+    }
+    if (clutch.rest == DiagnosticClutchRest::unknown && clutch.signal != DiagnosticCommandState::inactive)
+        appendDiagnosticPart(text, commandState(clutch.signal));
+    else if (clutch.rest == DiagnosticClutchRest::inRange && clutch.signal == DiagnosticCommandState::waitingForNeutral)
+        appendDiagnosticPart(text, tr(Text::DlgDiagnosticsClutchRearming));
     return text;
 }
 
@@ -1009,14 +1063,15 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
             line(Text::DlgDiagnosticsTransmissionShortcut, shortcut);
     }
     report += L"\r\n";
-    if (read.lastDriveAt)
-        line(Text::DlgDiagnosticsReportLastDrive, std::wstring(modeText(read.lastDrive.mode)) +
-             L" · " + eventAge(read.lastDriveAt, now));
+    const auto view = accessoryView(read);
+    if (view.sampledAt)
+        line(view.historical ? Text::DlgDiagnosticsReportLastDrive : Text::DlgDiagnosticsReportCurrentSample,
+             std::wstring(modeText(view.snapshot.mode)) + L" · " + eventAge(view.sampledAt, now));
     else
         report += std::wstring(tr(Text::DlgDiagnosticsReportNoDrive)) + L"\r\n";
-    if (read.lastDriveAt || read.sampledAt) {
-        const auto& snapshot = read.lastDriveAt ? read.lastDrive : read.snapshot;
-        if (read.lastDriveAt)
+    if (view.sampledAt) {
+        const auto& snapshot = view.snapshot;
+        if (view.historical)
             line(Text::DlgDiagnosticsProfile, reportLabel(profileText(snapshot)));
         for (std::size_t i = 0; i < axisControls.size(); ++i) {
             const auto& axis = snapshot.axes[i];
@@ -1036,20 +1091,21 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         line(Text::DlgDiagnosticsLastKey, lastAccessoryKey(snapshot, now));
         if (snapshot.transmission.configured) {
             auto detail = transmissionSummary(snapshot.transmission, snapshot.mode);
-            if (const auto status = transmissionStatus(snapshot.transmission); *status)
-                detail += L" · " + std::wstring(status);
+            appendDiagnosticPart(detail, transmissionStatus(snapshot));
             line(Text::DlgDiagnosticsTransmission, detail);
-            line(Text::DlgDiagnosticsTransmissionDataAge,
-                 gearboxSampleAge(snapshot.transmission, read.lastDriveAt ? read.lastDriveAt : read.sampledAt));
+            line(Text::DlgDiagnosticsTransmissionDataAge, gearboxSampleAge(snapshot.transmission, view.sampledAt));
         }
-        if (read.lastDriveAt &&
+        if (view.historical &&
             (snapshot.transmission.shortcutKey != read.snapshot.transmission.shortcutKey ||
              snapshot.transmission.shortcutPressedAt != read.snapshot.transmission.shortcutPressedAt)) {
             if (const auto shortcut = transmissionShortcut(snapshot.transmission, now); !shortcut.empty())
                 line(Text::DlgDiagnosticsTransmissionShortcut, shortcut);
         }
-        if (snapshot.clutch.configured)
-            line(Text::DlgDiagnosticsClutch, clutchSummary(snapshot.clutch));
+        if (snapshot.clutch.configured) {
+            line(Text::DlgDiagnosticsClutch, clutchSummary(snapshot.clutch, true));
+            if (snapshot.mode == DiagnosticMode::usb)
+                line(Text::DlgDiagnosticsClutchRawTravel, clutchTravelSummary(snapshot.clutch));
+        }
         line(Text::DlgDiagnosticsFeedback, feedbackStatus(snapshot));
         const auto& feedback = snapshot.feedbackData;
         if (hasFeedbackTelemetry(feedback)) {
@@ -1065,11 +1121,10 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
             line(Text::DlgDiagnosticsFeedbackSubmitted, submitted);
         }
     }
-    const auto accessories = accessoryView(read);
-    if (!accessories.commands().empty()) {
+    if (!view.commands().empty()) {
         report += L"\r\n";
-        line(Text::DlgDiagnosticsCommandHeading, accessoryViewContext(accessories, now));
-        for (const auto& command : accessories.commands()) {
+        line(Text::DlgDiagnosticsCommandHeading, accessoryViewContext(view, now));
+        for (const auto& command : view.commands()) {
             report += L"- " + commandName(command) +
                 L" · " + tr(Text::DlgDiagnosticsCommandInput) + L" " + commandSignal(command);
             if (!clutchCommand(command))
@@ -1307,9 +1362,9 @@ void refresh(HWND window, DialogState& state)
         !state.versionMismatch.empty() ? state.versionMismatch.c_str() : connectionText(read.connection));
     const bool connected = read.connection == DiagnosticConnection::connected;
     const auto mode = read.snapshot.mode;
-    const bool showLastDrive = read.lastDriveAt && (!connected || mode == DiagnosticMode::gameNotForeground ||
-        mode == DiagnosticMode::waitingForDriver);
-    const auto& snapshot = showLastDrive ? read.lastDrive : read.snapshot;
+    const auto view = accessoryView(read);
+    const bool showLastDrive = view.historical;
+    const auto& snapshot = view.snapshot;
     const bool showControls = connected || showLastDrive;
     const auto now = GetTickCount64();
     if (!state.missingFiles && state.versionMismatch.empty()) {
@@ -1363,7 +1418,7 @@ void refresh(HWND window, DialogState& state)
         summary = transmissionModeName(snapshot.transmission.manual);
         appendDiagnosticPart(summary, transmissionGearValues(snapshot.transmission));
         appendDiagnosticPart(summary, std::wstring(tr(Text::DlgDiagnosticsTransmissionData)) + L" " +
-            gearboxSampleAge(snapshot.transmission, showLastDrive ? read.lastDriveAt : read.sampledAt));
+            gearboxSampleAge(snapshot.transmission, view.sampledAt));
         transmissionContext = transmissionConfiguration(snapshot.transmission, snapshot.mode);
         appendDiagnosticPart(transmissionContext, shortcut);
     }
@@ -1372,10 +1427,13 @@ void refresh(HWND window, DialogState& state)
     setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION, summary);
     setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_CONTEXT, transmissionContext);
     setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS,
-                   showTransmission ? transmissionStatus(snapshot.transmission) : L"");
+                   showTransmission ? transmissionStatus(snapshot) : L"");
     const bool showClutch = showControls && snapshot.clutch.configured;
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_LABEL, showClutch ? tr(Text::DlgDiagnosticsClutch) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH, showClutch ? clutchSummary(snapshot.clutch) : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_TRAVEL, showClutch && snapshot.mode == DiagnosticMode::usb
+        ? std::wstring(tr(Text::DlgDiagnosticsClutchRawTravel)) + L" " + clutchTravelSummary(snapshot.clutch)
+        : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");

@@ -125,6 +125,12 @@ struct DiagnosticTransmission {
     bool operator==(const DiagnosticTransmission&) const = default;
 };
 
+enum class DiagnosticClutchRest : std::uint8_t { unknown, inRange, outOfRange };
+
+enum class DiagnosticClutchBlocker : std::uint8_t {
+    none, waitingForNeutral, signalPending, signalUnavailable, belowThreshold, retryPaddle
+};
+
 struct DiagnosticClutch {
     float input{};
     float applied{};
@@ -134,6 +140,10 @@ struct DiagnosticClutch {
     bool probeSupported{};
     bool appliedAvailable{};
     bool probeActive{};
+    float rawTravel{}; // Signed calibrated fraction before removing the dead zone.
+    DiagnosticCommandState signal{};
+    DiagnosticClutchRest rest{}; // Evaluated before converting rawTravel to float.
+    DiagnosticClutchBlocker blocker{};
 };
 
 struct DiagnosticSnapshot {

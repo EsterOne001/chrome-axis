@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.68** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.69** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -106,7 +106,7 @@ Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. C
 
 Open **Transmission… → Shifter and paddles…** to choose the H-pattern or native paddles for the active profile. When both devices are connected, Chrome Axis uses the native source saved in that profile. Existing keyboard bindings remain available. Release both paddles to arm them. Holding a paddle requests a single shift. The same window lets you change the installation-wide AUTO / MANUAL key. The hardware status describes the connected device and Diagnostics shows the selected, requested and engaged gear.
 
-In **Transmission… → Clutch…**, capture the rest position and end of travel, then save. The profile stores calibration and offers optional shift assistance that requires about 65% clutch travel to change gear. Neutral remains available. The experimental setting measures throttle attenuation in a forward gear in manual mode. Native progressive clutch behavior and the bite point still require in-game confirmation. With keyboard simulation active and **Num Lock** on, **Numpad 0/1/3/5/7** selects 0/25/50/75/100% for this test.
+In **Transmission… → Clutch…**, capture the rest position and end of travel, then save. The profile stores calibration and offers optional shift assistance that requires the clutch reading after dead-zone correction to reach 65% to change gear. Diagnostics displays the raw calibrated travel and its position relative to the ±3% rest range separately. Neutral remains available. The experimental setting measures throttle attenuation in a forward gear in manual mode. Native progressive clutch behavior and the bite point still require in-game confirmation. With keyboard simulation active and **Num Lock** on, **Numpad 0/1/3/5/7** selects 0/25/50/75/100% for this test.
 
 In **Accessories…** and **Shifter and paddles…**, click the key button to open the visual keyboard and choose a key. Number row and numpad keys are separate.
 

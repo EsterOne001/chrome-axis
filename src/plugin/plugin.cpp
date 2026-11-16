@@ -141,6 +141,7 @@ struct InputFrame {
     std::optional<float> clutch;
     bool selectorAmbiguous{};
     Clock::time_point handbrakeSampledAt{}, gearSampledAt{}, sequentialSampledAt{}, clutchSampledAt{};
+    std::optional<chrome_axis::AccessoryObservation> clutchObservation;
 };
 
 struct HudFrame {
@@ -1318,6 +1319,31 @@ DiagnosticCommandState diagnosticCommandState(chrome_axis::AccessoryStatus statu
     return DiagnosticCommandState::inactive;
 }
 
+void describeClutchBlocker(chrome_axis::DiagnosticTransmission& transmission, chrome_axis::DiagnosticClutch& clutch,
+                           std::optional<float> pressure) noexcept {
+    using chrome_axis::DiagnosticClutchBlocker;
+    using chrome_axis::DiagnosticShiftState;
+    if (transmission.shift != DiagnosticShiftState::clutchRequired)
+        return;
+
+    const bool qualified = chrome_axis::ClutchShiftAssist::pedalQualified(pressure);
+    if (!transmission.sequential && (transmission.selectedGear == -1 || qualified)) {
+        // This selector position will be considered again on the next game update.
+        transmission.shift = DiagnosticShiftState::pending;
+    } else if (qualified) {
+        // A momentary paddle request that already failed will not be repeated.
+        clutch.blocker = DiagnosticClutchBlocker::retryPaddle;
+    } else if (pressure) {
+        clutch.blocker = DiagnosticClutchBlocker::belowThreshold;
+    } else if (clutch.signal == DiagnosticCommandState::waitingForNeutral) {
+        clutch.blocker = DiagnosticClutchBlocker::waitingForNeutral;
+    } else if (clutch.signal == DiagnosticCommandState::temporarilyUnavailable) {
+        clutch.blocker = DiagnosticClutchBlocker::signalPending;
+    } else {
+        clutch.blocker = DiagnosticClutchBlocker::signalUnavailable;
+    }
+}
+
 struct AccessoryOutputHistory {
     std::uint64_t sentAt{};
     Clock::time_point issueUntil{};
@@ -1597,8 +1623,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             const auto gearbox = drivingSession && (inputFrame.nativeShifter || inputFrame.nativeSequential ||
                 inputFrame.simulated || capturing) ? manual_backend::snapshot(context.vehicle) : manual_backend::Snapshot{};
-            snapshot.transmission = diagnosticTransmission(gearbox, drivingSession && vehicleInputFresh(context, now) &&
-                inputFrame.generation == context.generation && now - inputFrame.sampled <= inputLifetime, now);
+            const bool drivingInputFresh = drivingSession && vehicleInputFresh(context, now) &&
+                inputFrame.generation == context.generation && now - inputFrame.sampled <= inputLifetime;
+            snapshot.transmission = diagnosticTransmission(gearbox, drivingInputFresh, now);
             const bool hasDelivery = drivingSession && vehicleDelivery.sampled != Clock::time_point{} &&
                 now - vehicleDelivery.sampled <= inputLifetime;
             const bool liveUsb = drivingSession && hudFrame.generation == context.generation &&
@@ -1621,10 +1648,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 liveUsb && hudFrame.status == HudStatus::usbReady,
                 liveUsb && hudFrame.status == HudStatus::usbPartial &&
                     (axesOrHandbrakeDelivered || nativeSelectorObserved || keySent || keyHeld));
-            const auto clutch = drivingSession
-                ? inputFrame.simulated ? probePosition :
-                    sourceInputFresh(inputFrame.clutchSampledAt, now) ? inputFrame.clutch : std::nullopt
-                : std::nullopt;
+            const auto clutch = inputFrame.simulated ? (drivingSession ? probePosition : std::nullopt) :
+                (drivingInputFresh && sourceInputFresh(inputFrame.clutchSampledAt, now) ? inputFrame.clutch : std::nullopt);
             const auto attenuation = hasDelivery ? vehicleDelivery.clutchAttenuation : std::nullopt;
             snapshot.clutch = {
                 .input = clutch.value_or(0.0f),
@@ -1636,6 +1661,21 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 .probeActive = inputFrame.clutchMode == chrome_axis::ClutchMode::experiment ||
                     (inputFrame.simulated && probePosition.has_value()),
             };
+            if (drivingInputFresh && inputFrame.clutchObservation) {
+                const auto& observed = *inputFrame.clutchObservation;
+                if (sourceInputFresh(observed.sampledAt, now)) {
+                    snapshot.clutch.signal = diagnosticCommandState(observed.status);
+                    if (observed.travel && observed.neutral) {
+                        snapshot.clutch.rawTravel = static_cast<float>(*observed.travel);
+                        snapshot.clutch.rest = *observed.neutral ? chrome_axis::DiagnosticClutchRest::inRange
+                                                                : chrome_axis::DiagnosticClutchRest::outOfRange;
+                    }
+                } else {
+                    snapshot.clutch.signal = DiagnosticCommandState::sampleExpired;
+                }
+            }
+            if (drivingInputFresh)
+                describeClutchBlocker(snapshot.transmission, snapshot.clutch, clutch);
             if (capturing && drivingSession && vehicleInputFresh(context, now)) {
                 const bool finalPedals = hasDelivery && vehicleDelivery.pedalTick;
                 const bool steeringApplied = hasDelivery && vehicleDelivery.axes[0].outcome == DiagnosticDelivery::applied;
@@ -2342,7 +2382,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                                   nativeSequential, transmissionSample.sequentialArmed, clutchMode, transmissionSample.clutch,
                                   transmissionSample.selectorAmbiguous, transmissionSample.handbrakeSampledAt,
                                   transmissionSample.gearSampledAt, transmissionSample.sequentialSampledAt,
-                                  transmissionSample.clutchSampledAt};
+                                  transmissionSample.clutchSampledAt, transmissionSample.clutchObservation};
                 } else {
                     inputFrame = {};
                 }
