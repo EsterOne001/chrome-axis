@@ -642,8 +642,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     logo.SetVisible(false);
     logo.SetInteractive(false);
     logo.SetAtlasResource(r"chrome_axis\\hud\\logo.inkatlas");
-    logo.SetSize(Vector2(26.0, 26.0));
-    logo.SetTranslation(9.0, 10.0);
+    logo.SetSize(Vector2(20.0, 20.0));
+    logo.SetTranslation(16.0, 12.0);
     logo.Reparent(badge);
 
     let shadow = this.CreateHudLabel(badge, 43.0, 5.0, 130.0, 21.0, 17, textHorizontalAlignment.Left);
@@ -652,7 +652,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
 
     let modeLabel = this.CreateHudLabel(badge, 42.0, 24.0, 130.0, 17.0, 13, textHorizontalAlignment.Left);
     let gearCaption = this.CreateHudLabel(badge, 180.0, 5.0, 44.0, 14.0, 10, textHorizontalAlignment.Center);
-    let gearLabel = this.CreateHudLabel(badge, 180.0, 16.0, 44.0, 29.0, 27, textHorizontalAlignment.Center);
+    let gearLabel = this.CreateHudLabel(badge, 180.0, 14.0, 44.0, 29.0, 27, textHorizontalAlignment.Center);
 
     this.hudBadge = badge;
     this.hudLogo = logo;
@@ -700,8 +700,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     let panel = HDRColor(0.024, 0.039, 0.059, 0.72);
     this.CreateHudRect(badge, 0.0, 2.0, 227.0, 44.0).SetTintColor(panel);
     this.CreateHudRect(badge, 227.0, 2.0, 9.0, 36.0).SetTintColor(panel);
-    this.hudInnerFrame = this.CreateHudDetail(badge, Vector2(4.0, 6.0), Vector2(223.0, 36.0), 0.44, true);
-    this.hudLogoFrame = this.CreateHudDetail(badge, Vector2(6.0, 7.0), Vector2(32.0, 32.0), 0.38, false);
+    this.hudInnerFrame = this.CreateHudDetail(badge, Vector2(5.0, 7.0), Vector2(217.0, 34.0), 0.44, true);
+    this.hudLogoFrame = this.CreateHudDetail(badge, Vector2(15.0, 11.0), Vector2(22.0, 22.0), 0.38, false);
     ArrayClear(this.hudBorder);
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 2.0, 236.0, 1.0));
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 3.0, 1.0, 42.0));
@@ -710,7 +710,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 37.0, 9.0, 1.0));
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 38.0, 1.0, 7.0));
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 12.0, 0.0, 16.0, 2.0));
-    this.hudDivider = this.CreateHudRect(badge, 173.0, 8.0, 1.0, 31.0);
+    this.hudDivider = this.CreateHudRect(badge, 173.0, 10.0, 1.0, 28.0);
   }
 
   private func CreateHudDetail(badge: ref<inkCanvas>, position: Vector2, size: Vector2, opacity: Float, nineSlice: Bool) -> ref<inkImage> {

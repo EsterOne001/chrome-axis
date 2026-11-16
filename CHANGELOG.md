@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.51
+
+- **HUD de conduite.** Le liseré gris intérieur est davantage espacé du contour extérieur et des équerres du volant. Le rapport est légèrement relevé pour dégager le bas du badge.
+
+[ZIP Vortex](out/Chromaxis-0.4.51.zip)
+
 ## Chrome Axis 0.4.50
 
 - **HUD Painter.** Les couleurs du contour et de la transmission s’appliquent dès leur modification. Elles s’enregistrent automatiquement avec le préréglage actif. Les couleurs enregistrées auparavant restent disponibles comme base pour les préréglages qui n’ont pas encore de réglage propre.
