@@ -9,7 +9,6 @@
 #include "chrome_axis/presets.hpp"
 #include "diagnostic_recording.hpp"
 #include "dialog_theme.hpp"
-#include "../core/settings_replace.hpp"
 
 #include <winver.h>
 #include <shobjidl.h>
@@ -876,25 +875,6 @@ HRESULT pickCsvFile(HWND owner, std::filesystem::path& result)
     return S_OK;
 }
 
-bool copyRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
-{
-    std::error_code ignored;
-    if (std::filesystem::equivalent(source, destination, ignored))
-        return true;
-
-    const auto temporary = detail::stagedSettingsPath(destination);
-    if (!CopyFileW(source.c_str(), temporary.c_str(), TRUE)) {
-        const auto error = GetLastError();
-        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
-            DeleteFileW(temporary.c_str());
-        return false;
-    }
-    if (detail::replaceSettingsFile(temporary, destination))
-        return true;
-    DeleteFileW(temporary.c_str());
-    return false;
-}
-
 void exportDrivingCapture(HWND window, const DiagnosticRecordingStatus& recording)
 {
     if (!canExportRecording(recording)) {
@@ -908,7 +888,7 @@ void exportDrivingCapture(HWND window, const DiagnosticRecordingStatus& recordin
         CoUninitialize();
     }
     if (status != HRESULT_FROM_WIN32(ERROR_CANCELLED) &&
-        (FAILED(status) || !copyRecording(recording.file, destination)))
+        (FAILED(status) || !exportDiagnosticRecording(recording.file, destination)))
         MessageBoxW(window, tr(Text::DlgDiagnosticsCsvError), tr(Text::DlgDiagnosticsCsvTitle), MB_OK | MB_ICONERROR);
 }
 

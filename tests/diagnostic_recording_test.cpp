@@ -1,12 +1,14 @@
 #include "chrome_axis/diagnostics.hpp"
 #include "diagnostic_recording.hpp"
 
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -30,6 +32,41 @@ struct SessionDirectory {
         std::filesystem::remove(path, error);
     }
 };
+
+bool testChronologicalExport(const std::filesystem::path& directory)
+{
+    constexpr std::uint64_t start = 1000;
+    const DiagnosticCaptureRecord first{
+        .usb = {.sampledAt = start + 200, .kind = DiagnosticUsbEventKind::pollExpired}, .usbIncident = true};
+    const DiagnosticCaptureRecord late{
+        .usb = {.sampledAt = start + 195, .durationMicros = 120000,
+                .kind = DiagnosticUsbEventKind::deviceSlow}, .usbIncident = true};
+    const DiagnosticCaptureRecord laterArrival{
+        .usb = {.sampledAt = start + 195, .durationMicros = 200000,
+                .kind = DiagnosticUsbEventKind::deviceSlow}, .usbIncident = true};
+    const auto csv = [&](auto rows) {
+        std::ostringstream stream;
+        writeDiagnosticCaptureHeader(stream);
+        writeDiagnosticCaptureRows(stream, rows, start, 2);
+        return std::move(stream).str();
+    };
+    // The dropped marker precedes the records associated with the missing samples.
+    std::ostringstream ordered;
+    writeDiagnosticCaptureHeader(ordered);
+    writeDiagnosticCaptureRows(ordered, std::array{late, laterArrival}, start, 0);
+    writeDiagnosticCaptureRows(ordered, std::array{first}, start, 2);
+    const auto source = directory / L"live.csv";
+    const auto destination = directory / L"export.csv";
+    const auto original = csv(std::array{first, late, laterArrival});
+    std::ofstream(source, std::ios::binary) << original;
+    const auto read = [](const std::filesystem::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>{input}, {});
+    };
+    return exportDiagnosticRecording(source, destination) && read(destination) == ordered.str() &&
+        read(source) == original && exportDiagnosticRecording(destination, destination) &&
+        read(destination) == ordered.str();
+}
 
 int run()
 {
@@ -126,7 +163,7 @@ int run()
         csv.find("505520") == csv.npos || csv.find(",usb,") == csv.npos ||
         csv.find("connection_lost") == csv.npos || csv.find("connection_restored") == csv.npos || result.dropped)
         return 6;
-    return 0;
+    return testChronologicalExport(result.file.parent_path()) ? 0 : 9;
 }
 
 } // namespace

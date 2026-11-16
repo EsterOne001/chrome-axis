@@ -351,6 +351,32 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     return true;
 }
 
+bool testPartialDrivingSample(const std::filesystem::path& root)
+{
+    using namespace chrome_axis;
+    DiagnosticPublisher publisher(root);
+    DiagnosticReader reader(root);
+    DiagnosticSnapshot drive{.mode = DiagnosticMode::usb};
+    drive.profile[0] = 'A';
+    drive.transmission = {.configured = true, .engagedGear = 2};
+    publisher.publish(drive, 1, {}, canRetainDrivingSample(drive.mode, true, false));
+    if (reader.read().lastDrive.transmission.engagedGear != 2)
+        return false;
+
+    drive.profile[0] = 'B';
+    drive.transmission.engagedGear = 3;
+    drive.axes[0].state = DiagnosticAxisState::armed;
+    drive.axes[0].delivery = DiagnosticDelivery::applied;
+    drive.accessories = DiagnosticAccessoryState::deviceUnavailable;
+    publisher.publish(drive, 2, {}, canRetainDrivingSample(drive.mode, false, true));
+    DiagnosticSnapshot expired{.mode = DiagnosticMode::usb, .accessories = DiagnosticAccessoryState::sampleExpired};
+    publisher.publish(expired, 2, {}, canRetainDrivingSample(expired.mode, false, false));
+    publisher.publish({.mode = DiagnosticMode::gameNotForeground});
+    const auto after = reader.read();
+    return after.lastDrive.transmission.engagedGear == 3 && after.lastDrive.profile[0] == 'B' &&
+        after.lastDrive.axes[0].delivery == DiagnosticDelivery::applied;
+}
+
 bool testStreamingCaptureAfterGameCloses(const std::filesystem::path& root)
 {
     using namespace chrome_axis;
@@ -693,6 +719,8 @@ int run()
         return performance;
     if (!testUsbBlockerRecording(otherRoot))
         return 29;
+    if (!testPartialDrivingSample(otherRoot))
+        return 32;
     return testStreamingCaptureAfterGameCloses(otherRoot) ? 0 : 25;
 }
 

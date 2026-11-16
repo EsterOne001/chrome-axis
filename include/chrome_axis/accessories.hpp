@@ -110,7 +110,13 @@ struct AccessoryTransmissionSample {
     int shiftDelta{}; // -1 or +1 on a new, unambiguous paddle press.
     std::optional<float> clutch; // 0 released, 1 fully depressed, nullopt until armed.
     bool selectorAmbiguous{};
+    DeviceReadClock::time_point handbrakeSampledAt{};
+    DeviceReadClock::time_point gearSampledAt{};
+    DeviceReadClock::time_point sequentialSampledAt{};
+    DeviceReadClock::time_point clutchSampledAt{};
 };
+
+using AccessoryKeyTimes = std::array<DeviceReadClock::time_point, 256>;
 
 bool isAccessoryKey(unsigned int key) noexcept;
 bool nativeShifterVerified(const AccessoryProfile& profile) noexcept;
@@ -124,11 +130,12 @@ public:
     explicit AccessoryReader(const AccessoryProfile& profile);
     // Returns held keys and optional pulse, handbrake and transmission outputs.
     // Native gears are -1 neutral, 0 reverse and 1–8 forward; nullopt is unavailable.
-    std::bitset<256> poll(DirectInput& input, std::span<AccessoryObservation> observations = {},
+    std::bitset<256> poll(DeviceSampleSource& input, std::span<AccessoryObservation> observations = {},
                          std::bitset<256>* pulses = nullptr,
                          std::optional<float>* progressiveHandbrake = nullptr,
                          std::optional<int>* nativeGear = nullptr,
-                         AccessoryTransmissionSample* transmission = nullptr);
+                         AccessoryTransmissionSample* transmission = nullptr,
+                         AccessoryKeyTimes* keyTimes = nullptr);
     void reset() noexcept;
     void resetKeyboardBindings() noexcept;
     // All bindings have a usable sample and passed the neutral check.
@@ -140,7 +147,8 @@ public:
                             std::span<AccessoryObservation> observations = {}, std::bitset<256>* pulses = nullptr,
                             std::optional<float>* progressiveHandbrake = nullptr,
                             std::optional<int>* nativeGear = nullptr,
-                            AccessoryTransmissionSample* transmission = nullptr);
+                            AccessoryTransmissionSample* transmission = nullptr,
+                            AccessoryKeyTimes* keyTimes = nullptr);
 
 private:
     struct BindingState {
@@ -148,6 +156,7 @@ private:
         bool active{};
         bool waitForRelease{};
         AccessoryStatus status{AccessoryStatus::waitingForNeutral};
+        std::uint64_t sequence{};
     };
 
     struct NativeShifterState {
@@ -168,6 +177,7 @@ private:
     std::array<std::size_t, maxAccessoryBindings> sampleOwners_{};
     std::array<std::bitset<buttonCount>, maxAccessoryBindings> requiredButtons_{};
     std::array<BindingState, maxAccessoryBindings> states_{};
+    std::array<std::uint64_t, maxAccessoryBindings> selectorSequences_{};
 };
 
 } // namespace chrome_axis

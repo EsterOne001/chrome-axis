@@ -46,7 +46,7 @@ public:
     explicit ForceOutputWorker(DirectInputDiagnostic logger = nullptr) noexcept : logger_(logger) {}
 
     bool submit(HWND window, std::string_view id, std::size_t axis, float force, Context validity,
-                std::uint64_t captureId = 0, bool missedCadence = false) {
+                std::uint64_t captureId = 0, bool missedCadence = false, std::uint64_t recoveryToken = 0) {
         if (id.size() != DeviceId{}.size() - 1)
             return false;
         if (!worker_.joinable()) {
@@ -64,7 +64,7 @@ public:
         }
         if (failed_.load(std::memory_order_acquire))
             return false;
-        Request request{window, {}, axis, force, std::move(validity), 0, captureId, missedCadence};
+        Request request{window, {}, axis, force, std::move(validity), 0, captureId, recoveryToken, missedCadence};
         std::ranges::copy(id, request.id.begin());
         {
             std::scoped_lock lock(mutex_);
@@ -135,18 +135,38 @@ private:
         Context context;
         std::uint64_t generation{};
         std::uint64_t captureId{};
+        std::uint64_t recoveryToken{};
         bool missedCadence{};
+
+        bool sameTarget(const Request& other) const noexcept {
+            return generation == other.generation && window == other.window && id == other.id &&
+                axis == other.axis && recoveryToken == other.recoveryToken;
+        }
     };
 
     struct Guard {
-        const ForceOutputWorker& owner;
+        ForceOutputWorker& owner;
         const Request& request;
         std::stop_token stop;
 
         static bool current(const void* opaque) noexcept {
             const auto& guard = *static_cast<const Guard*>(opaque);
-            return !guard.stop.stop_requested() && guard.owner.generation() == guard.request.generation &&
-                guard.request.context.current();
+            return guard.check(false);
+        }
+
+        static bool canInitialize(const void* opaque) noexcept {
+            const auto& guard = *static_cast<const Guard*>(opaque);
+            return guard.check(true);
+        }
+
+        bool check(bool allowNewer) const noexcept {
+            std::scoped_lock lock(owner.mutex_);
+            if (stop.stop_requested() || owner.generation() != request.generation)
+                return false;
+            const auto& pending = owner.pending_;
+            if (pending && !request.sameTarget(*pending))
+                return false;
+            return request.context.current() || (allowNewer && pending && pending->context.current());
         }
     };
 
@@ -168,6 +188,7 @@ private:
         std::uint64_t observedGeneration = generation();
         auto deadline = Clock::time_point::max();
         Clock::time_point retryAt{};
+        std::uint64_t recoveryToken{};
 
         while (!stop.stop_requested()) {
             std::optional<Request> request;
@@ -204,6 +225,10 @@ private:
                 window = request->window;
                 retryAt = {};
             }
+            if (request->recoveryToken && request->recoveryToken != recoveryToken) {
+                recoveryToken = request->recoveryToken;
+                retryAt = {};
+            }
             if (!driver && started >= retryAt) {
                 driver.emplace(window, logger_, &observe, this);
                 if (!driver->ready()) {
@@ -214,7 +239,8 @@ private:
             std::optional<float> accepted;
             if (driver && Guard::current(&guard))
                 accepted = driver->setWheelForce({request->id.data(), request->id.size() - 1},
-                    request->axis, request->force, &Guard::current, &guard);
+                    request->axis, request->force,
+                    {&Guard::current, &Guard::canInitialize, &guard, request->recoveryToken});
             const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started);
             const Completion result{
                 .generation = request->generation, .captureId = request->captureId,

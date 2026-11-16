@@ -27,6 +27,7 @@ bool capturesHPattern()
     ShifterCapture capture(wheelId);
     DeviceSample released;
     released.buttons.set(8); // An unrelated wheel-base toggle that stays on at rest.
+    released.povsPresent[1] = true;
     released.povs[1] = 18000;
     auto noisy = released;
     noisy.buttons.set(63);
@@ -72,7 +73,8 @@ bool capturesPovDirections()
         return false;
 
     ShifterCapture capture(shifterId);
-    const DeviceSample released;
+    DeviceSample released;
+    released.povsPresent[3] = true;
     capture.captureNeutral(released);
     capture.captureNeutral(released);
     capture.captureNeutral(released);
@@ -147,6 +149,57 @@ bool ignoresNoiseAndAxes()
     return capture.sample(paddle).binding == expected;
 }
 
+bool recoveredPovRequiresObservedCenter()
+{
+    auto pending = DeviceSample{};
+    pending.povsPending.set(0);
+    auto held = DeviceSample{};
+    held.povsPresent[0] = true;
+    held.povs[0] = 9000;
+    auto released = held;
+    released.povs[0] = povCentered;
+
+    ShifterCapture capture(shifterId);
+    if (capture.captureNeutral(pending) || capture.captureNeutral(pending) || !capture.captureNeutral(pending))
+        return false;
+    for (int i = 0; i < 4; ++i) {
+        if (capture.sample(held).status != ShifterCaptureStatus::AwaitingInput)
+            return false;
+    }
+    // A newly discovered but still held POV must not make a button ambiguous.
+    auto paddle = held;
+    paddle.buttons.set(3);
+    if (capture.sample(paddle).status != ShifterCaptureStatus::AwaitingInput ||
+        capture.sample(paddle).status != ShifterCaptureStatus::AwaitingInput ||
+        capture.sample(paddle).binding != AccessoryBinding{shifterId, AccessoryKind::Button, 3, 0, 1, 0})
+        return false;
+
+    if (!neutral(capture, released))
+        return false;
+    if (capture.sample(held).status != ShifterCaptureStatus::AwaitingInput ||
+        capture.sample(pending).status != ShifterCaptureStatus::AwaitingInput)
+        return false;
+    for (int i = 0; i < 4; ++i) {
+        if (capture.sample(held).status != ShifterCaptureStatus::AwaitingInput)
+            return false;
+    }
+    capture.sample(released);
+    if (capture.sample(held).status != ShifterCaptureStatus::AwaitingInput ||
+        capture.sample(held).status != ShifterCaptureStatus::AwaitingInput ||
+        capture.sample(held).binding != AccessoryBinding{shifterId, AccessoryKind::Pov, 0, povCentered, 9000, 0})
+        return false;
+
+    capture.deviceInterrupted();
+    for (int i = 0; i < 5; ++i) {
+        if (capture.sample(held).binding)
+            return false;
+    }
+    capture.sample(released);
+    capture.sample(held);
+    capture.sample(held);
+    return capture.sample(held).status == ShifterCaptureStatus::Captured;
+}
+
 bool comparesPhysicalGestures()
 {
     using chrome_axis::sameShifterInput;
@@ -180,6 +233,10 @@ int main()
     if (!comparesPhysicalGestures()) {
         std::cerr << "Shifter capture did not distinguish physical gestures\n";
         return 4;
+    }
+    if (!recoveredPovRequiresObservedCenter()) {
+        std::cerr << "A POV was not safely rearmed after discovery or reconnect\n";
+        return 5;
     }
     return 0;
 }

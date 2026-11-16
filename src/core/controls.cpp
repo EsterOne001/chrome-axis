@@ -324,6 +324,7 @@ ControlReader::ControlReader(const Profile& profile)
 void ControlReader::reset() noexcept
 {
     neutralPolls_.fill(0);
+    lastSequences_.fill(0);
     for (auto& stabilizer : pedalStabilizers_)
         stabilizer.reset();
     const auto axes = channels(profile_);
@@ -332,7 +333,7 @@ void ControlReader::reset() noexcept
     }
 }
 
-ControlState ControlReader::poll(DirectInput& input, Readings* readings)
+ControlState ControlReader::poll(DeviceSampleSource& input, Readings* readings)
 {
     return poll(input, readings, nullptr);
 }
@@ -344,7 +345,7 @@ ControlReader::CalibrationReadings ControlReader::review(DirectInput& input)
     return readings;
 }
 
-ControlState ControlReader::poll(DirectInput& input, Readings* readings, CalibrationReadings* calibration)
+ControlState ControlReader::poll(DeviceSampleSource& input, Readings* readings, CalibrationReadings* calibration)
 {
     const auto axes = channels(profile_);
     std::array<std::optional<DeviceSample>, 3> storage;
@@ -381,7 +382,11 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         const auto& calibration = *axes[i];
         if (calibration.deviceId.empty())
             continue;
+        state.assigned.set(i);
         const auto* sample = samples[i];
+        const bool fresh = sample && (!sample->sequence || lastSequences_[i] != sample->sequence);
+        if (sample)
+            lastSequences_[i] = sample->sequence;
         if (i > 0 && (!sample || calibration.axis >= axisCount || !sample->axesPresent[calibration.axis] ||
                       statuses[i] == DeviceReadStatus::resumed))
             pedalStabilizers_[i - 1].reset();
@@ -410,7 +415,8 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
             const float adjusted = (response.progressivity == 0 && response.saturation == maximumResponseSaturation)
                 ? calibrated : applyResponse(travel, calibration.deadzone, response, steering);
             return response.stabilization && !steering
-                ? pedalStabilizers_[i - 1].update(adjusted, sampledAt) : adjusted;
+                ? pedalStabilizers_[i - 1].update(adjusted, sample->sampledAt == DeviceReadClock::time_point{}
+                    ? sampledAt : sample->sampledAt) : adjusted;
         };
         if (review) {
             review->travel[i] = travel;
@@ -427,13 +433,16 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
                 neutralPolls_[i] = 0;
                 continue;
             }
-            if (++neutralPolls_[i] < requiredNeutralPolls)
+            if (fresh)
+                ++neutralPolls_[i];
+            if (neutralPolls_[i] < requiredNeutralPolls)
                 continue;
         }
         *readiness[i] = true;
         if (steering)
             state.calibratedSteering = calibrated;
         *outputs[i] = review && brake ? *review->adjustedBrake : output();
+        state.sampledAt[i] = sample->sampledAt;
         axisStatuses_[i] = AxisStatus::armed;
     }
     return state;

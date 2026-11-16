@@ -18,6 +18,8 @@ struct DiagnosticRecordingStatus {
     DiagnosticRecordingFailure failure{DiagnosticRecordingFailure::none};
 };
 
+bool exportDiagnosticRecording(const std::filesystem::path& source, const std::filesystem::path& destination);
+
 class DiagnosticRecorder {
 public:
     DiagnosticRecorder(const std::filesystem::path& gameRoot, const std::filesystem::path& profileRoot);

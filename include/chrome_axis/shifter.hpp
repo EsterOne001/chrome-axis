@@ -6,6 +6,16 @@ namespace chrome_axis {
 
 bool sameShifterInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept;
 
+class PovCapture {
+public:
+    void observe(const DeviceSample& sample) noexcept;
+    bool armed(std::size_t index) const noexcept { return centered_[index]; }
+    void reset() noexcept { centered_.reset(); }
+
+private:
+    std::bitset<povCount> centered_{};
+};
+
 enum class ShifterCaptureStatus { AwaitingNeutral, AwaitingInput, Ambiguous, Duplicate, Captured };
 
 struct ShifterCaptureResult {
@@ -21,6 +31,7 @@ public:
     bool captureNeutral(const DeviceSample& sample) noexcept;
     // Use after a skipped or interrupted position. The next capture requires a release.
     void resetPosition() noexcept;
+    void deviceInterrupted() noexcept;
     ShifterCaptureResult sample(const DeviceSample& sample,
                                 std::span<const AccessoryBinding> existing = {});
 
@@ -45,6 +56,7 @@ private:
 
     std::string deviceId_;
     DigitalState neutral_{};
+    PovCapture povCapture_;
     std::optional<Signal> pending_;
     unsigned int neutralReports_{};
     unsigned int signalReports_{};

@@ -94,6 +94,8 @@ struct ControlState {
     bool brakeReady{};
     // The calibrated position after deadzone, before curve and useful-travel adjustments.
     float calibratedSteering{};
+    std::array<DeviceReadClock::time_point, 3> sampledAt{};
+    std::bitset<3> assigned{};
 };
 
 enum class AxisStatus {
@@ -122,7 +124,7 @@ public:
     };
 
     explicit ControlReader(const Profile& profile);
-    ControlState poll(DirectInput& input, Readings* readings = nullptr);
+    ControlState poll(DeviceSampleSource& input, Readings* readings = nullptr);
     CalibrationReadings review(DirectInput& input);
     void reset() noexcept;
 
@@ -136,12 +138,13 @@ public:
         PedalStabilizer::Clock::time_point sampledAt = PedalStabilizer::Clock::now());
 
 private:
-    ControlState poll(DirectInput& input, Readings* readings, CalibrationReadings* calibration);
+    ControlState poll(DeviceSampleSource& input, Readings* readings, CalibrationReadings* calibration);
 
     Profile profile_;
     bool combinedPedals_{};
     std::array<std::size_t, 3> sampleOwners_{};
     std::array<unsigned int, 3> neutralPolls_{};
+    std::array<std::uint64_t, 3> lastSequences_{};
     std::array<AxisStatus, 3> axisStatuses_{};
     std::array<PedalStabilizer, 2> pedalStabilizers_{};
 };

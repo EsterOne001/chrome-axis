@@ -1,4 +1,4 @@
-foreach(component IN ITEMS controls calibration simulation configuration accessories shifter presets feedback diagnostics)
+foreach(component IN ITEMS controls calibration simulation configuration accessories shifter presets feedback diagnostics driving_inputs)
   set(test_name chrome_axis_${component})
   set(test_target ${test_name}_test)
   add_executable(${test_target} ${component}_test.cpp)

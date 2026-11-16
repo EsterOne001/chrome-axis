@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.61
+
+- **Reprise USB.** Les commandes sont lues et leur fraîcheur est contrôlée par périphérique. Une redétection lente laisse les autres périphériques utilisables.
+- **Retour de force.** La reprise confirmée du même volant réinitialise le délai de tentative. Les demandes annulées sont contrôlées entre les opérations du pilote.
+- **Capture et diagnostic.** Les assistants attendent le retour réel au centre d’une croix redevenue lisible. Ils continuent la capture pendant l’actualisation d’un autre périphérique. Le rapport retient les commandes fraîches en USB partiel et l’export CSV classe les incidents selon leur horodatage.
+
+[ZIP Vortex](out/Chromaxis-0.4.61.zip)
+
 ## Chrome Axis 0.4.60
 
 - **Reprise USB.** Les appels de retour de force sont isolés de la lecture des axes et boutons. La découverte DirectInput retente les vérifications momentanément indisponibles et l’application actualise son inventaire en arrière-plan.

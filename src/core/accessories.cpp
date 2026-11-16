@@ -586,6 +586,7 @@ AccessoryReader::AccessoryReader(const AccessoryProfile& profile)
 void AccessoryReader::reset() noexcept
 {
     states_.fill({});
+    selectorSequences_.fill(0);
     nativeShifter_ = {};
     sequentialNeutralPolls_ = 0;
     sequentialWaitForRelease_ = false;
@@ -626,9 +627,10 @@ AccessoryReadiness AccessoryReader::readiness(bool nativeSelectorUsable) const n
     return result;
 }
 
-std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryObservation> observations,
+std::bitset<256> AccessoryReader::poll(DeviceSampleSource& input, std::span<AccessoryObservation> observations,
                                       std::bitset<256>* pulses, std::optional<float>* progressiveHandbrake,
-                                      std::optional<int>* nativeGear, AccessoryTransmissionSample* transmission)
+                                      std::optional<int>* nativeGear, AccessoryTransmissionSample* transmission,
+                                      AccessoryKeyTimes* keyTimes)
 {
     std::array<std::optional<DeviceSample>, maxAccessoryBindings> storage;
     std::array<const DeviceSample*, maxAccessoryBindings> samples{};
@@ -643,7 +645,7 @@ std::bitset<256> AccessoryReader::poll(DirectInput& input, std::span<AccessoryOb
             samples[i] = &*storage[owner];
     }
     return update(std::span(samples).first(profile_.size()), std::span(statuses).first(profile_.size()),
-                  observations, pulses, progressiveHandbrake, nativeGear, transmission);
+                  observations, pulses, progressiveHandbrake, nativeGear, transmission, keyTimes);
 }
 
 float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& state, const DeviceSample* sample,
@@ -651,6 +653,9 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
 {
     if (status == DeviceReadStatus::resumed)
         state = {};
+    const bool fresh = sample && (!sample->sequence || state.sequence != sample->sequence);
+    if (sample)
+        state.sequence = sample->sequence;
     const bool probePending = sample && (binding.kind == AccessoryKind::Button ? sample->buttonsPending[binding.index]
         : binding.kind == AccessoryKind::Pov ? sample->povsPending[binding.index] : sample->axesPending[binding.index]);
     if ((!sample && status == DeviceReadStatus::pending) || probePending) {
@@ -674,7 +679,10 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
     if (neutral)
         *neutral = level->neutral;
     if (state.neutralPolls < requiredNeutralPolls) {
-        state.neutralPolls = level->neutral ? state.neutralPolls + 1 : 0;
+        if (!level->neutral)
+            state.neutralPolls = 0;
+        else if (fresh)
+            ++state.neutralPolls;
         state.status = state.neutralPolls == requiredNeutralPolls
             ? AccessoryStatus::armed : AccessoryStatus::waitingForNeutral;
         return 0.0f;
@@ -693,9 +701,17 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
                                        std::span<const DeviceReadStatus> statuses,
                                        std::span<AccessoryObservation> observations, std::bitset<256>* pulses,
                                         std::optional<float>* progressiveHandbrake, std::optional<int>* nativeGear,
-                                        AccessoryTransmissionSample* transmission)
+                                        AccessoryTransmissionSample* transmission, AccessoryKeyTimes* keyTimes)
 {
     std::bitset<256> keys;
+    std::array<std::uint64_t, maxAccessoryBindings> sampleSequences{};
+    bool nativeFresh = true, paddlesFresh = true;
+    DeviceReadClock::time_point gearSampledAt{}, paddlesSampledAt{};
+    const auto oldestSample = [](auto& oldest, const DeviceSample* sample) {
+        if (sample && sample->sampledAt != DeviceReadClock::time_point{} &&
+            (oldest == DeviceReadClock::time_point{} || sample->sampledAt < oldest))
+            oldest = sample->sampledAt;
+    };
     bool hasNativePositions = false;
     bool nativeAvailable = nativeShifterVerified_;
     bool nativeArmed = true;
@@ -716,6 +732,8 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         nativeGear->reset();
     if (transmission)
         *transmission = {};
+    if (keyTimes)
+        keyTimes->fill({});
     for (std::size_t i = 0; i < profile_.size(); ++i) {
         const auto& binding = profile_[i];
         auto& state = states_[i];
@@ -738,6 +756,9 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         }
         if (binding.nativeShifter) {
             hasNativePositions = true;
+            sampleSequences[i] = sample ? sample->sequence : 0;
+            nativeFresh &= sample && (!sample->sequence || sample->sequence != selectorSequences_[i]);
+            oldestSample(gearSampledAt, sample);
             nativeAvailable &= status != DeviceReadStatus::resumed &&
                 (state.status == AccessoryStatus::armed || state.status == AccessoryStatus::waitingForNeutral);
             nativeArmed &= state.status == AccessoryStatus::armed;
@@ -749,6 +770,9 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             continue;
         }
         if (binding.nativeSequential) {
+            sampleSequences[i] = sample ? sample->sequence : 0;
+            paddlesFresh &= sample && (!sample->sequence || sample->sequence != selectorSequences_[i]);
+            oldestSample(paddlesSampledAt, sample);
             const bool up = binding.role == ShifterRole::Upshift;
             paddlePositions |= up ? 1u : 2u;
             const bool armed = state.status == AccessoryStatus::armed;
@@ -764,13 +788,18 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             continue;
         }
         if (binding.clutchMode) {
-            if (transmission && state.status == AccessoryStatus::armed)
+            if (transmission && state.status == AccessoryStatus::armed) {
                 transmission->clutch = analogValue;
+                transmission->clutchSampledAt = sample->sampledAt;
+            }
             continue;
         }
         if (binding.handbrakeCeilingPercent != 0) {
-            if (progressiveHandbrake && state.status == AccessoryStatus::armed)
+            if (progressiveHandbrake && state.status == AccessoryStatus::armed) {
                 *progressiveHandbrake = analogValue;
+                if (transmission)
+                    transmission->handbrakeSampledAt = sample->sampledAt;
+            }
             continue;
         }
         if (!state.active)
@@ -779,14 +808,28 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             keys.set(binding.key);
         else if (!wasActive && pulses)
             pulses->set(binding.key);
+        else
+            continue;
+        if (keyTimes)
+            (*keyTimes)[binding.key] = std::max((*keyTimes)[binding.key], sample->sampledAt);
     }
 
+    // Each selector uses new reports across all its positions or paddles.
+    if (nativeFresh || paddlesFresh) {
+        for (std::size_t i = 0; i < profile_.size(); ++i) {
+            if ((nativeFresh && profile_[i].nativeShifter) || (paddlesFresh && profile_[i].nativeSequential))
+                selectorSequences_[i] = sampleSequences[i];
+        }
+    }
     if (paddlePositions) {
         if (paddlePositions != 3 || !paddlesAvailable) {
             sequentialNeutralPolls_ = 0;
             sequentialWaitForRelease_ = false;
         } else if (sequentialNeutralPolls_ < requiredNeutralPolls) {
-            sequentialNeutralPolls_ = paddlesNeutral ? sequentialNeutralPolls_ + 1 : 0;
+            if (!paddlesNeutral)
+                sequentialNeutralPolls_ = 0;
+            else if (paddlesFresh)
+                ++sequentialNeutralPolls_;
         }
         const bool armed = paddlesArmed && sequentialNeutralPolls_ == requiredNeutralPolls;
         if (armed) {
@@ -794,6 +837,7 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
             sequentialWaitForRelease_ = pressedPaddles > 1 || (sequentialWaitForRelease_ && !paddlesNeutral);
             if (transmission) {
                 transmission->sequentialArmed = true;
+                transmission->sequentialSampledAt = paddlesSampledAt;
                 if (!sequentialWaitForRelease_ && pressedPaddles == 1)
                     transmission->shiftDelta = paddleEdge;
             }
@@ -820,7 +864,10 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
         nativeShifter_ = {};
     } else if (nativeShifter_.neutralPolls < requiredNeutralPolls) {
         // All configured positions must pass through true neutral together after a loss.
-        nativeShifter_.neutralPolls = allNativeNeutral ? nativeShifter_.neutralPolls + 1 : 0;
+        if (!allNativeNeutral)
+            nativeShifter_.neutralPolls = 0;
+        else if (nativeFresh)
+            ++nativeShifter_.neutralPolls;
     }
 
     if (nativeShifter_.neutralPolls < requiredNeutralPolls) {
@@ -850,13 +897,15 @@ std::bitset<256> AccessoryReader::update(std::span<const DeviceSample* const> sa
     if (nativeShifter_.candidate != candidate) {
         nativeShifter_.candidate = candidate;
         nativeShifter_.candidatePolls = 1;
-    } else if (nativeShifter_.candidatePolls < required) {
+    } else if (nativeFresh && nativeShifter_.candidatePolls < required) {
         ++nativeShifter_.candidatePolls;
     }
     if (nativeShifter_.candidatePolls == required)
         nativeShifter_.stable = candidate;
     if (nativeGear)
         *nativeGear = nativeShifter_.stable;
+    if (transmission && nativeShifter_.stable)
+        transmission->gearSampledAt = gearSampledAt;
     return keys;
 }
 

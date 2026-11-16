@@ -1,5 +1,6 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "app_text.hpp"
+#include "device_capture.hpp"
 #include "device_inventory.hpp"
 #include "transmission_shortcut.hpp"
 #include "dialog_theme.hpp"
@@ -580,6 +581,9 @@ void ShifterDialog::interruptCapture(Text analogMessage, Text positionMessage, T
     if (stage_ == Stage::AnalogMeasure) {
         stage_ = Stage::AnalogReady;
         status(tr(analogMessage));
+    } else if (stage_ == Stage::Neutral && analog_ && !draft_.empty()) {
+        stage_ = Stage::AnalogReady;
+        status(tr(Text::DlgShifterCaptureDeviceRest));
     } else if (stage_ == Stage::Position) {
         stage_ = Stage::Paused;
         status(tr(positionMessage));
@@ -829,21 +833,32 @@ void ShifterDialog::poll()
                          Text::DlgShifterCaptureExpired);
         return;
     }
-    if (!inventory_.current())
-        return;
-    input_.beginPoll();
-    const auto sample = input_.sample(deviceId_);
+    const auto reading = readCaptureDevice(input_, deviceId_);
+    const auto& sample = reading.sample;
     if (GetTickCount64() >= deadline_) {
         interruptCapture(Text::DlgShifterMeasureExpired, Text::DlgShifterCapturePaused,
                          Text::DlgShifterCaptureExpired);
         return;
     }
-    if (!sample) {
-        if (digital_ && stage_ == Stage::Neutral)
-            digital_.emplace(deviceId_);
-        else if (digital_)
-            digital_->resetPosition();
+    if (!IsWindowEnabled(window_) || GetForegroundWindow() != window_) {
+        interruptCapture(Text::DlgShifterMeasureInterrupted, Text::DlgShifterCaptureInterrupted,
+                         Text::DlgShifterInitialCaptureInterrupted);
+        return;
+    }
+    if (!sample || reading.needsRest()) {
+        if (digital_)
+            digital_->deviceInterrupted();
         measurements_ = {};
+        if (analog_ && stage_ == Stage::AnalogMeasure && reading.needsRest()) {
+            KillTimer(window_, captureTimer);
+            rest_.reset();
+            stage_ = Stage::AnalogReady;
+            status(tr(Text::DlgShifterCaptureDeviceRest));
+            updateControls();
+            return;
+        }
+    }
+    if (!sample) {
         status(tr(Text::DlgShifterDeviceReadInterrupted));
         return;
     }
@@ -851,6 +866,8 @@ void ShifterDialog::poll()
         if (stage_ == Stage::Neutral) {
             if (digital_->captureNeutral(*sample))
                 position();
+            else
+                status(tr(Text::DlgShifterHoldNeutral));
             return;
         }
         const auto result = digital_->sample(*sample, draft_);
@@ -874,6 +891,7 @@ void ShifterDialog::poll()
         return;
     }
 
+    status(tr(stage_ == Stage::Neutral ? Text::DlgShifterHoldNeutral : Text::DlgShifterHoldAtLimit));
     if (!measurements_.add(*sample)) {
         measurements_ = {};
         return;
@@ -913,8 +931,8 @@ void ShifterDialog::advance()
     }
     if (stage_ == Stage::AnalogReady) {
         measurements_ = {};
-        stage_ = Stage::AnalogMeasure;
-        status(tr(Text::DlgShifterHoldAtLimit));
+        stage_ = rest_ ? Stage::AnalogMeasure : Stage::Neutral;
+        status(tr(rest_ ? Text::DlgShifterHoldAtLimit : Text::DlgShifterHoldNeutral));
         updateControls();
         runTimer();
         return;

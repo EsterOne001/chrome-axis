@@ -4,6 +4,7 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/controls.hpp"
 #include "../src/core/device_object_probe.hpp"
+#include "../src/core/wheel_force_retry.hpp"
 #include "../src/plugin/force_output_worker.hpp"
 
 #include <windows.h>
@@ -30,8 +31,10 @@ struct FakeForceDriver {
         std::atomic<bool> entered{};
         std::atomic<bool> resume{};
         std::atomic<unsigned int> initialized{};
+        std::atomic<unsigned int> setupCompleted{};
         std::atomic<unsigned int> stops{};
         std::atomic<unsigned int> started{};
+        std::atomic<std::uint64_t> recoveryToken{};
     };
     static inline State* testState{};
 
@@ -42,9 +45,8 @@ struct FakeForceDriver {
     WheelForceState wheelForceState() const noexcept { return mode; }
 
     std::optional<float> setWheelForce(std::string_view id, std::size_t, float force,
-                                      bool (*current)(const void*) noexcept, const void* guard) {
+                                       WheelForceGuard guard) {
         if (!initialized) {
-            initialized = true;
             if (++testState->initialized == 1) {
                 const auto start = TestClock::now();
                 testState->entered.store(true);
@@ -53,10 +55,15 @@ struct FakeForceDriver {
                 observer(observerContext, {DirectInputReadEventKind::slow, id, "FFB Acquire", S_OK,
                     static_cast<std::uint64_t>(duration.count())});
             }
+            if (!guard.canInitialize(guard.context))
+                return std::nullopt;
+            initialized = true;
+            ++testState->setupCompleted;
         }
-        if (!current(guard))
+        if (!guard.current(guard.context))
             return std::nullopt;
         ++testState->started;
+        testState->recoveryToken.store(guard.recoveryToken);
         mode = WheelForceState::active;
         return force;
     }
@@ -85,7 +92,7 @@ bool waitFor(Predicate&& predicate)
     return true;
 }
 
-int testSlowForceDuringIndependentInput(bool cancel)
+int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
 {
     FakeForceDriver::State state;
     FakeForceDriver::testState = &state;
@@ -133,8 +140,9 @@ int testSlowForceDuringIndependentInput(bool cancel)
     if (cancel)
         worker.cancel();
     const auto latestDeadline = TestClock::now() + (cancel ? 1s : 350ms);
-    if (!worker.submit(window, wheel, 0, 0.25f, {latestDeadline}, 42) ||
-        !worker.submit(window, wheel, 0, 0.5f, {latestDeadline}, 42))
+    const std::uint64_t recoveryToken = recover ? 17 : 0;
+    if (!worker.submit(window, wheel, 0, 0.25f, {latestDeadline}, 42, false, recoveryToken) ||
+        !worker.submit(window, wheel, 0, 0.5f, {latestDeadline}, 42, false, recoveryToken))
         return 53;
     allowDriver();
     std::optional<decltype(worker)::Completion> accepted;
@@ -145,7 +153,8 @@ int testSlowForceDuringIndependentInput(bool cancel)
             }
             return accepted.has_value();
         }) || accepted->accepted != 0.5f || accepted->captureId != 42 || state.started.load() != 1 ||
-        state.initialized.load() != (cancel ? 2u : 1u))
+        state.initialized.load() != (cancel || recover ? 2u : 1u) ||
+        state.setupCompleted.load() != 1 || state.recoveryToken.load() != recoveryToken)
         return 54;
     const auto slow = worker.nextOperation();
     if (!slow || slow->name.data() != std::string_view("FFB Acquire") || slow->deviceId.data() != wheel ||
@@ -157,6 +166,26 @@ int testSlowForceDuringIndependentInput(bool cancel)
     if (!waitFor([&] { return state.stops.load() > previousStops; }))
         return 56;
     return 0;
+}
+
+int testWheelForceRecoveryBackoff()
+{
+    WheelForceRetry retry;
+    const auto started = TestClock::time_point{} + 100s;
+    for (const auto elapsed : {0s, 2s, 6s, 14s, 30s}) {
+        const auto now = started + elapsed;
+        if (retry.waiting(now))
+            return 62;
+        retry.failed(now);
+    }
+    const auto recoveredAt = started + 31s;
+    if (retry.recovered(0) || !retry.waiting(recoveredAt) || retry.waiting(started + 60s))
+        return 63;
+    if (!retry.recovered(17) || retry.waiting(recoveredAt))
+        return 64;
+    retry.failed(recoveredAt);
+    return retry.recovered(17) || retry.recovered(0) || !retry.waiting(recoveredAt + 1s) ||
+        retry.waiting(recoveredAt + 2s) ? 65 : 0;
 }
 
 int testProvisionalInputLayout()
@@ -218,11 +247,15 @@ int testProvisionalInputLayout()
 int main()
 {
     using namespace chrome_axis;
+    if (const auto result = testWheelForceRecoveryBackoff())
+        return result;
     if (const auto result = testProvisionalInputLayout())
         return result;
     if (const auto result = testSlowForceDuringIndependentInput(false))
         return result;
     if (const auto result = testSlowForceDuringIndependentInput(true))
+        return result;
+    if (const auto result = testSlowForceDuringIndependentInput(false, true))
         return result;
     FeedbackSettings settings;
     WheelFeedback feedback;

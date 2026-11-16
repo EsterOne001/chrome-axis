@@ -1,16 +1,23 @@
 #include "diagnostic_recording.hpp"
 
 #include "chrome_axis/diagnostics.hpp"
+#include "../core/settings_replace.hpp"
 
+#include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
+#include <compare>
+#include <exception>
 #include <format>
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace chrome_axis {
 namespace {
@@ -21,6 +28,7 @@ constexpr auto pollInterval = 100ms;
 constexpr auto flushInterval = 1s;
 constexpr auto stopProgressTimeout = 3s;
 constexpr std::size_t batchSize = 256;
+constexpr std::size_t exportBufferSize = 64 * 1024;
 
 bool active(DiagnosticRecordingState state) noexcept
 {
@@ -57,9 +65,7 @@ public:
             GetCurrentProcessId());
         for (std::uint64_t suffix = 0;; ++suffix) {
             auto candidate = directory / std::format(L"{}-{}.csv", stem, suffix);
-            handle_ = CreateFileW(candidate.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (handle_ != INVALID_HANDLE_VALUE) {
+            if (create(candidate)) {
                 path = std::move(candidate);
                 return true;
             }
@@ -67,6 +73,13 @@ public:
             if (lastError != ERROR_FILE_EXISTS && lastError != ERROR_ALREADY_EXISTS)
                 return false;
         }
+    }
+
+    bool create(const std::filesystem::path& path) noexcept
+    {
+        handle_ = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+        return handle_ != INVALID_HANDLE_VALUE;
     }
 
     bool append(std::string_view text) noexcept
@@ -161,7 +174,126 @@ private:
     std::chrono::steady_clock::time_point nextFlush_{};
 };
 
+// A recording is written as samples arrive. Only delayed rows need an index
+// for chronological export, so ordinary driving rows can be streamed.
+struct CsvRowPosition {
+    std::uint64_t elapsedMs{};
+    std::streamoff offset{};
+
+    auto operator<=>(const CsvRowPosition&) const = default;
+};
+
+std::uint64_t csvElapsed(std::string_view row, std::uint64_t previous) noexcept
+{
+    const auto field = row.substr(0, row.find(','));
+    std::uint64_t elapsed{};
+    const auto end = field.data() + field.size();
+    const auto parsed = std::from_chars(field.data(), end, elapsed);
+    return parsed.ec == std::errc{} && parsed.ptr == end ? elapsed : previous;
+}
+
+bool writeChronologicalRecording(const std::filesystem::path& source, const std::filesystem::path& staged,
+                                 bool& created)
+{
+    std::ifstream input(source, std::ios::binary);
+    std::string header;
+    if (!std::getline(input, header))
+        return false;
+    const auto firstRow = input.tellg();
+    std::vector<CsvRowPosition> delayed;
+    std::string row;
+    std::uint64_t latest{};
+    while (input) {
+        const auto offset = input.tellg();
+        if (!std::getline(input, row))
+            break;
+        const auto elapsed = csvElapsed(row, latest);
+        if (elapsed < latest)
+            delayed.push_back({elapsed, offset});
+        else
+            latest = elapsed;
+    }
+    if (!input.eof() || input.bad())
+        return false;
+
+    if (delayed.empty()) {
+        input.close();
+        created = CopyFileW(source.c_str(), staged.c_str(), TRUE) != FALSE;
+        if (!created) {
+            const auto error = GetLastError();
+            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+                DeleteFileW(staged.c_str());
+        }
+        return created;
+    }
+
+    std::ranges::sort(delayed);
+    input.clear();
+    input.seekg(firstRow);
+    std::ifstream delayedInput(source, std::ios::binary);
+    CaptureFile output;
+    if (!input || !delayedInput || !output.create(staged))
+        return false;
+    created = true;
+    std::string buffer = std::move(header);
+    buffer.push_back('\n');
+    const auto append = [&](std::string_view line) {
+        buffer.append(line);
+        buffer.push_back('\n');
+        if (buffer.size() < exportBufferSize)
+            return true;
+        const auto written = output.append(buffer);
+        buffer.clear();
+        return written;
+    };
+    auto next = delayed.begin();
+    std::string delayedRow;
+    const auto appendDelayed = [&] {
+        delayedInput.clear();
+        delayedInput.seekg(next->offset);
+        ++next;
+        return std::getline(delayedInput, delayedRow) && append(delayedRow);
+    };
+
+    latest = 0;
+    while (input) {
+        const auto offset = input.tellg();
+        if (!std::getline(input, row))
+            break;
+        const auto elapsed = csvElapsed(row, latest);
+        if (elapsed < latest)
+            continue;
+        latest = elapsed;
+        while (next != delayed.end() && *next < CsvRowPosition{elapsed, offset}) {
+            if (!appendDelayed())
+                return false;
+        }
+        if (!append(row))
+            return false;
+    }
+    if (!input.eof() || input.bad())
+        return false;
+    while (next != delayed.end()) {
+        if (!appendDelayed())
+            return false;
+    }
+    return output.append(buffer) && output.flush();
+}
+
 } // namespace
+
+bool exportDiagnosticRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
+{
+    const auto staged = detail::stagedSettingsPath(destination);
+    bool created = false;
+    try {
+        if (writeChronologicalRecording(source, staged, created) && detail::replaceSettingsFile(staged, destination))
+            return true;
+    } catch (const std::exception&) {}
+    if (created)
+        DeleteFileW(staged.c_str());
+    return false;
+}
 
 struct DiagnosticRecorder::Impl {
     Impl(const std::filesystem::path& gameRoot, const std::filesystem::path& profileRoot)

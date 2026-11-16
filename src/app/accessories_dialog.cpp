@@ -1,5 +1,6 @@
 #include "chrome_axis/accessories_dialog.hpp"
 #include "app_text.hpp"
+#include "device_capture.hpp"
 #include "device_inventory.hpp"
 #include "dialog_theme.hpp"
 #include "ui_theme.hpp"
@@ -412,6 +413,7 @@ private:
     std::optional<int> previewTravel_;
     std::optional<int> previewHandbrake_;
     std::optional<DeviceSample> previous_;
+    PovCapture povCapture_;
     std::optional<AxisCapture> rest_;
     CalibrationCapture measurements_;
     CaptureStage stage_{CaptureStage::Idle};
@@ -425,6 +427,7 @@ private:
     bool validCeiling_{true};
     bool previewPolling_{};
     bool previewAxis_{};
+    bool captureReadInterrupted_{};
     std::optional<std::uint64_t> inventoryRevision_;
 };
 
@@ -635,6 +638,8 @@ void AccessoryDialog::clearCapture()
     stage_ = CaptureStage::Idle;
     captured_.clear();
     previous_.reset();
+    povCapture_.reset();
+    captureReadInterrupted_ = false;
     rest_.reset();
     send(IDC_ACCESSORY_INPUT, CB_RESETCONTENT);
     SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(sectionText(Text::DlgAccessoriesCapture, Text::DlgHandbrakeCapture, Text::DlgClutchCapture)));
@@ -954,6 +959,7 @@ void AccessoryDialog::startSampling(CaptureStage stage, const wchar_t* text)
     }
     measurements_ = {};
     stage_ = stage;
+    captureReadInterrupted_ = false;
     deadline_ = GetTickCount64() + captureTimeoutMs;
     SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCancelCapture));
     setStatus(text);
@@ -989,12 +995,12 @@ void AccessoryDialog::capture()
         startSampling(CaptureStage::AxisRest,
             tr(sectionText(Text::DlgAccessoriesHoldAtRest, Text::DlgHandbrakeHoldAtRest, Text::DlgClutchHoldAtRest)));
     } else {
-        input_.beginPoll();
-        previous_ = input_.sample(device->id);
+        previous_ = readCaptureDevice(input_, device->id).sample;
         if (!previous_) {
             setStatus(tr(Text::DlgAccessoriesInputUnavailable));
             return;
         }
+        povCapture_.observe(*previous_);
         startSampling(CaptureStage::Digital, tr(Text::DlgAccessoriesPressInput));
     }
 }
@@ -1021,21 +1027,44 @@ void AccessoryDialog::sample()
         setStatus(tr(Text::DlgAccessoriesCaptureExpired));
         return;
     }
-    if (!inventory_.current())
-        return;
     const auto* device = selectedDevice();
-    input_.beginPoll();
-    const auto state = device ? input_.sample(device->id) : std::nullopt;
+    const auto reading = device ? readCaptureDevice(input_, device->id) : CaptureDeviceRead{};
+    const auto& state = reading.sample;
     if (!focused()) {
         interruptCapture();
         return;
     }
-    if (!state || GetTickCount64() >= deadline_) {
+    if (GetTickCount64() >= deadline_) {
         clearCapture();
-        setStatus(tr(state ? Text::DlgAccessoriesCaptureExpired : Text::DlgAccessoriesInputUnavailable));
+        setStatus(tr(Text::DlgAccessoriesCaptureExpired));
         return;
     }
+    if (reading.needsRest()) {
+        if (stage_ != CaptureStage::Digital) {
+            clearCapture();
+            setStatus(tr(Text::DlgAccessoriesCaptureDeviceRest));
+            return;
+        }
+        previous_.reset();
+        povCapture_.reset();
+    }
+    if (!state) {
+        measurements_ = {};
+        povCapture_.reset();
+        if (!captureReadInterrupted_)
+            setStatus(tr(Text::DlgShifterDeviceReadInterrupted));
+        captureReadInterrupted_ = true;
+        return;
+    }
+    const bool recovered = std::exchange(captureReadInterrupted_, false);
     if (stage_ == CaptureStage::Digital) {
+        povCapture_.observe(*state);
+        if (recovered || !previous_)
+            setStatus(tr(Text::DlgAccessoriesPressInput));
+        if (!previous_) {
+            previous_ = state;
+            return;
+        }
         const auto pressed = state->buttons & ~previous_->buttons;
         for (std::size_t i = 0; i < buttonCount; ++i) {
             if (pressed[i])
@@ -1043,13 +1072,18 @@ void AccessoryDialog::sample()
         }
         for (std::size_t i = 0; i < povCount; ++i) {
             const auto direction = quantizePov(state->povs[i]);
-            if (direction != povCentered && direction != quantizePov(previous_->povs[i]))
+            if (povCapture_.armed(i) && direction != povCentered && direction != quantizePov(previous_->povs[i]))
                 captured_.push_back({device->id, AccessoryKind::Pov, i, povCentered, direction, 0});
         }
         previous_ = state;
         if (!captured_.empty())
             finishCapture();
         return;
+    }
+    if (recovered) {
+        setStatus(tr(stage_ == CaptureStage::AxisRest
+            ? sectionText(Text::DlgAccessoriesHoldAtRest, Text::DlgHandbrakeHoldAtRest, Text::DlgClutchHoldAtRest)
+            : sectionText(Text::DlgAccessoriesHoldAtLimit, Text::DlgHandbrakeHoldAtLimit, Text::DlgClutchHoldAtLimit)));
     }
     if (!measurements_.add(*state)) {
         measurements_ = {};

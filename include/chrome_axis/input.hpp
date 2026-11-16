@@ -19,6 +19,15 @@ inline constexpr std::size_t axisCount = 8;
 inline constexpr std::size_t buttonCount = 128;
 inline constexpr std::size_t povCount = 4;
 inline constexpr std::uint16_t povCentered = 0xffff;
+using DeviceReadClock = std::chrono::steady_clock;
+
+struct DeviceObjectSelection {
+    std::bitset<axisCount> axes;
+    std::bitset<buttonCount> buttons;
+    std::bitset<povCount> povs;
+
+    bool operator==(const DeviceObjectSelection&) const = default;
+};
 
 struct DeviceInfo {
     std::string id;
@@ -41,6 +50,9 @@ struct DeviceSample {
     std::bitset<axisCount> axesPending{};
     std::bitset<buttonCount> buttonsPending{};
     std::bitset<povCount> povsPending{};
+    DeviceReadClock::time_point sampledAt{};
+    std::uint64_t sequence{}; // Zero for synchronous reads.
+    std::uint64_t recoveryToken{};
 };
 
 const char* axisName(std::size_t index) noexcept;
@@ -51,7 +63,7 @@ bool isDeviceId(std::string_view id) noexcept;
 using DirectInputDiagnostic = void (*)(std::string_view deviceId, std::string_view stage,
     HRESULT result, bool available);
 
-enum class DirectInputReadEventKind : std::uint8_t { slow, pending, unavailable, recovered };
+enum class DirectInputReadEventKind : std::uint8_t { slow, pending, unavailable, recovered, sampleExpired };
 
 struct DirectInputReadEvent {
     DirectInputReadEventKind kind{};
@@ -64,8 +76,25 @@ struct DirectInputReadEvent {
 using DirectInputReadObserver = void (*)(void*, const DirectInputReadEvent&) noexcept;
 
 enum class WheelForceState { waiting, active, unavailable, neutral };
+
+struct WheelForceGuard {
+    using Check = bool (*)(const void*) noexcept;
+    Check current{};
+    Check canInitialize{};
+    const void* context{};
+    // A nonzero token identifies an input connection confirmed after a physical interruption.
+    std::uint64_t recoveryToken{};
+};
+
 // Only available and resumed carry fresh data. Resumed starts a new neutral check.
 enum class DeviceReadStatus { unavailable, pending, available, resumed };
+
+class DeviceSampleSource {
+public:
+    virtual ~DeviceSampleSource() = default;
+    virtual std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>& buttons,
+                                               DeviceReadStatus* status) = 0;
+};
 
 class DeviceReadContinuity {
 public:
@@ -81,7 +110,7 @@ private:
 };
 
 // Use each instance from one thread, with a top-level window of this process.
-class DirectInput {
+class DirectInput final : public DeviceSampleSource {
 public:
     explicit DirectInput(HWND window, DirectInputDiagnostic diagnostic = nullptr,
                          DirectInputReadObserver readObserver = nullptr, void* observerContext = nullptr);
@@ -95,12 +124,16 @@ public:
     void beginPoll() noexcept;
     // Only readers that validate a saved button mapping need its availability checked.
     std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>& buttons = {},
-                                       DeviceReadStatus* status = nullptr);
+                                       DeviceReadStatus* status = nullptr) override;
+    // The game limits layout discovery to commands in the current profile.
+    std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,
+                                                 DeviceReadStatus& status);
     // Output is limited to the calibrated actuator and expires if calls stop.
-    // The optional guard is called synchronously to recheck context around driver calls.
+    // Initialization can continue for a newer valid request for the same connection.
+    // Starting an effect always requires the current request.
     // Only a newly submitted effect returns an accepted signed fraction of nominal force.
     std::optional<float> setWheelForce(std::string_view id, std::size_t axis, float force,
-                                      bool (*stillCurrent)(const void*) noexcept = nullptr, const void* context = nullptr);
+                                      WheelForceGuard guard = {});
     WheelForceState wheelForceState() const noexcept;
     void stopWheelForce() noexcept;
     void close();

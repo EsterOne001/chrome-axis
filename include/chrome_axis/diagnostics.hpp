@@ -24,6 +24,12 @@ constexpr bool isDrivingCaptureMode(DiagnosticMode mode) noexcept
         mode == DiagnosticMode::usbDisabled || mode == DiagnosticMode::profileUnavailable;
 }
 
+constexpr bool canRetainDrivingSample(DiagnosticMode mode, bool usbReady, bool freshPartialUsbDelivery) noexcept
+{
+    return mode == DiagnosticMode::simulation || mode == DiagnosticMode::usbDisabled ||
+        (mode == DiagnosticMode::usb && (usbReady || freshPartialUsbDelivery));
+}
+
 enum class DiagnosticAxisState : std::uint32_t {
     unassigned, deviceUnavailable, axisUnavailable, waitingForNeutral, armed, awaitingProfile, inactive, simulated,
     sampleExpired, temporarilyUnavailable

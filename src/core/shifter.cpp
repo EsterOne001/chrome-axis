@@ -8,6 +8,11 @@ namespace {
 
 constexpr unsigned int stableReports = 3;
 
+bool povReadable(const DeviceSample& sample, std::size_t index) noexcept
+{
+    return sample.povsPresent[index] && !sample.povsPending[index];
+}
+
 } // namespace
 
 bool sameShifterInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept
@@ -20,6 +25,16 @@ bool sameShifterInput(const AccessoryBinding& first, const AccessoryBinding& sec
         || (first.engaged < first.rest && second.engaged < second.rest);
 }
 
+void PovCapture::observe(const DeviceSample& sample) noexcept
+{
+    for (std::size_t i = 0; i < povCount; ++i) {
+        if (!povReadable(sample, i))
+            centered_.reset(i);
+        else if (quantizePov(sample.povs[i]) == povCentered)
+            centered_.set(i);
+    }
+}
+
 ShifterCapture::ShifterCapture(std::string deviceId)
     : deviceId_(std::move(deviceId))
 {
@@ -27,9 +42,9 @@ ShifterCapture::ShifterCapture(std::string deviceId)
 
 ShifterCapture::DigitalState ShifterCapture::digitalState(const DeviceSample& sample) noexcept
 {
-    DigitalState state{sample.buttons, sample.povs};
-    for (auto& angle : state.povs)
-        angle = quantizePov(angle);
+    DigitalState state{sample.buttons};
+    for (std::size_t i = 0; i < povCount; ++i)
+        state.povs[i] = povReadable(sample, i) ? quantizePov(sample.povs[i]) : povCentered;
     return state;
 }
 
@@ -38,6 +53,7 @@ bool ShifterCapture::captureNeutral(const DeviceSample& sample) noexcept
     if (neutralCaptured_)
         return true;
 
+    povCapture_.observe(sample);
     const auto state = digitalState(sample);
     if (state != neutral_) {
         neutral_ = state;
@@ -61,6 +77,12 @@ void ShifterCapture::resetPosition() noexcept
     clearSignal();
 }
 
+void ShifterCapture::deviceInterrupted() noexcept
+{
+    povCapture_.reset();
+    resetPosition();
+}
+
 ShifterCaptureResult ShifterCapture::sample(const DeviceSample& sample,
                                             std::span<const AccessoryBinding> existing)
 {
@@ -68,9 +90,20 @@ ShifterCaptureResult ShifterCapture::sample(const DeviceSample& sample,
     if (!neutralCaptured_)
         return {Status::AwaitingNeutral, {}};
 
+    povCapture_.observe(sample);
     const auto state = digitalState(sample);
+    for (std::size_t i = 0; i < povCount; ++i) {
+        if (povCapture_.armed(i) && state.povs[i] == povCentered)
+            neutral_.povs[i] = povCentered;
+    }
     if (!armed_) {
-        if (state != neutral_) {
+        bool released = state.buttons == neutral_.buttons;
+        for (std::size_t i = 0; i < povCount; ++i) {
+            // An unreadable POV must not prevent independent buttons from rearming.
+            if (povCapture_.armed(i))
+                released &= state.povs[i] == neutral_.povs[i];
+        }
+        if (!released) {
             neutralReports_ = 0;
             return {Status::AwaitingNeutral, {}};
         }
@@ -91,7 +124,7 @@ ShifterCaptureResult ShifterCapture::sample(const DeviceSample& sample,
         }
     }
     for (std::size_t i = 0; i < povCount && !ambiguous; ++i) {
-        if (state.povs[i] == povCentered || state.povs[i] == neutral_.povs[i])
+        if (!povCapture_.armed(i) || state.povs[i] == povCentered || state.povs[i] == neutral_.povs[i])
             continue;
         // A mapped POV direction needs a centered rest state at runtime.
         ambiguous = candidate.has_value() || neutral_.povs[i] != povCentered;
