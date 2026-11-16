@@ -58,6 +58,55 @@ static_assert(planShift(reverseGear, 1, eightEntries, priorReverse) == ShiftPlan
 static_assert(planShift(reverseGear, reverseGear, eightEntries, priorReverse) == ShiftPlan::alreadyEngaged);
 static_assert(planShift(unavailableGear, reverseGear, eightEntries, Direction::unknown) == ShiftPlan::unsupported);
 
+constexpr bool canPlanShiftAfterPause(int gearBeforeNeutral, int requested, ShiftPlan expected) {
+    int vehicle{};
+    DirectionHistory history;
+    history.setVehicle(&vehicle);
+    history.observe(&vehicle, gearBeforeNeutral, gearBeforeNeutral, eightEntries);
+    history.observe(&vehicle, neutralGear, neutralGear, eightEntries);
+
+    // The input lease and gearbox observation expire, but the driver is still mounted.
+    history.setVehicle(&vehicle);
+    const auto direction = history.observe(&vehicle, neutralGear, neutralGear, eightEntries);
+    return planShift(neutralGear, requested, eightEntries, direction) == expected;
+}
+
+static_assert(canPlanShiftAfterPause(3, 2, ShiftPlan::direct));
+static_assert(canPlanShiftAfterPause(3, reverseGear, ShiftPlan::stoppedDirect));
+static_assert(canPlanShiftAfterPause(reverseGear, 2, ShiftPlan::stoppedDirect));
+
+constexpr bool clearsDirectionWhenDriverLeaves() {
+    int oldVehicle{}, otherVehicle{};
+    DirectionHistory history;
+    history.setVehicle(&oldVehicle);
+    history.observe(&oldVehicle, 3, 3, eightEntries);
+    history.setVehicle(&otherVehicle);
+    if (history.observe(&otherVehicle, neutralGear, neutralGear, eightEntries) != Direction::unknown)
+        return false;
+
+    history.observe(&otherVehicle, 2, 2, eightEntries);
+    history.setVehicle(nullptr);
+    history.setVehicle(&otherVehicle);
+    return history.observe(&otherVehicle, neutralGear, neutralGear, eightEntries) == Direction::unknown;
+}
+
+static_assert(clearsDirectionWhenDriverLeaves());
+
+constexpr bool requiresStopWhenReverseMayHaveEngagedDuringPause() {
+    int vehicle{};
+    DirectionHistory history;
+    history.setVehicle(&vehicle);
+    history.observe(&vehicle, 3, 3, eightEntries);
+    history.reverseRequested(&vehicle);
+    const auto afterReverseRequest = history.observe(&vehicle, neutralGear, neutralGear, eightEntries);
+    history.observe(&vehicle, 3, 3, eightEntries);
+    const auto afterReverseTarget = history.observe(&vehicle, neutralGear, reverseGear, eightEntries);
+    return planShift(neutralGear, 2, eightEntries, afterReverseRequest) == ShiftPlan::stoppedDirect
+        && planShift(neutralGear, 2, eightEntries, afterReverseTarget) == ShiftPlan::stoppedDirect;
+}
+
+static_assert(requiresStopWhenReverseMayHaveEngagedDuringPause());
+
 static_assert(suppressAutomatic(2, 3, eightEntries, false, std::nullopt));
 static_assert(!suppressAutomatic(2, 3, eightEntries, true, std::nullopt));
 static_assert(!suppressAutomatic(2, neutralGear, eightEntries, false, std::nullopt));

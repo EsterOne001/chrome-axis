@@ -98,7 +98,8 @@ struct SharedState {
     std::optional<ShiftRequest> request;
     std::uint64_t dispatchExpiresAt{};
     std::uint64_t engagementExpiresAt{};
-    Direction lastDirection{Direction::unknown};
+    // Still mounted during menus even when the input lease and its observations are invalid.
+    DirectionHistory directionHistory;
     bool enabled{};
     bool captureTelemetry{};
     Snapshot view{};
@@ -297,9 +298,7 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
     const auto now = GetTickCount64();
     const bool observedBeforeStep = freshGearbox(state.view, now);
     const bool validGear = supportedGear(engaged, entries);
-    if (!observedBeforeStep)
-        state.lastDirection = Direction::unknown;
-    state.lastDirection = observeDirection(state.lastDirection, engaged, entries);
+    const auto direction = state.directionHistory.observe(owner, engaged, target, entries);
     state.view.engagedGear = validGear ? engaged : unavailableGear;
     state.view.targetGear = supportedGear(target, entries) ? target : unavailableGear;
     state.view.gearCount = validGear ? entries : 0;
@@ -335,7 +334,7 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
     if (!settled || (!cooldownReady && state.request->absolute != engaged))
         return std::nullopt;
     state.dispatchExpiresAt = state.request->expiresAt;
-    return ReadyRequest{*std::exchange(state.request, std::nullopt), state.selectionRevision, state.lastDirection};
+    return ReadyRequest{*std::exchange(state.request, std::nullopt), state.selectionRevision, direction};
 }
 
 bool liveRequest(const void* owner, std::uint64_t generation, const ReadyRequest& command) noexcept {
@@ -442,6 +441,7 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
             return;
         // Remember an issued R shift across mode toggles and missing observations.
         if (requested == reverseGear && !throughNeutral) {
+            state.directionHistory.reverseRequested(owner);
             const auto issue = ++state.reverseIssueSerial;
             if (!std::exchange(state.view.reverseIssued, true))
                 newReverseIssue = issue;
@@ -509,6 +509,7 @@ bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexc
 
 void detach() noexcept {
     installed.store(false, std::memory_order_release);
+    setDriverVehicle(nullptr);
     publish(nullptr, false, 0);
     if (stepTarget && hookSdk->hooking->Detach(hookPlugin, stepTarget))
         stepTarget = nullptr;
@@ -518,6 +519,11 @@ void detach() noexcept {
 
 bool available() noexcept {
     return installed.load(std::memory_order_acquire);
+}
+
+void setDriverVehicle(const void* vehicle) noexcept {
+    StateGuard guard;
+    state.directionHistory.setVehicle(vehicle);
 }
 
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute, bool captureTelemetry) noexcept {
@@ -533,7 +539,6 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
         resetSelection();
         if (newVehicle) {
             const bool reverseIssued = state.vehicle == vehicle && state.view.reverseIssued;
-            state.lastDirection = Direction::unknown;
             state.view = {.reverseIssued = reverseIssued};
         }
         state.view.requestedGear = unavailableGear;

@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.53
+
+- **Boîte manuelle.** Après la fermeture de la carte ou d’un menu, un rapport avant peut être réengagé en roulant si la boîte est passée au point mort depuis un rapport avant. Le changement entre marche avant et marche arrière exige toujours une vitesse proche de zéro.
+- **Reprise USB.** Le plugin rouvre les périphériques lorsque le jeu reprend la conduite après une interruption du contexte, y compris si le joueur reste au volant. Les commandes se réarment après leur retour au repos.
+
+[ZIP Vortex](out/Chromaxis-0.4.53.zip)
+
 ## Chrome Axis 0.4.52
 
 - **HUD de conduite.** Le badge est plus haut pour espacer les textes du liseré et séparer les deux lignes dans chaque colonne. Le fond bleu est plus transparent.

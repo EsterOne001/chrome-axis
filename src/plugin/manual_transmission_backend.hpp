@@ -30,6 +30,7 @@ struct Snapshot {
 bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexcept;
 void detach() noexcept;
 bool available() noexcept;
+void setDriverVehicle(const void* vehicle) noexcept;
 // The absolute value is a selector level; delta is a single sequential input.
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute = std::nullopt,
              bool captureTelemetry = false) noexcept;
@@ -87,6 +88,35 @@ constexpr Direction observeDirection(Direction previous, int engaged, int entrie
         return previous;
     return engaged == reverseGear ? Direction::reverse : Direction::forward;
 }
+
+class DirectionHistory {
+public:
+    constexpr void setVehicle(const void* vehicle) noexcept {
+        if (vehicle_ != vehicle) {
+            vehicle_ = vehicle;
+            direction_ = Direction::unknown;
+        }
+    }
+
+    constexpr Direction observe(const void* vehicle, int engaged, int target, int entries) noexcept {
+        if (!vehicle || vehicle_ != vehicle)
+            return Direction::unknown;
+        if (!supportedGear(target, entries) || (target == reverseGear && engaged != reverseGear))
+            direction_ = Direction::unknown;
+        else
+            direction_ = observeDirection(direction_, engaged, entries);
+        return direction_;
+    }
+
+    constexpr void reverseRequested(const void* vehicle) noexcept {
+        if (vehicle_ == vehicle)
+            direction_ = Direction::unknown;
+    }
+
+private:
+    const void* vehicle_{};
+    Direction direction_{Direction::unknown};
+};
 
 constexpr ShiftPlan planShift(int engaged, int requested, int entries, Direction previous) noexcept {
     if (!supportedGear(engaged, entries) || !supportedGear(requested, entries))

@@ -525,7 +525,7 @@ class ChromeAxisHudPainterSection extends inkComponent {
   }
 }
 
-public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>) -> Int32;
+public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>, canDrive: Bool) -> Int32;
 public static native func ChromeAxis_CaptureEnabled() -> Bool;
 public static native func ChromeAxis_CaptureVehicleRecord(vehicle: ref<VehicleObject>, record: TweakDBID) -> Void;
 public static native func ChromeAxis_TransmissionState(vehicle: ref<VehicleObject>) -> Int32;
@@ -536,7 +536,7 @@ public static native func ChromeAxis_VehicleImpact(vehicle: ref<VehicleObject>, 
 public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let player: wref<PlayerPuppet>;
   private let generation: Int32;
-  private let feedbackVehicle: wref<VehicleObject>;
+  private let driverVehicle: wref<VehicleObject>;
   private let feedbackPolling: Bool;
   private let hudBadge: wref<inkCanvas>;
   private let hudBorder: array<wref<inkRectangle>>;
@@ -560,9 +560,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private func OnPlayerAttach(request: ref<PlayerAttachRequest>) -> Void {
     this.player = request.owner as PlayerPuppet;
     this.generation += 1;
-    this.feedbackVehicle = null;
+    this.driverVehicle = null;
     this.feedbackPolling = false;
-    ChromeAxis_DriverHeartbeat(null);
+    ChromeAxis_DriverHeartbeat(null, false);
     this.Refresh(this.generation);
   }
 
@@ -577,9 +577,9 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private func Clear() -> Void {
     this.player = null;
     this.generation += 1;
-    this.feedbackVehicle = null;
+    this.driverVehicle = null;
     this.feedbackPolling = false;
-    ChromeAxis_DriverHeartbeat(null);
+    ChromeAxis_DriverHeartbeat(null, false);
     if IsDefined(this.hudBadge) {
       let parent = this.hudBadge.GetParentWidget() as inkCompoundWidget;
       if IsDefined(parent) {
@@ -896,7 +896,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudBadge.SetVisible(true);
   }
 
-  private func CanDrive(game: GameInstance) -> Bool {
+  private func CanDrive(game: GameInstance, out paused: Bool) -> Bool {
+    paused = false;
     let stateBoard: ref<IBlackboard> = this.player.GetPlayerStateMachineBlackboard();
     if !IsDefined(stateBoard) {
       return false;
@@ -910,9 +911,13 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       return false;
     }
     let ui: ref<IBlackboard> = boards.Get(GetAllBlackboardDefs().UI_System);
+    if !IsDefined(ui) {
+      return false;
+    }
     let photoMode: ref<IBlackboard> = boards.Get(GetAllBlackboardDefs().PhotoMode);
-    return IsDefined(ui) && !ui.GetBool(GetAllBlackboardDefs().UI_System.IsInMenu) &&
-           (!IsDefined(photoMode) || !photoMode.GetBool(GetAllBlackboardDefs().PhotoMode.IsActive));
+    paused = ui.GetBool(GetAllBlackboardDefs().UI_System.IsInMenu) ||
+             (IsDefined(photoMode) && photoMode.GetBool(GetAllBlackboardDefs().PhotoMode.IsActive));
+    return !paused;
   }
 
   public func Refresh(generation: Int32) -> Void {
@@ -920,16 +925,27 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       return;
     }
     let game: GameInstance = this.player.GetGame();
-    let vehicle: wref<VehicleObject>;
-    if !(this.CanDrive(game) && VehicleComponent.GetVehicle(game, this.player.GetEntityID(), vehicle) &&
-         IsDefined(vehicle) && VehicleComponent.IsDriver(game, this.player)) {
+    let paused: Bool;
+    let canDrive = this.CanDrive(game, paused);
+    let vehicle: wref<VehicleObject> = this.driverVehicle;
+    if canDrive {
+      if !(VehicleComponent.GetVehicle(game, this.player.GetEntityID(), vehicle) &&
+           IsDefined(vehicle) && VehicleComponent.IsDriver(game, this.player)) {
+        vehicle = null;
+      }
+    } else {
+      if !paused || !IsDefined(vehicle) || !vehicle.IsPlayerDriver() {
+        vehicle = null;
+      }
+    }
+    let status = ChromeAxis_DriverHeartbeat(vehicle, canDrive);
+    this.driverVehicle = vehicle;
+    if !canDrive {
       vehicle = null;
     }
-    let status = ChromeAxis_DriverHeartbeat(vehicle);
     if IsDefined(vehicle) && ChromeAxis_CaptureEnabled() {
       ChromeAxis_CaptureVehicleRecord(vehicle, vehicle.GetRecordID());
     }
-    this.feedbackVehicle = vehicle;
     if IsDefined(vehicle) && !this.feedbackPolling && ChromeAxis_FeedbackEnabled() {
       this.feedbackPolling = true;
       this.RefreshFeedback(generation);
@@ -951,10 +967,17 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       return;
     }
     let game: GameInstance = this.player.GetGame();
-    let vehicle = this.feedbackVehicle;
-    if !IsDefined(vehicle) || !this.CanDrive(game) || !vehicle.IsPlayerDriver() {
+    let vehicle = this.driverVehicle;
+    if !IsDefined(vehicle) || !vehicle.IsPlayerDriver() {
+      vehicle = null;
+    }
+    let paused: Bool;
+    if !IsDefined(vehicle) || !this.CanDrive(game, paused) {
       this.feedbackPolling = false;
-      ChromeAxis_DriverHeartbeat(null);
+      if !paused {
+        vehicle = null;
+      }
+      ChromeAxis_DriverHeartbeat(vehicle, false);
       return;
     }
 
@@ -1044,7 +1067,7 @@ protected cb func OnUnmountingEvent(evt: ref<UnmountingEvent>) -> Bool {
     let game: GameInstance = vehicle.GetGame();
     let actor: ref<GameObject> = GameInstance.FindEntityByID(game, evt.request.lowLevelMountingInfo.childId) as GameObject;
     if IsDefined(actor) && actor.IsPlayer() {
-      ChromeAxis_DriverHeartbeat(null);
+      ChromeAxis_DriverHeartbeat(null, false);
     }
   }
   return wrappedMethod(evt);

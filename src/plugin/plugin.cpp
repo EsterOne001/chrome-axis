@@ -762,16 +762,21 @@ chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleas
 
 void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
     RED4ext::Handle<RED4ext::ISerializable> vehicle;
+    bool canDrive{};
     RED4ext::GetParameter(frame, &vehicle);
+    RED4ext::GetParameter(frame, &canDrive);
     ++frame->code; // ParamEnd
 
     const auto now = Clock::now();
-    auto* current = active.load(std::memory_order_acquire) ? static_cast<Vehicle*>(vehicle.instance) : nullptr;
+    auto* mounted = active.load(std::memory_order_acquire) ? static_cast<Vehicle*>(vehicle.instance) : nullptr;
+    auto* current = canDrive ? mounted : nullptr;
     const bool foreground = current && foregroundGameWindow();
     auto status = HudStatus::hidden;
     bool invalidated;
     {
         std::scoped_lock lock(stateMutex);
+        if (transmissionAvailable)
+            manual_backend::setDriverVehicle(mounted);
         const bool vehicleChanged = context.vehicle != current;
         invalidated = vehicleChanged || (current && now - context.refreshed > contextLifetime);
         if (invalidated) {
@@ -862,6 +867,7 @@ void registerNative() {
     auto* heartbeat = RED4ext::CGlobalFunction::Create(name, name, &driverHeartbeat);
     heartbeat->flags = {.isNative = true, .isStatic = true};
     heartbeat->AddParam("handle:vehicleBaseObject", "vehicle");
+    heartbeat->AddParam("Bool", "canDrive");
     heartbeat->SetReturnType("Int32");
     rtti->RegisterFunction(heartbeat);
 
@@ -1544,6 +1550,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool simulated = session != chrome_axis::SimulationSession::inactive;
         const bool modeChanged = simulated != wasSimulated;
         const bool windowChanged = foreground != window;
+        const bool drivingContextChanged = current.generation != lastGeneration;
         const bool drivingSessionChanged = current.session != lastDrivingSession;
         UsbConfigurationChanges changes;
         if (!simulated && (!wasDriving || modeChanged || start >= nextConfigurationPoll)) {
@@ -1551,7 +1558,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             changes = usb.refresh(configurationDirectory, start, !wasDriving || modeChanged, diagnostic);
         }
         const bool sourceChanged = modeChanged || session == chrome_axis::SimulationSession::restarted || changes.preset;
-        if (!wasDriving || lastGeneration != current.generation || sourceChanged || windowChanged ||
+        if (!wasDriving || drivingContextChanged || sourceChanged || windowChanged ||
             changes.calibration || changes.accessories) {
             accessoryKeys.apply({});
             if (input) {
@@ -1578,9 +1585,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             nextPendingReport = {};
             lastGeneration = current.generation;
         }
-        if (drivingSessionChanged || modeChanged || windowChanged || changes.preset || changes.calibration || changes.accessories) {
-            // A cinematic or another driver transition can leave the USB devices acquired but stale.
-            if (drivingSessionChanged && input) {
+        if (drivingSessionChanged || drivingContextChanged || modeChanged || windowChanged ||
+            changes.preset || changes.calibration || changes.accessories) {
+            // A paused vehicle callback can invalidate the context while the driver stays seated.
+            if ((drivingSessionChanged || drivingContextChanged) && input) {
                 info("Driver context resumed. Reopening USB devices and waiting for neutral.");
             }
             input.reset();
