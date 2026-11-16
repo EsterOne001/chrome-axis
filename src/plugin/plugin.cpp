@@ -75,7 +75,6 @@ constexpr auto diagnosticInterval = 150ms;
 constexpr auto captureInterval = 50ms;
 constexpr auto diagnosticIssueDuration = 1s;
 constexpr auto accessoryPulseDuration = 50ms;
-constexpr auto performanceLimit = 5min;
 
 // Values returned to the HUD in driving_context.reds.
 enum class HudStatus : std::int32_t {
@@ -168,7 +167,6 @@ struct VehicleDelivery {
 
 struct InputAgeCapture {
     Clock::time_point started{};
-    Clock::time_point deadline{};
     chrome_axis::PerformanceTiming timing;
 };
 
@@ -1247,14 +1245,14 @@ void updatePerformanceCapture(chrome_axis::PerformanceReport& report, std::uint6
                 report = {};
                 report.state = PerformanceState::capturing;
                 report.startedAt = tick;
-                inputAgeCapture = {now, now + performanceLimit, {}};
+                inputAgeCapture = {now, {}};
             }
             report.requestId = request->id;
         }
     }
     if (report.state == PerformanceState::capturing) {
         report.inputAge = inputAgeCapture.timing;
-        if (tick >= leaseUntil || now >= inputAgeCapture.deadline) {
+        if (tick >= leaseUntil) {
             report.state = PerformanceState::complete;
             report.endedAt = tick;
             inputAgeCapture = {};
@@ -1436,6 +1434,12 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             };
             if (capturing && drivingSession && vehicleInputFresh(context, now)) {
                 const bool finalPedals = hasDelivery && vehicleDelivery.pedalTick;
+                const bool steeringApplied = hasDelivery && vehicleDelivery.axes[0].outcome == DiagnosticDelivery::applied;
+                const auto handbrake = hasDelivery ? vehicleDelivery.handbrake : std::nullopt;
+                const bool feedbackApplied = snapshot.feedback == DiagnosticFeedbackState::active &&
+                    snapshot.feedbackData.submittedAt && tick >= snapshot.feedbackData.submittedAt &&
+                    tick - snapshot.feedbackData.submittedAt <=
+                        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(inputLifetime).count());
                 captureSample = chrome_axis::DrivingCaptureSample{
                     .sampledAt = tick,
                     .mode = snapshot.mode,
@@ -1452,7 +1456,15 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     .clutch = snapshot.clutch,
                     .shiftDelayMicros = gearbox.engagementDelayMs.value_or(0) * 1000,
                     .shiftDelayAvailable = gearbox.engagementDelayMs.has_value(),
+                    .steering = steeringApplied ? appliedAxes[0].value : 0.0f,
+                    .handbrake = handbrake ? handbrake->finalValue : 0.0f,
+                    .feedbackForce = feedbackApplied ? snapshot.feedbackData.submitted : 0.0f,
+                    .steeringAvailable = steeringApplied,
+                    .handbrakeAvailable = handbrake.has_value(),
+                    .feedbackForceAvailable = feedbackApplied,
                 };
+            } else if (capturing) {
+                captureSample = chrome_axis::DrivingCaptureSample{.sampledAt = tick, .mode = snapshot.mode};
             }
             const bool hasPedalDelivery = hasDelivery && snapshot.mode == DiagnosticMode::usb &&
                 snapshot.profileLoaded && vehicleDelivery.pedalTick;
@@ -1527,8 +1539,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 snapshot.feedback = DiagnosticFeedbackState::inactive;
             snapshot.feedbackData = {};
         }
-        if (captureSample)
-            diagnostics->recordDrivingSample(performance.requestId, *captureSample);
         if (usb.enabled && snapshot.mode != DiagnosticMode::simulation) {
             const auto usbContext = std::pair{snapshot.mode, menuPaused};
             if (lastUsbContext != usbContext) {
@@ -1541,6 +1551,11 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
         } else {
             lastUsbContext.reset();
+        }
+        if (captureSample) {
+            for (std::size_t i = 0; i < snapshot.axes.size(); ++i)
+                captureSample->axes[i] = snapshot.axes[i].state;
+            diagnostics->recordDrivingSample(performance.requestId, *captureSample);
         }
         diagnostics->publish(snapshot, drivingSession, performance);
     };
@@ -2153,7 +2168,7 @@ void updateVehicle(Vehicle* vehicle) {
     // Invalidate it so the worker waits for neutral before using the lever again.
     const bool resumedWithLever = (inputFrame.handbrake || inputFrame.nativeShifter || inputFrame.nativeSequential ||
         inputFrame.clutchMode) && !vehicleInputFresh(context, now);
-    const bool captureTelemetry = now < inputAgeCapture.deadline;
+    const bool captureTelemetry = inputAgeCapture.started != Clock::time_point{};
     context.vehicleUpdated = now;
     if (resumedWithLever) {
         suspendTransmission();
@@ -2291,8 +2306,7 @@ void updateVehicle(Vehicle* vehicle) {
     }
     const bool applied = steer || pedals || handbrakeWritten;
     if (applied) {
-        if (!simulated && inputAgeCapture.started != Clock::time_point{} && now < inputAgeCapture.deadline &&
-            inputFrame.sampled >= inputAgeCapture.started) {
+        if (!simulated && inputAgeCapture.started != Clock::time_point{} && inputFrame.sampled >= inputAgeCapture.started) {
             inputAgeCapture.timing.add(elapsedMicros(Clock::now() - inputFrame.sampled));
         }
         if (steer)

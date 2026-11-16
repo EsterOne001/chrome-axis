@@ -116,7 +116,10 @@ int testPerformanceCapture(const std::filesystem::path& root)
         publisher.recordDrivingSample(start, sample); // Native driving with USB disabled is a valid baseline.
         sample.sampledAt += 20;
         sample.mode = DiagnosticMode::waitingForVehicleInput;
-        publisher.recordDrivingSample(start, sample); // A paused vehicle doesn't produce a driving row.
+        publisher.recordDrivingSample(start, sample); // Pausing is a context transition.
+        sample.sampledAt += 40;
+        publisher.recordDrivingSample(start, sample); // No repeated rows while it remains paused.
+        publisher.publish(snapshot, 1, performance);
         const auto live = observer.read();
         if (observer.ownsPerformanceCapture() || live.performance.state != PerformanceState::capturing ||
             live.performance.requestId != start || live.performance.usbRead.samples != 2 ||
@@ -130,13 +133,27 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.performance.peakLimitedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f ||
             live.performance.usbIntervalOverruns != 4 || live.performance.feedbackIntervalOverruns != 5 ||
             live.performance.peakContinuousForce != 1.125f || live.performance.referenceFeedbackGain != 130 ||
-            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 3 || !owner.readDrivingCapture().empty())
+            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 3)
             return 15;
 
+        std::array<DiagnosticCaptureRecord, 5> records;
+        const auto firstBatch = owner.drainCapture(std::span(records).first(2));
+        if (!firstBatch.available || firstBatch.finished || firstBatch.dropped || firstBatch.count != 2 ||
+            observer.drainCapture(records).available)
+            return 28;
+
+        // Leave the incident queued at the publisher so the final snapshot must flush it.
+        DiagnosticUsbEvent usb{.sampledAt = sample.sampledAt, .durationMicros = 52100, .result = 0x80070005,
+                              .kind = DiagnosticUsbEventKind::deviceSlow, .mode = sample.mode};
+        constexpr std::string_view privateId = "private-device-identifier";
+        constexpr std::string_view operation = "Poll";
+        std::ranges::copy(privateId, usb.deviceId.begin());
+        std::ranges::copy(operation, usb.operation.begin());
+        publisher.recordUsbEvent(usb);
         const auto stop = owner.requestPerformanceCapture(false);
         const auto stopRequest = publisher.performanceRequest();
         if (stop <= start || owner.ownsPerformanceCapture() || !stopRequest || stopRequest->id != stop ||
-            stopRequest->enabled || stopRequest->leaseUntil)
+            stopRequest->enabled || stopRequest->leaseUntil || observer.requestPerformanceCapture(true))
             return 16;
         sample.sampledAt += 50;
         publisher.recordDrivingSample(start, sample); // No late samples after the owner stops.
@@ -150,22 +167,36 @@ int testPerformanceCapture(const std::filesystem::path& root)
             finished.usbRead.totalMicros != 800 || finished.motionAge.totalMicros != 23000 ||
             finished.clippedSamples != 3 || finished.impactClippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
-        const auto records = owner.readDrivingCapture();
-        if (records.size() != 3 || records.front().transmission.shift != DiagnosticShiftState::pending ||
-            records[1].shiftDelayMicros != 9900 || records.back().mode != DiagnosticMode::usbDisabled ||
-            !records.back().speedAvailable || records.back().speedMps != 12.5f || observer.read().drivingCaptureSamples ||
-            !observer.readDrivingCapture().empty())
+        const auto tail = owner.drainCapture(std::span(records).subspan(2));
+        if (!tail.available || !tail.finished || tail.count != 3 || tail.dropped ||
+            records.front().driving.transmission.shift != DiagnosticShiftState::pending ||
+            records[1].driving.shiftDelayMicros != 9900 || records[2].driving.mode != DiagnosticMode::usbDisabled ||
+            !records[2].driving.speedAvailable || records[2].driving.speedMps != 12.5f ||
+            records[3].driving.mode != DiagnosticMode::waitingForVehicleInput ||
+            !records[4].usbIncident || records[4].usb.durationMicros != 52100 ||
+            owner.drainCapture(records).count || observer.read().drivingCaptureSamples ||
+            observer.drainCapture(records).available)
             return 22;
         std::ostringstream csv;
-        writeDrivingCaptureCsv(csv, records);
+        writeDiagnosticCaptureHeader(csv);
+        writeDiagnosticCaptureRows(csv, std::span(records).first(2), performance.startedAt);
+        writeDiagnosticCaptureRows(csv, std::span(records).subspan(2), performance.startedAt);
+        writeDiagnosticCaptureConnection(csv, performance.startedAt, performance.startedAt + 100, false);
+        writeDiagnosticCaptureConnection(csv, performance.startedAt, performance.startedAt + 200, true);
         const auto text = csv.str();
         constexpr std::string_view pendingRow =
-            "\r\n0,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,2,pending,,1,0,1,1,1,1,0\r\n";
+            "\r\n0,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,2,pending,,1,0,1,1,1,1,0,driving,";
         constexpr std::string_view acceptedRow =
-            "\r\n10,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,3,accepted,9900,1,0,1,1,1,1,1\r\n";
+            "\r\n10,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,3,accepted,9900,1,0,1,1,1,1,1,driving,";
         if (!text.starts_with("elapsed_ms,mode,vehicle,speed_mps,engine_rpm,") ||
             text.find(pendingRow) == std::string::npos || text.find(acceptedRow) == std::string::npos ||
-            text.find("\r\n30,usb_disabled,") == std::string::npos) {
+            text.find("\r\n30,usb_disabled,") == std::string::npos ||
+            text.find("\r\n50,waiting_for_vehicle_input,") == std::string::npos ||
+            text.find(",context,") == std::string::npos ||
+            text.find(",device_slow,\"Poll\",0x80070005,52100,") == std::string::npos ||
+            text.find(privateId) != std::string::npos ||
+            text.find(",connection_lost,") == std::string::npos ||
+            text.find(",connection_restored,") == std::string::npos) {
             std::cerr << text;
             return 23;
         }
@@ -180,7 +211,7 @@ int testPerformanceCapture(const std::filesystem::path& root)
         if (!closedRequest || closedRequest->id <= stop || closedRequest->enabled)
             return 19;
 
-        if (observer.requestPerformanceCapture(true) <= closedRequest->id)
+        if (observer.requestPerformanceCapture(true))
             return 20;
     }
 
@@ -193,38 +224,69 @@ int testPerformanceCapture(const std::filesystem::path& root)
     return 0;
 }
 
-bool testBoundedCaptureAfterGameCloses(const std::filesystem::path& root)
+bool testStreamingCaptureAfterGameCloses(const std::filesystem::path& root)
 {
     using namespace chrome_axis;
     DiagnosticReader reader(root);
+    const DiagnosticSnapshot snapshot{.mode = DiagnosticMode::simulation};
+    std::array<DiagnosticCaptureRecord, 64> records;
+    std::uint64_t firstTick = GetTickCount64();
+    DrivingCaptureSample sample{.sampledAt = firstTick, .mode = DiagnosticMode::simulation};
+    sample.transmission.engagedGear = 4;
     {
         DiagnosticPublisher publisher(root);
-        const DiagnosticSnapshot snapshot{.mode = DiagnosticMode::simulation};
         publisher.publish(snapshot);
         reader.read();
         const auto start = reader.requestPerformanceCapture(true);
-        if (!start)
+        if (!start || !publisher.performanceRequest()->enabled)
             return false;
-        DrivingCaptureSample sample{.sampledAt = GetTickCount64(), .mode = DiagnosticMode::simulation};
-        sample.transmission.engagedGear = 4;
-        for (std::size_t i = 0; i <= maxDrivingCaptureSamples; ++i) {
+        for (std::size_t i = 0; i < diagnosticCaptureCapacity + records.size(); ++i) {
             publisher.recordDrivingSample(start, sample);
             sample.sampledAt += 25;
+            if ((i + 1) % records.size() == 0) {
+                publisher.publish(snapshot, 1);
+                const auto batch = reader.drainCapture(records);
+                if (batch.count != records.size() || batch.dropped || batch.finished || !batch.available ||
+                    records.front().driving.sampledAt != firstTick + 25 * (i + 1 - records.size()) ||
+                    records.back().driving.sampledAt != firstTick + 25 * i)
+                    return false;
+            }
         }
-        const auto stop = reader.requestPerformanceCapture(false);
-        if (stop <= start)
-            return false;
-        publisher.publish(snapshot, 1, PerformanceReport{.state = PerformanceState::complete, .requestId = stop});
+        // A blocked reader eventually loses old rows, while newer rows remain available.
+        for (std::size_t i = 0; i < diagnosticCaptureCapacity + records.size(); ++i) {
+            publisher.recordDrivingSample(start, sample);
+            sample.sampledAt += 25;
+            if ((i + 1) % records.size() == 0)
+                publisher.publish(snapshot, 1);
+        }
+        publisher.recordDrivingSample(start, sample); // The destructor flushes this last uncommitted row.
     }
-    const auto stopped = reader.read();
-    const auto records = reader.readDrivingCapture();
-    if (stopped.connection != DiagnosticConnection::stale || stopped.performance.state != PerformanceState::complete ||
-        records.size() != maxDrivingCaptureSamples ||
-        records.back().sampledAt - records.front().sampledAt != 25 * (maxDrivingCaptureSamples - 1))
+    if (reader.read().connection != DiagnosticConnection::stale)
+        return false;
+    // The next publisher must not discard the preceding capture's tail before its owner drains it.
+    DiagnosticPublisher restarted(root);
+    restarted.publish(snapshot);
+    DiagnosticReader observer(root);
+    if (reader.read().connection != DiagnosticConnection::connected ||
+        observer.read().connection != DiagnosticConnection::connected || observer.requestPerformanceCapture(true))
+        return false;
+    const auto first = reader.drainCapture(records);
+    if (first.finished || first.dropped != records.size() + 1 || first.count != records.size() || !first.available ||
+        records.front().driving.sampledAt != firstTick + 25 * (diagnosticCaptureCapacity + 2 * records.size() + 1))
         return false;
     std::ostringstream csv;
-    writeDrivingCaptureCsv(csv, std::span(records).first(1));
-    return csv.str().ends_with("\r\n0,simulation,,,,,,0,,0,0,0,,,,,,4,,,0,0,0,0,0,0,0\r\n");
+    writeDiagnosticCaptureHeader(csv);
+    writeDiagnosticCaptureRows(csv, std::span(records).first(1), firstTick, first.dropped);
+    if (csv.str().find(",dropped,65,") == std::string::npos)
+        return false;
+    for (std::size_t i = records.size(); i < diagnosticCaptureCapacity; i += records.size()) {
+        const auto batch = reader.drainCapture(records);
+        if (!batch.available || batch.dropped || batch.count != records.size() ||
+            batch.finished != (i + records.size() == diagnosticCaptureCapacity))
+            return false;
+    }
+    return records.back().driving.sampledAt == sample.sampledAt && observer.requestPerformanceCapture(true) &&
+        !reader.requestPerformanceCapture(false);
 }
 
 int run()
@@ -502,7 +564,7 @@ int run()
     const auto performance = testPerformanceCapture(otherRoot);
     if (performance != 0)
         return performance;
-    return testBoundedCaptureAfterGameCloses(otherRoot) ? 0 : 25;
+    return testStreamingCaptureAfterGameCloses(otherRoot) ? 0 : 25;
 }
 
 } // namespace

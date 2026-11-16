@@ -7,7 +7,9 @@
 #include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/input.hpp"
 #include "chrome_axis/presets.hpp"
+#include "diagnostic_recording.hpp"
 #include "dialog_theme.hpp"
+#include "../core/settings_replace.hpp"
 
 #include <winver.h>
 #include <shobjidl.h>
@@ -38,21 +40,15 @@ const wchar_t* missingPluginFilesText(PluginFiles files) noexcept
 namespace {
 
 constexpr UINT_PTR refreshTimer = 1;
-constexpr UINT refreshIntervalMs = 250;
+constexpr UINT refreshIntervalMs = 150;
 constexpr UINT_PTR copyTimer = 2;
 constexpr UINT copyFeedbackMs = 2500;
 constexpr wchar_t unavailableValue[] = L"—";
-constexpr ULONGLONG performanceCommandTimeoutMs = 3000;
 constexpr auto releaseCom = [](auto* object) { object->Release(); };
-
-struct PerformanceCommand {
-    std::uint64_t id{};
-    ULONGLONG expiresAt{};
-    bool start{};
-};
 
 struct DialogState {
     DiagnosticReader& reader;
+    DiagnosticRecorder& recorder;
     const std::filesystem::path& gameRoot;
     const std::filesystem::path& profileRoot;
     std::wstring models;
@@ -60,8 +56,6 @@ struct DialogState {
     const wchar_t* missingFiles{};
     std::wstring pluginVersion{};
     std::wstring versionMismatch{};
-    PerformanceCommand performanceCommand{};
-    bool performanceCommandFailed{};
 };
 
 struct AccessoryDialogState {
@@ -664,42 +658,57 @@ std::wstring clippingSummary(const PerformanceReport& report)
     return text;
 }
 
-bool hasPerformanceData(const PerformanceReport& report)
+bool recordingAvailable(const DialogState& state)
 {
-    return report.expiredReads || report.transientReads || report.forceSamples || report.submittedEffects ||
-        report.usbIntervalOverruns || report.feedbackIntervalOverruns ||
-        std::ranges::any_of(performanceControls, [&](const auto& control) {
-            return (report.*control.timing).samples != 0;
-        });
+    return !state.gameRoot.empty() && !state.missingFiles && state.versionMismatch.empty();
 }
 
-bool performancePluginReady(const DiagnosticRead& read, const DialogState& state)
+bool canStopRecording(DiagnosticRecordingState state)
 {
-    return read.connection == DiagnosticConnection::connected && !state.missingFiles && state.versionMismatch.empty();
+    return state == DiagnosticRecordingState::starting || state == DiagnosticRecordingState::recording ||
+        state == DiagnosticRecordingState::waitingForGame;
 }
 
-std::wstring performanceStatus(const DiagnosticRead& read, ULONGLONG now)
+bool canExportRecording(const DiagnosticRecordingStatus& recording)
 {
-    const auto& performance = read.performance;
-    Text label;
-    auto end = performance.endedAt;
-    if (performance.state == PerformanceState::capturing) {
-        const bool driving = read.connection == DiagnosticConnection::connected &&
-            isDrivingCaptureMode(read.snapshot.mode);
-        label = driving ? Text::DlgDiagnosticsPerformanceActive : Text::DlgDiagnosticsPerformancePaused;
-        end = read.connection == DiagnosticConnection::connected ? now : read.sampledAt;
-    } else {
-        label = hasPerformanceData(performance) || read.drivingCaptureSamples
-            ? Text::DlgDiagnosticsPerformanceComplete : Text::DlgDiagnosticsPerformanceNoData;
+    std::error_code error;
+    return (recording.state == DiagnosticRecordingState::complete || recording.state == DiagnosticRecordingState::failed) &&
+        !recording.file.empty() && std::filesystem::is_regular_file(recording.file, error);
+}
+
+const wchar_t* recordingStateText(const DiagnosticRecordingStatus& recording, bool available)
+{
+    switch (recording.state) {
+    case DiagnosticRecordingState::idle:
+        return tr(available ? Text::DlgDiagnosticsPerformanceReady : Text::DlgDiagnosticsPerformanceUnavailable);
+    case DiagnosticRecordingState::starting: return tr(Text::DlgDiagnosticsPerformanceStarting);
+    case DiagnosticRecordingState::recording: return tr(Text::DlgDiagnosticsPerformanceActive);
+    case DiagnosticRecordingState::waitingForGame: return tr(Text::DlgDiagnosticsRecordingWaitingForGame);
+    case DiagnosticRecordingState::stopping: return tr(Text::DlgDiagnosticsPerformanceStopping);
+    case DiagnosticRecordingState::complete:
+        return tr(recording.rows ? Text::DlgDiagnosticsPerformanceComplete : Text::DlgDiagnosticsPerformanceNoData);
+    case DiagnosticRecordingState::failed:
+        switch (recording.failure) {
+        case DiagnosticRecordingFailure::file: return tr(Text::DlgDiagnosticsRecordingFileError);
+        case DiagnosticRecordingFailure::unavailable: return tr(Text::DlgDiagnosticsRecordingUnavailable);
+        case DiagnosticRecordingFailure::stopTimeout: return tr(Text::DlgDiagnosticsRecordingStopTimeout);
+        case DiagnosticRecordingFailure::worker:
+        case DiagnosticRecordingFailure::none:
+            return tr(Text::DlgDiagnosticsPerformanceFailed);
+        }
+        break;
     }
-    std::wstring status = tr(label);
-    if (performance.startedAt && end >= performance.startedAt) {
-        const auto elapsed = end - performance.startedAt;
-        status += elapsed && elapsed < 1000 ? L" · < 1 s" : L" · " + std::to_wstring(elapsed / 1000) + L" s";
-    }
-    if (read.drivingCaptureSamples == maxDrivingCaptureSamples)
-        status += L" · " + std::wstring(tr(Text::DlgDiagnosticsCsvFull));
-    return status;
+    return unavailableValue;
+}
+
+std::wstring recordingSummary(const DiagnosticRecordingStatus& recording, bool available)
+{
+    std::wstring summary = recordingStateText(recording, available);
+    if (recording.rows)
+        summary += L" · " + std::wstring(tr(Text::DlgDiagnosticsRecordingRows)) + L" " + std::to_wstring(recording.rows);
+    if (recording.dropped)
+        summary += L" · " + std::wstring(tr(Text::DlgDiagnosticsRecordingDropped)) + L" " + std::to_wstring(recording.dropped);
+    return summary;
 }
 
 const wchar_t* transmissionStatus(const DiagnosticTransmission& transmission)
@@ -789,11 +798,28 @@ HRESULT pickCsvFile(HWND owner, std::filesystem::path& result)
     return S_OK;
 }
 
-void exportDrivingCapture(HWND window, DiagnosticReader& reader)
+bool copyRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
 {
-    reader.read();
-    const auto samples = reader.readDrivingCapture();
-    if (samples.empty()) {
+    std::error_code ignored;
+    if (std::filesystem::equivalent(source, destination, ignored))
+        return true;
+
+    const auto temporary = detail::stagedSettingsPath(destination);
+    if (!CopyFileW(source.c_str(), temporary.c_str(), TRUE)) {
+        const auto error = GetLastError();
+        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS)
+            DeleteFileW(temporary.c_str());
+        return false;
+    }
+    if (detail::replaceSettingsFile(temporary, destination))
+        return true;
+    DeleteFileW(temporary.c_str());
+    return false;
+}
+
+void exportDrivingCapture(HWND window, const DiagnosticRecordingStatus& recording)
+{
+    if (!canExportRecording(recording)) {
         MessageBoxW(window, tr(Text::DlgDiagnosticsCsvUnavailable), tr(Text::DlgDiagnosticsCsvTitle), MB_OK | MB_ICONWARNING);
         return;
     }
@@ -804,7 +830,7 @@ void exportDrivingCapture(HWND window, DiagnosticReader& reader)
         CoUninitialize();
     }
     if (status != HRESULT_FROM_WIN32(ERROR_CANCELLED) &&
-        (FAILED(status) || !saveDrivingCaptureCsv(destination, samples)))
+        (FAILED(status) || !copyRecording(recording.file, destination)))
         MessageBoxW(window, tr(Text::DlgDiagnosticsCsvError), tr(Text::DlgDiagnosticsCsvTitle), MB_OK | MB_ICONERROR);
 }
 
@@ -935,9 +961,15 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
                 usbEventDetails(event, state.devices) + L"\r\n";
         }
     }
+    const auto recording = state.recorder.status();
+    if (recording.state != DiagnosticRecordingState::idle)
+        line(Text::DlgDiagnosticsRecordingStatus, recordingSummary(recording, recordingAvailable(state)));
     if (read.performance.state != PerformanceState::idle) {
         report += L"\r\n" + std::wstring(tr(Text::DlgDiagnosticsPerformanceReport)) + L"\r\n";
-        report += performanceStatus(read, now) + L"\r\n";
+        const auto& performance = read.performance;
+        const auto end = performance.state == PerformanceState::complete ? performance.endedAt : read.sampledAt;
+        if (performance.startedAt && end >= performance.startedAt)
+            line(Text::DlgDiagnosticsPerformanceDuration, std::to_wstring((end - performance.startedAt) / 1000) + L" s");
         for (const auto& control : performanceControls)
             line(control.label, performanceTiming(read.performance.*control.timing));
         line(Text::DlgDiagnosticsPerformanceExpired, std::to_wstring(read.performance.expiredReads));
@@ -1081,37 +1113,19 @@ INT_PTR CALLBACK accessoryDetailsProc(HWND window, UINT message, WPARAM wParam, 
     return FALSE;
 }
 
-void refreshPerformance(HWND window, DialogState& state, const DiagnosticRead& read, ULONGLONG now)
+void refreshPerformance(HWND window, const DialogState& state, const DiagnosticRead& read)
 {
+    const auto recording = state.recorder.status();
+    const bool canStop = canStopRecording(recording.state);
+    const bool stopping = recording.state == DiagnosticRecordingState::stopping;
+    const bool available = recordingAvailable(state);
     const auto& performance = read.performance;
-    auto& command = state.performanceCommand;
-    if (command.id && (performance.requestId == command.id || now >= command.expiresAt)) {
-        state.performanceCommandFailed = performance.requestId != command.id;
-        command = {};
-    }
-    const bool running = performance.state == PerformanceState::capturing;
-    const bool pluginReady = performancePluginReady(read, state);
     const bool showResults = performance.state != PerformanceState::idle;
-    const bool canControl = pluginReady && (!running || state.reader.ownsPerformanceCapture());
-    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_SAVE_CSV),
-        performance.state == PerformanceState::complete && read.drivingCaptureSamples);
+    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_SAVE_CSV), canExportRecording(recording));
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE,
-                   tr(running ? Text::DlgDiagnosticsPerformanceStop : Text::DlgDiagnosticsPerformanceStart));
-    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_PERFORMANCE), canControl && !command.id);
-
-    if (command.id) {
-        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE,
-                       tr(command.start ? Text::DlgDiagnosticsPerformanceStarting : Text::DlgDiagnosticsPerformanceStopping));
-    } else if (pluginReady && running && !canControl) {
-        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, tr(Text::DlgDiagnosticsPerformanceElsewhere));
-    } else if (state.performanceCommandFailed) {
-        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, tr(Text::DlgDiagnosticsPerformanceFailed));
-    } else if (showResults) {
-        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, performanceStatus(read, now));
-    } else {
-        setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE,
-                       tr(pluginReady ? Text::DlgDiagnosticsPerformanceReady : Text::DlgDiagnosticsPerformanceUnavailable));
-    }
+                   tr(canStop || stopping ? Text::DlgDiagnosticsPerformanceStop : Text::DlgDiagnosticsPerformanceStart));
+    EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_PERFORMANCE), !stopping && (canStop || available));
+    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, recordingSummary(recording, available));
     for (const auto& control : performanceControls)
         setChangedText(window, control.valueId, performanceTiming(performance.*control.timing));
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_WARNINGS, showResults
@@ -1143,6 +1157,15 @@ void refresh(HWND window, DialogState& state)
     const auto& snapshot = showLastDrive ? read.lastDrive : read.snapshot;
     const bool showControls = connected || showLastDrive;
     const auto now = GetTickCount64();
+    if (!state.missingFiles && state.versionMismatch.empty()) {
+        if (read.usbEventCount) {
+            const auto& latest = read.usbEvents[read.usbEventCount - 1];
+            setChangedText(window, IDC_MODAL_INTRO, std::wstring(tr(Text::DlgDiagnosticsLatestUsb)) +
+                           L" · " + usbEventTitle(latest.kind) + L" · " + eventAge(latest.sampledAt, now));
+        } else {
+            setChangedText(window, IDC_MODAL_INTRO, tr(Text::DlgDiagnosticsIntro));
+        }
+    }
     setChangedText(window, IDC_DIAGNOSTICS_MODE, connected ? modeText(mode) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_PROFILE_LABEL,
                    tr(showLastDrive ? Text::DlgDiagnosticsLastDriveProfile : Text::DlgDiagnosticsProfile));
@@ -1170,7 +1193,7 @@ void refresh(HWND window, DialogState& state)
     setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");
-    refreshPerformance(window, state, read, now);
+    refreshPerformance(window, state, read);
 }
 
 INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -1235,28 +1258,22 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_DIAGNOSTICS_SAVE_CSV && state) {
-            exportDrivingCapture(window, state->reader);
+            exportDrivingCapture(window, state->recorder.status());
             return TRUE;
         }
         if (LOWORD(wParam) == IDC_DIAGNOSTICS_PERFORMANCE && state) {
-            const auto read = state->reader.read();
-            const bool start = read.performance.state != PerformanceState::capturing;
-            if (!state->performanceCommand.id && performancePluginReady(read, *state) &&
-                (start || state->reader.ownsPerformanceCapture())) {
-                const auto id = state->reader.requestPerformanceCapture(start);
-                state->performanceCommandFailed = !id;
-                if (id)
-                    state->performanceCommand = {id, GetTickCount64() + performanceCommandTimeoutMs, start};
-                refresh(window, *state);
-            }
+            const auto status = state->recorder.status().state;
+            if (canStopRecording(status))
+                state->recorder.stop();
+            else if (status != DiagnosticRecordingState::stopping && recordingAvailable(*state))
+                state->recorder.start();
+            refresh(window, *state);
             return TRUE;
         }
         if (LOWORD(wParam) != IDCANCEL)
             break;
         [[fallthrough]];
     case WM_CLOSE:
-        if (state && state->reader.ownsPerformanceCapture())
-            state->reader.requestPerformanceCapture(false);
         EndDialog(window, IDCANCEL);
         return TRUE;
     case WM_DESTROY:
@@ -1270,11 +1287,11 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 } // namespace
 
 void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::span<const DeviceInfo> devices,
-                     DiagnosticReader& reader)
+                     DiagnosticReader& reader, DiagnosticRecorder& recorder)
 {
     const auto pluginDirectory = profileRoot.parent_path();
     const auto gameRoot = installedGameRoot(pluginDirectory);
-    DialogState state{reader, gameRoot, profileRoot, detectedModels(devices), devices};
+    DialogState state{reader, recorder, gameRoot, profileRoot, detectedModels(devices), devices};
     if (!gameRoot.empty()) {
         const auto files = pluginFiles(pluginDirectory);
         state.missingFiles = missingPluginFilesText(files);

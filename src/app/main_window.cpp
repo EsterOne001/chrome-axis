@@ -11,6 +11,7 @@
 #include "chrome_axis/simulation.hpp"
 #include "app_text.hpp"
 #include "calibration_guide.hpp"
+#include "diagnostic_recording.hpp"
 #include "diagnostics_dialog.hpp"
 #include "ui_theme.hpp"
 
@@ -239,7 +240,8 @@ class App {
 public:
     explicit App(std::filesystem::path directory)
         : directory_(std::move(directory)), gameRoot_(chrome_axis::installedGameRoot(directory_.parent_path())),
-          publisher_(gameRoot_), simulationDiagnostics_(gameRoot_), drivingDiagnostics_(gameRoot_) {}
+          publisher_(gameRoot_), simulationDiagnostics_(gameRoot_), drivingDiagnostics_(gameRoot_),
+          diagnosticRecorder_(gameRoot_, directory_) {}
     ~App()
     {
         for (const auto font : fonts_)
@@ -1076,8 +1078,8 @@ private:
     bool publisherFailed_{};
     chrome_axis::SimulationPublisher publisher_;
     chrome_axis::DiagnosticReader simulationDiagnostics_;
-    // Keep ownership of a completed driving capture when the dialog closes.
     chrome_axis::DiagnosticReader drivingDiagnostics_;
+    chrome_axis::DiagnosticRecorder diagnosticRecorder_;
     std::uint64_t simulationRequestedAt_{};
     std::uint64_t nextSimulationStatus_{};
     chrome_axis::Simulator simulator_;
@@ -1196,7 +1198,7 @@ void App::action(int command, int notification)
         break;
     case showDiagnostics:
         if (!calibrating_)
-            chrome_axis::showDiagnostics(window_, directory_, devices_, drivingDiagnostics_);
+            chrome_axis::showDiagnostics(window_, directory_, devices_, drivingDiagnostics_, diagnosticRecorder_);
         break;
     case startCalibration:
         beginCalibration(assignedCalibrationScope());

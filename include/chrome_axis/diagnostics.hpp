@@ -11,7 +11,6 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <vector>
 
 namespace chrome_axis {
 
@@ -215,7 +214,7 @@ struct PerformanceReport {
     std::array<char, 257> feedbackProfile{};
 };
 
-inline constexpr std::size_t maxDrivingCaptureSamples = 16384;
+inline constexpr std::size_t diagnosticCaptureCapacity = 4096;
 
 struct DrivingCaptureSample {
     std::uint64_t sampledAt{}; // GetTickCount64().
@@ -233,10 +232,33 @@ struct DrivingCaptureSample {
     DiagnosticClutch clutch{};
     std::uint64_t shiftDelayMicros{};
     bool shiftDelayAvailable{};
+    std::array<DiagnosticAxisState, 3> axes{};
+    float steering{};
+    float handbrake{};
+    float feedbackForce{};
+    bool steeringAvailable{};
+    bool handbrakeAvailable{};
+    bool feedbackForceAvailable{};
 };
 
-void writeDrivingCaptureCsv(std::ostream& output, std::span<const DrivingCaptureSample> samples);
-bool saveDrivingCaptureCsv(const std::filesystem::path& path, std::span<const DrivingCaptureSample> samples);
+struct DiagnosticCaptureRecord {
+    DrivingCaptureSample driving{};
+    DiagnosticUsbEvent usb{};
+    bool usbIncident{};
+};
+
+struct DiagnosticCaptureBatch {
+    std::size_t count{};
+    std::uint64_t dropped{};
+    bool finished{};
+    bool available{};
+};
+
+void writeDiagnosticCaptureHeader(std::ostream& output);
+void writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
+                                std::uint64_t startedAt, std::uint64_t dropped = 0);
+void writeDiagnosticCaptureConnection(std::ostream& output, std::uint64_t startedAt,
+                                      std::uint64_t sampledAt, bool connected);
 
 struct PerformanceRequest {
     std::uint64_t id{};
@@ -273,9 +295,12 @@ public:
                  const PerformanceReport& performance = {}) noexcept;
     void recordUsbEvent(const DiagnosticUsbEvent& event) noexcept;
     void recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept;
-    std::optional<PerformanceRequest> performanceRequest() const noexcept;
+    std::optional<PerformanceRequest> performanceRequest() noexcept;
 
 private:
+    void queueCaptureRecord(const DiagnosticCaptureRecord& row) noexcept;
+    void flushCaptureRecords() noexcept; // Shared frame mutex held.
+
     HANDLE owner_{};
     HANDLE mutex_{};
     HANDLE mapping_{};
@@ -283,8 +308,13 @@ private:
     DiagnosticRead report_{};
     std::uint64_t drivingSession_{};
     std::uint64_t publisherId_{};
-    std::uint64_t lastCaptureId_{};
+    PerformanceRequest observedRequest_{};
     DrivingCaptureSample lastCaptureSample_{};
+    std::array<DiagnosticCaptureRecord, 256> pending_{};
+    std::size_t pendingHead_{};
+    std::size_t pendingCount_{};
+    std::uint64_t pendingId_{};
+    std::uint64_t pendingDropped_{};
 };
 
 class DiagnosticReader {
@@ -298,11 +328,15 @@ public:
     // Submit a command for this reader's capture. A zero result means no request was sent.
     std::uint64_t requestPerformanceCapture(bool enabled) noexcept;
     bool ownsPerformanceCapture() const noexcept { return captureOwner_ != 0; }
-    std::vector<DrivingCaptureSample> readDrivingCapture();
+    // Caller supplies a nonempty buffer. False availability is transient unless finished is also true.
+    DiagnosticCaptureBatch drainCapture(std::span<DiagnosticCaptureRecord> output) noexcept;
 
 private:
+    bool publisherPresent() const noexcept; // Shared frame mutex held.
+
     std::wstring channel_;
     std::wstring mutexName_;
+    std::wstring publisherName_;
     HANDLE mutex_{};
     HANDLE mapping_{};
     DiagnosticFrame* frame_{};
@@ -310,6 +344,9 @@ private:
     std::uint64_t publisherId_{};
     std::uint64_t captureOwner_{};
     std::uint64_t captureId_{};
+    std::uint64_t capturePublisherId_{};
+    std::uint64_t captureRead_{};
+    std::uint64_t nextSequence_{};
 };
 
 } // namespace chrome_axis

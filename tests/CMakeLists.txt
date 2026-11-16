@@ -7,6 +7,13 @@ foreach(component IN ITEMS controls calibration simulation configuration accesso
   add_test(NAME ${test_name} COMMAND ${test_target})
 endforeach()
 
+add_executable(chrome_axis_diagnostic_recording_test diagnostic_recording_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/app/diagnostic_recording.cpp)
+target_include_directories(chrome_axis_diagnostic_recording_test PRIVATE ${PROJECT_SOURCE_DIR}/src/app)
+target_compile_options(chrome_axis_diagnostic_recording_test PRIVATE /W4 /utf-8)
+target_link_libraries(chrome_axis_diagnostic_recording_test PRIVATE chrome_axis_input)
+add_test(NAME chrome_axis_diagnostic_recording COMMAND chrome_axis_diagnostic_recording_test)
+
 add_executable(chrome_axis_manual_transmission_input_test manual_transmission_input_test.cpp)
 target_include_directories(chrome_axis_manual_transmission_input_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
 target_compile_options(chrome_axis_manual_transmission_input_test PRIVATE /W4 /utf-8)
