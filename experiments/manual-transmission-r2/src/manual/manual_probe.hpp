@@ -16,6 +16,7 @@ void initialize(const std::filesystem::path& pluginDirectory, RED4ext::v1::Plugi
                 const RED4ext::v1::Sdk* sdk) noexcept;
 void heartbeat(RED4ext::vehicle::BaseObject* vehicle, bool foreground) noexcept;
 std::int32_t displayGear(RED4ext::vehicle::BaseObject* vehicle) noexcept;
+bool isManualModeActive(RED4ext::vehicle::BaseObject* vehicle) noexcept;
 void shutdown() noexcept;
 
 } // namespace manual_probe

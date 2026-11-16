@@ -22,7 +22,9 @@ If the old DLL is still present, R2 manual mode remains disabled and the new `st
 4. Press **F8** again to resume automatic shifting. After a driving interruption or a return to the game, use **F8** to enable manual mode again.
 5. Quit the game normally. Copy `trials.csv` and `status.txt` from the folder containing `arm.txt`, then remove `arm.txt` before the next launch. The first time the prototype is armed after a game restart replaces the previous CSV.
 
-Under the Chrome Axis logo, the HUD shows the engaged gear in automatic and manual driving. It can display gears 1 through 8 as reported by the vehicle. R2 manual shifting supports up to seven forward gears. Compare the engaged gear with the target gear and shift outcome in the CSV.
+Under the Chrome Axis logo, the HUD shows the engaged gear and transmission mode together, as in `GEAR 3 · AUTO` and `GEAR 3 · MANUAL`. The mode updates when the **F8** toggle is accepted. A dash replaces the gear number when no gear is available.
+
+The HUD can display gears 1 through 8 as reported by the vehicle. R2 manual shifting supports up to seven forward gears. Compare the engaged gear with the target gear and shift outcome in the CSV.
 
 The CSV records the engaged gear, target gear, shift request outcome, engine RPM and speed. Each session can last up to 20 minutes.
 

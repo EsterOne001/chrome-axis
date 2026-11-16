@@ -31,7 +31,7 @@ diff --git a/src/plugin/plugin.cpp b/src/plugin/plugin.cpp
  
  #include <RED4ext/RED4ext.hpp>
  #include <RED4ext/Scripting/Natives/vehicleBaseObject.hpp>
-@@ -681,9 +682,18 @@
+@@ -681,9 +682,26 @@
          }
      }
      accessoryKeys.releaseStale(now, invalidated || !current);
@@ -47,10 +47,18 @@ diff --git a/src/plugin/plugin.cpp b/src/plugin/plugin.cpp
 +    ++frame->code; // ParamEnd
 +    if (out)
 +        *out = manual_probe::displayGear(static_cast<Vehicle*>(vehicle.instance));
++}
++
++void manualModeForHud(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* out, std::int64_t) {
++    RED4ext::Handle<RED4ext::ISerializable> vehicle;
++    RED4ext::GetParameter(frame, &vehicle);
++    ++frame->code; // ParamEnd
++    if (out)
++        *out = manual_probe::isManualModeActive(static_cast<Vehicle*>(vehicle.instance));
  }
  
  void registerNative() {
-@@ -694,6 +704,13 @@
+@@ -694,6 +712,20 @@
      heartbeat->AddParam("handle:vehicleBaseObject", "vehicle");
      heartbeat->SetReturnType("Int32");
      rtti->RegisterFunction(heartbeat);
@@ -61,10 +69,17 @@ diff --git a/src/plugin/plugin.cpp b/src/plugin/plugin.cpp
 +    manualGear->AddParam("handle:vehicleBaseObject", "vehicle");
 +    manualGear->SetReturnType("Int32");
 +    rtti->RegisterFunction(manualGear);
++
++    constexpr auto modeName = "ChromeAxis_ManualModeActive";
++    auto* manualMode = RED4ext::CGlobalFunction::Create(modeName, modeName, &manualModeForHud);
++    manualMode->flags = {.isNative = true, .isStatic = true};
++    manualMode->AddParam("handle:vehicleBaseObject", "vehicle");
++    manualMode->SetReturnType("Bool");
++    rtti->RegisterFunction(manualMode);
  
      auto* enabled = RED4ext::CGlobalFunction::Create("ChromeAxis_FeedbackEnabled", "ChromeAxis_FeedbackEnabled", &feedbackEnabled);
      enabled->flags = {.isNative = true, .isStatic = true};
-@@ -1718,6 +1735,7 @@
+@@ -1718,6 +1750,7 @@
  }
  
  void stopPlugin() {
@@ -72,7 +87,7 @@ diff --git a/src/plugin/plugin.cpp b/src/plugin/plugin.cpp
      active.store(false, std::memory_order_release);
      feedbackRequested.store(false, std::memory_order_relaxed);
      drivingVehicle.store(nullptr, std::memory_order_release);
-@@ -1794,6 +1812,7 @@
+@@ -1794,6 +1827,7 @@
          return false;
      }
      rtti->AddPostRegisterCallback(&registerNative);
@@ -83,54 +98,57 @@ diff --git a/src/plugin/plugin.cpp b/src/plugin/plugin.cpp
 diff --git a/scripts/driving_context.reds b/scripts/driving_context.reds
 --- a/scripts/driving_context.reds
 +++ b/scripts/driving_context.reds
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  public static native func ChromeAxis_DriverHeartbeat(vehicle: ref<VehicleObject>) -> Int32;
 +public static native func ChromeAxis_ManualGear(vehicle: ref<VehicleObject>) -> Int32;
++public static native func ChromeAxis_ManualModeActive(vehicle: ref<VehicleObject>) -> Bool;
  public static native func ChromeAxis_FeedbackEnabled() -> Bool;
  public static native func ChromeAxis_FeedbackMotion(vehicle: ref<VehicleObject>, velocity: Vector4, forward: Vector4, right: Vector4, mass: Float, simTime: Float, skidding: Bool, airborne: Bool) -> Void;
  public static native func ChromeAxis_VehicleImpact(vehicle: ref<VehicleObject>, velocityChange: Float, lateral: Float) -> Void;
-@@ -14,6 +15,9 @@
+@@ -14,6 +16,10 @@
    private let hudLogoRetry: Int32;
    private let hudLabel: wref<inkText>;
    private let hudLabelShadow: wref<inkText>;
 +  private let hudGearLabel: wref<inkText>;
 +  private let hudGearLabelShadow: wref<inkText>;
 +  private let hudGear: Int32;
++  private let hudManualMode: Bool;
    private let hudStatus: Int32;
    private let hudRetry: Int32;
    private let hudFrench: Bool;
-@@ -53,6 +57,9 @@
+@@ -53,6 +59,10 @@
      this.hudLogoRetry = 0;
      this.hudLabel = null;
      this.hudLabelShadow = null;
 +    this.hudGearLabel = null;
 +    this.hudGearLabelShadow = null;
 +    this.hudGear = -2;
++    this.hudManualMode = false;
      this.hudStatus = 0;
      this.hudRetry = 0;
      this.hudFrench = false;
-@@ -81,7 +88,7 @@
+@@ -81,7 +91,7 @@
  
      let badge = new inkCanvas();
      badge.SetName(n"ChromeAxisStatusBadge");
 -    badge.SetSize(Vector2(176.0, 34.0));
-+    badge.SetSize(Vector2(176.0, 63.0));
++    badge.SetSize(Vector2(242.0, 63.0));
      badge.SetAnchor(inkEAnchor.TopLeft);
      badge.SetAnchorPoint(0.0, 0.0);
      badge.SetTranslation(36.0, 176.0);
-@@ -94,16 +101,24 @@
+@@ -94,16 +104,24 @@
      logo.SetSize(Vector2(34.0, 34.0));
      logo.Reparent(badge);
  
 -    let shadow = this.CreateHudLabel(badge, 1.0);
-+    let shadow = this.CreateHudLabel(badge, 0.0, 1.0);
++    let shadow = this.CreateHudLabel(badge, 0.0, 1.0, 134.0);
      shadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
 -    let label = this.CreateHudLabel(badge, 0.0);
-+    let label = this.CreateHudLabel(badge, 0.0, 0.0);
++    let label = this.CreateHudLabel(badge, 0.0, 0.0, 134.0);
 +
-+    let gearShadow = this.CreateHudLabel(badge, 28.0, 1.0);
++    let gearShadow = this.CreateHudLabel(badge, 28.0, 1.0, 200.0);
 +    gearShadow.SetTintColor(HDRColor(0.0, 0.0, 0.0, 0.85));
-+    let gearLabel = this.CreateHudLabel(badge, 28.0, 0.0);
++    let gearLabel = this.CreateHudLabel(badge, 28.0, 0.0, 200.0);
 +    gearLabel.SetTintColor(HDRColor(1.0, 0.84, 0.18, 1.0));
  
      this.hudBadge = badge;
@@ -145,20 +163,21 @@ diff --git a/scripts/driving_context.reds b/scripts/driving_context.reds
      this.TryShowHudLogo();
      return true;
    }
-@@ -120,7 +135,7 @@
+@@ -120,23 +138,66 @@
      }
    }
  
 -  private func CreateHudLabel(badge: ref<inkCanvas>, offset: Float) -> ref<inkText> {
-+  private func CreateHudLabel(badge: ref<inkCanvas>, row: Float, offset: Float) -> ref<inkText> {
++  private func CreateHudLabel(badge: ref<inkCanvas>, row: Float, offset: Float, width: Float) -> ref<inkText> {
      let label = new inkText();
      label.SetFontFamily("base\\gameplay\\gui\\fonts\\raj\\raj.inkfontfamily");
      label.SetFontStyle(n"Bold");
-@@ -128,14 +143,54 @@
+     label.SetFontSize(18);
      label.SetHorizontalAlignment(textHorizontalAlignment.Left);
      label.SetVerticalAlignment(textVerticalAlignment.Center);
-     label.SetSize(Vector2(134.0, 34.0));
+-    label.SetSize(Vector2(134.0, 34.0));
 -    label.SetTranslation(40.0 + offset, offset);
++    label.SetSize(Vector2(width, 34.0));
 +    label.SetTranslation(40.0 + offset, row + offset);
      label.Reparent(badge);
      return label;
@@ -185,14 +204,15 @@ diff --git a/scripts/driving_context.reds b/scripts/driving_context.reds
 +    if !IsDefined(this.hudGearLabel) || !IsDefined(this.hudGearLabelShadow) {
 +      return;
 +    }
-+    let visible = this.hudGear >= -1 && this.hudGear <= 8;
++    let visible = this.hudStatus != 0;
 +    this.hudGearLabel.SetVisible(visible);
 +    this.hudGearLabelShadow.SetVisible(visible);
 +    if !visible {
 +      return;
 +    }
 +    let value = this.hudGear > 0 ? IntToString(this.hudGear) : (this.hudGear == 0 ? "R" : "—");
-+    let text = (this.hudFrench ? "RAPPORT " : "GEAR ") + value;
++    let mode = this.hudManualMode ? (this.hudFrench ? "MANUEL" : "MANUAL") : "AUTO";
++    let text = (this.hudFrench ? "RAPPORT " : "GEAR ") + value + " · " + mode;
 +    this.hudGearLabel.SetText(text);
 +    this.hudGearLabelShadow.SetText(text);
 +  }
@@ -200,18 +220,31 @@ diff --git a/scripts/driving_context.reds b/scripts/driving_context.reds
 +  private func UpdateHud(game: GameInstance, status: Int32, vehicle: wref<VehicleObject>) -> Void {
      if status != 0 && this.hudStatus == 0 {
        this.hudFrench = this.IsFrenchInterface(game);
-+    }
+     }
 +    let gear: Int32 = -2;
++    let manualMode: Bool = false;
 +    if status != 0 && IsDefined(vehicle) {
 +      gear = this.ReadHudGear(vehicle);
++      manualMode = ChromeAxis_ManualModeActive(vehicle);
 +    }
-+    if this.hudGear != gear {
-+      this.hudGear = gear;
-+      this.ApplyHudGear();
-     }
++    let modeChanged = this.hudManualMode ? !manualMode : manualMode;
++    let gearLineChanged = this.hudGear != gear || modeChanged;
++    this.hudGear = gear;
++    this.hudManualMode = manualMode;
      let changed = this.hudStatus != status;
      this.hudStatus = status;
-@@ -264,7 +319,7 @@
+     if status == 0 {
+@@ -152,6 +213,9 @@
+         if !this.hudLogoReady {
+           this.hudLogoRetry = 30;
+         }
++      }
++      if changed || gearLineChanged {
++        this.ApplyHudGear();
+       }
+       this.TryShowHudLogo();
+     }
+@@ -264,7 +328,7 @@
      next.context = this;
      next.generation = generation;
      GameInstance.GetDelaySystem(game).DelayCallback(next, 0.10, false);

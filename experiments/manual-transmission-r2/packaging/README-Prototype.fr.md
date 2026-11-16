@@ -22,7 +22,9 @@ Si l’ancienne DLL est encore présente, le mode manuel R2 reste désactivé et
 4. Appuyez de nouveau sur **F8** pour reprendre les passages automatiques. Après une interruption de conduite ou un retour au jeu, réactivez le mode manuel avec **F8**.
 5. Quittez le jeu normalement. Copiez `trials.csv` et `status.txt` depuis le dossier où se trouve `arm.txt`, puis retirez `arm.txt` avant le prochain lancement. Le premier armement après un redémarrage remplace l’ancien CSV.
 
-Sous le logo Chrome Axis, le HUD affiche le rapport engagé en automatique comme en manuel. Il peut afficher de 1 à 8 selon les rapports indiqués par le véhicule. La commande manuelle de la R2 couvre au maximum sept rapports avant. Comparez le rapport engagé avec le rapport cible et le résultat de la commande dans le CSV.
+Sous le logo Chrome Axis, le HUD associe le rapport engagé au mode de boîte, comme dans `RAPPORT 3 · AUTO` et `RAPPORT 3 · MANUEL`. Le mode s’actualise dès que la bascule avec **F8** est acceptée. Un tiret remplace le numéro en l’absence de rapport disponible.
+
+Le HUD peut afficher les rapports 1 à 8 selon le véhicule. La commande manuelle de la R2 couvre au maximum sept rapports avant. Comparez le rapport engagé avec le rapport cible et le résultat de la commande dans le CSV.
 
 Le CSV contient le rapport engagé, le rapport cible, le résultat des demandes de changement, le régime moteur et la vitesse. Une session dure jusqu’à 20 minutes.
 

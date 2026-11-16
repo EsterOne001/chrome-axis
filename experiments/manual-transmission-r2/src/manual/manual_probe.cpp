@@ -55,6 +55,11 @@ struct Probe {
 
 Probe probe;
 
+bool hasCurrentDriver(Vehicle* vehicle) noexcept {
+    return vehicle && probe.initialized && probe.recording && probe.vehicle == vehicle &&
+           Clock::now() - probe.lastHeartbeat <= maximumSampleGap;
+}
+
 void setStatus(const char* message) noexcept {
     std::FILE* file = nullptr;
     if (!probe.statusPath.empty() && _wfopen_s(&file, probe.statusPath.c_str(), L"wb") == 0) {
@@ -280,8 +285,7 @@ std::int32_t displayGear(Vehicle* vehicle) noexcept {
     constexpr int maximumDisplayGear = 8;
     constexpr auto maximumDisplayAgeMs = 250ULL;
     const std::unique_lock lock(probe.mutex, std::try_to_lock);
-    if (!lock || !vehicle || !probe.initialized || !probe.recording || probe.vehicle != vehicle ||
-        Clock::now() - probe.lastHeartbeat > maximumSampleGap)
+    if (!lock || !hasCurrentDriver(vehicle))
         return unavailable;
 
     const auto native = manual_backend::snapshot();
@@ -291,6 +295,11 @@ std::int32_t displayGear(Vehicle* vehicle) noexcept {
         return unavailable;
 
     return static_cast<std::int32_t>(native.engagedGear);
+}
+
+bool isManualModeActive(Vehicle* vehicle) noexcept {
+    const std::unique_lock lock(probe.mutex, std::try_to_lock);
+    return lock && hasCurrentDriver(vehicle) && probe.manual;
 }
 
 void shutdown() noexcept {
