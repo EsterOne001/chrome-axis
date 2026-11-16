@@ -332,9 +332,8 @@ public:
 
         if (needsAcquisition_) {
             const auto result = observer.measure("Probe Acquire", [&] { return opened.device->Acquire(); });
-            if (FAILED(result))
-                return snapshot(request.wanted);
-            opened.acquired = true;
+            // A transient metadata error can clear while acquisition is still refused.
+            opened.acquired = SUCCEEDED(result);
         }
         const auto& wanted = request.wanted;
         needsAcquisition_ |= refreshObjects(opened.axes, wanted.axes, *opened.device, observer,

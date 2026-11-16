@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.65
+
+- **Palettes sur deux périphériques.** Les relevés au repos reçus avant un appui restent disponibles pour le rejeu, même si la boucle de traitement prend du retard. La validation continue d’écarter un relevé absent, ancien ou postérieur à l’appui.
+- **Détection DirectInput.** Après un `E_PENDING`, un refus d’acquisition de la poignée de détection laisse le sondage réessayer les commandes en attente. Les commandes déjà reconnues restent utilisables.
+
+[ZIP Vortex](out/Chromaxis-0.4.65.zip)
+
 ## Chrome Axis 0.4.64
 
 - **Palettes sur deux périphériques.** Une demande de rapport exige un relevé suffisamment récent de chaque palette au moment de l’appui. Les appuis brefs distincts gardent leur ordre.

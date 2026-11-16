@@ -21,7 +21,8 @@ struct DrivingInputDevice {
 
 class PaddleInputBatch {
 public:
-    void observe(const AccessoryTransmissionSample& sample, DeviceReadClock::duration lifetime) noexcept {
+    void observe(const AccessoryTransmissionSample& sample, DeviceReadClock::duration lifetime,
+                 std::optional<DeviceReadClock::time_point> splitEvidence = std::nullopt) noexcept {
         if (!sample.sequentialArmed || sample.paddlesPressed > 1) {
             pending_.reset();
             return;
@@ -30,7 +31,7 @@ public:
             finish();
         // Replaying a historical level preserves holds, but a shift requires
         // evidence from both paddles when the press occurred.
-        const auto opposite = sample.oppositePaddleSampledAt;
+        const auto opposite = splitEvidence.value_or(sample.oppositePaddleSampledAt);
         if (sample.shiftDelta && opposite != DeviceReadClock::time_point{} &&
             opposite <= sample.shiftSampledAt && sample.shiftSampledAt - opposite <= lifetime)
             pending_ = Edge{sample.shiftDelta, sample.shiftSampledAt};
@@ -93,6 +94,17 @@ public:
     // Returns false if a previous worker is still closing this device.
     bool configure(HWND window, std::span<const DrivingInputDevice> devices) {
         reap();
+        std::array<const DrivingInputDevice*, 2> paddles{};
+        for (const auto& device : devices) {
+            if (!device.discrete)
+                continue;
+            for (const auto& binding : *device.discrete)
+                if (binding.nativeSequential)
+                    paddles[binding.role == ShifterRole::Upshift ? 0 : 1] = &device;
+        }
+        const bool split = paddles[0] && paddles[1] && paddles[0] != paddles[1];
+        splitPaddles_ = {};
+
         for (auto entry = active_.begin(); entry != active_.end();) {
             if (std::ranges::find(devices, entry->first, &DrivingInputDevice::id) != devices.end()) {
                 ++entry;
@@ -114,7 +126,10 @@ public:
                 found = active_.try_emplace(device.id, Entry{std::move(worker)}).first;
             }
             auto& entry = found->second;
-            const Configuration config{window, device.objects, device.discrete, true};
+            const bool trackPaddle = split && (&device == paddles[0] || &device == paddles[1]);
+            const Configuration config{window, device.objects, device.discrete, true, trackPaddle};
+            if (trackPaddle)
+                splitPaddles_[&device == paddles[0] ? 0 : 1] = &entry;
             if (entry.config != config)
                 entry.previousAccessory = {};
             entry.config = config;
@@ -234,6 +249,21 @@ public:
                 entry.previousAccessory = entry.report;
     }
 
+    void observePaddles(PaddleInputBatch& batch, const AccessoryTransmissionSample& sample,
+                        Clock::duration lifetime) {
+        // The replay reconstructs levels, not the sampling cadence of a paddle
+        // on another device. Use that worker's report at the physical edge.
+        if (sample.shiftDelta && (splitPaddles_[0] || splitPaddles_[1])) {
+            const auto* opposite = splitPaddles_[sample.shiftDelta > 0 ? 1 : 0];
+            const auto proof = opposite && !opposite->disruptedAccessories
+                ? opposite->worker->paddleEvidenceAt(sample.shiftSampledAt, opposite->report.loss)
+                : Clock::time_point{};
+            batch.observe(sample, lifetime, proof);
+        } else {
+            batch.observe(sample, lifetime);
+        }
+    }
+
     std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>&,
                                        DeviceReadStatus* status) override {
         const auto it = active_.find(id);
@@ -274,12 +304,16 @@ public:
 
 private:
     static constexpr std::size_t discreteQueueCapacity = 16;
+    // Covers the 100 ms press lifetime plus its preceding 100 ms of paddle
+    // evidence at the production 5 ms cadence, without spending FIFO slots.
+    static constexpr std::size_t paddleEvidenceCapacity = 64;
 
     struct Configuration {
         HWND window{};
         DeviceObjectSelection objects;
         std::shared_ptr<const AccessoryProfile> discrete;
         bool active{};
+        bool trackPaddle{};
 
         bool operator==(const Configuration&) const = default;
     };
@@ -289,6 +323,11 @@ private:
         DeviceReadStatus status{DeviceReadStatus::unavailable};
         std::uint64_t loss{};
         Clock::time_point lastValid{};
+    };
+
+    struct PaddleEvidence {
+        Clock::time_point sampledAt{}, completedAt{};
+        DiscreteAccessoryLevel level{};
     };
 
     template <class Record, std::size_t capacity>
@@ -310,6 +349,16 @@ private:
             first_ = (first_ + 1) % capacity;
             --size_;
             return result;
+        }
+
+        template <class Predicate>
+        const Record* findNewest(Predicate&& matches) const noexcept {
+            for (auto count = size_; count > 0; --count) {
+                const auto& record = slots_[(first_ + count - 1) % capacity];
+                if (matches(record))
+                    return &record;
+            }
+            return nullptr;
         }
 
     private:
@@ -374,11 +423,25 @@ private:
             while (const auto sample = discrete_.pop()) {
                 if (now - sample->sampledAt > lifetime_) {
                     discrete_.clear();
+                    paddleEvidence_.clear();
                     return true;
                 }
                 visit(*sample);
             }
             return false;
+        }
+
+        Clock::time_point paddleEvidenceAt(Clock::time_point pressedAt, std::uint64_t loss) {
+            std::scoped_lock lock(mutex_);
+            if (discreteOverflow_ || latest_.loss != loss || latest_.status == DeviceReadStatus::unavailable)
+                return {};
+            const auto* report = paddleEvidence_.findNewest([&](const auto& evidence) {
+                return evidence.completedAt <= pressedAt;
+            });
+            // Examine the latest report before the press, including negative
+            // evidence; an older neutral must not hide a later conflict.
+            return report && (report->level == DiscreteAccessoryLevel::neutral ||
+                              report->level == DiscreteAccessoryLevel::idle) ? report->sampledAt : Clock::time_point{};
         }
 
         std::optional<Event> nextEvent() {
@@ -395,15 +458,18 @@ private:
         void discardDiscrete() noexcept {
             ++discreteRevision_;
             discrete_.clear();
+            paddleEvidence_.clear();
             discreteOverflow_ = false;
             haveDiscreteBaseline_ = false;
         }
 
-        void publishDiscrete(const Report& report, const AccessoryProfile& bindings) {
+        void publishDiscrete(const Report& report, const AccessoryProfile& bindings,
+                             bool trackPaddle, Clock::time_point completedAt) {
             if (report.status == DeviceReadStatus::pending)
                 return;
             if (!report.sample || report.status == DeviceReadStatus::resumed) {
                 discrete_.clear();
+                paddleEvidence_.clear();
                 haveDiscreteBaseline_ = false;
             }
             if (!report.sample)
@@ -415,12 +481,15 @@ private:
                     haveDiscreteBaseline_ && previous == DiscreteAccessoryLevel::engaged);
                 changed |= haveDiscreteBaseline_ && current != previous;
                 previous = current;
+                if (trackPaddle && bindings[i].nativeSequential)
+                    paddleEvidence_.push({report.sample->sampledAt, completedAt, current});
             }
             haveDiscreteBaseline_ = true;
             if (!changed || discreteOverflow_)
                 return;
             if (discrete_.full()) {
                 discrete_.clear();
+                paddleEvidence_.clear();
                 discreteOverflow_ = true;
                 Event event{.kind = DirectInputReadEventKind::discreteOverflow, .sampledAt = GetTickCount64()};
                 std::ranges::copy(std::string_view("USB discrete inputs"), event.operation.begin());
@@ -510,7 +579,7 @@ private:
                     std::unique_lock lock(mutex_);
                     if (revision == revision_) {
                         if (config.discrete && discreteRevision == discreteRevision_)
-                            publishDiscrete(report, *config.discrete);
+                            publishDiscrete(report, *config.discrete, config.trackPaddle, finishedAt);
                         latest_ = std::move(report);
                         cycles_.push({finishedAt, elapsedMicros(finishedAt - started), missedCadence});
                     }
@@ -531,6 +600,7 @@ private:
         Configuration config_{};
         Report latest_;
         Recent<DeviceSample, discreteQueueCapacity> discrete_;
+        Recent<PaddleEvidence, paddleEvidenceCapacity> paddleEvidence_;
         std::array<DiscreteAccessoryLevel, maxAccessoryBindings> discreteLevels_{};
         bool haveDiscreteBaseline_{};
         Recent<Event, 8> events_;
@@ -567,6 +637,7 @@ private:
     Clock::duration interval_, lifetime_;
     DirectInputDiagnostic logger_{};
     std::unordered_map<std::string, Entry> active_;
+    std::array<Entry*, 2> splitPaddles_{}; // Node addresses survive rehash; configure rebuilds the pair.
     std::vector<std::unique_ptr<Worker>> retired_;
     std::vector<Replay> replays_;
     bool replaying_{};

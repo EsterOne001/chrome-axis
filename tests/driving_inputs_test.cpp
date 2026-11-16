@@ -240,7 +240,11 @@ struct TransitionDriver {
             if (!state->sameDevicePaddles)
                 sample.buttons.set(0, scenario == Transition::paddleOverlap && frame > 1);
             sample.buttons.set(1, scenario == Transition::oldOtherHold || scenario == Transition::freshOtherHold);
-            if (scenario == Transition::oldOtherHold)
+            // The other controller must not produce a fresh report until the
+            // wheel has already sampled the tap.
+            if (scenario == Transition::oldOtherHold ||
+                (scenario == Transition::freshOtherHold &&
+                 (state->progress[0].load() >> 32) != static_cast<unsigned int>(scenario)))
                 sample.sampledAt -= 160ms;
         }
         return sample;
@@ -307,7 +311,7 @@ int checkBufferedTransitions(bool sameDevicePaddles)
             collected.buttonPresses += pulses.test('J');
             collected.axisPresses += pulses.test('E');
             collected.povPresses += pulses.test('K');
-            paddleBatch.observe(shift, 100ms);
+            input.observePaddles(paddleBatch, shift, 100ms);
             if (latest) {
                 collected.heldCurrently = held.test(VK_SPACE);
                 collected.unrelatedStillHeld = held.test('B');
@@ -428,6 +432,144 @@ int checkBufferedTransitions(bool sameDevicePaddles)
     return expired.buttonPresses || expired.shifts || expired.heldDuringReplay || expired.armed ? 36 : 0;
 }
 
+enum class OpponentInterruption { none, noReport, disconnect };
+
+struct SplitPaddleDriver {
+    struct State {
+        std::string_view actuated;
+        OpponentInterruption interruption{};
+        std::atomic<bool> press{}, opponentSilent{}, opponentWasSilent{};
+        std::atomic<Clock::duration::rep> edgeAt{};
+        std::atomic<unsigned int> reportsAfterRelease{}, opponentReportsSinceEdge{};
+    };
+
+    static inline State* state{};
+
+    SplitPaddleDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*) {}
+    bool ready() const noexcept { return true; }
+
+    std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,
+                                                 DeviceReadStatus& status) {
+        const bool actuated = id == state->actuated;
+        if (!actuated && state->opponentSilent) {
+            state->opponentWasSilent = true;
+            status = state->interruption == OpponentInterruption::disconnect
+                ? DeviceReadStatus::unavailable : DeviceReadStatus::pending;
+            return std::nullopt;
+        }
+        status = DeviceReadStatus::available;
+        DeviceSample sample;
+        sample.sampledAt = Clock::now();
+        sample.buttonsPresent = wanted.buttons;
+        if (actuated) {
+            if (state->press) {
+                sample.buttons.set(0);
+                if (!state->edgeAt)
+                    state->edgeAt = sample.sampledAt.time_since_epoch().count();
+            } else if (state->edgeAt) {
+                ++state->reportsAfterRelease;
+            }
+        } else {
+            const auto edge = state->edgeAt.load();
+            if (edge && sample.sampledAt.time_since_epoch().count() > edge)
+                ++state->opponentReportsSinceEdge;
+        }
+        return sample;
+    }
+};
+
+int checkSplitPaddleSampling(bool pressDown, OpponentInterruption interruption)
+{
+    SplitPaddleDriver::State fake{.actuated = pressDown ? pedals : wheel, .interruption = interruption};
+    SplitPaddleDriver::state = &fake;
+    DrivingInputs<SplitPaddleDriver> input(5ms, 100ms);
+    const AccessoryProfile profile{
+        {.deviceId = wheel, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
+         .role = ShifterRole::Upshift, .nativeSequential = true},
+        {.deviceId = pedals, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
+         .role = ShifterRole::Downshift, .nativeSequential = true},
+    };
+    std::array devices{DrivingInputDevice{.id = wheel}, DrivingInputDevice{.id = pedals}};
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        devices[i].discrete = std::make_shared<AccessoryProfile>(AccessoryProfile{profile[i]});
+        devices[i].objects.buttons.set(0);
+    }
+    if (!input.configure(GetDesktopWindow(), devices))
+        return 48;
+
+    AccessoryReader reader(profile);
+    struct Result {
+        bool armed{};
+        Clock::time_point priorOpposite{};
+        std::vector<std::pair<int, Clock::time_point>> shifts;
+    };
+    const auto consume = [&] {
+        Result result;
+        input.beginPoll(Clock::now());
+        input.visitAccessoryDisruptions([&](const auto& id, bool reset) {
+            if (reset)
+                reader.resetDiscrete(id);
+        });
+        PaddleInputBatch batch;
+        input.replayAccessories([&](bool latest) {
+            AccessoryTransmissionSample sample;
+            reader.poll(input, {}, nullptr, nullptr, nullptr, &sample, nullptr, !latest);
+            if (sample.shiftDelta)
+                result.priorOpposite = sample.oppositePaddleSampledAt;
+            input.observePaddles(batch, sample, 100ms);
+            if (latest)
+                result.armed = sample.sequentialArmed;
+        });
+        batch.finish();
+        result.shifts.assign(batch.edges().begin(), batch.edges().end());
+        return result;
+    };
+    if (!waitUntil([&] { return consume().armed; }))
+        return 49;
+
+    // The consumer's previous report becomes stale while the worker either
+    // continues to read the stationary paddle or really loses its signal.
+    fake.opponentSilent = interruption != OpponentInterruption::none;
+    if (fake.opponentSilent && !waitUntil([&] { return fake.opponentWasSilent.load(); }))
+        return 50;
+    std::this_thread::sleep_for(115ms);
+    fake.press = true;
+    if (!waitUntil([&] { return fake.edgeAt.load() != 0; }))
+        return 51;
+    fake.press = false;
+    if (!waitUntil([&] { return fake.reportsAfterRelease.load() >= 2; }))
+        return 52;
+    fake.opponentSilent = false;
+    if (!waitUntil([&] { return fake.opponentReportsSinceEdge.load() >= 2; }))
+        return 53;
+
+    const auto firstEdge = Clock::time_point{Clock::duration{fake.edgeAt.load()}};
+    auto result = consume();
+    if (interruption == OpponentInterruption::disconnect) {
+        // A detected loss invalidates the batch. The next legitimate tap is
+        // accepted only after the reconnected pair rearms at rest.
+        if (result.armed || !result.shifts.empty() || !waitUntil([&] { return consume().armed; }))
+            return 57;
+        fake.edgeAt = 0;
+        fake.reportsAfterRelease = 0;
+        fake.press = true;
+        if (!waitUntil([&] { return fake.edgeAt.load() != 0; }))
+            return 58;
+        fake.press = false;
+        if (!waitUntil([&] { return fake.reportsAfterRelease.load() >= 2; }))
+            return 59;
+        result = consume();
+    } else if (!result.armed || result.priorOpposite == Clock::time_point{} ||
+               firstEdge - result.priorOpposite <= 100ms) {
+        return 54;
+    }
+    if (interruption == OpponentInterruption::noReport)
+        return result.shifts.empty() ? 0 : 55;
+    const auto edge = Clock::time_point{Clock::duration{fake.edgeAt.load()}};
+    const std::array expected{std::pair{pressDown ? -1 : 1, edge}};
+    return result.armed && std::ranges::equal(result.shifts, expected) && consume().shifts.empty() ? 0 : 56;
+}
+
 int checkPaddleBatchOrdering()
 {
     const auto first = Clock::now();
@@ -485,7 +627,12 @@ int main()
 {
     for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkCoalescedArming(),
                               checkBufferedTransitions(false), checkBufferedTransitions(true),
-                              checkPaddleBatchOrdering(), checkPaddleEvidenceAtPress()}) {
+                              checkPaddleBatchOrdering(), checkPaddleEvidenceAtPress(),
+                              checkSplitPaddleSampling(false, OpponentInterruption::none),
+                              checkSplitPaddleSampling(true, OpponentInterruption::none),
+                              checkSplitPaddleSampling(false, OpponentInterruption::noReport),
+                              checkSplitPaddleSampling(true, OpponentInterruption::noReport),
+                              checkSplitPaddleSampling(false, OpponentInterruption::disconnect)}) {
         if (result) {
             std::cerr << "Driving input check failed: " << result << '\n';
             return result;
