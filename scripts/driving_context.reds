@@ -704,9 +704,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   }
 
   private func BuildHudFrame(badge: ref<inkCanvas>) -> Void {
-    let panel = HDRColor(0.024, 0.039, 0.059, 0.52);
-    this.CreateHudRect(badge, 0.0, 2.0, 227.0, 56.0).SetTintColor(panel);
-    this.CreateHudRect(badge, 227.0, 2.0, 9.0, 48.0).SetTintColor(panel);
+    this.ApplyMinimapBackground(this.CreateHudRect(badge, 0.0, 2.0, 227.0, 56.0));
+    this.ApplyMinimapBackground(this.CreateHudRect(badge, 227.0, 2.0, 9.0, 48.0));
     this.hudInnerFrame = this.CreateHudDetail(badge, Vector2(5.0, 7.0), Vector2(217.0, 46.0), 0.44, true);
     this.hudLogoFrame = this.CreateHudDetail(badge, Vector2(15.0, 18.0), Vector2(22.0, 22.0), 0.38, false);
     ArrayClear(this.hudBorder);
@@ -718,6 +717,13 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 50.0, 1.0, 7.0));
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 12.0, 0.0, 16.0, 2.0));
     this.hudDivider = this.CreateHudRect(badge, 173.0, 12.0, 1.0, 36.0);
+  }
+
+  private func ApplyMinimapBackground(panel: ref<inkRectangle>) -> Void {
+    panel.SetTintColor(HDRColor(14.0 / 255.0, 14.0 / 255.0, 23.0 / 255.0, 1.0));
+    panel.SetOpacity(0.75);
+    panel.SetStyle(r"base\\gameplay\\gui\\common\\main_colors.inkstyle");
+    panel.BindProperty(n"opacity", n"MiniMapStyle.bgOpacity");
   }
 
   private func CreateHudDetail(badge: ref<inkCanvas>, position: Vector2, size: Vector2, opacity: Float, nineSlice: Bool) -> ref<inkImage> {
