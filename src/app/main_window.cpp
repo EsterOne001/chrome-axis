@@ -6,7 +6,6 @@
 #include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/feedback_dialog.hpp"
-#include "chrome_axis/keyboard_dialog.hpp"
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/profiles_dialog.hpp"
 #include "chrome_axis/simulation.hpp"
@@ -68,20 +67,40 @@ enum Command {
     toggleUsb, selectProfile, configureFeedback, automaticLanguage, frenchLanguage, englishLanguage,
     frenchFlag, englishFlag, chooseCalibrationScope, showDiagnostics, previousCalibration,
     backupProfiles, restoreProfiles, openModInfo, reassignDevice, configureBrake, leaveSimulation,
-    chooseAxisSettings, configureSteering, configureThrottle, configureTransmissionKey, configureTransmission,
+    openWheelSettings, openPedalSettings, openTransmissionSettings, configureSteering, configureThrottle,
+    configureTransmission, configureClutch, configureHandbrake, calibrateWheel, calibratePedals,
     deadzoneFirst = 200, meterFirst = 210, brakeResponseMeter = meterFirst + commands.size(), retryAxisFirst = 220
 };
 
 struct AxisSettingsOption {
     Command command;
-    Text label;
     chrome_axis::ResponseAxis axis;
 };
 
 constexpr std::array axisSettingsOptions{
-    AxisSettingsOption{configureSteering, Text::mainSteeringSettings, chrome_axis::ResponseAxis::steering},
-    AxisSettingsOption{configureThrottle, Text::mainThrottleSettings, chrome_axis::ResponseAxis::throttle},
-    AxisSettingsOption{configureBrake, Text::mainBrakeSettings, chrome_axis::ResponseAxis::brake},
+    AxisSettingsOption{configureSteering, chrome_axis::ResponseAxis::steering},
+    AxisSettingsOption{configureThrottle, chrome_axis::ResponseAxis::throttle},
+    AxisSettingsOption{configureBrake, chrome_axis::ResponseAxis::brake},
+};
+
+struct ControlCommand {
+    Command command;
+    Text label;
+};
+
+constexpr std::array wheelCommands{
+    ControlCommand{calibrateWheel, Text::mainCalibrateWheel},
+    ControlCommand{configureSteering, Text::mainSteeringSettings},
+    ControlCommand{configureFeedback, Text::mainForceFeedback}
+};
+constexpr std::array pedalCommands{
+    ControlCommand{calibratePedals, Text::mainCalibratePedals},
+    ControlCommand{configureThrottle, Text::mainThrottleSettings},
+    ControlCommand{configureBrake, Text::mainBrakeSettings}
+};
+constexpr std::array transmissionCommands{
+    ControlCommand{configureTransmission, Text::mainMenuTransmission},
+    ControlCommand{configureClutch, Text::mainClutchSettings}
 };
 
 using CalibrationScope = std::array<bool, commands.size()>;
@@ -422,12 +441,8 @@ private:
         AppendMenuW(deviceMenu_, MF_STRING, startCalibration, tr(Text::mainMenuCalibrate));
         AppendMenuW(deviceMenu_, MF_STRING, chooseCalibrationScope, tr(Text::mainMenuCalibrationScope));
         AppendMenuW(deviceMenu_, MF_STRING, reassignDevice, tr(Text::mainMenuReassignDevice));
-        AppendMenuW(deviceMenu_, MF_STRING, configureAccessories, tr(Text::mainMenuAccessories));
-        AppendMenuW(deviceMenu_, MF_STRING, configureTransmission, tr(Text::mainMenuTransmission));
-        for (const auto& option : axisSettingsOptions)
-            AppendMenuW(deviceMenu_, MF_STRING, option.command, tr(option.label));
-        AppendMenuW(deviceMenu_, MF_STRING, configureFeedback, tr(Text::mainMenuFeedback));
-        AppendMenuW(deviceMenu_, MF_STRING, configureTransmissionKey, transmissionKeyMenuLabel().c_str());
+        AppendMenuW(deviceMenu_, MF_SEPARATOR, 0, nullptr);
+        appendControlGroups(deviceMenu_);
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(deviceMenu_), tr(Text::mainMenuDevices));
         helpMenu_ = CreatePopupMenu();
         languageMenu_ = CreatePopupMenu();
@@ -455,7 +470,8 @@ private:
         devicesTitle_ = label(tr(Text::mainDevices));
         refresh_ = button(tr(Text::mainRefresh), refreshDevices);
         accessories_ = button(tr(Text::mainAccessories), configureAccessories);
-        transmission_ = button(tr(Text::mainTransmission), configureTransmission);
+        handbrake_ = button(tr(Text::mainHandbrakeSettings), configureHandbrake);
+        transmission_ = button(tr(Text::mainTransmission), openTransmissionSettings);
         for (std::size_t i = 0; i < deviceLabels.size(); ++i) {
             deviceLabels_[i] = label(tr(deviceLabels[i]));
             deviceCombos_[i] = combo(deviceComboFirst + static_cast<int>(i));
@@ -487,8 +503,8 @@ private:
         ShowWindow(reviewBrakeValue_, SW_HIDE);
 
         calibrationTitle_ = label(tr(Text::mainCalibration));
-        axisSettings_ = button(tr(Text::mainAxisSettings), chooseAxisSettings);
-        feedback_ = button(tr(Text::mainForceFeedback), configureFeedback);
+        wheelSettings_ = button(tr(Text::mainWheelSettings), openWheelSettings);
+        pedalSettings_ = button(tr(Text::mainPedalSettings), openPedalSettings);
         instruction_ = label(tr(Text::mainConnectToBegin));
         guideStep_ = label(L"");
         guideAction_ = label(L"");
@@ -574,8 +590,9 @@ private:
         for (const auto button : {frenchFlag_, englishFlag_})
             place(button, width - 24 - languageButtonSize, 26, languageButtonSize, languageButtonSize);
         const int comboWidth = (width - 112) / 3;
-        place(devicesTitle_, 42, 110, width - 466, 24);
-        place(transmission_, width - 414, 106, 122, 29);
+        place(devicesTitle_, 42, 110, width - 598, 24);
+        place(transmission_, width - 546, 106, 122, 29);
+        place(handbrake_, width - 414, 106, 122, 29);
         place(accessories_, width - 282, 106, 120, 29);
         place(refresh_, width - 152, 106, 110, 29);
         for (std::size_t i = 0; i < deviceCombos_.size(); ++i) {
@@ -620,8 +637,8 @@ private:
         }
         place(steeringDeadzoneHint_, column[2] + 68, 306, 65, 22);
 
-        place(axisSettings_, width - 343, 428, 137, 29);
-        place(feedback_, width - 196, 428, 154, 29);
+        place(wheelSettings_, width - 304, 428, 126, 29);
+        place(pedalSettings_, width - 168, 428, 126, 29);
         place(start_, 42, 491, 158, 29);
         place(calibrationScopeButton_, 210, 491, 180, 29);
         place(diagnostics_, width - 175, 491, 133, 29);
@@ -898,8 +915,12 @@ private:
     bool confirmCurrentPreset();
     void chooseStoredProfile();
     void reassignStoredDevice();
-    void openAxisSettingsMenu();
-    void updateAxisSettingsAvailability();
+    void appendControlCommands(HMENU menu, std::span<const ControlCommand> items) const;
+    void appendControlGroups(HMENU menu) const;
+    void openControlMenu(HWND anchor, std::span<const ControlCommand> items);
+    void updateControlAvailability();
+    bool canEditControl(Command command) const;
+    CalibrationScope availablePedals() const;
     void configureAxisResponse(std::size_t channel);
     void transferProfiles(bool restoring);
     void updateLanguageIndicator(Language preference);
@@ -910,9 +931,7 @@ private:
     void updateCalibrationMotion(bool foreground);
     void refreshUsbToggle();
     void changeUsbMode();
-    void chooseTransmissionShortcut();
     void refreshTransmissionKey();
-    std::wstring transmissionKeyMenuLabel() const;
     void setMode(bool simulation);
     void applyMode();
     void updateSimulationView();
@@ -997,7 +1016,7 @@ private:
     HBRUSH backgroundBrush_{}, panelBrush_{}, fieldBrush_{};
     HMENU profileMenu_{}, deviceMenu_{}, languageMenu_{}, testToolsMenu_{}, helpMenu_{};
     HWND devicesTitle_{}, axesTitle_{}, calibrationTitle_{};
-    HWND accessories_{}, diagnostics_{}, feedback_{}, axisSettings_{}, steeringDeadzoneHint_{};
+    HWND accessories_{}, handbrake_{}, diagnostics_{}, wheelSettings_{}, pedalSettings_{}, steeringDeadzoneHint_{};
     HWND refresh_{}, hardware_{}, transmission_{}, instruction_{}, start_{};
     HWND calibrationScopeButton_{}, axisChoice_{}, measure_{}, cancel_{}, previous_{};
     HWND guideStep_{}, guideAction_{}, guideDevice_{}, guideNotice_{};
@@ -1123,11 +1142,20 @@ void App::action(int command, int notification)
     case reassignDevice:
         reassignStoredDevice();
         break;
-    case configureTransmissionKey:
-        chooseTransmissionShortcut();
+    case openWheelSettings:
+        openControlMenu(wheelSettings_, wheelCommands);
         break;
-    case chooseAxisSettings:
-        openAxisSettingsMenu();
+    case openPedalSettings:
+        openControlMenu(pedalSettings_, pedalCommands);
+        break;
+    case openTransmissionSettings:
+        openControlMenu(transmission_, transmissionCommands);
+        break;
+    case calibrateWheel:
+        beginCalibration({true, false, false});
+        break;
+    case calibratePedals:
+        beginCalibration(availablePedals());
         break;
     case configureSteering:
     case configureThrottle:
@@ -1137,11 +1165,16 @@ void App::action(int command, int notification)
         break;
     }
     case configureAccessories:
+    case configureHandbrake:
+    case configureClutch:
     case configureTransmission:
-        if (!simulation_ && !calibrating_ && confirmCurrentPreset()) {
+        if (canEditControl(static_cast<Command>(command)) && confirmCurrentPreset()) {
+            using chrome_axis::AccessorySection;
+            const auto section = command == configureClutch ? AccessorySection::clutch
+                : command == configureHandbrake ? AccessorySection::handbrake : AccessorySection::keys;
             const bool changed = command == configureTransmission
                 ? chrome_axis::editProfileShifter(window_, *input_, directory_, preset_, devices_)
-                : chrome_axis::editAccessories(window_, *input_, directory_, preset_);
+                : chrome_axis::editAccessories(window_, *input_, directory_, preset_, section);
             refreshTransmissionKey();
             if (changed) {
                 readAccessories();
@@ -1474,7 +1507,7 @@ void App::rebuildPreview()
     }
     const bool canSave = canSaveProfile();
     EnableWindow(save_, canSave);
-    updateAxisSettingsAvailability();
+    updateControlAvailability();
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | (canSave ? MF_ENABLED : MF_GRAYED));
     setText(status_, !profileMessage_.empty() ? profileMessage_
         : !steeringZoneValid ? tr(Text::mainSteeringDeadzoneRange)
@@ -1573,34 +1606,81 @@ void App::updateLanguageIndicator(Language preference)
     InvalidateRect(englishFlag_, nullptr, FALSE);
 }
 
-void App::openAxisSettingsMenu()
+CalibrationScope App::availablePedals() const
 {
-    if (!IsWindowEnabled(axisSettings_))
+    auto scope = availableCalibrationScope();
+    scope[0] = false;
+    return scope;
+}
+
+bool App::canEditControl(Command command) const
+{
+    if (simulation_ || calibrating_)
+        return false;
+    switch (command) {
+    case calibrateWheel: return availableCalibrationScope()[0];
+    case calibratePedals: return std::ranges::any_of(availablePedals(), std::identity{});
+    case configureSteering: return canConfigureAxis(0);
+    case configureThrottle: return canConfigureAxis(1);
+    case configureBrake: return canConfigureAxis(2);
+    default: return true;
+    }
+}
+
+void App::appendControlCommands(HMENU menu, std::span<const ControlCommand> items) const
+{
+    for (const auto& [command, label] : items)
+        AppendMenuW(menu, MF_STRING | (canEditControl(command) ? MF_ENABLED : MF_GRAYED), command, tr(label));
+}
+
+void App::appendControlGroups(HMENU menu) const
+{
+    const auto addGroup = [&](Text label, std::span<const ControlCommand> items) {
+        if (const auto group = CreatePopupMenu()) {
+            appendControlCommands(group, items);
+            if (!AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(group), tr(label)))
+                DestroyMenu(group);
+        }
+    };
+    addGroup(Text::mainMenuWheelSettings, wheelCommands);
+    addGroup(Text::mainMenuPedalSettings, pedalCommands);
+    addGroup(Text::mainMenuTransmissionSettings, transmissionCommands);
+    const std::array accessoryEntries{
+        ControlCommand{configureHandbrake, Text::mainHandbrakeSettings},
+        ControlCommand{configureAccessories, Text::mainMenuAccessories}
+    };
+    appendControlCommands(menu, accessoryEntries);
+}
+
+void App::openControlMenu(HWND anchor, std::span<const ControlCommand> items)
+{
+    if (simulation_ || calibrating_ || !IsWindowEnabled(anchor))
         return;
     const auto menu = CreatePopupMenu();
     if (!menu)
         return;
-    for (std::size_t channel = 0; channel < axisSettingsOptions.size(); ++channel) {
-        const auto& option = axisSettingsOptions[channel];
-        AppendMenuW(menu, MF_STRING | (canConfigureAxis(channel) ? MF_ENABLED : MF_GRAYED), option.command, tr(option.label));
-    }
+    appendControlCommands(menu, items);
     RECT bounds{};
-    GetWindowRect(axisSettings_, &bounds);
+    GetWindowRect(anchor, &bounds);
     const auto selected = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, bounds.left, bounds.bottom, 0, window_, nullptr);
     DestroyMenu(menu);
     if (selected)
         action(selected, 0);
 }
 
-void App::updateAxisSettingsAvailability()
+void App::updateControlAvailability()
 {
-    bool any = false;
-    for (std::size_t channel = 0; channel < axisSettingsOptions.size(); ++channel) {
-        const bool available = canConfigureAxis(channel);
-        any |= available;
-        EnableMenuItem(deviceMenu_, axisSettingsOptions[channel].command, MF_BYCOMMAND | (available ? MF_ENABLED : MF_GRAYED));
-    }
-    EnableWindow(axisSettings_, any);
+    for (const auto control : {wheelSettings_, pedalSettings_, transmission_, handbrake_, accessories_})
+        EnableWindow(control, !simulation_ && !calibrating_);
+    const auto update = [&](std::span<const ControlCommand> items) {
+        for (const auto& [command, label] : items)
+            EnableMenuItem(deviceMenu_, command, MF_BYCOMMAND | (canEditControl(command) ? MF_ENABLED : MF_GRAYED));
+    };
+    update(wheelCommands);
+    update(pedalCommands);
+    update(transmissionCommands);
+    for (const auto command : {configureHandbrake, configureAccessories})
+        EnableMenuItem(deviceMenu_, command, MF_BYCOMMAND | (canEditControl(command) ? MF_ENABLED : MF_GRAYED));
 }
 
 void App::configureAxisResponse(std::size_t channel)
@@ -1883,20 +1963,12 @@ void App::refreshUsbToggle()
     nextUsbRefresh_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
 }
 
-std::wstring App::transmissionKeyMenuLabel() const
-{
-    return std::wstring(tr(Text::mainMenuTransmissionKey)) + L" (" + chrome_axis::accessoryKeyLabel(transmissionKey_) + L")…";
-}
-
 void App::refreshTransmissionKey()
 {
     const auto key = chrome_axis::loadTransmissionHotkey(directory_);
     if (key != transmissionKey_)
         simulator_.reset();
     transmissionKey_ = key;
-    ModifyMenuW(deviceMenu_, configureTransmissionKey, MF_BYCOMMAND | MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
-                configureTransmissionKey, transmissionKeyMenuLabel().c_str());
-
     const auto keyPair = [key](unsigned int first, unsigned int second, const wchar_t* separator) {
         if (key == first)
             return chrome_axis::accessoryKeyLabel(second);
@@ -1914,31 +1986,6 @@ void App::refreshTransmissionKey()
     constexpr std::array<unsigned int, 5> clutchKeys{VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD3, VK_NUMPAD5, VK_NUMPAD7};
     const bool clutchKeyOverlap = std::ranges::find(clutchKeys, key) != clutchKeys.end();
     setText(simClutch_, clutchKeyOverlap ? tr(Text::mainSimulationClutchKeysOverlap) : tr(Text::mainSimulationClutchKeys));
-}
-
-void App::chooseTransmissionShortcut()
-{
-    if (calibrating_ || !confirmPersistentDirectory())
-        return;
-    refreshTransmissionKey();
-    const auto choice = chrome_axis::chooseTransmissionKey(window_, transmissionKey_);
-    if (!choice)
-        return;
-
-    std::string error;
-    if (!chrome_axis::saveTransmissionHotkey(directory_, *choice, error)) {
-        MessageBoxW(window_, tr(Text::mainTransmissionKeySaveFailed), title, MB_OK | MB_ICONERROR);
-        return;
-    }
-    refreshTransmissionKey();
-    const auto message = tr(Text::mainTransmissionKeySaved) + chrome_axis::accessoryKeyLabel(transmissionKey_);
-    if (simulation_) {
-        setText(status_, message);
-        nextSimulationStatus_ = GetTickCount64() + 2000;
-    } else {
-        profileMessage_ = message;
-        rebuildPreview();
-    }
 }
 
 void App::changeUsbMode()
@@ -2004,9 +2051,7 @@ void App::updateCalibrationView()
     const bool axisDeviceAvailable = std::ranges::any_of(devices_, hasAxes);
     for (std::size_t i = 0; i < deviceCombos_.size(); ++i)
         EnableWindow(deviceCombos_[i], !calibrating_ && (axisDeviceAvailable || !deviceSelections_[i].empty()));
-    EnableWindow(accessories_, !calibrating_);
-    EnableWindow(feedback_, !calibrating_);
-    updateAxisSettingsAvailability();
+    updateControlAvailability();
     EnableWindow(diagnostics_, !calibrating_);
     EnableMenuItem(helpMenu_, showDiagnostics, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableWindow(reload_, !calibrating_);
@@ -2017,13 +2062,8 @@ void App::updateCalibrationView()
     EnableMenuItem(deviceMenu_, startCalibration, MF_BYCOMMAND | (canStart ? MF_ENABLED : MF_GRAYED));
     EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | (canChooseScope ? MF_ENABLED : MF_GRAYED));
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_ENABLED);
-    EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
-    EnableWindow(transmission_, !calibrating_);
-    EnableMenuItem(deviceMenu_, configureTransmission, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(deviceMenu_, reassignDevice, MF_BYCOMMAND |
         (calibrating_ || activeDirectory().empty() || temporaryDirectory_ ? MF_GRAYED : MF_ENABLED));
-    EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
-    EnableMenuItem(deviceMenu_, configureTransmissionKey, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, reloadProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, selectProfile, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
     EnableMenuItem(profileMenu_, backupProfiles, MF_BYCOMMAND | (calibrating_ ? MF_GRAYED : MF_ENABLED));
@@ -2133,7 +2173,8 @@ void App::updateGuideVisibility()
     guideVisible_ = calibrating_;
     reviewVisible_ = reviewing;
     for (const auto control : {devicesTitle_, hardware_, usbToggle_, refresh_, accessories_, transmission_, axesTitle_,
-                              start_, calibrationScopeButton_, diagnostics_, feedback_, axisSettings_, steeringDeadzoneHint_})
+                              start_, calibrationScopeButton_, diagnostics_, wheelSettings_, pedalSettings_,
+                              handbrake_, steeringDeadzoneHint_})
         show(control, !calibrating_);
     for (const auto control : headings_)
         show(control, !calibrating_);
@@ -2182,7 +2223,7 @@ void App::applyMode()
         constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW;
         SetWindowPos(control, nullptr, 0, 0, 0, 0, flags | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     };
-    for (const auto control : {hardwareTab_, usbToggle_, refresh_, accessories_, transmission_, diagnostics_, feedback_, axisSettings_,
+    for (const auto control : {hardwareTab_, usbToggle_, refresh_, accessories_, handbrake_, transmission_, diagnostics_, wheelSettings_, pedalSettings_,
                               steeringDeadzoneHint_, hardware_, headings_[2],
                               instruction_, start_, calibrationScopeButton_, profileName_, folder_, select_, reload_, save_})
         setVisible(control, !simulation_);
@@ -2213,11 +2254,8 @@ void App::updateSimulationView()
     EnableMenuItem(deviceMenu_, startCalibration, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, refreshDevices, MF_BYCOMMAND | MF_GRAYED);
-    EnableMenuItem(deviceMenu_, configureAccessories, MF_BYCOMMAND | MF_GRAYED);
-    EnableMenuItem(deviceMenu_, configureTransmission, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(deviceMenu_, reassignDevice, MF_BYCOMMAND | MF_GRAYED);
-    EnableMenuItem(deviceMenu_, configureFeedback, MF_BYCOMMAND | MF_GRAYED);
-    updateAxisSettingsAvailability();
+    updateControlAvailability();
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, reloadProfile, MF_BYCOMMAND | MF_GRAYED);
     EnableMenuItem(profileMenu_, selectProfile, MF_BYCOMMAND | MF_GRAYED);
@@ -2721,16 +2759,9 @@ void App::contextMenu(int x, int y)
         refreshUsbToggle();
         AppendMenuW(menu, MF_STRING | (canToggleUsb() ? MF_ENABLED : MF_GRAYED), toggleUsb, usbActionLabel());
         AppendMenuW(menu, MF_STRING, refreshDevices, tr(Text::mainRefreshDevices));
-        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
-                    configureAccessories, tr(Text::mainAccessories));
-        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
-                    configureTransmission, tr(Text::mainMenuTransmission));
-        AppendMenuW(menu, MF_STRING | (calibrating_ ? MF_GRAYED : MF_ENABLED),
-                    configureFeedback, tr(Text::mainForceFeedback));
-        for (std::size_t channel = 0; channel < axisSettingsOptions.size(); ++channel) {
-            const auto& option = axisSettingsOptions[channel];
-            AppendMenuW(menu, MF_STRING | (canConfigureAxis(channel) ? MF_ENABLED : MF_GRAYED), option.command, tr(option.label));
-        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        appendControlGroups(menu);
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING | (GetMenuState(deviceMenu_, startCalibration, MF_BYCOMMAND) & MF_GRAYED),
                     startCalibration, tr(Text::mainCalibrateAxes));
         AppendMenuW(menu, MF_STRING | (GetMenuState(deviceMenu_, chooseCalibrationScope, MF_BYCOMMAND) & MF_GRAYED),

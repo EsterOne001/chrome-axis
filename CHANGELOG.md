@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.44
+
+- **Périphériques.** Les réglages sont regroupés dans Volant, Pédales, Transmission, Frein à main et Accessoires.
+- **Transmission.** Les réglages de boîte et de palettes et le raccourci AUTO / MANUEL sont accessibles depuis le même assistant. L’embrayage dispose de son propre écran sous Transmission. Les affectations et les calibrations existantes sont conservées.
+- **Édition des commandes.** Les affectations de boîte ou de palettes se modifient et se retirent depuis Transmission. Accessoires conserve les touches génériques. Le frein à main progressif s’ouvre directement depuis Matériel USB.
+
+[ZIP Vortex](out/Chromaxis-0.4.44.zip)
+
 ## Chrome Axis 0.4.43
 
 - **Transmission.** Accès direct depuis Matériel USB, choix entre levier en H et palettes natives, suivi de la demande jusqu’à l’observation du rapport engagé. Les raccourcis clavier existants restent utilisables.

@@ -11,7 +11,6 @@
 #define IDC_ACCESSORY_ADD 2108
 #define IDC_ACCESSORY_LIST 2109
 #define IDC_ACCESSORY_REMOVE 2110
-#define IDC_ACCESSORY_SHIFTER 2111
 #define IDC_ACCESSORY_TYPE_LABEL 2112
 #define IDC_ACCESSORY_INPUT_LABEL 2113
 #define IDC_ACCESSORY_EDIT 2114
@@ -32,14 +31,11 @@
 #define IDC_HANDBRAKE_CEILING 2131
 #define IDC_HANDBRAKE_CEILING_LABEL 2132
 #define IDC_HANDBRAKE_STATUS 2133
-#define IDC_ACCESSORY_TAB_KEYS 2134
-#define IDC_ACCESSORY_TAB_HANDBRAKE 2135
 #define IDC_HANDBRAKE_USE_SPACE 2136
 #define IDC_HANDBRAKE_AXIS 2137
 #define IDC_HANDBRAKE_APPLY_AXIS 2138
 #define IDC_HANDBRAKE_REMOVE 2139
 #define IDC_HANDBRAKE_HEADING 2140
-#define IDC_ACCESSORY_TAB_CLUTCH 2141
 #define IDC_CLUTCH_MODE 2142
 #define IDC_CLUTCH_MODE_LABEL 2143
 #define IDC_CLUTCH_STATUS 2144
@@ -63,6 +59,9 @@
 #define IDC_SHIFTER_ACTIVATION 2216
 #define IDC_SHIFTER_SHORTCUT 2217
 #define IDC_SHIFTER_SHORTCUT_HINT 2218
+#define IDC_SHIFTER_REMOVE 2219
+#define IDC_SHIFTER_THRESHOLDS 2220
+#define IDC_SHIFTER_PREVIEW_STATUS 2221
 #define IDC_MODAL_FORM 2301
 #define IDC_MODAL_RESULTS 2302
 #define IDC_MODAL_LIST_HEADING 2303
@@ -81,12 +80,15 @@ namespace chrome_axis {
 
 struct ProfilePreset;
 
-bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& root, const ProfilePreset& preset);
+enum class AccessorySection { keys, handbrake, clutch };
+
+bool editAccessories(HWND owner, DirectInput& input, const std::filesystem::path& root,
+                     const ProfilePreset& preset, AccessorySection section = AccessorySection::keys);
 bool editProfileShifter(HWND owner, DirectInput& input, const std::filesystem::path& root,
                         const ProfilePreset& preset, std::span<const DeviceInfo> devices);
 bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings,
-                 std::span<const DeviceInfo> devices, std::string_view preferredDevice,
-                 const std::filesystem::path& profileRoot, std::function<bool(HWND, const AccessoryProfile&)> save = {});
+                 std::span<const DeviceInfo> devices, const std::filesystem::path& profileRoot,
+                 std::function<bool(HWND, const AccessoryProfile&)> save);
 inline bool isNativeTransmissionBinding(const AccessoryBinding& binding) noexcept
 {
     return binding.nativeShifter || binding.nativeSequential;
@@ -98,6 +100,7 @@ std::wstring accessoryBindingInputLabel(const AccessoryBinding& binding);
 std::wstring accessoryBindingOutputLabel(const AccessoryBinding& binding, bool nativeVerified);
 const wchar_t* accessoryActivationLabel(AccessoryActivation activation);
 void populateAccessoryActivation(HWND window, int control);
+std::optional<AccessoryThresholds> editAccessoryThresholds(HWND owner, const AccessoryThresholds& settings);
 enum class BindingKeyEdit { unchanged, changed, occupied, handbrakeInputConflict };
 BindingKeyEdit chooseBindingKey(HWND owner, AccessoryProfile& bindings, std::size_t row);
 

@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.43** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.44** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -49,6 +49,16 @@ The app displays **Simulation requested** until the plugin confirms simulation w
 
 ## Calibration and profiles
 
+Open these settings from **USB Hardware** or the **Devices** menu.
+
+| Control | Settings |
+| --- | --- |
+| **Wheel…** | Wheel calibration, steering response and force feedback. |
+| **Pedals…** | Throttle and brake calibration, response curves and stabilization. |
+| **Transmission…** | Shifter and paddles, AUTO / MANUAL key and clutch. |
+| **Handbrake…** | Progressive lever calibration, preview and ceiling. |
+| **Accessories…** | Key bindings for other buttons, axes and D-pad directions. |
+
 1. In **USB Hardware**, click **Refresh**. Select devices for **Wheel**, **Throttle** and **Brake**. For pedals attached to the wheelbase, select **Same as wheel** for the throttle and **Same as throttle** for the brake. Select **Game controls** to keep the game’s usual controls for an axis.
 2. Click **Calibrate axes**. At each step, the animation and instructions show the position to use on the displayed device. Once in position, click **Capture position** and hold the control still until the capture finishes. If several axes move, select the one that matches the requested control. Use **Previous** to retake a position while keeping earlier captures.
 3. On the **Review** screen, move each control. Each row shows whether to centre the wheel, release a pedal, or reconnect a device. The travel gauge moves as soon as a reading is available. Steering should range from −100% to +100% and each pedal from 0% to 100%, returning to zero at rest. Use the button for the control you want to repeat, such as **Redo brake**, to keep the other measurements. Click **Finish** to return to the main screen, where you can adjust deadzones if needed.
@@ -56,7 +66,7 @@ The app displays **Simulation requested** until the plugin confirms simulation w
 
 If your driver puts both pedals on one axis, Chrome Axis accepts a shared rest position with travel in opposite directions. Use separate axes in the driver settings to measure both pedals at once.
 
-To take a measurement again, open **Calibrate separately…**, then choose an axis or device. Choosing a device recalibrates all driving axes assigned to it. If a device disappears during capture, reconnect the same device and retry that position. Completed positions are kept. Other measurements and accessory bindings are kept. Save the profile to apply the result.
+To recalibrate steering, open **Wheel… → Calibrate wheel…**. To recalibrate the configured throttle and brake axes, open **Pedals… → Calibrate pedals…**. To repeat a single axis or all the axes on a device, open **Calibrate separately…**. Choosing a device recalibrates all driving axes assigned to it. If a device disappears during capture, reconnect the same device and retry that position. Completed positions are kept. Other measurements and accessory bindings are kept. Save the profile to apply the result.
 
 **Select profile…** lets you switch to **Default profile** or create a named copy from the current saved settings. Each profile stores its own calibration, accessory bindings and force feedback settings. **Save profile** and **Reload** act on the active profile. The plugin picks up the same selection on its next settings check. USB activation is shared across profiles.
 
@@ -70,7 +80,7 @@ If a profile device appears disconnected after a transfer, connect its replaceme
 
 The **Steering** field in the **Deadzone (%)** column accepts 0–25%. Enter **0** to turn off the steering deadzone. **None** appears next to the field. When you return to the game, the wheel rearms after three consecutive readings of **1.5% or less** after the deadzone, in either direction. Once armed, small movements reach the game with a 0% deadzone. Pedals keep the 0.5–25% range. Recalibrating the same axis on the same device keeps its deadzone, including 0% for steering.
 
-After calibrating the brake, open **Brake settings…**. Progressivity of **0** gives a linear response. A positive value softens the start of the travel and a negative value makes it more responsive. Set **Travel for full brake** to **50–100%** of calibrated travel. The gauges compare travel before the deadzone with adjusted output. Press the pedal or enter a simulated travel of 0–100%. Click **Apply**, then **Save profile**.
+After calibrating the brake, open **Pedals… → Brake settings…**. Progressivity of **0** gives a linear response. A positive value softens the start of the travel and a negative value makes it more responsive. Set **Travel for full brake** to **50–100%** of calibrated travel. The gauges compare travel before the deadzone with adjusted output. Press the pedal or enter a simulated travel of 0–100%. Click **Apply**, then **Save profile**.
 
 In **Brake settings…**, **Travel pedal · progressive** softens initial brake response and **Load cell · linear** gives a proportional response after the deadzone. The preset changes progressivity and preserves effective travel and the deadzone. Click **Apply**, then **Save profile**.
 
@@ -78,7 +88,7 @@ The shared graph in **Brake settings…** and **Throttle settings…** compares 
 
 ### Steering and throttle response
 
-After calibration, open the control settings in **Devices**. Positive steering sensitivity makes small movements around the centre more responsive. Negative values soften them. Reduce **Effective travel** to reach full steering earlier in both directions.
+After calibration, open **Wheel… → Steering settings…** or **Pedals… → Throttle settings…**. Positive steering sensitivity makes small movements around the centre more responsive. Negative values soften them. Reduce **Effective travel** to reach full steering earlier in both directions.
 
 For the throttle, leave progressivity at **0** for a linear response or use a positive value for finer control at the start of pedal travel. The full-output point is also adjustable. For both controls, compare the travel and output gauges using the hardware or a simulated value. Click **Apply**, then **Save profile**.
 
@@ -86,7 +96,7 @@ For the throttle, leave progressivity at **0** for a linear response or use a po
 
 ### Force feedback
 
-Save the steering calibration and open **Force feedback…** from **USB Hardware**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. **Gain** adjusts every effect from 5% to 200%. **Centering** adjusts resistance toward the centre and in corners from 50% to 250%, with 100% for existing profiles. Both sliders move in 5-point steps. Chrome Axis limits the command to DirectInput’s nominal range. You can disable impacts separately or invert the direction if the wheel pushes away from center.
+Save the steering calibration and open **Wheel… → Force feedback…**. The panel checks whether the DirectInput driver exposes a force feedback actuator for the calibrated axis. Enable it for the current profile and start with low strength. **Gain** adjusts every effect from 5% to 200%. **Centering** adjusts resistance toward the centre and in corners from 50% to 250%, with 100% for existing profiles. Both sliders move in 5-point steps. Chrome Axis limits the command to DirectInput’s nominal range. You can disable impacts separately or invert the direction if the wheel pushes away from center.
 
 Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. Centering eases in the air. Landings and collisions add distinct jolts with a shared **Impact strength** setting from 0% to 200% in 5-point steps. A setting of 100% preserves the previous strength. Use **Impacts** to switch those jolts on or off. Chrome Axis stops its effects when you stop driving, the game loses focus or the wheel stops responding. Steering and pedals still work on supported devices without force feedback.
 
@@ -94,20 +104,20 @@ Chrome Axis uses vehicle motion, heading, skidding and loss of ground contact. C
 
 ## Shifters, paddles and accessories
 
-Open **Transmission…** under **USB hardware** to choose the H-pattern or native paddles for the active profile. When both devices are connected, Chrome Axis uses the native source saved in that profile. Existing keyboard bindings remain available. Release both paddles to arm them. Holding a paddle requests a single shift. The same window lets you change the installation-wide AUTO / MANUAL key. The hardware status describes the connected device and Diagnostics shows the selected, requested and engaged gear.
+Open **Transmission… → Shifter and paddles…** to choose the H-pattern or native paddles for the active profile. When both devices are connected, Chrome Axis uses the native source saved in that profile. Existing keyboard bindings remain available. Release both paddles to arm them. Holding a paddle requests a single shift. The same window lets you change the installation-wide AUTO / MANUAL key. The hardware status describes the connected device and Diagnostics shows the selected, requested and engaged gear.
 
-In **Accessories… → Clutch**, capture the rest position and end of travel. The profile stores calibration and offers optional shift assistance that requires about 65% clutch travel to change gear. Neutral remains available. The experimental setting measures throttle attenuation in a forward gear in manual mode. Native progressive clutch behavior and the bite point still require in-game confirmation. With keyboard simulation active and **Num Lock** on, **Numpad 0/1/3/5/7** selects 0/25/50/75/100% for this test.
+In **Transmission… → Clutch…**, capture the rest position and end of travel, then save. The profile stores calibration and offers optional shift assistance that requires about 65% clutch travel to change gear. Neutral remains available. The experimental setting measures throttle attenuation in a forward gear in manual mode. Native progressive clutch behavior and the bite point still require in-game confirmation. With keyboard simulation active and **Num Lock** on, **Numpad 0/1/3/5/7** selects 0/25/50/75/100% for this test.
 
-In **Accessories…** and **Shifter / paddles…**, click the key button to open the visual keyboard and choose a key. Number row and numpad keys are separate.
+In **Accessories…** and **Shifter and paddles…**, click the key button to open the visual keyboard and choose a key. Number row and numpad keys are separate.
 
 Select a binding in **Accessories…** to see its live state. For an axis, the gauge shows travel and the press and release thresholds. The preview shows the physical input state and keyboard output mode. It works with Cyberpunk closed.
 
-To change the key for an already captured input, select the binding and click **Change key…**. In **Shifter / paddles…**, select the device first, then click **Apply** after making changes. Finish by clicking **Save** in **Accessories…**.
+To change the key for an already captured input, select the binding and click **Change key…**. In **Shifter and paddles…**, select the device first. Use **Remove** to delete the selected key binding or the entire native transmission configuration. Click **Save** in the window where you made the change.
 
-1. Open **USB Hardware → Accessories…**, select the DirectInput device and click **Shifter / paddles…**. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
+1. Open **USB Hardware → Transmission… → Shifter and paddles…** and select the DirectInput device. For paddles or a shifter connected through the wheelbase, select the wheel. For a standalone USB device, select its own entry.
 2. In **Sequential / paddles**, capture **Shift up** and **Shift down**. Select **Button or D-pad** for digital inputs. For an analog axis, capture neutral and full travel in each direction. Bind the same keys in your transmission mod.
 3. To control Cyberpunk’s transmission directly, choose **Native H · 6 + R**, **Native H · 7 + R**, or **Native H · 8 + R** to match your shifter. Start in neutral, capture all usable positions, and return to neutral between them. Confirm **Missing** only for a position the lever physically lacks. Recalibrate native patterns created before 0.4.40 to confirm their layout. The wizard records the physical position without assigning a key. Applying a new pattern replaces the profile’s native pattern and any key-based gear bindings for that lever. Paddle and other accessory settings are kept.
-4. Click **Apply**, then **Save** in **Accessories…**, and **Enable USB in game**. The pattern is saved in the active profile’s `accessories.ini` and works with the app closed. Take the driver’s seat with the shifter in neutral to arm it. The HUD displays **N**, **R**, or the engaged gear alongside **AUTO** or **MANUAL**. Press **F8** to toggle the mode by default, including when stopped. Choose another key in **Devices → AUTO / MANUAL key…**. It applies to all profiles for that installation and takes effect without restarting the game.
+4. Click **Save** in **Shifter and paddles…**, then **Enable USB in game** in the main header. The pattern is saved in the active profile’s `accessories.ini` and works with the app closed. Take the driver’s seat with the shifter in neutral to arm it. The HUD displays **N**, **R**, or the engaged gear alongside **AUTO** or **MANUAL**. Press **F8** to toggle the mode by default, including when stopped. Use **AUTO / MANUAL key…** in **Shifter and paddles…** to choose another key. It applies to all profiles for that installation and takes effect without restarting the game.
 
 Native mode uses the gears available on the vehicle. The supported Cyberpunk build exposes up to seven forward gears and reverse. Bring the vehicle to a stop before selecting reverse or returning to a forward gear. When R is engaged in MANUAL, the throttle pedal commands reverse and the brake pedal keeps its braking role. This mapping remains stable while R is still engaged when switching to AUTO. If a direction change is refused, stop the car and select the gear again. After unplugging or switching windows, return the lever to neutral to rearm it. Disable other mods that directly control the transmission when testing native mode.
 
@@ -117,11 +127,11 @@ To test without hardware, open **Help → Test tools → Keyboard simulation**, 
 
 **Manual Transmission V10 4.3** offers rebindable sequential shift commands. Chrome Axis suggests **Numpad + / Numpad −** to avoid the **↑ / ↓** keys used by Cyberpunk for throttle and brake. Set the same keys in V10. To use a clutch pedal, capture it as an accessory axis, assign a key without modifiers, and set the same key in V10. Testing the two mods together is still pending. [V10 controls](https://www.nexusmods.com/cyberpunk2077/mods/28342) · [V10 discussion about sequential and H-pattern shifting](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts)
 
-You can also bind an individual button, D-pad direction or axis in **Accessories…**. **Space** is the default handbrake key. In **Hold** mode, Chrome Axis keeps the assigned key down while the input is active. By default, an axis presses the key at **55%** of its measured travel and releases it below **35%**. For a handbrake or clutch captured as an axis, select the binding, open **Axis thresholds…** and keep the release threshold below the press threshold. Click **Apply**, then **Save**. These bindings send a keyboard key.
+You can also bind an individual button, D-pad direction or axis in **Accessories…**. **Space** is the default handbrake key. In **Hold** mode, Chrome Axis keeps the assigned key down while the input is active. By default, an axis presses the key at **55%** of its measured travel and releases it below **35%**. For an analog key binding, select it in **Accessories…** or **Shifter and paddles…** according to its role. Open **Axis thresholds…** and keep the release threshold below the press threshold. Click **Apply**, then **Save**. These bindings send a keyboard key.
 
-For a progressive USB handbrake, open **Accessories… → Handbrake**, select the device and capture its axis at rest and fully pulled. Confirm with **Use this axis**, set the **Ceiling (%)** from 1 to 100%, then click **Save**. If an axis is already bound to **Space**, **Reuse Space axis** keeps its calibration. The **Keys** tab contains the keyboard bindings and the shifter and paddle setup. By default, full lever travel sends **15%** to the game. The preview shows the lever travel and calculated output. In game, enable USB, take the driver’s seat and release the lever to arm the axis. The native handbrake key remains available. Each profile supports one progressive handbrake axis.
+For a progressive USB handbrake, open **Handbrake…** in **USB Hardware**, select the device and capture its axis at rest and fully pulled. Confirm with **Use this axis**, set the **Ceiling (%)** from 1 to 100%, then click **Save**. If an axis is already bound to **Space**, **Reuse Space axis** keeps its calibration. By default, full lever travel sends **15%** to the game. The preview shows the lever travel and calculated output. In game, enable USB, take the driver’s seat and release the lever to arm the axis. The native handbrake key remains available. Each profile supports one progressive handbrake axis.
 
-Select a binding in **Accessories…** or **Shifter / paddles…** and choose **Hold** or **Single pulse** in **Output**. Hold keeps the assigned key down while the input is active. A pulse lasts about 50 ms and triggers on a new press, which suits paddles and buttons. Release the input to trigger another pulse. Existing bindings use Hold. Save the changes in **Accessories…**.
+Select a key binding in **Accessories…** or **Shifter and paddles…** and choose **Hold** or **Single pulse** in **Output**. Hold keeps the assigned key down while the input is active. A pulse lasts about 50 ms and triggers on a new press, which suits paddles and buttons. Release the input to trigger another pulse. Existing bindings use Hold. Save the changes in that window.
 
 ### PC connections
 

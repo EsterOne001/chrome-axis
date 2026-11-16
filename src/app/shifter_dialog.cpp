@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <utility>
 
 namespace chrome_axis {
@@ -21,6 +22,8 @@ constexpr UINT captureInterval = 20;
 constexpr ULONGLONG captureTimeout = 30000;
 constexpr UINT_PTR inventoryTimer = 2;
 constexpr UINT inventoryDebounceMs = 300;
+constexpr UINT_PTR previewTimer = 3;
+constexpr UINT previewInterval = 50;
 
 bool isNumpadDigit(unsigned int key)
 {
@@ -57,9 +60,8 @@ enum class Stage { Setup, Neutral, Position, Paused, AnalogReady, AnalogMeasure,
 class ShifterDialog {
 public:
     ShifterDialog(DirectInput& input, AccessoryProfile& bindings, std::span<const DeviceInfo> devices,
-                  std::string_view preferredDevice, const std::filesystem::path& profileRoot,
-                  std::function<bool(HWND, const AccessoryProfile&)> save)
-        : input_(input), bindings_(bindings), preferredDevice_(preferredDevice), profileRoot_(profileRoot), save_(std::move(save)),
+                  const std::filesystem::path& profileRoot, std::function<bool(HWND, const AccessoryProfile&)> save)
+        : input_(input), bindings_(bindings), profileRoot_(profileRoot), save_(std::move(save)),
           devices_(devices.begin(), devices.end()), edited_(bindings) {}
 
     void initialise(HWND window);
@@ -75,6 +77,10 @@ public:
     void chooseKey();
     void chooseShortcut();
     void editSavedKey();
+    void editSavedThresholds();
+    void removeSaved();
+    void previewFocusChanged(bool active);
+    void pollPreview();
     void changeActivation();
     void apply();
     void cancel();
@@ -91,7 +97,7 @@ private:
     void runTimer();
     void interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage);
     bool hasCaptureChanges() const { return !draft_.empty() || pending_.has_value() || absentNativePositions_ != 0; }
-    bool confirmDiscard(Text message) const;
+    bool confirm(Text message) const;
     ShifterRole role() const;
     unsigned int suggestedKey() const;
     void setKey(unsigned int key);
@@ -100,6 +106,9 @@ private:
     void fillDevices(std::string_view preferredDevice);
     Text setupStatus() const;
     const DeviceInfo* selectedDevice(bool attachedOnly = false) const;
+    std::optional<std::size_t> selectedBinding() const;
+    void selectPreview(const AccessoryBinding* binding);
+    void showPreview(std::wstring text);
     const ModeOption& selectedMode() const;
     bool replacesSetup(const AccessoryBinding& binding) const;
     std::size_t initialMode() const;
@@ -107,7 +116,6 @@ private:
 
     DirectInput& input_;
     AccessoryProfile& bindings_;
-    std::string preferredDevice_;
     const std::filesystem::path& profileRoot_;
     std::function<bool(HWND, const AccessoryProfile&)> save_;
     HWND window_{};
@@ -115,6 +123,11 @@ private:
     std::size_t attachedCount_{};
     AccessoryProfile edited_;
     std::vector<std::size_t> savedRows_;
+    std::optional<AccessoryBinding> previewBinding_;
+    std::optional<AccessoryReader> preview_;
+    std::size_t previewIndex_{};
+    std::wstring previewStatus_;
+    bool previewRunning_{};
     AccessoryProfile draft_;
     std::optional<AccessoryBinding> pending_;
     std::optional<ShifterCapture> digital_;
@@ -138,13 +151,14 @@ void ShifterDialog::initialise(HWND window)
     window_ = window;
     showShortcut(loadTransmissionHotkey(profileRoot_));
     SetDlgItemTextW(window_, IDC_SHIFTER_SHORTCUT_HINT, tr(Text::DlgShifterShortcutHint));
-    SetDlgItemTextW(window_, IDOK, tr(save_ ? Text::DlgSave : Text::DlgShifterApply));
-    if (preferredDevice_.empty()) {
-        const auto saved = std::ranges::find_if(edited_, isNativeTransmissionBinding);
-        if (saved != edited_.end())
-            preferredDevice_ = saved->deviceId;
+    SetDlgItemTextW(window_, IDOK, tr(Text::DlgSave));
+    auto saved = std::ranges::find_if(edited_, isNativeTransmissionBinding);
+    if (saved == edited_.end()) {
+        saved = std::ranges::find_if(edited_, [](const AccessoryBinding& binding) {
+            return binding.role != ShifterRole::None;
+        });
     }
-    fillDevices(preferredDevice_);
+    fillDevices(saved == edited_.end() ? std::string_view{} : saved->deviceId);
     for (std::size_t i = 0; i < modes.size(); ++i) {
         const auto row = send(IDC_SHIFTER_MODE, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(modes[i].label)));
         if (row >= 0 && send(IDC_SHIFTER_MODE, CB_SETITEMDATA, static_cast<WPARAM>(row),
@@ -164,7 +178,8 @@ void ShifterDialog::fillDevices(std::string_view preferredDevice)
     send(IDC_SHIFTER_DEVICE, CB_RESETCONTENT);
     attachedCount_ = devices_.size();
     for (const auto& binding : edited_) {
-        if (std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id) == devices_.end()) {
+        if (binding.role != ShifterRole::None &&
+            std::ranges::find(devices_, binding.deviceId, &DeviceInfo::id) == devices_.end()) {
             DeviceInfo offline;
             offline.id = binding.deviceId;
             devices_.push_back(std::move(offline));
@@ -209,7 +224,7 @@ bool ShifterDialog::refreshDevices()
     if (!inventoryDirty_ || stage_ != Stage::Setup || !IsWindowEnabled(window_))
         return false;
     const auto* selected = selectedDevice();
-    const auto preferred = selected ? selected->id : preferredDevice_;
+    const auto preferred = selected ? selected->id : std::string{};
     inventoryDirty_ = false;
     devices_ = input_.devices();
     fillDevices(preferred);
@@ -248,10 +263,15 @@ void ShifterDialog::updateControls()
     SetDlgItemTextW(window_, IDC_SHIFTER_SKIP, tr(nativeMode ? Text::DlgShifterNativeMissing : Text::DlgShifterSkip));
     ShowWindow(GetDlgItem(window_, IDC_SHIFTER_SKIP), setup ? SW_HIDE : SW_SHOW);
     ShowWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), setup ? SW_SHOW : SW_HIDE);
-    const auto row = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
-    const bool selected = setup && row >= 0 && static_cast<std::size_t>(row) < savedRows_.size();
-    const auto* saved = selected ? &edited_[savedRows_[static_cast<std::size_t>(row)]] : nullptr;
-    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), saved && !isNativeTransmissionBinding(*saved));
+    const auto selected = selectedBinding();
+    const auto* saved = selected ? &edited_[*selected] : nullptr;
+    const bool editable = saved && !isNativeTransmissionBinding(*saved);
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_EDIT), editable);
+    EnableWindow(GetDlgItem(window_, IDC_SHIFTER_REMOVE), saved != nullptr);
+    ShowWindow(GetDlgItem(window_, IDC_SHIFTER_REMOVE), setup ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(window_, IDC_SHIFTER_THRESHOLDS),
+               editable && saved->kind == AccessoryKind::Axis ? SW_SHOW : SW_HIDE);
+    selectPreview(saved);
     const auto* activationBinding = saved ? saved : stage_ == Stage::Captured && pending_ ? &*pending_ : nullptr;
     const bool editableActivation = activationBinding && !isNativeTransmissionBinding(*activationBinding);
     const bool showActivation = activationBinding ? editableActivation : !nativeMode;
@@ -325,6 +345,14 @@ const DeviceInfo* ShifterDialog::selectedDevice(bool attachedOnly) const
     return index < (attachedOnly ? attachedCount_ : devices_.size()) ? &devices_[index] : nullptr;
 }
 
+std::optional<std::size_t> ShifterDialog::selectedBinding() const
+{
+    const auto row = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
+    if (stage_ == Stage::Setup && row >= 0 && static_cast<std::size_t>(row) < savedRows_.size())
+        return savedRows_[static_cast<std::size_t>(row)];
+    return std::nullopt;
+}
+
 void ShifterDialog::showSavedBindings(LRESULT selection)
 {
     const auto top = send(IDC_SHIFTER_LIST, LB_GETTOPINDEX);
@@ -336,17 +364,128 @@ void ShifterDialog::showSavedBindings(LRESULT selection)
     const bool nativeVerified = nativeShifterVerified(edited_);
     for (std::size_t i = 0; i < edited_.size(); ++i) {
         const auto& binding = edited_[i];
-        if (binding.deviceId != device->id || binding.handbrakeCeilingPercent || binding.clutchMode)
+        if (binding.deviceId != device->id || binding.role == ShifterRole::None)
             continue;
         const auto label = bindingSummary(binding, nativeVerified);
         if (send(IDC_SHIFTER_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())) >= 0)
             savedRows_.push_back(i);
     }
-    if (selection >= 0) {
-        send(IDC_SHIFTER_LIST, LB_SETCURSEL, static_cast<WPARAM>(selection));
+    if (!savedRows_.empty() && selection >= 0) {
+        const auto row = std::min(static_cast<std::size_t>(selection), savedRows_.size() - 1);
+        send(IDC_SHIFTER_LIST, LB_SETCURSEL, static_cast<WPARAM>(row));
         if (top >= 0)
             send(IDC_SHIFTER_LIST, LB_SETTOPINDEX, static_cast<WPARAM>(top));
     }
+}
+
+void ShifterDialog::showPreview(std::wstring text)
+{
+    if (previewStatus_ != text) {
+        previewStatus_ = std::move(text);
+        SetDlgItemTextW(window_, IDC_SHIFTER_PREVIEW_STATUS, previewStatus_.c_str());
+    }
+}
+
+void ShifterDialog::selectPreview(const AccessoryBinding* binding)
+{
+    const auto selected = binding ? std::optional{*binding} : std::nullopt;
+    if (selected != previewBinding_) {
+        previewBinding_ = selected;
+        preview_.reset();
+        previewIndex_ = 0;
+        if (binding && !isNativeTransmissionBinding(*binding)) {
+            preview_.emplace(AccessoryProfile{*binding});
+        } else if (binding && (!binding->nativeShifter || nativeShifterVerified(edited_))) {
+            AccessoryProfile native;
+            for (const auto& position : edited_) {
+                if (!isNativeTransmissionBinding(position))
+                    continue;
+                if (position == *binding)
+                    previewIndex_ = native.size();
+                native.push_back(position);
+            }
+            preview_.emplace(native);
+        }
+        if (preview_)
+            showPreview(tr(Text::DlgAccessoryPreviewPending));
+    }
+    previewFocusChanged(GetForegroundWindow() == window_);
+}
+
+void ShifterDialog::previewFocusChanged(bool active)
+{
+    if (active && stage_ == Stage::Setup && preview_ && IsWindowEnabled(window_)) {
+        if (!previewRunning_)
+            previewRunning_ = SetTimer(window_, previewTimer, previewInterval, nullptr) != 0;
+        return;
+    }
+    if (previewRunning_) {
+        KillTimer(window_, previewTimer);
+        previewRunning_ = false;
+        if (preview_)
+            preview_->reset();
+    }
+    if (stage_ != Stage::Setup)
+        showPreview({});
+    else if (!previewBinding_)
+        showPreview(tr(Text::DlgShifterPreviewSelect));
+    else if (!preview_)
+        showPreview(tr(Text::DlgShifterNativeRecapture));
+    else
+        showPreview(tr(Text::DlgAccessoryPreviewPaused));
+}
+
+void ShifterDialog::pollPreview()
+{
+    if (!previewRunning_ || !preview_)
+        return;
+    if (GetForegroundWindow() != window_ || !IsWindowEnabled(window_)) {
+        previewFocusChanged(false);
+        return;
+    }
+    std::array<AccessoryObservation, maxAccessoryBindings> observations;
+    input_.beginPoll();
+    preview_->poll(input_, observations);
+    if (GetForegroundWindow() != window_ || !IsWindowEnabled(window_)) {
+        previewFocusChanged(false);
+        return;
+    }
+
+    const auto& observation = observations[previewIndex_];
+    std::wstring message;
+    switch (observation.status) {
+    case AccessoryStatus::deviceUnavailable:
+        message = tr(Text::DlgAccessoryPreviewDevice);
+        break;
+    case AccessoryStatus::inputUnavailable:
+        message = tr(Text::DlgAccessoryPreviewInput);
+        break;
+    case AccessoryStatus::temporarilyUnavailable:
+        message = tr(Text::DlgAccessoryPreviewPending);
+        break;
+    case AccessoryStatus::waitingForNeutral:
+        message = tr(Text::DlgAccessoryPreviewNeutral);
+        break;
+    case AccessoryStatus::armed:
+        if (isNativeTransmissionBinding(*previewBinding_)) {
+            message = shifterRoleLabel(previewBinding_->role) + tr(observation.engaged.value_or(false)
+                ? Text::DlgShifterPreviewEngaged : Text::DlgShifterPreviewReleased);
+        } else {
+            const bool pulse = previewBinding_->activation == AccessoryActivation::pulse;
+            const auto output = pulse ? (observation.active ? Text::DlgAccessoryPreviewPulseActive
+                                                           : Text::DlgAccessoryPreviewPulseReady)
+                                      : (observation.active ? Text::DlgAccessoryPreviewPressed
+                                                            : Text::DlgAccessoryPreviewReleased);
+            message = accessoryKeyLabel(previewBinding_->key) + tr(output);
+        }
+        break;
+    }
+    if (observation.travel) {
+        const auto percent = std::lround(std::clamp(*observation.travel, 0.0, 1.0) * 100.0);
+        message += L"  ·  ";
+        message += tr(Text::DlgAccessoryPreviewTravel) + std::to_wstring(percent) + L" %";
+    }
+    showPreview(std::move(message));
 }
 
 void ShifterDialog::selectDevice()
@@ -368,11 +507,12 @@ void ShifterDialog::selectMode()
 
 Text ShifterDialog::setupStatus() const
 {
+    if (edited_ != bindings_)
+        return Text::DlgShifterEditSave;
     if (devices_.empty())
         return Text::DlgShifterNoDevices;
     if (!selectedDevice(true))
-        return edited_ != bindings_ ? (save_ ? Text::DlgShifterEditSave : Text::DlgShifterEditApply)
-                                    : Text::DlgShifterEditOffline;
+        return Text::DlgShifterEditOffline;
     const auto& mode = selectedMode();
     const bool nativeOnDevice = std::ranges::any_of(savedRows_, [this](std::size_t row) {
         return edited_[row].nativeShifter;
@@ -384,8 +524,6 @@ Text ShifterDialog::setupStatus() const
             ? Text::DlgShifterNativeRecapture : Text::DlgShifterNativeSetup;
     if (mode.forward)
         return nativeOnDevice ? Text::DlgShifterReplaceNative : Text::DlgShifterExternalSetup;
-    if (edited_ != bindings_)
-        return save_ ? Text::DlgShifterEditSave : Text::DlgShifterEditApply;
     return savedRows_.empty() ? Text::DlgShifterNeutralThenStart : Text::DlgShifterEditOrStart;
 }
 
@@ -427,7 +565,7 @@ void ShifterDialog::interruptCapture(Text analogMessage, Text positionMessage, T
 
 void ShifterDialog::start()
 {
-    if (hasCaptureChanges() && !confirmDiscard(Text::DlgShifterDiscardCapture))
+    if (hasCaptureChanges() && !confirm(Text::DlgShifterDiscardCapture))
         return;
     KillTimer(window_, captureTimer);
     draft_.clear();
@@ -527,12 +665,11 @@ void ShifterDialog::chooseShortcut()
 
 void ShifterDialog::editSavedKey()
 {
-    if (stage_ != Stage::Setup)
+    const auto index = selectedBinding();
+    if (!index || isNativeTransmissionBinding(edited_[*index]))
         return;
     const auto selection = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
-    if (selection < 0 || static_cast<std::size_t>(selection) >= savedRows_.size())
-        return;
-    switch (chooseBindingKey(window_, edited_, savedRows_[static_cast<std::size_t>(selection)])) {
+    switch (chooseBindingKey(window_, edited_, *index)) {
     case BindingKeyEdit::unchanged:
         break;
     case BindingKeyEdit::occupied:
@@ -549,6 +686,40 @@ void ShifterDialog::editSavedKey()
     }
 }
 
+void ShifterDialog::editSavedThresholds()
+{
+    const auto index = selectedBinding();
+    if (!index)
+        return;
+    auto& binding = edited_[*index];
+    if (binding.kind != AccessoryKind::Axis || isNativeTransmissionBinding(binding))
+        return;
+    if (const auto values = editAccessoryThresholds(window_, binding.thresholds);
+        values && *values != binding.thresholds) {
+        binding.thresholds = *values;
+        showSavedBindings(send(IDC_SHIFTER_LIST, LB_GETCURSEL));
+        status(tr(Text::DlgAccessoriesThresholdsEdited));
+        updateControls();
+    }
+}
+
+void ShifterDialog::removeSaved()
+{
+    const auto index = selectedBinding();
+    if (!index)
+        return;
+    const bool native = isNativeTransmissionBinding(edited_[*index]);
+    if (!confirm(native ? Text::DlgAccessoriesRemoveNative : Text::DlgShifterRemoveBinding))
+        return;
+    if (native)
+        std::erase_if(edited_, isNativeTransmissionBinding);
+    else
+        edited_.erase(edited_.begin() + *index);
+    showSavedBindings(send(IDC_SHIFTER_LIST, LB_GETCURSEL));
+    status(tr(native ? Text::DlgAccessoriesNativeRemoved : Text::DlgAccessoriesBindingRemoved));
+    updateControls();
+}
+
 void ShifterDialog::changeActivation()
 {
     const auto selected = send(IDC_SHIFTER_ACTIVATION, CB_GETCURSEL);
@@ -560,12 +731,11 @@ void ShifterDialog::changeActivation()
             pending_->activation = activation;
         return;
     }
-    if (stage_ != Stage::Setup)
+    const auto index = selectedBinding();
+    if (!index)
         return;
     const auto row = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
-    if (row < 0 || static_cast<std::size_t>(row) >= savedRows_.size())
-        return;
-    auto& binding = edited_[savedRows_[static_cast<std::size_t>(row)]];
+    auto& binding = edited_[*index];
     if (!isNativeTransmissionBinding(binding) && binding.activation != activation) {
         binding.activation = activation;
         showSavedBindings(row);
@@ -583,8 +753,7 @@ void ShifterDialog::position()
         setKey(0);
         SetDlgItemTextW(window_, IDC_SHIFTER_STEP, tr(Text::DlgShifterComplete));
         status(draft_.empty() ? tr(Text::DlgShifterNoPosition)
-            : tr(native_ ? (save_ ? Text::DlgShifterSaveDirect : Text::DlgShifterNativeSave)
-                         : (save_ ? Text::DlgShifterExternalSaveDirect : Text::DlgShifterSaveAndConfigure)));
+            : tr(native_ ? Text::DlgShifterSaveDirect : Text::DlgShifterExternalSaveDirect));
     } else {
         SetDlgItemTextW(window_, IDC_SHIFTER_STEP, shifterRoleLabel(role()).c_str());
         setKey(native_ ? 0 : suggestedKey());
@@ -815,13 +984,13 @@ void ShifterDialog::apply()
         status(tr(Text::DlgShifterBindingLimit));
         return;
     }
-    if (save_ && !save_(window_, updated))
+    if (!save_(window_, updated))
         return;
     bindings_ = std::move(updated);
     EndDialog(window_, IDOK);
 }
 
-bool ShifterDialog::confirmDiscard(Text message) const
+bool ShifterDialog::confirm(Text message) const
 {
     return MessageBoxW(window_, tr(message),
         tr(Text::DlgShifterTitle), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
@@ -829,7 +998,7 @@ bool ShifterDialog::confirmDiscard(Text message) const
 
 void ShifterDialog::cancel()
 {
-    if ((!hasCaptureChanges() && edited_ == bindings_) || confirmDiscard(Text::DlgShifterDiscard))
+    if ((!hasCaptureChanges() && edited_ == bindings_) || confirm(Text::DlgShifterDiscard))
         EndDialog(window_, IDCANCEL);
 }
 
@@ -851,6 +1020,8 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(window, IDC_SHIFTER_ACTIVATION_LABEL, tr(Text::DlgAccessoryActivation));
         SetDlgItemTextW(window, IDC_SHIFTER_SKIP, tr(Text::DlgShifterSkip));
         SetDlgItemTextW(window, IDC_SHIFTER_EDIT, tr(Text::DlgBindingEdit));
+        SetDlgItemTextW(window, IDC_SHIFTER_REMOVE, tr(Text::DlgShifterRemove));
+        SetDlgItemTextW(window, IDC_SHIFTER_THRESHOLDS, tr(Text::DlgShifterThresholds));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
         DialogTheme::attach(window, tr(Text::DlgShifterHeading), IDC_SHIFTER_STATUS, IDC_SHIFTER_LIST,
                             {IDC_SHIFTER_START, IDC_SHIFTER_ADVANCE, IDOK});
@@ -865,6 +1036,10 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
             dialog->poll();
             return TRUE;
         }
+        if (wp == previewTimer) {
+            dialog->pollPreview();
+            return TRUE;
+        }
         if (wp == inventoryTimer) {
             dialog->refreshDevices();
             return TRUE;
@@ -875,8 +1050,11 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         dialog->deviceTopologyChanged();
         return FALSE;
     }
-    if (message == WM_ACTIVATE && LOWORD(wp) != WA_INACTIVE) {
-        dialog->refreshDevices();
+    if (message == WM_ACTIVATE) {
+        const bool active = LOWORD(wp) != WA_INACTIVE;
+        if (active)
+            dialog->refreshDevices();
+        dialog->previewFocusChanged(active);
         return FALSE;
     }
     if (message == WM_CLOSE) {
@@ -906,6 +1084,12 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         return TRUE;
     case IDC_SHIFTER_EDIT:
         dialog->editSavedKey();
+        return TRUE;
+    case IDC_SHIFTER_REMOVE:
+        dialog->removeSaved();
+        return TRUE;
+    case IDC_SHIFTER_THRESHOLDS:
+        dialog->editSavedThresholds();
         return TRUE;
     case IDC_SHIFTER_START:
         dialog->start();
@@ -937,10 +1121,10 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
 } // namespace
 
 bool editShifter(HWND owner, DirectInput& input, AccessoryProfile& bindings,
-                 std::span<const DeviceInfo> devices, std::string_view preferredDevice,
-                 const std::filesystem::path& profileRoot, std::function<bool(HWND, const AccessoryProfile&)> save)
+                 std::span<const DeviceInfo> devices, const std::filesystem::path& profileRoot,
+                 std::function<bool(HWND, const AccessoryProfile&)> save)
 {
-    ShifterDialog dialog(input, bindings, devices, preferredDevice, profileRoot, std::move(save));
+    ShifterDialog dialog(input, bindings, devices, profileRoot, std::move(save));
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SHIFTER), owner,
         shifterProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)
