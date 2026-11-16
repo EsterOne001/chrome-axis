@@ -27,13 +27,16 @@ private:
     bool down_{};
 };
 
+constexpr bool isSupportedForwardGear(int gear, int availableEntries) noexcept {
+    // The native array holds at most eight entries, including reverse at index zero.
+    return availableEntries >= 2 && availableEntries <= 8 && gear >= 1 && gear < availableEntries;
+}
+
 constexpr int requestedGear(int observed, int availableEntries, int delta) noexcept {
-    const int maximum = availableEntries - 1; // Vehicle records contain the reverse ratio.
-    const int target = observed + delta;
-    if ((delta != 1 && delta != -1) || observed < 1 || observed > maximum ||
-        target < 1 || target > maximum)
+    if ((delta != 1 && delta != -1) || !isSupportedForwardGear(observed, availableEntries))
         return 0;
-    return target;
+    const int target = observed + delta;
+    return isSupportedForwardGear(target, availableEntries) ? target : 0;
 }
 
 } // namespace chrome_axis

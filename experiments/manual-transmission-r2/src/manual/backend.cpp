@@ -1,8 +1,8 @@
 #include "backend.hpp"
+#include "shift_request.hpp"
 
 #include <windows.h>
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -23,7 +23,6 @@ constexpr std::uintptr_t shiftRva = 0x81DB9C;
 constexpr std::uintptr_t shiftCallRva = 0x6E32BA;
 constexpr std::uintptr_t planarSpeedRva = 0x6E45F0;
 constexpr std::uintptr_t gearboxOwnerLinkRva = 0x81DB1D;
-constexpr std::uintptr_t engineRpmFormulaRva = 0x6E3B04;
 constexpr std::uintptr_t engineRpmStoreRva = 0x6E0318;
 constexpr std::array<std::uint8_t, 20> stepBytes{
     0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x68,
@@ -38,10 +37,6 @@ constexpr std::array<std::uint8_t, 16> planarSpeedBytes{
     0x48, 0x83, 0xC1, 0x20};
 constexpr std::array<std::uint8_t, 10> gearboxOwnerLinkBytes{
     0x48, 0x8B, 0x89, 0xC8, 0x0B, 0x00, 0x00, 0x48, 0x89, 0x39};
-constexpr std::array<std::uint8_t, 21> engineRpmFormulaBytes{
-    0x48, 0x8B, 0xB0, 0xD0, 0x0B, 0x00, 0x00, 0xF3, 0x42, 0x0F, 0x59,
-    0x4C, 0xF1, 0x38, 0xF3, 0x42, 0x0F, 0x58, 0x4C, 0xF1, 0x34};
-
 constexpr std::array<std::uint8_t, 14> engineRpmStoreBytes{
     0xF3, 0x0F, 0x5F, 0x53, 0x68, 0xF3, 0x0F, 0x5D, 0xD0, 0xF3, 0x0F, 0x11, 0x53, 0x14};
 
@@ -50,22 +45,11 @@ constexpr auto vehicleDriveBodyOffset = 0x5F0;
 constexpr auto vehicleGearboxOffset = 0xBC8;
 constexpr auto vehicleEngineOffset = 0xBD0;
 constexpr auto engineRpmOffset = 0x14;
-constexpr auto engineDriveSpeedOffset = 0x1C;
-constexpr auto engineMaximumRpmOffset = 0x6C;
-constexpr auto firstGearMaxSpeedOffset = 0x1C;
-constexpr auto firstGearMaxRpmOffset = 0x24;
-constexpr auto firstGearRpmInterceptOffset = 0x34;
-constexpr auto firstGearRpmSlopeOffset = 0x38;
-constexpr auto gearRowStride = 0x30;
 constexpr auto gearCountOffset = 0x198;
 constexpr auto shiftTimeOffset = 0x1AC;
 constexpr auto targetGearOffset = 0x1C4;
 constexpr auto engagedGearOffset = 0x1C8;
 constexpr auto leaseDurationMs = 250ULL;
-constexpr int maximumGearEntries = 8; // The native array is bounded by gearCountOffset.
-constexpr float manualMinimumSpeed = 2.0f;
-constexpr float downshiftSpeedMargin = 0.90f;
-constexpr float downshiftRpmMargin = 0.95f;
 
 using Step = void (*)(void*, float);
 using Shift = bool (*)(void*, int, bool, bool);
@@ -183,42 +167,13 @@ bool liveLease(const void* owner, std::uint64_t generation) noexcept {
     return state.vehicle == owner && state.generation == generation && GetTickCount64() < state.expiresAt;
 }
 
-bool validGear(int gear, int entries) noexcept {
-    return entries >= 2 && entries <= maximumGearEntries && gear >= 1 && gear < entries;
-}
-
-const char* downshiftLimit(const void* owner, const void* gearbox, int target, float speed) noexcept {
-    const auto gearRow = static_cast<std::size_t>(target) * gearRowStride;
-    const auto maxSpeed = readField<float>(gearbox, gearRow + firstGearMaxSpeedOffset);
-    if (!std::isfinite(maxSpeed) || maxSpeed <= 0.0f || speed >= maxSpeed * downshiftSpeedMargin)
-        return "downshift_speed_limit";
-
-    const auto* engine = readField<void*>(owner, vehicleEngineOffset);
-    if (!engine)
-        return "downshift_rpm_unavailable";
-
-    const auto driveSpeed = std::abs(readField<float>(engine, engineDriveSpeedOffset));
-    const auto maxEngineRpm = readField<float>(engine, engineMaximumRpmOffset);
-    const auto maxGearRpm = readField<float>(gearbox, gearRow + firstGearMaxRpmOffset);
-    const auto slope = readField<float>(gearbox, gearRow + firstGearRpmSlopeOffset);
-    const auto intercept = readField<float>(gearbox, gearRow + firstGearRpmInterceptOffset);
-    if (!std::isfinite(driveSpeed) || !std::isfinite(maxEngineRpm) || maxEngineRpm <= 0.0f ||
-        !std::isfinite(maxGearRpm) || maxGearRpm <= 0.0f || !std::isfinite(slope) || slope < 0.0f ||
-        !std::isfinite(intercept)) {
-        return "downshift_rpm_unavailable";
-    }
-
-    // 6E3AAC uses abs(drive speed) * gear slope + intercept for the requested gear.
-    const auto prediction = std::max(driveSpeed, speed) * slope + intercept;
-    return prediction >= std::min(maxEngineRpm, maxGearRpm) * downshiftRpmMargin ? "downshift_rpm_limit" : nullptr;
-}
-
 bool filterAutomatic(void* gearbox, int target, bool immediate, bool bypassCooldown) noexcept {
     const auto original = std::bit_cast<Shift>(originalShift);
     if (gearbox && activeStep.gearbox == gearbox && !immediate && !bypassCooldown && gameForeground()) {
         const auto engaged = readField<int>(gearbox, engagedGearOffset);
         const auto entries = readField<int>(gearbox, gearCountOffset);
-        if (validGear(engaged, entries) && validGear(target, entries) && engaged != target) {
+        if (engaged != target && chrome_axis::isSupportedForwardGear(engaged, entries) &&
+            chrome_axis::isSupportedForwardGear(target, entries)) {
             StateGuard guard;
             if (state.enabled && liveLease(activeStep.owner, activeStep.generation)) {
                 ++state.view.suppressedAutoShifts;
@@ -297,10 +252,9 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
         if (std::isfinite(observedSpeed) && observedSpeed >= 0.0f)
             speed = observedSpeed;
     }
-    const bool manualStep = enabled && speed >= manualMinimumSpeed;
     {
         // Scope the filter to native requests issued by this exact step and vehicle.
-        const StepScope scope(manualStep ? ManualStep{gearbox, owner, generation} : ManualStep{});
+        const StepScope scope(enabled ? ManualStep{gearbox, owner, generation} : ManualStep{});
         original(gearbox, deltaTime);
     }
 
@@ -318,17 +272,13 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
     if (!request)
         return;
 
-    const int requestedGear = validGear(engaged, entries) ? engaged + request : -1;
+    const int requestedGear = chrome_axis::isSupportedForwardGear(engaged, entries) ? engaged + request : -1;
     const char* outcome = "native_rejected";
-    if (!manualStep) {
-        outcome = "waiting_for_forward_motion";
-    } else if (!validGear(engaged, entries) || target != engaged ||
-               readField<float>(gearbox, shiftTimeOffset) >= 0.001f) {
+    if (!chrome_axis::isSupportedForwardGear(engaged, entries) || target != engaged ||
+        readField<float>(gearbox, shiftTimeOffset) >= 0.001f) {
         outcome = "shift_in_progress";
-    } else if (!validGear(requestedGear, entries)) {
+    } else if (!chrome_axis::isSupportedForwardGear(requestedGear, entries)) {
         outcome = "outside_forward_range";
-    } else if (const auto* limit = request < 0 ? downshiftLimit(owner, gearbox, requestedGear, speed) : nullptr) {
-        outcome = limit;
     } else {
         bool stillEnabled{};
         {
@@ -362,7 +312,6 @@ bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexc
     auto* const speed = verifiedAddress(module, planarSpeedRva, planarSpeedBytes);
     if (!step || !shift || !speed || !verifiedAddress(module, shiftCallRva, shiftCallBytes) ||
         !verifiedAddress(module, gearboxOwnerLinkRva, gearboxOwnerLinkBytes) ||
-        !verifiedAddress(module, engineRpmFormulaRva, engineRpmFormulaBytes) ||
         !verifiedAddress(module, engineRpmStoreRva, engineRpmStoreBytes))
         return false;
 

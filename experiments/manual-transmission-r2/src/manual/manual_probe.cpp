@@ -24,7 +24,6 @@ using namespace std::chrono_literals;
 constexpr auto markerPollInterval = 250ms;
 constexpr auto maximumSampleGap = 450ms;
 constexpr auto sessionTimeout = 20min;
-constexpr float minimumMotionSpeed = 2.0f;
 constexpr double metresPerSecondToMph = 2.2369363;
 
 struct Probe {
@@ -203,14 +202,13 @@ void sample(Vehicle* vehicle, Clock::time_point now) noexcept {
             probe.manual = false;
             event = "manual_off";
             setStatus("Automatic restored. F8 enables experimental manual mode in a forward gear.");
-        } else if (native.speedMetersPerSecond >= minimumMotionSpeed && native.engagedGear > 0 &&
-                   native.engagedGear < native.gearCount) {
+        } else if (chrome_axis::isSupportedForwardGear(native.engagedGear, native.gearCount)) {
             probe.manual = true;
             event = "manual_on";
             setStatus("Manual active. Page Up / Page Down change gears. F8 restores automatic.");
         } else {
             event = "manual_unavailable";
-            setStatus("Manual unavailable. Drive in a forward gear and press F8 again.");
+            setStatus("Manual unavailable. Wait for a supported forward gear, then press F8 again.");
         }
     } else if (native.gearCount > 1 && probe.lastEngaged == -1 && native.engagedGear >= 0 && !probe.manual) {
         setStatus("Recording native automatic gearbox. F8 toggles manual in a forward gear.");

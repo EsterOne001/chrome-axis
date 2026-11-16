@@ -18,13 +18,17 @@ Si l’ancienne DLL est encore présente, le mode manuel R2 reste désactivé et
 
 1. Dans le dossier du jeu, créez un fichier vide `arm.txt` dans `red4ext/plugins/chrome_axis/manual-transmission-probe`.
 2. Lancez le jeu. Désactivez la simulation clavier de Chrome Axis pour utiliser les commandes habituelles de Cyberpunk, puis faites un passage en boîte automatique avec une accélération modérée sur une route droite et dégagée. Pour comparer, reprenez le même tronçon dans le même sens avec la même voiture.
-3. En marche avant au-dessus d’environ **7 km/h (4,5 mph)**, appuyez sur **F8** pendant environ **0,2 seconde**, puis relâchez. Utilisez **Page précédente** pour monter un rapport et **Page suivante** pour descendre. Laissez chaque touche revenir au repos avant la commande suivante. Le prototype peut refuser un rétrogradage en fonction de la vitesse et du régime estimé.
+3. Lorsqu’un rapport avant compatible est engagé, maintenez **F8** environ **0,2 seconde**, puis relâchez. Utilisez **Page précédente** pour monter un rapport et **Page suivante** pour descendre. Relâchez chaque touche avant la commande suivante.
 4. Appuyez de nouveau sur **F8** pour reprendre les passages automatiques. Après une interruption de conduite ou un retour au jeu, réactivez le mode manuel avec **F8**.
 5. Quittez le jeu normalement. Copiez `trials.csv` et `status.txt` depuis le dossier où se trouve `arm.txt`, puis retirez `arm.txt` avant le prochain lancement. Le premier armement après un redémarrage remplace l’ancien CSV.
 
 Sous le logo Chrome Axis, le HUD associe le rapport engagé au mode de boîte, comme dans `RAPPORT 3 · AUTO` et `RAPPORT 3 · MANUEL`. Le mode s’actualise dès que la bascule avec **F8** est acceptée. Un tiret remplace le numéro en l’absence de rapport disponible.
 
-Le HUD peut afficher les rapports 1 à 8 selon le véhicule. La commande manuelle de la R2 couvre au maximum sept rapports avant. Comparez le rapport engagé avec le rapport cible et le résultat de la commande dans le CSV.
+Le prototype transmet les demandes admissibles de passage à un rapport avant au jeu quelle que soit la vitesse ou le régime. Le jeu décide de l’engagement et applique ses délais de changement de rapport. Il conserve la gestion du point mort et de la marche arrière.
+
+Pour reproduire un ancien refus, reprenez la même voiture et le même rapport de départ. En décélération, demandez le rapport inférieur à une vitesse où la version précédente refusait ce passage. Dans le CSV, vérifiez le résultat de la demande et le rapport engagé, puis comparez le régime et la vitesse juste avant et après.
+
+Le HUD peut afficher les rapports 1 à 8 selon le véhicule. La commande manuelle de la R2 couvre au maximum sept rapports avant.
 
 Le CSV contient le rapport engagé, le rapport cible, le résultat des demandes de changement, le régime moteur et la vitesse. Une session dure jusqu’à 20 minutes.
 

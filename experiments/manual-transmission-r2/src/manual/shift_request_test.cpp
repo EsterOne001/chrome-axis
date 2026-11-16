@@ -3,7 +3,17 @@
 #include <cstdio>
 
 int main() {
+    using chrome_axis::isSupportedForwardGear;
     using chrome_axis::requestedGear;
+    static_assert(isSupportedForwardGear(1, 2));
+    static_assert(isSupportedForwardGear(7, 8));
+    static_assert(!isSupportedForwardGear(8, 8));
+    static_assert(!isSupportedForwardGear(8, 9));
+    static_assert(!isSupportedForwardGear(0, 8));
+    static_assert(!isSupportedForwardGear(-1, 8));
+    static_assert(requestedGear(6, 8, 1) == 7);
+    static_assert(requestedGear(7, 8, 1) == 0);
+    static_assert(requestedGear(7, 9, -1) == 0);
     static_assert(requestedGear(2, 7, 1) == 3);
     static_assert(requestedGear(2, 7, -1) == 1);
     static_assert(requestedGear(1, 7, -1) == 0);
