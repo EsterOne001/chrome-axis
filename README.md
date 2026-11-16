@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.49** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.50** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -158,7 +158,7 @@ L’USB en jeu est désactivé par défaut. Depuis l’application installée da
 
 Le logo et le libellé du HUD changent de couleur ensemble selon l’état des commandes. Le badge utilise un fond sombre translucide et affiche le rapport engagé dans une colonne dédiée. La conduite USB utilise le profil enregistré et fonctionne avec l’application fermée.
 
-Dans le menu de pause de Cyberpunk, ouvrez **HUD Painter → Chrome Axis**. Choisissez **Contour du badge** ou **Texte de la boîte** et réglez la couleur dans le sélecteur de HUD Painter. Cliquez sur **Appliquer** sous la section Chrome Axis. Les deux couleurs sont enregistrées dans `r6/storages/ChromeAxisHUD/colors.json`, indépendamment des préréglages du jeu. Pour revenir au cyan ou au rouge d’origine, réinitialisez la couleur concernée dans le sélecteur, puis cliquez sur **Appliquer**. L’intégration est facultative et cible HUD Painter 1.4.1. [HUD Painter](https://www.nexusmods.com/cyberpunk2077/mods/14935)
+Dans le menu de pause de Cyberpunk, ouvrez **HUD Painter → Chrome Axis**. Choisissez **Contour du badge** ou **Texte de la boîte**. Le sélecteur applique la couleur immédiatement au badge. Chrome Axis enregistre chaque paire de couleurs sous le préréglage HUD Painter actif dans son fichier `r6/storages/ChromeAxisHUD/colors.json`. Enregistrer un préréglage depuis HUD Painter reprend les couleurs Chrome Axis de la sélection actuelle. Activez un autre préréglage pour rappeler ses couleurs. Les couleurs enregistrées avant la 0.4.50 servent de base aux préréglages sans réglage propre. Pour retrouver le cyan ou le rouge d’origine, utilisez la réinitialisation de la couleur dans le sélecteur. L’intégration est facultative et cible HUD Painter 1.4.1. [HUD Painter](https://www.nexusmods.com/cyberpunk2077/mods/14935)
 
 | Couleur | État en jeu |
 | --- | --- |

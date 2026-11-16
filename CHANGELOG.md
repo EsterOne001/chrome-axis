@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.50
+
+- **HUD Painter.** Les couleurs du contour et de la transmission s’appliquent dès leur modification. Elles s’enregistrent automatiquement avec le préréglage actif. Les couleurs enregistrées auparavant restent disponibles comme base pour les préréglages qui n’ont pas encore de réglage propre.
+- **HUD de conduite.** Le cadre intérieur et les équerres autour du logo utilisent des motifs gris de l’atlas natif de Cyberpunk.
+
+[ZIP Vortex](out/Chromaxis-0.4.50.zip)
+
 ## Chrome Axis 0.4.49
 
 - **HUD Painter.** La section Chrome Axis est rattachée au contrôleur du menu à l’ouverture. La liste est retrouvée à partir de ses lignes de couleur, y compris quand HUD Painter reconstruit l’écran après un changement de préréglage.

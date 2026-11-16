@@ -1,7 +1,7 @@
 @if(ModuleExists("HudPainter"))
-import HudPainter.ComponentColorItem
+import HudPainter.{ComponentColorItem, HudPainterStorage}
 @if(ModuleExists("HudPainter"))
-import Codeware.UI.{SimpleButton, inkCustomController}
+import Codeware.UI.TextInput
 @if(ModuleExists("HudPainter"))
 import RedData.Json.{JsonArray, JsonObject, JsonVariant}
 @if(ModuleExists("HudPainter"))
@@ -48,7 +48,14 @@ private func ChromeAxis_LoadHudPalette() -> ref<ChromeAxisHudPalette> {
 @if(ModuleExists("HudPainter"))
 class ChromeAxisHudPainterMenu extends ScriptableService {
   private let storage: ref<FileSystemStorage>;
+  private let colors: ref<JsonObject>;
   private let palette: ref<ChromeAxisHudPalette>;
+  private let activePresetKey: String;
+  private let dirty: Bool;
+  private let flushScheduled: Bool;
+  private let pendingPresetKey: String;
+  private let pendingPresetPalette: ref<ChromeAxisHudPalette>;
+  private let pendingPresetAlreadyExisted: Bool;
   private let menuController: wref<inkGameController>;
 
   public static func Get() -> ref<ChromeAxisHudPainterMenu> {
@@ -58,7 +65,8 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   private cb func OnLoad() {
     // RedFileSystem grants this storage handle once per game launch.
     this.storage = FileSystem.GetStorage("ChromeAxisHUD");
-    this.palette = this.ReadPalette();
+    this.colors = this.ReadColors();
+    this.palette = this.ReadPalette(this.colors, ChromeAxisHudPalette.Default());
     GameInstance.GetCallbackSystem()
       .RegisterCallback(n"InkWidget/Spawn", this, n"OnHudPainterWidgetSpawn")
       .AddTarget(inkWidgetTarget.Library(r"base\\gameplay\\gui\\hud_painter.inkwidget", n"ColorPicker"))
@@ -66,41 +74,164 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   }
 
   public func GetPalette() -> ref<ChromeAxisHudPalette> {
+    if Equals(this.activePresetKey, "") {
+      this.SyncActivePreset();
+    }
     return this.palette;
   }
 
-  public func SavePalette(border: HDRColor, transmission: HDRColor) -> Bool {
+  public func SyncActivePreset() -> Bool {
+    let painter = HudPainterStorage.Get();
+    if !IsDefined(painter) {
+      return false;
+    }
+    let name = painter.GetActivePresetName();
+    let key = StrLower(name);
+    if Equals(key, "") || Equals(key, this.activePresetKey) {
+      return false;
+    }
+
+    this.FlushColors();
+    this.activePresetKey = key;
+    // Pre-0.4.50 palettes were global. Use them as the starting colors for profiles without overrides.
+    let fallback = this.ReadPalette(this.colors, ChromeAxisHudPalette.Default());
+    let presets = this.colors.GetKey("presets") as JsonObject;
+    this.palette = IsDefined(presets) ? this.ReadPalette(presets.GetKey(key) as JsonObject, fallback) : fallback;
+    return true;
+  }
+
+  public func ChangeColor(isBorder: Bool, color: HDRColor) -> Void {
+    let current = this.GetPalette();
+    let previous = isBorder ? current.border : current.transmission;
+    if Equals(previous.Red, color.Red) && Equals(previous.Green, color.Green) && Equals(previous.Blue, color.Blue) {
+      return;
+    }
+    let next = new ChromeAxisHudPalette();
+    next.border = isBorder ? color : current.border;
+    next.transmission = isBorder ? current.transmission : color;
+    this.palette = next;
+    this.StorePalette(this.activePresetKey, next);
+    this.ApplyToHud();
+
+    // Batch slider changes. Release and menu close also flush while the game is paused.
+    if !this.flushScheduled {
+      let delay = GameInstance.GetDelaySystem(GetGameInstance());
+      if IsDefined(delay) {
+        let callback = new ChromeAxisHudColorFlush();
+        callback.menu = this;
+        this.flushScheduled = true;
+        delay.DelayCallback(callback, 0.30, false);
+      }
+    }
+  }
+
+  public func FlushAfterInput() -> Void {
+    this.flushScheduled = false;
+    this.FlushColors();
+  }
+
+  public func TrackPresetSave(name: String) -> Void {
+    this.pendingPresetKey = StrLower(name);
+    this.pendingPresetPalette = this.GetPalette();
+    this.pendingPresetAlreadyExisted = this.HasNativePreset(this.pendingPresetKey);
+  }
+
+  public func FinishPresetSave() -> Void {
+    if !IsDefined(this.pendingPresetPalette) || this.pendingPresetAlreadyExisted {
+      return;
+    }
+    // Existence proves success only when the new name did not exist before the save.
+    if this.HasNativePreset(this.pendingPresetKey) {
+      this.PresetSaved();
+    } else {
+      this.pendingPresetPalette = null;
+      this.pendingPresetKey = "";
+    }
+  }
+
+  private func HasNativePreset(key: String) -> Bool {
+    let painter = HudPainterStorage.Get();
+    if IsDefined(painter) {
+      for preset in painter.GetAvailablePresetsList() {
+        let name = preset.name;
+        if Equals(StrLower(name), key) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  public func PresetSaved() -> Void {
+    if IsDefined(this.pendingPresetPalette) {
+      this.StorePalette(this.pendingPresetKey, this.pendingPresetPalette);
+      this.pendingPresetPalette = null;
+      this.pendingPresetKey = "";
+    }
+    this.FlushColors();
+  }
+
+  public func ApplyToHud() -> Void {
+    let systems = GameInstance.GetScriptableSystemsContainer(GetGameInstance());
+    if IsDefined(systems) {
+      let context = systems.Get(n"ChromeAxisDrivingContext") as ChromeAxisDrivingContext;
+      if IsDefined(context) {
+        context.ApplyHudPalette();
+      }
+    }
+  }
+
+  private func StorePalette(key: String, palette: ref<ChromeAxisHudPalette>) -> Void {
+    if Equals(key, "") {
+      return;
+    }
+    let presets = this.colors.GetKey("presets") as JsonObject;
+    if !IsDefined(presets) {
+      presets = new JsonObject();
+    }
+    let entry = new JsonObject();
+    entry.SetKey("border", this.EncodeColor(palette.border));
+    entry.SetKey("transmission", this.EncodeColor(palette.transmission));
+    presets.SetKey(key, entry);
+    this.colors.SetKey("presets", presets);
+    this.dirty = true;
+  }
+
+  public func FlushColors() -> Bool {
+    if !this.dirty {
+      return true;
+    }
     if !IsDefined(this.storage) {
       return false;
     }
     let file = this.storage.GetFile("colors.json");
-    if !IsDefined(file) {
+    if !IsDefined(file) || !file.WriteJson(this.colors) {
       return false;
     }
-    let colors = new JsonObject();
-    colors.SetKey("border", this.EncodeColor(border));
-    colors.SetKey("transmission", this.EncodeColor(transmission));
-    if !file.WriteJson(colors) {
-      return false;
-    }
-    this.palette.border = border;
-    this.palette.transmission = transmission;
+    this.dirty = false;
     return true;
   }
 
-  private func ReadPalette() -> ref<ChromeAxisHudPalette> {
-    let palette = ChromeAxisHudPalette.Default();
-    if !IsDefined(this.storage) || NotEquals(this.storage.IsFile("colors.json"), FileSystemStatus.True) {
-      return palette;
-    }
-    let file = this.storage.GetFile("colors.json");
-    if IsDefined(file) {
-      let colors = file.ReadAsJson() as JsonObject;
-      if IsDefined(colors) {
-        palette.border = this.ReadColor(colors, "border", palette.border);
-        palette.transmission = this.ReadColor(colors, "transmission", palette.transmission);
+  private func ReadColors() -> ref<JsonObject> {
+    if IsDefined(this.storage) && Equals(this.storage.IsFile("colors.json"), FileSystemStatus.True) {
+      let file = this.storage.GetFile("colors.json");
+      if IsDefined(file) {
+        let colors = file.ReadAsJson() as JsonObject;
+        if IsDefined(colors) {
+          return colors;
+        }
       }
     }
+    return new JsonObject();
+  }
+
+  private func ReadPalette(colors: ref<JsonObject>, fallback: ref<ChromeAxisHudPalette>) -> ref<ChromeAxisHudPalette> {
+    if !IsDefined(colors) {
+      return fallback;
+    }
+    let palette = new ChromeAxisHudPalette();
+    palette.border = this.ReadColor(colors, "border", fallback.border);
+    palette.transmission = this.ReadColor(colors, "transmission", fallback.transmission);
     return palette;
   }
 
@@ -141,11 +272,23 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
 
   public func OpenMenu(controller: wref<inkGameController>) -> Void {
     this.menuController = controller;
-    this.MountSection();
+    let root = controller.GetRootCompoundWidget();
+    if IsDefined(root) && !IsDefined(root.GetWidgetByPathName(n"ChromeAxisPresetEvents")) {
+      let events = new ChromeAxisHudPainterPresetEvents();
+      events.Reparent(root);
+    }
+    this.RefreshMenu();
   }
 
   private cb func OnHudPainterWidgetSpawn(event: ref<inkWidgetSpawnEvent>) {
     // HUD Painter recreates the picker after rebuilding its color list.
+    this.RefreshMenu();
+  }
+
+  private func RefreshMenu() -> Void {
+    if this.SyncActivePreset() {
+      this.ApplyToHud();
+    }
     this.MountSection();
   }
 
@@ -217,11 +360,69 @@ protected cb func OnChromeAxisHudPainterMenuReady(evt: ref<ChromeAxisHudPainterM
 }
 
 @if(ModuleExists("HudPainter"))
+class ChromeAxisHudColorFlush extends DelayCallback {
+  public let menu: wref<ChromeAxisHudPainterMenu>;
+
+  public func Call() -> Void {
+    if IsDefined(this.menu) {
+      this.menu.FlushAfterInput();
+    }
+  }
+}
+
+@if(ModuleExists("HudPainter"))
+class ChromeAxisHudPainterPresetEvents extends inkComponent {
+  protected cb func OnCreate() -> ref<inkWidget> {
+    let widget = new inkCanvas();
+    widget.SetName(n"ChromeAxisPresetEvents");
+    widget.SetInteractive(false);
+    return widget;
+  }
+
+  protected cb func OnHudPainterPresetSaved(event: ref<HudPainterPresetSaved>) -> Bool {
+    let menu = ChromeAxisHudPainterMenu.Get();
+    if IsDefined(menu) {
+      menu.PresetSaved();
+    }
+    return false;
+  }
+
+  protected cb func OnHudPainterInkStyleRefreshed(event: ref<HudPainterInkStyleRefreshed>) -> Bool {
+    let menu = ChromeAxisHudPainterMenu.Get();
+    if IsDefined(menu) && menu.SyncActivePreset() {
+      menu.ApplyToHud();
+    }
+    return false;
+  }
+}
+
+@if(ModuleExists("HudPainter"))
+@wrapMethod(GenericMessageNotification)
+private final func Close(result: GenericMessageNotificationResult) -> Void {
+  let saveMenu: ref<ChromeAxisHudPainterMenu>;
+  if Equals(result, GenericMessageNotificationResult.Confirm)
+    && IsDefined(this.m_data) && this.m_data.isInput && IsDefined(this.m_textInput)
+    && Equals(this.m_data.title, GetLocalizedTextByKey(n"Mod-HudPainter-Save-Preset-Title")) {
+    let name = this.m_textInput.GetText();
+    if NotEquals(name, "") && NotEquals(StrLower(name), "default") {
+      saveMenu = ChromeAxisHudPainterMenu.Get();
+      if IsDefined(saveMenu) {
+        saveMenu.TrackPresetSave(name);
+      }
+    }
+  }
+  wrappedMethod(result);
+  if IsDefined(saveMenu) {
+    saveMenu.FinishPresetSave();
+  }
+}
+
+@if(ModuleExists("HudPainter"))
 class ChromeAxisHudPainterSection extends inkComponent {
   private let french: Bool;
   private let border: wref<ComponentColorItem>;
   private let transmission: wref<ComponentColorItem>;
-  private let applyButton: wref<SimpleButton>;
+  private let selectedColor: ref<HudPainterColorItem>;
   private let message: wref<inkText>;
 
   protected cb func OnCreate() -> ref<inkWidget> {
@@ -245,56 +446,58 @@ class ChromeAxisHudPainterSection extends inkComponent {
     this.border = this.AddColor(panel, this.french ? "Contour du badge" : "Badge outline", defaults.border, palette.border);
     this.transmission = this.AddColor(panel, this.french ? "Texte de la boîte" : "Gearbox text", defaults.transmission, palette.transmission);
 
-    let actions = new inkHorizontalPanel();
-    actions.SetFitToContent(true);
-    actions.SetMargin(32.0, 4.0, 0.0, 0.0);
-    actions.Reparent(panel);
-
-    let button = SimpleButton.Create();
-    button.SetText(this.french ? "Appliquer" : "Apply");
-    button.ToggleAnimations(true);
-    button.ToggleSounds(true);
-    button.Reparent(actions);
-    button.GetRootWidget().SetSize(Vector2(265.0, 65.0));
-    button.RegisterToCallback(n"OnBtnClick", this, n"OnApply");
-    this.applyButton = button;
-
-    this.message = this.AddLabel(actions, "", 24);
-    this.message.SetMargin(16.0, 0.0, 0.0, 0.0);
-    this.message.SetVAlign(inkEVerticalAlign.Center);
+    this.message = this.AddLabel(panel, this.french ? "Enregistrement automatique" : "Autosave enabled", 24);
+    this.message.SetMargin(32.0, 2.0, 0.0, 0.0);
   }
 
   protected cb func OnUninitialize() {
-    if IsDefined(this.applyButton) {
-      this.applyButton.UnregisterFromCallback(n"OnBtnClick", this, n"OnApply");
+    let menu = ChromeAxisHudPainterMenu.Get();
+    if IsDefined(menu) {
+      menu.FlushColors();
     }
   }
 
-  protected cb func OnApply(widget: wref<inkWidget>) -> Bool {
-    if !IsDefined(this.border) || !IsDefined(this.transmission) || !IsDefined(this.message) {
-      return false;
-    }
-    let border = this.border.GetData();
-    let transmission = this.transmission.GetData();
-    let menu = ChromeAxisHudPainterMenu.Get();
-    if !IsDefined(menu) || !menu.SavePalette(border.customColor, transmission.customColor) {
-      this.message.SetText(this.french ? "Enregistrement impossible" : "Could not save colors");
-      return false;
-    }
+  protected cb func OnHudPainterColorSelected(event: ref<HudPainterColorSelected>) -> Bool {
+    this.selectedColor = event.data;
+    return false;
+  }
 
-    border.presetColor = border.customColor;
-    transmission.presetColor = transmission.customColor;
-    this.border.RefreshItemData();
-    this.transmission.RefreshItemData();
-    this.message.SetText(this.french ? "Couleurs enregistrées" : "Colors saved");
-    let systems = GameInstance.GetScriptableSystemsContainer(GetGameInstance());
-    if IsDefined(systems) {
-      let context = systems.Get(n"ChromeAxisDrivingContext") as ChromeAxisDrivingContext;
-      if IsDefined(context) {
-        context.ApplyHudPalette();
+  protected cb func OnHudPainterColorChanged(event: ref<HudPainterColorChanged>) -> Bool {
+    if !IsDefined(this.border) || !IsDefined(this.transmission) || !IsDefined(this.selectedColor)
+      || !Equals(event.type, HudPainterColorType.Default) || !Equals(event.name, this.selectedColor.name) {
+      return false;
+    }
+    let isBorder = Equals(this.selectedColor, this.border.GetData());
+    if isBorder || Equals(this.selectedColor, this.transmission.GetData()) {
+      let menu = ChromeAxisHudPainterMenu.Get();
+      if IsDefined(menu) {
+        menu.ChangeColor(isBorder, event.color);
       }
     }
-    return true;
+    return false;
+  }
+
+  protected cb func OnHudPainterColorPreviewAvailable(event: ref<HudPainterColorPreviewAvailable>) -> Bool {
+    if !IsDefined(this.border) || !IsDefined(this.transmission) || !IsDefined(this.message) || !IsDefined(event.color) {
+      return false;
+    }
+    let isBorder = Equals(event.color, this.border.GetData());
+    if isBorder || Equals(event.color, this.transmission.GetData()) {
+      let menu = ChromeAxisHudPainterMenu.Get();
+      if IsDefined(menu) {
+        menu.ChangeColor(isBorder, event.color.customColor);
+        if !menu.FlushColors() {
+          this.message.SetText(this.french ? "Enregistrement impossible" : "Could not save colors");
+        } else {
+          this.border.GetData().presetColor = this.border.GetData().customColor;
+          this.transmission.GetData().presetColor = this.transmission.GetData().customColor;
+          this.border.RefreshItemData();
+          this.transmission.RefreshItemData();
+          this.message.SetText(this.french ? "Enregistrement automatique" : "Autosave enabled");
+        }
+      }
+    }
+    return false;
   }
 
   private func AddColor(parent: ref<inkCompoundWidget>, label: String, defaultColor: HDRColor, savedColor: HDRColor) -> ref<ComponentColorItem> {
@@ -339,8 +542,10 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let hudBorder: array<wref<inkRectangle>>;
   private let hudDivider: wref<inkRectangle>;
   private let hudLogo: wref<inkImage>;
-  private let hudLogoReady: Bool;
-  private let hudLogoRetry: Int32;
+  private let hudInnerFrame: wref<inkImage>;
+  private let hudLogoFrame: wref<inkImage>;
+  private let hudGraphicsReady: Bool;
+  private let hudGraphicsRetries: Int32;
   private let hudLabel: wref<inkText>;
   private let hudLabelShadow: wref<inkText>;
   private let hudGearLabel: wref<inkText>;
@@ -385,8 +590,10 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     ArrayClear(this.hudBorder);
     this.hudDivider = null;
     this.hudLogo = null;
-    this.hudLogoReady = false;
-    this.hudLogoRetry = 0;
+    this.hudInnerFrame = null;
+    this.hudLogoFrame = null;
+    this.hudGraphicsReady = false;
+    this.hudGraphicsRetries = 0;
     this.hudLabel = null;
     this.hudLabelShadow = null;
     this.hudGearLabel = null;
@@ -449,7 +656,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
 
     this.hudBadge = badge;
     this.hudLogo = logo;
-    this.hudLogoRetry = 30;
+    this.hudGraphicsReady = false;
+    this.hudGraphicsRetries = 30;
     this.hudLabel = label;
     this.hudLabelShadow = shadow;
     this.hudGearLabel = gearLabel;
@@ -458,26 +666,42 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.ApplyHudPalette();
     this.ApplyHudStatus();
     this.ApplyHudGear();
-    this.TryShowHudLogo();
+    this.TryShowHudGraphics();
     return true;
   }
 
-  private func TryShowHudLogo() -> Void {
-    if this.hudLogoReady || this.hudLogoRetry <= 0 || !IsDefined(this.hudLogo) {
+  private func TryShowHudGraphics() -> Void {
+    if this.hudGraphicsReady || this.hudGraphicsRetries <= 0 {
       return;
     }
-    this.hudLogoRetry -= 1;
-    // Ink can show a solid placeholder until the atlas part is available.
-    if this.hudLogo.IsTexturePartExist(n"logo") && this.hudLogo.SetTexturePart(n"logo") {
-      this.hudLogoReady = true;
-      this.hudLogo.SetVisible(true);
+    this.hudGraphicsRetries -= 1;
+    let logoReady = this.TryShowHudImage(this.hudLogo, n"logo");
+    let frameReady = this.TryShowHudImage(this.hudInnerFrame, n"status_cell_fg");
+    let cornersReady = this.TryShowHudImage(this.hudLogoFrame, n"item_grid_frame");
+    this.hudGraphicsReady = logoReady && frameReady && cornersReady;
+  }
+
+  private func TryShowHudImage(image: wref<inkImage>, part: CName) -> Bool {
+    if !IsDefined(image) {
+      return false;
     }
+    if image.IsVisible() {
+      return true;
+    }
+    // Ink can show a solid placeholder while the atlas loads.
+    if !image.IsTexturePartExist(part) || !image.SetTexturePart(part) {
+      return false;
+    }
+    image.SetVisible(true);
+    return true;
   }
 
   private func BuildHudFrame(badge: ref<inkCanvas>) -> Void {
     let panel = HDRColor(0.024, 0.039, 0.059, 0.72);
     this.CreateHudRect(badge, 0.0, 2.0, 227.0, 44.0).SetTintColor(panel);
     this.CreateHudRect(badge, 227.0, 2.0, 9.0, 36.0).SetTintColor(panel);
+    this.hudInnerFrame = this.CreateHudDetail(badge, Vector2(4.0, 6.0), Vector2(223.0, 36.0), 0.44, true);
+    this.hudLogoFrame = this.CreateHudDetail(badge, Vector2(6.0, 7.0), Vector2(32.0, 32.0), 0.38, false);
     ArrayClear(this.hudBorder);
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 2.0, 236.0, 1.0));
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 0.0, 3.0, 1.0, 42.0));
@@ -487,6 +711,23 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 227.0, 38.0, 1.0, 7.0));
     ArrayPush(this.hudBorder, this.CreateHudRect(badge, 12.0, 0.0, 16.0, 2.0));
     this.hudDivider = this.CreateHudRect(badge, 173.0, 8.0, 1.0, 31.0);
+  }
+
+  private func CreateHudDetail(badge: ref<inkCanvas>, position: Vector2, size: Vector2, opacity: Float, nineSlice: Bool) -> ref<inkImage> {
+    let detail = new inkImage();
+    detail.SetVisible(false);
+    detail.SetInteractive(false);
+    detail.SetAtlasResource(r"base\\gameplay\\gui\\common\\shapes\\atlas_shapes_sync.inkatlas");
+    detail.useNineSliceScale = nineSlice;
+    detail.SetBrushTileType(inkBrushTileType.NoTile);
+    detail.SetContentHAlign(inkEHorizontalAlign.Fill);
+    detail.SetContentVAlign(inkEVerticalAlign.Fill);
+    detail.SetTintColor(HDRColor(0.48, 0.53, 0.59, 1.0));
+    detail.SetOpacity(opacity);
+    detail.SetSize(size);
+    detail.SetTranslation(position);
+    detail.Reparent(badge);
+    return detail;
   }
 
   public func ApplyHudPalette() -> Void {
@@ -586,14 +827,14 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     if IsDefined(this.hudBadge) {
       if changed {
         this.ApplyHudStatus();
-        if !this.hudLogoReady {
-          this.hudLogoRetry = 30;
+        if !this.hudGraphicsReady {
+          this.hudGraphicsRetries = 30;
         }
       }
       if changed || gearLineChanged {
         this.ApplyHudGear();
       }
-      this.TryShowHudLogo();
+      this.TryShowHudGraphics();
     }
     if this.hudRetry > 0 {
       this.hudRetry -= 1;
