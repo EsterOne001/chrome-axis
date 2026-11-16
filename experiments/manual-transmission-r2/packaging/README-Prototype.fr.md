@@ -18,11 +18,11 @@ Si l’ancienne DLL est encore présente, le mode manuel R2 reste désactivé et
 
 1. Dans le dossier du jeu, créez un fichier vide `arm.txt` dans `red4ext/plugins/chrome_axis/manual-transmission-probe`.
 2. Lancez le jeu. Désactivez la simulation clavier de Chrome Axis pour utiliser les commandes habituelles de Cyberpunk, puis faites un passage en boîte automatique avec une accélération modérée sur une route droite et dégagée. Pour comparer, reprenez le même tronçon dans le même sens avec la même voiture.
-3. Lorsqu’un rapport avant compatible est engagé, maintenez **F8** environ **0,2 seconde**, puis relâchez. Utilisez **Page précédente** pour monter un rapport et **Page suivante** pour descendre. Relâchez chaque touche avant la commande suivante.
+3. Pour tester la bascule à l’arrêt, restez au volant avec le jeu au premier plan. Maintenez **F8** environ **0,2 seconde**, puis relâchez. Vous pouvez sélectionner le mode manuel au point mort ou avant que les données de rapport soient disponibles. **F8** sélectionne uniquement le mode de boîte. Une fois que le jeu a engagé un rapport avant compatible, utilisez **Page précédente** pour monter un rapport et **Page suivante** pour descendre parmi les rapports compatibles. Relâchez chaque touche avant la commande suivante.
 4. Appuyez de nouveau sur **F8** pour reprendre les passages automatiques. Après une interruption de conduite ou un retour au jeu, réactivez le mode manuel avec **F8**.
 5. Quittez le jeu normalement. Copiez `trials.csv` et `status.txt` depuis le dossier où se trouve `arm.txt`, puis retirez `arm.txt` avant le prochain lancement. Le premier armement après un redémarrage remplace l’ancien CSV.
 
-Sous le logo Chrome Axis, le HUD associe le rapport engagé au mode de boîte, comme dans `RAPPORT 3 · AUTO` et `RAPPORT 3 · MANUEL`. Le mode s’actualise dès que la bascule avec **F8** est acceptée. Un tiret remplace le numéro en l’absence de rapport disponible.
+Sous le logo Chrome Axis, le HUD associe le rapport engagé au mode de boîte, comme dans `RAPPORT 3 · AUTO` et `RAPPORT 3 · MANUEL`. Le mode s’actualise dès que la bascule avec **F8** est acceptée. En l’absence de rapport disponible, le mode s’affiche à côté d’un tiret, comme dans `RAPPORT — · MANUEL`.
 
 Le prototype transmet les demandes admissibles de passage à un rapport avant au jeu quelle que soit la vitesse ou le régime. Le jeu décide de l’engagement et applique ses délais de changement de rapport. Il conserve la gestion du point mort et de la marche arrière.
 

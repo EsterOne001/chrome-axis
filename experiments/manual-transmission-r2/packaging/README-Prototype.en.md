@@ -18,11 +18,11 @@ If the old DLL is still present, R2 manual mode remains disabled and the new `st
 
 1. In the game folder, create an empty `arm.txt` file in `red4ext/plugins/chrome_axis/manual-transmission-probe`.
 2. Launch the game. Disable Chrome Axis keyboard simulation to use the usual Cyberpunk controls, then complete an automatic baseline run with moderate throttle on a clear, straight road. For comparison, use the same car, stretch of road and direction for the next run.
-3. With a supported forward gear engaged, hold **F8** for about **0.2 seconds**, then release it. Use **Page Up** to shift up and **Page Down** to shift down. Release each key before entering the next command.
+3. To test the toggle while stationary, stay in the driver’s seat with the game in the foreground. Hold **F8** for about **0.2 seconds**, then release it. You can select manual mode in neutral or while gear data is unavailable. **F8** only selects the transmission mode. Once the game has engaged a supported forward gear, use **Page Up** to shift up and **Page Down** to shift down through the supported gears. Release each key before entering the next command.
 4. Press **F8** again to resume automatic shifting. After a driving interruption or a return to the game, use **F8** to enable manual mode again.
 5. Quit the game normally. Copy `trials.csv` and `status.txt` from the folder containing `arm.txt`, then remove `arm.txt` before the next launch. The first time the prototype is armed after a game restart replaces the previous CSV.
 
-Under the Chrome Axis logo, the HUD shows the engaged gear and transmission mode together, as in `GEAR 3 · AUTO` and `GEAR 3 · MANUAL`. The mode updates when the **F8** toggle is accepted. A dash replaces the gear number when no gear is available.
+Under the Chrome Axis logo, the HUD shows the engaged gear and transmission mode together, as in `GEAR 3 · AUTO` and `GEAR 3 · MANUAL`. The mode updates when the **F8** toggle is accepted. When no gear is available, the mode appears beside a dash, as in `GEAR — · MANUAL`.
 
 The prototype sends eligible forward shift requests to the game at any road speed or engine RPM. The game decides whether to engage the gear and applies its own shift timing. It continues to handle neutral and reverse.
 

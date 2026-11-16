@@ -2,6 +2,27 @@
 
 namespace chrome_axis {
 
+struct ManualModeToggle {
+    bool update(bool pressed) noexcept {
+        if (!pressed) {
+            released_ = true;
+            return false;
+        }
+        if (!released_)
+            return false;
+
+        released_ = false;
+        manual_ = !manual_;
+        return true;
+    }
+
+    bool active() const noexcept { return manual_; }
+
+private:
+    bool released_{};
+    bool manual_{};
+};
+
 struct ShiftKeys {
     int update(bool up, bool down) noexcept {
         if (!released_) {

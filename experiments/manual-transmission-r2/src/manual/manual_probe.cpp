@@ -23,6 +23,7 @@ using namespace std::chrono_literals;
 
 constexpr auto markerPollInterval = 250ms;
 constexpr auto maximumSampleGap = 450ms;
+constexpr auto maximumGearboxSampleAgeMs = 250ULL;
 constexpr auto sessionTimeout = 20min;
 constexpr double metresPerSecondToMph = 2.2369363;
 
@@ -44,12 +45,10 @@ struct Probe {
     int lastEngaged{-1};
     float lastSpeed{-1.0f};
     chrome_axis::ShiftKeys keys;
+    chrome_axis::ManualModeToggle mode;
     bool initialized{};
     bool markerPresent{};
     bool recording{};
-    bool toggleReleased{};
-    bool toggleDown{};
-    bool manual{};
 };
 
 Probe probe;
@@ -69,10 +68,8 @@ void setStatus(const char* message) noexcept {
 
 void pause(const char* message) noexcept {
     manual_backend::publish(nullptr, false, 0);
-    probe.manual = false;
+    probe.mode = {};
     probe.keys = {};
-    probe.toggleReleased = false;
-    probe.toggleDown = false;
     probe.lastSpeed = -1.0f;
     probe.lastEngaged = -1;
     if (probe.vehicle) {
@@ -163,12 +160,16 @@ void writeSample(Clock::time_point now, const manual_backend::Snapshot& native, 
     if (flush)
         probe.lastFlush = now;
     if (std::fprintf(probe.csv, "%u,%u,%.3f,%s,%d,%d,%d,%s,%s,%s,%d,%d,%d,%u,%s,%u\n",
-                     probe.session, probe.segment, elapsed, event, static_cast<int>(probe.manual),
+                     probe.session, probe.segment, elapsed, event, static_cast<int>(probe.mode.active()),
                      native.engagedGear, native.targetGear, rpm, mph, acceleration, native.gearCount,
                      requested, native.requestedGear, native.shiftSerial, native.outcome,
                      native.suppressedAutoShifts) < 0 || (flush && std::fflush(probe.csv) != 0)) {
         stop("Unable to write trials.csv. Check file access and available space.");
     }
+}
+
+bool hasFreshGearboxSample(const manual_backend::Snapshot& native) noexcept {
+    return native.sampledAt && GetTickCount64() - native.sampledAt < maximumGearboxSampleAgeMs;
 }
 
 void sample(Vehicle* vehicle, Clock::time_point now) noexcept {
@@ -179,48 +180,35 @@ void sample(Vehicle* vehicle, Clock::time_point now) noexcept {
         probe.lastHeartbeat = now;
         ++probe.segment;
         manual_backend::publish(vehicle, false, 0);
-        setStatus("Waiting for native gearbox telemetry. F8 toggles manual in a forward gear.");
+        setStatus("F8 selects automatic or manual while stopped or moving.");
         return;
     }
 
     probe.lastHeartbeat = now;
     const auto native = manual_backend::snapshot();
-    const bool toggle = pressed(VK_F8);
-    const bool toggleEdge = probe.toggleReleased && toggle && !probe.toggleDown;
-    probe.toggleReleased |= !toggle;
-    probe.toggleDown = toggle;
-
+    const bool modeChanged = probe.mode.update(pressed(VK_F8));
+    const bool manual = probe.mode.active();
     const char* event = native.engagedGear != probe.lastEngaged ? "native_gear_changed" : "sample";
-    if (probe.manual && native.gearCount < 2) {
-        probe.manual = false;
+    if (modeChanged) {
         probe.keys = {};
-        event = "manual_lease_expired";
-        setStatus("Manual paused. Drive in a forward gear and press F8 again.");
-    } else if (toggleEdge) {
-        probe.keys = {};
-        if (probe.manual) {
-            probe.manual = false;
-            event = "manual_off";
-            setStatus("Automatic restored. F8 enables experimental manual mode in a forward gear.");
-        } else if (chrome_axis::isSupportedForwardGear(native.engagedGear, native.gearCount)) {
-            probe.manual = true;
-            event = "manual_on";
-            setStatus("Manual active. Page Up / Page Down change gears. F8 restores automatic.");
-        } else {
-            event = "manual_unavailable";
-            setStatus("Manual unavailable. Wait for a supported forward gear, then press F8 again.");
-        }
-    } else if (native.gearCount > 1 && probe.lastEngaged == -1 && native.engagedGear >= 0 && !probe.manual) {
-        setStatus("Recording native automatic gearbox. F8 toggles manual in a forward gear.");
+        event = manual ? "manual_on" : "manual_off";
+        setStatus(manual ? "Manual selected. Page Up / Page Down change gears once a forward gear is engaged."
+                         : "Automatic restored. F8 can switch modes while stopped or moving.");
     }
 
-    const int delta = probe.manual ? probe.keys.update(pressed(VK_PRIOR), pressed(VK_NEXT)) : 0;
-    const int requested = chrome_axis::requestedGear(native.engagedGear, native.gearCount, delta);
-    if (delta != 0)
-        event = requested > 0 ? (delta > 0 ? "request_up" : "request_down") : "outside_range";
-    manual_backend::publish(vehicle, probe.manual, requested > 0 ? delta : 0);
+    const int delta = manual ? probe.keys.update(pressed(VK_PRIOR), pressed(VK_NEXT)) : 0;
+    int requested{};
+    if (delta != 0) {
+        if (hasFreshGearboxSample(native) && chrome_axis::isSupportedForwardGear(native.engagedGear, native.gearCount)) {
+            requested = chrome_axis::requestedGear(native.engagedGear, native.gearCount, delta);
+            event = requested > 0 ? (delta > 0 ? "request_up" : "request_down") : "outside_range";
+        } else {
+            event = "gear_unavailable";
+        }
+    }
+    manual_backend::publish(vehicle, manual, requested > 0 ? delta : 0);
     probe.lastEngaged = native.engagedGear;
-    writeSample(now, native, event, requested, delta != 0 || toggleEdge);
+    writeSample(now, native, event, requested, delta != 0 || modeChanged);
 }
 } // namespace
 
@@ -281,13 +269,12 @@ void heartbeat(Vehicle* vehicle, bool foreground) noexcept {
 std::int32_t displayGear(Vehicle* vehicle) noexcept {
     constexpr std::int32_t unavailable = -2;
     constexpr int maximumDisplayGear = 8;
-    constexpr auto maximumDisplayAgeMs = 250ULL;
     const std::unique_lock lock(probe.mutex, std::try_to_lock);
     if (!lock || !hasCurrentDriver(vehicle))
         return unavailable;
 
     const auto native = manual_backend::snapshot();
-    if (!native.sampledAt || GetTickCount64() - native.sampledAt >= maximumDisplayAgeMs ||
+    if (!hasFreshGearboxSample(native) ||
         native.gearCount < 2 || native.engagedGear < -1 || native.engagedGear > maximumDisplayGear ||
         native.engagedGear >= native.gearCount)
         return unavailable;
@@ -297,7 +284,7 @@ std::int32_t displayGear(Vehicle* vehicle) noexcept {
 
 bool isManualModeActive(Vehicle* vehicle) noexcept {
     const std::unique_lock lock(probe.mutex, std::try_to_lock);
-    return lock && hasCurrentDriver(vehicle) && probe.manual;
+    return lock && hasCurrentDriver(vehicle) && probe.mode.active();
 }
 
 void shutdown() noexcept {

@@ -23,6 +23,28 @@ int main() {
     static_assert(requestedGear(4, -1, 1) == 0);
     static_assert(requestedGear(3, 7, 0) == 0);
 
+    static_assert(requestedGear(0, 8, 1) == 0);
+    static_assert(requestedGear(-1, 8, 1) == 0);
+    static_assert(requestedGear(1, 0, 1) == 0);
+
+    chrome_axis::ManualModeToggle mode;
+    if (mode.active() || mode.update(true) || mode.update(false) ||
+        !mode.update(true) || !mode.active() || mode.update(true) ||
+        mode.update(false) || !mode.update(true) || mode.active()) {
+        std::fputs("Manual mode selection edge failed\n", stderr);
+        return 1;
+    }
+    if (mode.update(false) || !mode.update(true) || !mode.active()) {
+        std::fputs("Manual mode reactivation failed\n", stderr);
+        return 1;
+    }
+    mode = {};
+    if (mode.active() || mode.update(true) || mode.update(false) ||
+        !mode.update(true) || !mode.active()) {
+        std::fputs("Manual mode reset or release rearm failed\n", stderr);
+        return 1;
+    }
+
     chrome_axis::ShiftKeys keys;
     if (keys.update(true, false) != 0 || keys.update(false, false) != 0 ||
         keys.update(true, false) != 1 || keys.update(true, false) != 0 ||
