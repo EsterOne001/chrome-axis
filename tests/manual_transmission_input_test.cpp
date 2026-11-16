@@ -299,10 +299,13 @@ bool nativePaddlesAndClutchRespectArming()
     if (assist.apply({}, intent.gear, delta) || intent.gear != -1)
         return false;
     intent.gear = 3;
-    if (!assist.apply(0.6f, intent.gear, delta) || intent.gear != -1)
+    if (!assist.apply(0.649f, intent.gear, delta) || intent.gear != -1)
         return false;
     intent.gear = 3;
-    if (assist.apply(0.7f, intent.gear, delta) || intent.gear != 3)
+    if (assist.apply(0.65f, intent.gear, delta) || intent.gear != 3)
+        return false;
+    intent.gear = -1;
+    if (assist.apply({}, intent.gear, delta) || intent.gear != -1)
         return false;
     intent.gear.reset();
     delta = 1;

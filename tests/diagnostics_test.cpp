@@ -307,19 +307,39 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
         .blockerCount = 5,
     };
     publisher.recordUsbEvent(blockers);
+    const auto recordLayout = [&](std::uint64_t sampledAt, DiagnosticUsbEventKind kind,
+                                  std::string_view operation, HRESULT result) {
+        DiagnosticUsbEvent event{
+            .sampledAt = sampledAt, .result = static_cast<std::uint32_t>(result),
+            .kind = kind, .mode = DiagnosticMode::usb, .deviceAxisMask = 0b001,
+        };
+        std::ranges::copy(operation, event.operation.begin());
+        publisher.recordUsbEvent(event);
+    };
+    recordLayout(tick + 41, DiagnosticUsbEventKind::layoutPending, "GetObjectInfo axis", E_PENDING);
+    recordLayout(tick + 43, DiagnosticUsbEventKind::layoutRecovered, "Read handle GetObjectInfo axis", S_OK);
+    recordLayout(tick + 42, DiagnosticUsbEventKind::layoutAcquireDenied, "Probe Acquire", E_ACCESSDENIED);
+    recordLayout(tick + 44, DiagnosticUsbEventKind::layoutMissing, "GetObjectInfo button",
+                 HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
     first.transmission.engagedGear = -1;
     first.transmission.manual = true;
     publisher.publish(first, 1);
     const auto resumed = reader.read();
     if (resumed.lastDrive.transmission != first.transmission || resumed.eventCount != 6 ||
-        resumed.usbEventCount != 1 || resumed.usbEvents[0].blockerCount != blockers.blockerCount ||
-        !resumed.usbEvents[0].blockers[1].clutch || !resumed.usbEvents[0].blockers[3].progressiveHandbrake)
+        resumed.usbEventCount != 5 || resumed.usbEvents[0].blockerCount != blockers.blockerCount ||
+        !resumed.usbEvents[0].blockers[1].clutch || !resumed.usbEvents[0].blockers[3].progressiveHandbrake ||
+        resumed.usbEvents[2].kind != DiagnosticUsbEventKind::layoutAcquireDenied ||
+        resumed.usbEvents[3].kind != DiagnosticUsbEventKind::layoutRecovered)
         return false;
 
     const std::array rows{
         DiagnosticCaptureRecord{.driving = {.sampledAt = tick, .mode = DiagnosticMode::usb,
                                             .transmission = first.transmission}},
         DiagnosticCaptureRecord{.usb = resumed.usbEvents[0], .usbIncident = true},
+        DiagnosticCaptureRecord{.usb = resumed.usbEvents[1], .usbIncident = true},
+        DiagnosticCaptureRecord{.usb = resumed.usbEvents[2], .usbIncident = true},
+        DiagnosticCaptureRecord{.usb = resumed.usbEvents[3], .usbIncident = true},
+        DiagnosticCaptureRecord{.usb = resumed.usbEvents[4], .usbIncident = true},
         DiagnosticCaptureRecord{.driving = {.sampledAt = tick + 50, .mode = waiting.mode,
                                             .transmission = waiting.transmission}},
         DiagnosticCaptureRecord{.driving = {.sampledAt = tick + 51, .mode = DiagnosticMode::usb,
@@ -342,7 +362,11 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
         text.find(",modifier_blocked,0,5,") == std::string::npos ||
         text.find(",selector_ambiguous,,") == std::string::npos ||
         text.find(",selector_ambiguous,0,0,") == std::string::npos ||
-        text.find(",discrete_overflow,") == std::string::npos)
+        text.find(",discrete_overflow,") == std::string::npos ||
+        text.find(",layout_pending,\"GetObjectInfo axis\",0x8000000A,") == std::string::npos ||
+        text.find(",layout_acquire_denied,\"Probe Acquire\",0x80070005,") == std::string::npos ||
+        text.find(",layout_recovered,\"Read handle GetObjectInfo axis\",0x00000000,") == std::string::npos ||
+        text.find(",layout_missing,\"GetObjectInfo button\",0x80070002,") == std::string::npos)
         return false;
     std::istringstream lines(text);
     std::string row;
@@ -676,6 +700,8 @@ int run()
                 .kind = DiagnosticUsbEventKind::pollExpired, .mode = DiagnosticMode::usb,
             });
         }
+        publisher.recordUsbEvent({.sampledAt = usbTick - 1, .kind = DiagnosticUsbEventKind::layoutPending,
+                                  .mode = DiagnosticMode::usb});
         auto pending = snapshot;
         pending.axes[0].state = DiagnosticAxisState::temporarilyUnavailable;
         pending.axes[0].inputAvailable = 0;

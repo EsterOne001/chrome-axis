@@ -66,7 +66,10 @@ bool isDeviceId(std::string_view id) noexcept;
 using DirectInputDiagnostic = void (*)(std::string_view deviceId, std::string_view stage,
     HRESULT result, bool available);
 
-enum class DirectInputReadEventKind : std::uint8_t { slow, pending, unavailable, recovered, sampleExpired, discreteOverflow };
+enum class DirectInputReadEventKind : std::uint8_t {
+    slow, pending, unavailable, recovered, sampleExpired, discreteOverflow,
+    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered
+};
 
 struct DirectInputReadEvent {
     DirectInputReadEventKind kind{};

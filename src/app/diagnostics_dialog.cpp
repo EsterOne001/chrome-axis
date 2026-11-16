@@ -494,6 +494,13 @@ bool slowFeedbackEvent(const DiagnosticUsbEvent& event)
     return event.kind == DiagnosticUsbEventKind::deviceSlow && usbOperation(event).starts_with("FFB ");
 }
 
+bool usbLayoutFailureCode(const DiagnosticUsbEvent& event) noexcept
+{
+    return FAILED(static_cast<HRESULT>(event.result)) &&
+        (event.kind == DiagnosticUsbEventKind::layoutPending || event.kind == DiagnosticUsbEventKind::layoutAcquireDenied ||
+         event.kind == DiagnosticUsbEventKind::layoutMissing);
+}
+
 const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
 {
     switch (event.kind) {
@@ -510,6 +517,10 @@ const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
     case DiagnosticUsbEventKind::menuPaused: return tr(Text::DlgDiagnosticsUsbEventMenu);
     case DiagnosticUsbEventKind::directInputReopened: return tr(Text::DlgDiagnosticsUsbEventReopened);
     case DiagnosticUsbEventKind::discreteOverflow: return tr(Text::DlgDiagnosticsUsbEventDiscreteOverflow);
+    case DiagnosticUsbEventKind::layoutPending: return tr(Text::DlgDiagnosticsUsbEventLayoutPending);
+    case DiagnosticUsbEventKind::layoutAcquireDenied: return tr(Text::DlgDiagnosticsUsbEventLayoutAcquireDenied);
+    case DiagnosticUsbEventKind::layoutMissing: return tr(Text::DlgDiagnosticsUsbEventLayoutMissing);
+    case DiagnosticUsbEventKind::layoutRecovered: return tr(Text::DlgDiagnosticsUsbEventLayoutRecovered);
     }
     return unavailableValue;
 }
@@ -558,6 +569,10 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     case DiagnosticUsbEventKind::devicePending:
     case DiagnosticUsbEventKind::deviceUnavailable:
     case DiagnosticUsbEventKind::deviceRecovered:
+    case DiagnosticUsbEventKind::layoutPending:
+    case DiagnosticUsbEventKind::layoutAcquireDenied:
+    case DiagnosticUsbEventKind::layoutMissing:
+    case DiagnosticUsbEventKind::layoutRecovered:
     case DiagnosticUsbEventKind::discreteOverflow: {
         const auto id = bounded(event.deviceId);
         const auto device = std::ranges::find(devices, id, &DeviceInfo::id);
@@ -576,7 +591,8 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
                 (character >= '0' && character <= '9') || character == ' ';
         }))
             append(fromUtf8(operation));
-        if (event.kind == DiagnosticUsbEventKind::deviceUnavailable || event.kind == DiagnosticUsbEventKind::devicePending)
+        if (event.kind == DiagnosticUsbEventKind::deviceUnavailable || event.kind == DiagnosticUsbEventKind::devicePending ||
+            usbLayoutFailureCode(event))
             append(std::format(L"0x{:08X}", event.result));
         break;
     }
@@ -1279,6 +1295,8 @@ void refresh(HWND window, DialogState& state)
                 detail += usbEventDetails(latest, state.devices);
             } else {
                 detail += L" · " + eventAge(latest.sampledAt, now);
+                if (usbLayoutFailureCode(latest))
+                    detail += std::format(L" · 0x{:08X}", latest.result);
             }
             if (latest.kind == DiagnosticUsbEventKind::commandsWaiting &&
                 (latest.accessories == DiagnosticAccessoryState::modifierBlocked ||

@@ -8,6 +8,10 @@
 
 namespace chrome_axis {
 
+inline bool objectProbeDeferred(HRESULT result) noexcept {
+    return result == E_PENDING || result == DIERR_NOTACQUIRED;
+}
+
 // A refused acquisition must not skip a fresh metadata probe. Some drivers
 // briefly return E_PENDING even when the next GetObjectInfo works unacquired.
 template <class Acquire, class Refresh, class Release>
@@ -29,24 +33,34 @@ public:
         if (unknown.none())
             return;
         for (std::size_t index = 0; index < Count; ++index) {
-            if (!unknown[index] || now < retryAt_[index])
-                continue;
-            const auto [result, present, completedAt] = probe(index);
-            if (SUCCEEDED(result) || result == DIERR_OBJECTNOTFOUND) {
-                known_.set(index);
-                present_.set(index, SUCCEEDED(result) && present);
-            } else {
-                retryAt_[index] = completedAt + std::chrono::milliseconds(500);
-            }
+            if (unknown[index])
+                refreshOne(index, now, probe);
         }
     }
 
+    template <class Probe>
+    bool refreshOne(std::size_t index, Clock::time_point now, Probe&& probe) {
+        if (known_[index] || now < retryAt_[index])
+            return false;
+        const auto [result, present, completedAt] = probe(index);
+        deferred_.set(index, objectProbeDeferred(result));
+        if (SUCCEEDED(result) || result == DIERR_OBJECTNOTFOUND) {
+            known_.set(index);
+            present_.set(index, SUCCEEDED(result) && present);
+        } else {
+            retryAt_[index] = completedAt + std::chrono::milliseconds(500);
+        }
+        return true;
+    }
+
     const std::bitset<Count>& present() const noexcept { return present_; }
+    const std::bitset<Count>& deferred() const noexcept { return deferred_; }
     std::bitset<Count> pending() const noexcept { return ~known_; }
 
 private:
     std::bitset<Count> known_;
     std::bitset<Count> present_;
+    std::bitset<Count> deferred_;
     std::array<Clock::time_point, Count> retryAt_{};
 };
 

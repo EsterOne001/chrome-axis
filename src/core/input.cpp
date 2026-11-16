@@ -28,6 +28,8 @@ using Clock = std::chrono::steady_clock;
 constexpr auto pendingGrace = std::chrono::milliseconds(100);
 constexpr auto slowInputOperation = std::chrono::milliseconds(20);
 constexpr auto slowInputReportInterval = std::chrono::seconds(1);
+constexpr auto layoutReportInterval = std::chrono::seconds(2);
+constexpr auto readHandleProbeInterval = std::chrono::milliseconds(50);
 constexpr auto forceDuration = std::chrono::milliseconds(100);
 constexpr auto forceRefresh = std::chrono::milliseconds(60);
 std::atomic<std::uint64_t> hardwareRecoverySerial{};
@@ -106,21 +108,21 @@ void probeInventoryLayout(IDirectInputDevice8W& device, DeviceInfo& info) {
             continue;
         HRESULT result{};
         info.axes[index] = hasObject(device, axisOffsets[index], DIDFT_ABSAXIS, &result);
-        info.layoutPending.axes[index] = result == E_PENDING;
+        info.layoutPending.axes[index] = objectProbeDeferred(result);
     }
     for (DWORD index = 0; index < buttonCount; ++index) {
         if (!info.layoutPending.buttons[index])
             continue;
         HRESULT result{};
         info.buttons[index] = hasObject(device, DIJOFS_BUTTON(index), DIDFT_BUTTON, &result);
-        info.layoutPending.buttons[index] = result == E_PENDING;
+        info.layoutPending.buttons[index] = objectProbeDeferred(result);
     }
     for (DWORD index = 0; index < povCount; ++index) {
         if (!info.layoutPending.povs[index])
             continue;
         HRESULT result{};
         info.povs[index] = hasObject(device, DIJOFS_POV(index), DIDFT_POV, &result);
-        info.layoutPending.povs[index] = result == E_PENDING;
+        info.layoutPending.povs[index] = objectProbeDeferred(result);
     }
 }
 
@@ -190,18 +192,23 @@ BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
     return DIENUM_CONTINUE;
 }
 
-InputPtr createDirectInput(DirectInputDiagnostic diagnostic) {
+InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = nullptr) {
     static const char moduleAnchor = 0;
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&moduleAnchor), &module)) {
+        const auto result = HRESULT_FROM_WIN32(GetLastError());
+        if (status)
+            *status = result;
         if (diagnostic)
-            diagnostic({}, "GetModuleHandleExW", HRESULT_FROM_WIN32(GetLastError()), false);
+            diagnostic({}, "GetModuleHandleExW", result, false);
         return {};
     }
     void* input = nullptr;
     const auto result = DirectInput8Create(module, DIRECTINPUT_VERSION, IID_IDirectInput8W, &input, nullptr);
+    if (status)
+        *status = result;
     InputPtr instance(SUCCEEDED(result) ? static_cast<IDirectInput8W*>(input) : nullptr);
     if (diagnostic)
         diagnostic({}, "DirectInput8Create", result, instance != nullptr);
@@ -213,7 +220,8 @@ struct OpenDevice {
 
     void release() {
         if (device) {
-            device->Unacquire();
+            if (acquired)
+                device->Unacquire();
             device.reset();
         }
         acquired = false;
@@ -221,6 +229,9 @@ struct OpenDevice {
         axes = {};
         povs = {};
         buttons = {};
+        nextReadHandleProbe = {};
+        nextReadHandleObject = 0;
+        lastLayoutEvents = {};
         ++layoutConnection;
     }
 
@@ -258,6 +269,11 @@ struct OpenDevice {
     bool reportedReadTimeout{};
     std::uint64_t recoveryToken{};
     std::uint64_t layoutConnection{};
+    Clock::time_point nextReadHandleProbe{};
+    std::size_t nextReadHandleObject{};
+    std::array<Clock::time_point,
+        static_cast<std::size_t>(DirectInputReadEventKind::layoutRecovered) -
+        static_cast<std::size_t>(DirectInputReadEventKind::layoutPending) + 1> lastLayoutEvents{};
 };
 
 class ReadObserver {
@@ -304,6 +320,19 @@ public:
         report(DirectInputReadEventKind::recovered, operation, result);
     }
 
+    void layout(DirectInputReadEventKind kind, std::string_view operation, HRESULT result) const noexcept {
+        if (!callback_)
+            return;
+        const auto now = Clock::now();
+        const auto index = static_cast<std::size_t>(kind) -
+            static_cast<std::size_t>(DirectInputReadEventKind::layoutPending);
+        auto& last = device_.lastLayoutEvents[index];
+        if (last == Clock::time_point{} || now - last >= layoutReportInterval) {
+            last = now;
+            report(kind, operation, result);
+        }
+    }
+
 private:
     void report(DirectInputReadEventKind kind, std::string_view operation, HRESULT result) const noexcept {
         callback_(context_, {kind, id_, operation, result, micros_});
@@ -316,23 +345,34 @@ private:
     std::uint64_t micros_{};
 };
 
-template <std::size_t Count, class Offset>
-bool refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& wanted,
-                    IDirectInputDevice8W& device, ReadObserver& observer, std::string_view operation,
-                    DWORD type, Offset offset) {
-    bool needsAcquisition = false;
-    layout.refresh(wanted, Clock::now(), [&](std::size_t index) {
-        bool present = false;
-        const auto result = observer.measure(operation, [&] {
-            HRESULT status{};
-            present = hasObject(device, offset(index), type, &status);
-            return status;
-        });
-        // Some drivers defer metadata on an unacquired handle without returning DIERR_NOTACQUIRED.
-        needsAcquisition |= result == DIERR_NOTACQUIRED || result == E_PENDING;
-        return std::tuple{result, present, Clock::now()};
+enum class LayoutProbe { quiet, discovery, readHandle };
+
+auto probeObject(IDirectInputDevice8W& device, ReadObserver& observer, std::string_view operation,
+                 DWORD type, DWORD offset, LayoutProbe probe) {
+    bool present = false;
+    const auto result = observer.measure(operation, [&] {
+        HRESULT status{};
+        present = hasObject(device, offset, type, &status);
+        return status;
     });
-    return needsAcquisition;
+    if (probe != LayoutProbe::quiet) {
+        if (result == DIERR_OBJECTNOTFOUND || (SUCCEEDED(result) && !present))
+            observer.layout(DirectInputReadEventKind::layoutMissing, operation, result);
+        else if (FAILED(result))
+            observer.layout(DirectInputReadEventKind::layoutPending, operation, result);
+        else if (probe == LayoutProbe::readHandle)
+            observer.layout(DirectInputReadEventKind::layoutRecovered, operation, result);
+    }
+    return std::tuple{result, present, Clock::now()};
+}
+
+template <std::size_t Count, class Offset>
+void refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& wanted,
+                    IDirectInputDevice8W& device, ReadObserver& observer, std::string_view operation,
+                    DWORD type, Offset offset, LayoutProbe probe = LayoutProbe::quiet) {
+    layout.refresh(wanted, Clock::now(), [&](std::size_t index) {
+        return probeObject(device, observer, operation, type, offset(index), probe);
+    });
 }
 
 class LayoutDiscovery {
@@ -345,58 +385,87 @@ public:
             opened_ = std::make_unique<OpenDevice>();
             id_ = request.id;
             connection_ = request.connection;
-            needsAcquisition_ = false;
         }
         auto& opened = *opened_;
         ReadObserver observer(opened, request.id, observer_, context_);
-        if (!opened.device && !open(observer))
-            return snapshot(request.wanted);
-
         const auto& wanted = request.wanted;
-        probeDeviceLayout(needsAcquisition_, [&] {
+        if (!opened.device && !open(observer)) {
+            auto result = snapshot(wanted);
+            result.fallback = result.pending;
+            return result;
+        }
+
+        bool needsAcquisition = hasDeferred(wanted);
+        const bool triedAcquisition = needsAcquisition;
+        probeDeviceLayout(needsAcquisition, [&] {
             const auto result = observer.measure("Probe Acquire", [&] { return opened.device->Acquire(); });
+            if (FAILED(result))
+                observer.layout(DirectInputReadEventKind::layoutAcquireDenied, "Probe Acquire", result);
             opened.acquired = SUCCEEDED(result);
             return opened.acquired;
         }, [&] {
-            bool deferred = refreshObjects(opened.axes, wanted.axes, *opened.device, observer,
-                "GetObjectInfo axis", DIDFT_ABSAXIS, [](std::size_t index) { return axisOffsets[index]; });
-            deferred |= refreshObjects(opened.povs, wanted.povs, *opened.device, observer,
-                "GetObjectInfo POV", DIDFT_POV, [](std::size_t index) { return static_cast<DWORD>(DIJOFS_POV(index)); });
-            deferred |= refreshObjects(opened.buttons, wanted.buttons, *opened.device, observer,
-                "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); });
-            return deferred;
+            refreshObjects(opened.axes, wanted.axes, *opened.device, observer,
+                "GetObjectInfo axis", DIDFT_ABSAXIS, [](std::size_t index) { return axisOffsets[index]; },
+                LayoutProbe::discovery);
+            refreshObjects(opened.povs, wanted.povs, *opened.device, observer,
+                "GetObjectInfo POV", DIDFT_POV, [](std::size_t index) { return static_cast<DWORD>(DIJOFS_POV(index)); },
+                LayoutProbe::discovery);
+            refreshObjects(opened.buttons, wanted.buttons, *opened.device, observer,
+                "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); },
+                LayoutProbe::discovery);
+            return hasDeferred(wanted);
         }, [&] {
             const auto result = observer.measure("Probe Unacquire", [&] { return opened.device->Unacquire(); });
             opened.acquired = false;
             if (FAILED(result))
                 opened.device.reset();
         });
-        return snapshot(wanted);
+        auto result = snapshot(wanted);
+        if (triedAcquisition) {
+            result.fallback = {opened.axes.deferred() & wanted.axes, opened.buttons.deferred() & wanted.buttons,
+                               opened.povs.deferred() & wanted.povs};
+        }
+        return result;
     }
 
 private:
     bool open(ReadObserver& observer) {
-        if (!input_)
-            input_ = createDirectInput(nullptr);
+        const auto setup = [&](std::string_view operation, auto&& call) {
+            const auto result = observer.measure(operation, call);
+            if (FAILED(result))
+                observer.layout(DirectInputReadEventKind::layoutPending, operation, result);
+            return SUCCEEDED(result);
+        };
+        if (!input_ && !setup("Probe DirectInput8Create", [&] {
+                HRESULT result{};
+                input_ = createDirectInput(nullptr, &result);
+                return input_ || FAILED(result) ? result : E_FAIL;
+            }))
+            return false;
         GUID guid{};
         if (!input_ || FAILED(parseDeviceId(id_, guid)))
             return false;
         DevicePtr device;
-        const auto created = observer.measure("Probe CreateDevice", [&] {
-            HRESULT result{};
-            device = createDevice(*input_, guid, &result);
-            return result;
-        });
-        if (FAILED(created) || !device)
+        if (!setup("Probe CreateDevice", [&] {
+                HRESULT result{};
+                device = createDevice(*input_, guid, &result);
+                return device || FAILED(result) ? result : E_FAIL;
+            }))
             return false;
-        if (FAILED(observer.measure("Probe SetDataFormat", [&] { return device->SetDataFormat(&c_dfDIJoystick2); })))
+        if (!setup("Probe SetDataFormat", [&] { return device->SetDataFormat(&c_dfDIJoystick2); }))
             return false;
-        if (FAILED(observer.measure("Probe SetCooperativeLevel", [&] {
+        if (!setup("Probe SetCooperativeLevel", [&] {
             return device->SetCooperativeLevel(window_, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
-        })))
+            }))
             return false;
         opened_->device = std::move(device);
         return true;
+    }
+
+    bool hasDeferred(const DeviceObjectSelection& wanted) const noexcept {
+        return (opened_->axes.deferred() & wanted.axes).any() ||
+               (opened_->buttons.deferred() & wanted.buttons).any() ||
+               (opened_->povs.deferred() & wanted.povs).any();
     }
 
     DeviceObjectSelection pending(const DeviceObjectSelection& wanted) const noexcept {
@@ -416,8 +485,47 @@ private:
     std::unique_ptr<OpenDevice> opened_;
     std::string id_;
     std::uint64_t connection_{};
-    bool needsAcquisition_{};
 };
+
+void probeOnReadHandle(OpenDevice& opened, const DeviceObjectSelection& wanted, ReadObserver& observer) {
+    const auto now = Clock::now();
+    if (now < opened.nextReadHandleProbe)
+        return;
+
+    constexpr auto objectCount = axisCount + buttonCount + povCount;
+    const auto probe = [&](auto& layout, const auto& flags, std::size_t index,
+                           std::string_view operation, DWORD type, DWORD offset) {
+        return flags[index] && layout.refreshOne(index, now, [&](std::size_t) {
+            return probeObject(*opened.device, observer, operation, type, offset, LayoutProbe::readHandle);
+        });
+    };
+
+    // An object that repeatedly returns pending must leave slots for other
+    // axes, buttons and hats. Never spend a batch of driver calls on one report.
+    for (std::size_t count = 0; count < objectCount; ++count) {
+        const auto object = (opened.nextReadHandleObject + count) % objectCount;
+        bool tried = false;
+        if (object < axisCount) {
+            tried = probe(opened.axes, wanted.axes, object, "Read handle GetObjectInfo axis",
+                          DIDFT_ABSAXIS, axisOffsets[object]);
+        } else if (object < axisCount + buttonCount) {
+            const auto button = static_cast<DWORD>(object - axisCount);
+            tried = probe(opened.buttons, wanted.buttons, button, "Read handle GetObjectInfo button",
+                          DIDFT_BUTTON, DIJOFS_BUTTON(button));
+        } else {
+            const auto pov = static_cast<DWORD>(object - axisCount - buttonCount);
+            tried = probe(opened.povs, wanted.povs, pov, "Read handle GetObjectInfo POV",
+                          DIDFT_POV, DIJOFS_POV(pov));
+        }
+        if (tried) {
+            const auto completedAt = Clock::now();
+            opened.nextReadHandleObject = (object + 1) % objectCount;
+            opened.nextReadHandleProbe = completedAt + (completedAt - now >= slowInputOperation
+                ? DeviceReadRecovery::reopenDelay : readHandleProbeInterval);
+            return;
+        }
+    }
+}
 
 struct WheelOutput {
     WheelOutput(DirectInputReadObserver observer, void* context) noexcept
@@ -732,7 +840,23 @@ std::optional<DeviceSample> DirectInput::sampleForDriving(const std::string& id,
     if (!impl_->drivingLayout)
         impl_->drivingLayout = std::make_unique<DeviceLayoutWorker<LayoutDiscovery>>(
             LayoutDiscovery(impl_->window, impl_->readObserver, impl_->observerContext));
-    const auto layout = impl_->drivingLayout->read(id, wanted, opened.layoutConnection);
+    // Proof from the acquired handle is valid for this connection. Exclude
+    // those objects from the separate probe, including confirmed absences.
+    const DeviceObjectSelection unresolved{wanted.axes & opened.axes.pending(),
+        wanted.buttons & opened.buttons.pending(), wanted.povs & opened.povs.pending()};
+    auto layout = impl_->drivingLayout->read(id, unresolved, opened.layoutConnection);
+    if (layout.fallback != DeviceObjectSelection{}) {
+        ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext);
+        probeOnReadHandle(opened, layout.fallback, observer);
+    }
+    // A slow fallback cannot renew the report's timestamp. The input worker
+    // still checks its lifetime before publishing any state to the game.
+    layout.present.axes |= wanted.axes & opened.axes.present();
+    layout.present.buttons |= wanted.buttons & opened.buttons.present();
+    layout.present.povs |= wanted.povs & opened.povs.present();
+    layout.pending.axes &= opened.axes.pending();
+    layout.pending.buttons &= opened.buttons.pending();
+    layout.pending.povs &= opened.povs.pending();
     sample->axesPending = layout.pending.axes;
     sample->buttonsPending = layout.pending.buttons;
     sample->povsPending = layout.pending.povs;

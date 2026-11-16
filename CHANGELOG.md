@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.67
+
+- **Détection DirectInput.** Quand le sondage séparé est bloqué, Chrome Axis vérifie les commandes encore en attente sur la connexion qui lit déjà le périphérique. La reprise conserve l’expiration des relevés et le réarmement au repos.
+- **Inventaire USB.** Une commande momentanément inaccessible reste en attente de sondage. Les commandes déjà reconnues restent disponibles.
+- **Diagnostic FR/EN.** Le rapport et le CSV distinguent la détection en attente, l’accès refusé par le pilote, la commande absente et sa confirmation par la connexion de lecture.
+
+[ZIP Vortex](out/Chromaxis-0.4.67.zip)
+
 ## Chrome Axis 0.4.66
 
 - **Transmission.** L'assistant permet de convertir un levier en H par touches vers le mode natif en réutilisant ses contacts. La montée et la descente en séquentiel natif peuvent être capturées sur deux appareils USB.

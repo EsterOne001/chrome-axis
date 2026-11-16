@@ -68,10 +68,10 @@ constexpr std::array<std::string_view, 10> axisTokens{
     "unassigned", "device_unavailable", "axis_unavailable", "waiting_for_neutral", "armed", "awaiting_profile",
     "inactive", "simulated", "sample_expired", "temporarily_unavailable"
 };
-constexpr std::array<std::string_view, 12> usbTokens{
+constexpr std::array<std::string_view, 16> usbTokens{
     "device_slow", "device_pending", "device_unavailable", "device_recovered", "poll_expired", "poll_gap",
     "commands_waiting", "commands_ready", "context_changed", "menu_paused", "directinput_reopened",
-    "discrete_overflow"
+    "discrete_overflow", "layout_pending", "layout_acquire_denied", "layout_missing", "layout_recovered"
 };
 constexpr std::array<std::string_view, 13> accessoryTokens{
     "unconfigured", "waiting", "ready", "profile_error", "inactive", "blocked", "device_unavailable",
@@ -90,7 +90,7 @@ constexpr std::array<std::string_view, 12> shifterRoleTokens{
 static_assert(modeTokens.size() == static_cast<std::size_t>(DiagnosticMode::simulation) + 1);
 static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::selectorAmbiguous) + 1);
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::temporarilyUnavailable) + 1);
-static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::discreteOverflow) + 1);
+static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::layoutRecovered) + 1);
 static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::selectorAmbiguous) + 1);
 static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::sampleExpired) + 1);
 static_assert(inputKindTokens.size() == static_cast<std::size_t>(AccessoryKind::Axis) + 1);
@@ -494,11 +494,19 @@ void DiagnosticPublisher::recordUsbEvent(const DiagnosticUsbEvent& event) noexce
         return;
     auto& count = report_.usbEventCount;
     auto& events = report_.usbEvents;
-    if (count == events.size()) {
-        std::move(events.begin() + 1, events.end(), events.begin());
-        --count;
+    // Workers on separate devices can report an older incident after a newer one.
+    if (count < events.size() || event.sampledAt >= events.front().sampledAt) {
+        if (count == events.size()) {
+            std::move(events.begin() + 1, events.end(), events.begin());
+            --count;
+        }
+        const auto end = events.begin() + count;
+        const auto position = std::ranges::upper_bound(events.begin(), end, event.sampledAt, {},
+                                                       &DiagnosticUsbEvent::sampledAt);
+        std::move_backward(position, end, end + 1);
+        *position = event;
+        ++count;
     }
-    events[count++] = event;
     if (event.sampledAt)
         queueCaptureRecord({.usb = event, .usbIncident = true});
 }

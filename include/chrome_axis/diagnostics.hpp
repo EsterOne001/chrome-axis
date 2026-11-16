@@ -166,7 +166,8 @@ struct DiagnosticEvent {
 
 enum class DiagnosticUsbEventKind : std::uint8_t {
     deviceSlow, devicePending, deviceUnavailable, deviceRecovered, pollExpired, pollGap,
-    commandsWaiting, commandsReady, contextChanged, menuPaused, directInputReopened, discreteOverflow
+    commandsWaiting, commandsReady, contextChanged, menuPaused, directInputReopened, discreteOverflow,
+    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered
 };
 
 struct DiagnosticUsbBlocker {

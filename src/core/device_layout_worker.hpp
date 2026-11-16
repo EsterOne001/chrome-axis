@@ -18,6 +18,7 @@ struct DeviceLayoutRequest {
 struct DeviceLayoutSnapshot {
     DeviceObjectSelection present;
     DeviceObjectSelection pending;
+    DeviceObjectSelection fallback; // Objects that can be checked on the acquired reader.
 
     bool incomplete() const noexcept {
         return pending.axes.any() || pending.buttons.any() || pending.povs.any();
@@ -31,6 +32,9 @@ struct DeviceLayoutSnapshot {
         retain(present.axes, pending.axes, previous.axes, wanted.axes);
         retain(present.buttons, pending.buttons, previous.buttons, wanted.buttons);
         retain(present.povs, pending.povs, previous.povs, wanted.povs);
+        fallback.axes &= previous.axes & wanted.axes;
+        fallback.buttons &= previous.buttons & wanted.buttons;
+        fallback.povs &= previous.povs & wanted.povs;
     }
 };
 

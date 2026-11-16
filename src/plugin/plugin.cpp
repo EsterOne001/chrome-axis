@@ -1371,6 +1371,10 @@ struct UsbReadDiagnostics {
         case ReadKind::recovered: kind = DiagnosticUsbEventKind::deviceRecovered; break;
         case ReadKind::sampleExpired: kind = DiagnosticUsbEventKind::pollExpired; break;
         case ReadKind::discreteOverflow: kind = DiagnosticUsbEventKind::discreteOverflow; break;
+        case ReadKind::layoutPending: kind = DiagnosticUsbEventKind::layoutPending; break;
+        case ReadKind::layoutAcquireDenied: kind = DiagnosticUsbEventKind::layoutAcquireDenied; break;
+        case ReadKind::layoutMissing: kind = DiagnosticUsbEventKind::layoutMissing; break;
+        case ReadKind::layoutRecovered: kind = DiagnosticUsbEventKind::layoutRecovered; break;
         }
         DiagnosticUsbEvent event{.sampledAt = tick, .durationMicros = read.durationMicros,
                                  .result = static_cast<std::uint32_t>(read.result), .kind = kind,
