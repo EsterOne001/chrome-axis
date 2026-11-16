@@ -1,4 +1,5 @@
 #include "../src/plugin/manual_transmission_backend.hpp"
+#include "../src/plugin/manual_transmission_input.hpp"
 
 #include <limits>
 
@@ -155,6 +156,26 @@ int main() {
     constexpr std::array forward{0.0f, 1.0f, 0.0f};
     constexpr std::array uphillForward{0.0f, 0.8f, 0.6f};
     const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (const int engaged : {reverseGear, 3}) {
+        const auto priorDirection = observeDirection(Direction::unknown, engaged, eightEntries);
+        for (const auto speed : {0.0f, 6.0f}) {
+            chrome_axis::TransmissionPedals pedals;
+            using chrome_axis::observePedalGear;
+            using chrome_axis::PedalRouting;
+            const auto inGear = engaged == reverseGear ? PedalRouting::reverse : PedalRouting::standard;
+            if (planShift(engaged, neutralGear, eightEntries, priorDirection) != ShiftPlan::direct ||
+                pedals.update(true, observePedalGear(engaged, engaged, eightEntries), false) != inGear ||
+                pedals.update(true, observePedalGear(engaged, neutralGear, eightEntries), false) != inGear ||
+                pedals.update(true, observePedalGear(neutralGear, neutralGear, eightEntries), false) != PedalRouting::standard)
+                return 2;
+            const auto movement = speed == 0.0f ? Direction::unknown : priorDirection;
+            const auto next = planShift(neutralGear, 1, eightEntries, priorDirection, movement);
+            const bool forwardAllowed = next == ShiftPlan::direct ||
+                (next == ShiftPlan::stoppedDirect && shiftSpeedAllowed(1, speed));
+            if (forwardAllowed != (engaged != reverseGear || speed == 0.0f))
+                return 3;
+        }
+    }
     return movementDirection({0.0f, 10.0f, 0.0f}, forward) == Direction::forward
         && movementDirection({0.0f, 8.0f, 6.0f}, uphillForward) == Direction::forward
         && movementDirection({0.0f, -10.0f, 0.0f}, forward) == Direction::reverse

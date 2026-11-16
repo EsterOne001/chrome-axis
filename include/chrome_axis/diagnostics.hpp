@@ -108,6 +108,12 @@ struct DiagnosticTransmission {
     int engagedGear{-2};
     DiagnosticShiftState shift{};
     bool sequential{};
+    std::uint32_t shortcutKey{};
+    std::uint64_t shortcutPressedAt{}; // GetTickCount64() of the last recognized press.
+    bool hasRequestedMode{};
+    bool requestedManual{};
+    bool shortcutAvailable{};
+    std::uint64_t gearboxSampledAt{}; // GetTickCount64() of the observed gear, or zero if unavailable.
 
     bool operator==(const DiagnosticTransmission&) const = default;
 };
@@ -156,6 +162,18 @@ enum class DiagnosticUsbEventKind : std::uint8_t {
     commandsWaiting, commandsReady, contextChanged, menuPaused, directInputReopened
 };
 
+struct DiagnosticUsbBlocker {
+    AccessoryKind kind{};
+    ShifterRole role{};
+    std::uint32_t index{};
+    std::uint32_t key{};
+    DiagnosticCommandState state{};
+    bool clutch{};
+    bool progressiveHandbrake{};
+
+    bool operator==(const DiagnosticUsbBlocker&) const = default;
+};
+
 struct DiagnosticUsbEvent {
     std::uint64_t sampledAt{}; // GetTickCount64() at detection.
     std::uint64_t durationMicros{};
@@ -170,6 +188,8 @@ struct DiagnosticUsbEvent {
     std::uint32_t accessoryCount{};
     std::uint8_t deviceAxisMask{};
     std::uint8_t deviceAccessoryCount{};
+    std::array<DiagnosticUsbBlocker, 4> blockers{};
+    std::uint32_t blockerCount{}; // Total, including any entries omitted from blockers.
 };
 
 enum class PerformanceState : std::uint32_t { idle, capturing, complete };
@@ -290,7 +310,7 @@ public:
     DiagnosticPublisher(const DiagnosticPublisher&) = delete;
     DiagnosticPublisher& operator=(const DiagnosticPublisher&) = delete;
 
-    // A nonzero driving session identifies a snapshot taken in the driver's seat with game focus.
+    // A nonzero session and a driving mode identify a snapshot to retain when driving is interrupted.
     void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0,
                  const PerformanceReport& performance = {}) noexcept;
     void recordUsbEvent(const DiagnosticUsbEvent& event) noexcept;

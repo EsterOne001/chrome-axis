@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.59
+
+- **Reprise USB.** Chrome Axis réutilise ses connexions DirectInput lorsque la fenêtre du jeu reste la même et retire `GetCapabilities` de la lecture des axes et des boutons. Une perte de périphérique déclenche toujours sa réacquisition avec réarmement au neutre.
+- **Transmission.** Le raccourci AUTO / MANUEL reconnaît les appuis physiques brefs et conserve la dernière affectation valide si sa configuration ne peut pas être relue. Le mode sélectionné est conservé pendant une pause dans le même véhicule.
+- **HUD et diagnostic.** Le badge distingue des commandes armées, une commande récemment appliquée et un réarmement partiel. Le diagnostic conserve le dernier relevé de conduite valide et indique les commandes en attente, la touche de transmission et les modes demandé et actif.
+
+[ZIP Vortex](out/Chromaxis-0.4.59.zip)
+
 ## Chrome Axis 0.4.58
 
 - **Diagnostic en direct.** L’enregistrement continue après la fermeture de la fenêtre Diagnostic, jusqu’à l’arrêt manuel ou à la fermeture de l’application. L’application sauvegarde le CSV par lots dans `Profil/Diagnostics` et signale les lignes perdues si le tampon est dépassé. L’export reprend les données de conduite et les incidents USB dans la même chronologie.

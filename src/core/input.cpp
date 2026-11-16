@@ -208,7 +208,6 @@ struct OpenDevice {
     std::array<bool, povCount> povs{};
     std::bitset<buttonCount> buttonsChecked;
     std::bitset<buttonCount> buttonsPresent;
-    bool needsPolling{true};
     bool acquired{};
     Clock::time_point retryAfter{};
     Clock::time_point pendingSince{};
@@ -452,11 +451,6 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
             opened.povs = availablePovs(*device);
             return DI_OK;
         });
-        DIDEVCAPS capabilities{};
-        capabilities.dwSize = sizeof(capabilities);
-        result = observer.measure("GetCapabilities", [&] { return device->GetCapabilities(&capabilities); });
-        opened.needsPolling = FAILED(result)
-            || (capabilities.dwFlags & DIDC_POLLEDDATAFORMAT) != 0;
         opened.device = std::move(device);
     }
     if (!opened.acquired) {
@@ -472,8 +466,8 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     DIJOYSTATE2 state{};
     const auto sampledAt = Clock::now();
     std::string_view stage = "Poll";
-    auto result = opened.needsPolling
-        ? observer.measure(stage, [&] { return opened.device->Poll(); }) : DI_OK;
+    // Devices that do not require polling return DI_NOEFFECT, which is a successful HRESULT.
+    auto result = observer.measure(stage, [&] { return opened.device->Poll(); });
     if (SUCCEEDED(result)) {
         stage = "GetDeviceState";
         result = observer.measure(stage, [&] { return opened.device->GetDeviceState(sizeof(state), &state); });

@@ -138,6 +138,33 @@ int testTransientRead(const chrome_axis::Profile& profile)
     if (!state.steeringReady || state.throttleReady || state.brakeReady || state.values.brake != 0.0f ||
         reader.axisStatuses()[2] != AxisStatus::waitingForNeutral)
         return 40;
+
+    // A context pause resets arming on the same connected inputs. A later
+    // hard loss only disarms the disconnected device.
+    reader.reset();
+    if (reader.update(connected).steeringReady)
+        return 41;
+    wheel.axes[0] = profile.steering.neutral;
+    pedals.axes[1] = profile.throttle.neutral;
+    pedals.axes[2] = profile.brake.neutral;
+    for (int i = 0; i < 3; ++i)
+        state = reader.update(connected);
+    if (!state.steeringReady || !state.throttleReady || !state.brakeReady)
+        return 42;
+    state = reader.update({nullptr, &pedals, &pedals}, nullptr,
+                          {Status::unavailable, Status::available, Status::available});
+    if (state.steeringReady || !state.throttleReady || !state.brakeReady ||
+        reader.axisStatuses()[0] != AxisStatus::deviceUnavailable)
+        return 43;
+    wheel.axes[0] = profile.steering.positive;
+    state = reader.update(connected, nullptr, {Status::resumed, Status::available, Status::available});
+    if (state.steeringReady || !state.brakeReady || reader.axisStatuses()[0] != AxisStatus::waitingForNeutral)
+        return 44;
+    wheel.axes[0] = profile.steering.neutral;
+    for (int i = 0; i < 3; ++i)
+        state = reader.update(connected);
+    if (!state.steeringReady || !state.brakeReady)
+        return 45;
     return 0;
 }
 

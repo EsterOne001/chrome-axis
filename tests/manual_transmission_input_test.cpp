@@ -84,58 +84,125 @@ bool injectedKeyDoesNotToggleTransmission()
 {
     ManualTransmissionInput input;
     PhysicalModeKey keyboard{VK_F8};
-    keyboard.primeReleased(VK_F8);
-    const auto update = [&] { return input.update(true, -1, false, keyboard.down(VK_F8), false, false, {}).manual; };
-    if (!update())
+    keyboard.setContext(true, 100);
+    const auto initial = keyboard.initialState(VK_F8);
+    if (!initial)
         return false;
-    keyboard.update(VK_F8, true, true); // Sent by a held or pulsed USB accessory.
-    if (!update())
+    keyboard.primeReleased(*initial);
+    const auto update = [&](std::uint64_t tick) {
+        return input.update(true, -1, false, std::nullopt, false, false, {}, VK_F8,
+            false, false, 0, keyboard.takePress(VK_F8, tick).has_value());
+    };
+    if (!update(100).manual)
         return false;
-    keyboard.update(VK_F8, false, true);
-    if (!update())
+    keyboard.update(VK_F8, true, true, 101); // Sent by a USB accessory.
+    keyboard.update(VK_F8, false, true, 102);
+    if (!update(104).manual)
         return false;
-    keyboard.update(VK_F8, true, false);
-    if (update())
+    keyboard.update(VK_F8, true, false, 105);
+    keyboard.update(VK_F8, false, false, 107);
+    const auto automatic = update(112); // The entire press was between game callbacks.
+    if (automatic.manual || !automatic.toggledByKey || update(113).toggledByKey)
         return false;
-    keyboard.update(VK_F8, false, true); // An injected release must not rearm the physical key.
-    if (update())
+    keyboard.update(VK_F8, true, false, 114);
+    keyboard.update(VK_F8, true, false, 115); // Auto-repeat while held.
+    keyboard.update(VK_F8, false, true, 116); // An injected release must not rearm.
+    if (keyboard.takePress(VK_F8, 118) != 114ull)
         return false;
-    keyboard.update(VK_F8, false, false);
-    if (update())
+    keyboard.update(VK_F8, true, false, 119);
+    if (keyboard.takePress(VK_F8, 120))
         return false;
-    keyboard.update(VK_F8, true, false);
-    return update();
+    keyboard.update(VK_F8, false, false, 121);
+    keyboard.update(VK_F8, true, false, 122);
+    const auto manual = update(125);
+    if (!manual.manual || !manual.toggledByKey || update(126).toggledByKey)
+        return false;
+    keyboard.update(VK_F8, false, false, 130);
+    keyboard.update(VK_F8, true, false, 132);
+    return !keyboard.takePress(VK_F8, 131) && keyboard.takePress(VK_F8, 133) == 132ull;
 }
 
 bool changingShortcutRearmsWithoutChangingModes()
 {
     ManualTransmissionInput input;
     PhysicalModeKey keyboard{VK_F8};
-    const auto update = [&] { return input.update(true, -1, false, keyboard.down(keyboard.key()), false, false, {}).manual; };
-    keyboard.primeReleased(VK_F8);
-    if (!update())
+    keyboard.setContext(true, 100);
+    const auto update = [&](std::uint64_t tick) {
+        const auto key = keyboard.key();
+        return input.update(true, -1, false, std::nullopt, false, false, {}, key,
+            false, false, 0, keyboard.takePress(key, tick).has_value()).manual;
+    };
+    keyboard.update(VK_F8, false, false, 101);
+    keyboard.update(VK_F8, true, false, 102);
+    if (update(103))
         return false;
     keyboard.select(VK_F9);
-    if (!update() || keyboard.key() != VK_F9 || keyboard.down(VK_F8).has_value())
+    if (update(104) || keyboard.key() != VK_F9 || keyboard.takePress(VK_F8, 104))
         return false;
 
-    keyboard.update(VK_F9, true, false); // The new key was held during reassignment.
-    keyboard.primeReleased(VK_F9);      // A stale sample claiming it was up must be discarded.
-    if (keyboard.down(VK_F9).has_value() || !update())
+    const auto initial = keyboard.initialState(VK_F9);
+    if (!initial)
         return false;
-    keyboard.update(VK_F9, false, true);
-    keyboard.update(VK_F8, false, false);
-    if (keyboard.down(VK_F9).has_value() || !update())
+    keyboard.update(VK_F9, true, false, 105); // A repeat from the key held during reassignment.
+    keyboard.primeReleased(*initial);        // A stale sample claiming it was up must be discarded.
+    if (update(106))
+        return false;
+    keyboard.update(VK_F9, false, true, 107);
+    keyboard.update(VK_F8, false, false, 108);
+    keyboard.update(VK_F9, true, false, 109);
+    if (update(110))
         return false;
 
-    keyboard.update(VK_F9, false, false);
-    if (!update())
+    keyboard.update(VK_F9, false, false, 111);
+    keyboard.update(VK_F9, true, false, 112);
+    keyboard.select(VK_F9); // Saving the same value must preserve the pending press.
+    return update(113) && update(114);
+}
+
+bool physicalPressRequiresFreshDrivingContext()
+{
+    PhysicalModeKey keyboard{VK_F8};
+    keyboard.setContext(true, 100);
+    keyboard.update(VK_F8, false, false, 101);
+    keyboard.update(VK_F8, true, false, 102);
+    keyboard.update(VK_F8, false, false, 103);
+    keyboard.setContext(false, 104);
+    keyboard.update(VK_F8, true, false, 105);
+    keyboard.setContext(true, 106);
+    keyboard.update(VK_F8, true, false, 107); // Held while resuming.
+    if (keyboard.takePress(VK_F8, 108))
         return false;
-    keyboard.update(VK_F9, true, false);
-    if (update())
+    keyboard.update(VK_F8, false, false, 109);
+    keyboard.update(VK_F8, true, false, 207); // Game context has not refreshed in 101 ms.
+    keyboard.setContext(true, 208);
+    if (keyboard.takePress(VK_F8, 209) || !keyboard.initialState(VK_F8))
         return false;
-    keyboard.select(VK_F9);             // Saving the same value must preserve a held key's state.
-    return keyboard.down(VK_F9) == true && !update();
+    keyboard.update(VK_F8, false, false, 210);
+    keyboard.update(VK_F8, true, false, 211);
+    keyboard.setContext(true, 285);
+    keyboard.setContext(true, 380);
+    if (keyboard.takePress(VK_F8, 412)) // Press itself has aged beyond 200 ms.
+        return false;
+    keyboard.update(VK_F8, false, false, 413);
+    keyboard.update(VK_F8, true, false, 414);
+    if (keyboard.takePress(VK_F8, 481)) // A pending press cannot survive an expired context.
+        return false;
+    keyboard.setContext(true, 482);
+    return !keyboard.takePress(VK_F8, 483) && keyboard.initialState(VK_F8).has_value();
+}
+
+bool physicalPressOverridesLevelArmingInSimulation()
+{
+    ManualTransmissionInput input;
+    const auto update = [&](std::optional<bool> level, bool edge) {
+        return input.update(false, {}, true, level, false, false, {}, VK_F8, false, false, 0, edge);
+    };
+    const auto enable = update(std::nullopt, true);
+    const bool selected = input.manualSelected();
+    const auto hold = update(true, false);
+    const auto disable = update(std::nullopt, true);
+    return enable.toggledByKey && enable.manual && selected && !hold.toggledByKey && hold.manual &&
+        disable.toggledByKey && !disable.manual && !input.manualSelected();
 }
 
 bool simulationPollsAfterAccessoryKeysAreReleased()
@@ -270,6 +337,10 @@ int main()
     if (!ambiguousKeysNeedFullRelease() || !injectedKeyDoesNotToggleTransmission() ||
         !changingShortcutRearmsWithoutChangingModes()) {
         std::cerr << "A held or injected key changed the transmission\n";
+        return 1;
+    }
+    if (!physicalPressRequiresFreshDrivingContext() || !physicalPressOverridesLevelArmingInSimulation()) {
+        std::cerr << "A physical shortcut lost an accepted press or accepted a stale driving context\n";
         return 1;
     }
     if (!simulationPollsAfterAccessoryKeysAreReleased()) {

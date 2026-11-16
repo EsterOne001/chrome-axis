@@ -82,11 +82,12 @@ enum class HudStatus : std::int32_t {
 };
 
 bool usbHudStatus(HudStatus status) noexcept {
-    return status == HudStatus::usbReady || status == HudStatus::usbWaiting;
+    return status == HudStatus::usbReady || status == HudStatus::usbWaiting || status == HudStatus::usbPartial;
 }
 
 struct DrivingContext {
     Vehicle* vehicle{};
+    Vehicle* mounted{};
     std::uint64_t generation{};
     std::uint64_t session{};
     Clock::time_point refreshed{};
@@ -181,6 +182,9 @@ HudFrame hudFrame;
 Clock::time_point lastUsbSignal{};
 chrome_axis::Simulator simulator;
 chrome_axis::ManualTransmissionInput transmissionInput;
+bool transmissionChoiceAvailable{};
+unsigned int lastTransmissionShortcut{};
+std::uint64_t transmissionShortcutPressedAt{};
 chrome_axis::ClutchShiftAssist clutchAssist;
 chrome_axis::KeyboardClutchProbe keyboardClutch;
 std::optional<float> probePosition;
@@ -550,6 +554,7 @@ void invalidateFrames() noexcept {
 // Called under stateMutex. Publish the invalidation before releasing the lock,
 // so an older sample cannot send keyboard or wheel output to a new session.
 void advanceDrivingGeneration() noexcept {
+    chrome_axis::setTransmissionHotkeyContext(false);
     drivingGeneration.store(++context.generation, std::memory_order_release);
 }
 
@@ -720,13 +725,25 @@ chrome_axis::PedalRouting updateTransmission(Vehicle* vehicle, bool pedalsReleas
     const bool sequential = inputFrame.nativeSequential;
     paddleExpired |= paddleRequests.expire(now);
     const bool sendPaddle = sequential && paddleRequests.pending() && !manual_backend::snapshot(vehicle).requestPending;
-    const auto toggle = simulated
+    transmissionChoiceAvailable = hardware || sequential || simulated;
+    chrome_axis::setTransmissionHotkeyContext(transmissionChoiceAvailable);
+    const auto physicalPress = transmissionChoiceAvailable
+        ? chrome_axis::takeTransmissionHotkeyPress(hotkey) : std::nullopt;
+    if (physicalPress) {
+        lastTransmissionShortcut = hotkey;
+        transmissionShortcutPressedAt = *physicalPress;
+    }
+    const auto toggle = simulated && !chrome_axis::transmissionHotkeyAvailable()
         ? chrome_axis::simulatedTransmissionKey(keyDown(static_cast<int>(hotkey)), accessoryKeys.hasInjectedKeys())
-        : hardware || sequential ? chrome_axis::transmissionHotkey(hotkey) : std::nullopt;
+        : std::nullopt;
     auto intent = transmissionInput.update(hardware, inputFrame.nativeGear, simulated, toggle,
         simulated && keyDown(VK_PRIOR), simulated && keyDown(VK_NEXT),
         simulated ? keyboardGear() : chrome_axis::DirectGearKeys{}, hotkey, sequential, inputFrame.sequentialArmed,
-        sendPaddle ? paddleRequests.pop() : 0);
+        sendPaddle ? paddleRequests.pop() : 0, physicalPress.has_value());
+    if (toggle.value_or(false) && intent.toggledByKey) {
+        lastTransmissionShortcut = hotkey;
+        transmissionShortcutPressedAt = GetTickCount64();
+    }
     if (!intent.manual || !inputFrame.sequentialArmed)
         paddleRequests.clear();
     if (!intent.manual)
@@ -782,12 +799,15 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
             const auto heading = foreground ? std::optional{std::array{forward.X, forward.Y, forward.Z}} : std::nullopt;
             manual_backend::setDriverVehicle(mounted, heading);
         }
-        const bool vehicleChanged = context.vehicle != current;
-        invalidated = vehicleChanged || (current && now - context.refreshed > contextLifetime);
-        if (invalidated) {
+        const bool mountedChanged = context.mounted != mounted;
+        invalidated = mountedChanged || context.vehicle != current || (current && now - context.refreshed > contextLifetime);
+        if (mountedChanged) {
             transmissionInput = {};
-            if (vehicleChanged)
-                transmissionPedals = {};
+            transmissionChoiceAvailable = false;
+            lastTransmissionShortcut = 0;
+            transmissionPedals = {};
+        }
+        if (invalidated) {
             advanceDrivingGeneration();
             context.vehicleUpdated = {};
             invalidateFrames();
@@ -801,11 +821,14 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
             appliedAxes = {};
         }
         context.vehicle = current;
+        context.mounted = mounted;
         context.refreshed = now;
         context.menuPaused = mounted && !canDrive;
         drivingVehicle.store(current, std::memory_order_release);
-        if (invalidated || !foreground)
+        if (invalidated || !foreground) {
+            chrome_axis::setTransmissionHotkeyContext(false);
             suspendTransmission();
+        }
         if (foreground) {
             status = HudStatus::loaded;
             if (hudFrame.generation == context.generation) {
@@ -817,8 +840,9 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
                     status = HudStatus::usbWaiting;
                     if (sampleLive && vehicleLive) {
                         status = hudFrame.status;
-                        if (lastUsbSignal != Clock::time_point{} && now - lastUsbSignal <= hudSignalDuration)
-                            status = status == HudStatus::usbReady ? HudStatus::usbSignal : HudStatus::usbPartial;
+                        if (status == HudStatus::usbReady && lastUsbSignal != Clock::time_point{} &&
+                            now - lastUsbSignal <= hudSignalDuration)
+                            status = HudStatus::usbSignal;
                     }
                 } else if (hudFrame.status == HudStatus::simulation && sampleLive && vehicleLive) {
                     status = HudStatus::simulation;
@@ -1260,21 +1284,33 @@ void updatePerformanceCapture(chrome_axis::PerformanceReport& report, std::uint6
     }
 }
 
-chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend::Snapshot& state) noexcept {
+chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend::Snapshot& state,
+                                                          bool driving) noexcept {
     using chrome_axis::DiagnosticShiftState;
-    if (!inputFrame.nativeShifter && !inputFrame.nativeSequential && !inputFrame.simulated)
-        return {.engagedGear = state.gearCount > 0 ? state.engagedGear : -2};
-
-    chrome_axis::DiagnosticTransmission result{.configured = true, .sequential = inputFrame.nativeSequential};
+    const auto hotkey = chrome_axis::transmissionHotkeyBinding();
+    const bool shortcutSource = inputFrame.nativeShifterVerified || inputFrame.nativeSequential || inputFrame.simulated;
+    chrome_axis::DiagnosticTransmission result{
+        .configured = inputFrame.nativeShifter || inputFrame.nativeSequential || inputFrame.simulated ||
+            transmissionChoiceAvailable,
+        .manual = state.manualActive,
+        .engagedGear = state.gearCount > 0 ? state.engagedGear : -2,
+        .sequential = inputFrame.nativeSequential,
+        .shortcutKey = hotkey,
+        .shortcutPressedAt = lastTransmissionShortcut == hotkey ? transmissionShortcutPressedAt : 0,
+        .hasRequestedMode = transmissionChoiceAvailable,
+        .requestedManual = transmissionInput.manualSelected(),
+        .shortcutAvailable = transmissionAvailable && driving && shortcutSource &&
+            (chrome_axis::transmissionHotkeyAvailable() || inputFrame.simulated),
+        .gearboxSampledAt = state.sampledAt};
+    if (!result.configured)
+        return result;
     if (!transmissionAvailable) {
         result.shift = DiagnosticShiftState::unavailable;
         return result;
     }
 
-    result.manual = state.manualActive;
     result.selectedGear = inputFrame.nativeGear.value_or(state.selectedGear.value_or(-2));
     result.requestedGear = state.requestedGear;
-    result.engagedGear = state.gearCount > 0 ? state.engagedGear : -2;
     if (inputFrame.nativeShifter && !inputFrame.nativeShifterVerified) {
         result.shift = DiagnosticShiftState::recalibrationNeeded;
         return result;
@@ -1357,7 +1393,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     if (diagnostics)
         usbReadDiagnostics.emplace(UsbReadDiagnostics{*diagnostics, usb});
     std::optional<std::pair<DiagnosticMode, bool>> lastUsbContext;
-    std::optional<bool> usbCommandsReady;
+    std::optional<DiagnosticUsbEvent> lastUsbReadiness;
     std::uint64_t usbWaitStartedAt{};
     chrome_axis::DiagnosticSnapshot diagnostic;
     chrome_axis::PerformanceReport performance;
@@ -1416,7 +1452,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             const auto gearbox = drivingSession && (inputFrame.nativeShifter || inputFrame.nativeSequential ||
                 inputFrame.simulated || capturing) ? manual_backend::snapshot(context.vehicle) : manual_backend::Snapshot{};
-            snapshot.transmission = drivingSession ? diagnosticTransmission(gearbox) : chrome_axis::DiagnosticTransmission{};
+            snapshot.transmission = diagnosticTransmission(gearbox, drivingSession && vehicleInputFresh(context, now) &&
+                inputFrame.generation == context.generation && now - inputFrame.sampled <= inputLifetime);
             const bool hasDelivery = drivingSession && vehicleDelivery.sampled != Clock::time_point{} &&
                 now - vehicleDelivery.sampled <= inputLifetime;
             const auto clutch = drivingSession
@@ -1464,7 +1501,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     .feedbackForceAvailable = feedbackApplied,
                 };
             } else if (capturing) {
-                captureSample = chrome_axis::DrivingCaptureSample{.sampledAt = tick, .mode = snapshot.mode};
+                captureSample = chrome_axis::DrivingCaptureSample{.sampledAt = tick, .mode = snapshot.mode,
+                                                                  .transmission = snapshot.transmission};
             }
             const bool hasPedalDelivery = hasDelivery && snapshot.mode == DiagnosticMode::usb &&
                 snapshot.profileLoaded && vehicleDelivery.pedalTick;
@@ -1570,7 +1608,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     WatchedProfile watchedHotkey;
     const auto hotkeyPath = configurationDirectory / chrome_axis::transmissionHotkeyFilename;
     std::uint64_t lastGeneration{};
-    std::uint64_t lastDrivingSession{};
     bool wasDriving{};
     bool wasSimulated{};
     bool reportedDriver{};
@@ -1580,8 +1617,15 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     while (!stop.stop_requested()) {
         const auto start = Clock::now();
         if (start >= nextHotkeyPoll) {
-            if (watchedHotkey.changed(hotkeyPath, start, nextHotkeyPoll == Clock::time_point{}))
-                chrome_axis::selectTransmissionHotkey(chrome_axis::loadTransmissionHotkey(configurationDirectory));
+            if (watchedHotkey.changed(hotkeyPath, start, nextHotkeyPoll == Clock::time_point{})) {
+                const auto binding = chrome_axis::readTransmissionHotkey(configurationDirectory);
+                std::error_code error;
+                const bool missing = !binding && !watchedHotkey.stamp &&
+                    !std::filesystem::exists(hotkeyPath, error) && !error;
+                if (binding || missing)
+                    chrome_axis::selectTransmissionHotkey(binding.value_or(chrome_axis::defaultTransmissionHotkey));
+                watchedHotkey.retryAt = binding || missing ? Clock::time_point::max() : start + 1s;
+            }
             nextHotkeyPoll = start + configurationPollInterval;
         }
         DrivingContext current;
@@ -1599,7 +1643,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             diagnostic.feedbackData = {};
         }
         if (!foreground) {
-            usbCommandsReady.reset();
+            lastUsbReadiness.reset();
             usbWaitStartedAt = 0;
             lastMeasuredUsb = {};
             lastUsbPollFinished = {};
@@ -1640,7 +1684,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool modeChanged = simulated != wasSimulated;
         const bool windowChanged = foreground != window;
         const bool drivingContextChanged = current.generation != lastGeneration;
-        const bool drivingSessionChanged = current.session != lastDrivingSession;
         UsbConfigurationChanges changes;
         if (!simulated && (!wasDriving || modeChanged || start >= nextConfigurationPoll)) {
             nextConfigurationPoll = start + configurationPollInterval;
@@ -1657,6 +1700,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             lastFeedbackUpdate = {};
             diagnostic.feedbackData = {};
             usb.resetReaders();
+            lastUsbPollFinished = {};
+            lastUsbReadiness.reset();
+            usbWaitStartedAt = 0;
             std::scoped_lock lock(stateMutex);
             if (context.generation == current.generation) {
                 invalidateFrames();
@@ -1674,25 +1720,16 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             nextPendingReport = {};
             lastGeneration = current.generation;
         }
-        if (drivingSessionChanged || drivingContextChanged || modeChanged || windowChanged ||
-            changes.preset || changes.calibration || changes.accessories) {
-            // A paused vehicle callback can invalidate the context while the driver stays seated.
-            if ((drivingSessionChanged || drivingContextChanged) && input) {
-                info("Driver context resumed. Reopening USB devices and waiting for neutral.");
-            }
+        if (windowChanged) {
             if (input && usb.enabled && !simulated && diagnostics) {
                 DiagnosticUsbEvent event{.sampledAt = GetTickCount64(), .kind = DiagnosticUsbEventKind::directInputReopened,
                                          .mode = DiagnosticMode::usb};
-                const auto reason = drivingSessionChanged ? "driving_session" : drivingContextChanged ? "driving_context"
-                    : windowChanged ? "window" : "configuration";
-                copyDiagnosticToken(event.operation, reason);
+                copyDiagnosticToken(event.operation, "window");
                 diagnostics->recordUsbEvent(event);
             }
             input.reset();
-            lastUsbPollFinished = {};
             window = foreground;
             retryInitialization = {};
-            lastDrivingSession = current.session;
         }
         if (modeChanged) {
             if (simulated) {
@@ -1775,7 +1812,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     const auto tick = GetTickCount64();
                     diagnostics->recordUsbEvent({.sampledAt = tick, .durationMicros = elapsedMicros(duration),
                         .kind = DiagnosticUsbEventKind::pollExpired, .mode = DiagnosticMode::usb});
-                    usbCommandsReady.reset();
+                    lastUsbReadiness.reset();
                     if (!usbWaitStartedAt)
                         usbWaitStartedAt = tick;
                 }
@@ -1817,7 +1854,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool usbReady = physical && usb.profilesValid() && (!usb.reader || axesReady) &&
             (!usb.accessories || accessoriesReady);
         if (diagnostics && physical && !sampleExpired && vehicleInputFresh(current, start)) {
-            if (usbCommandsReady != usbReady) {
+            if (!usbReady || !lastUsbReadiness || lastUsbReadiness->kind != DiagnosticUsbEventKind::commandsReady) {
                 const auto tick = GetTickCount64();
                 DiagnosticUsbEvent event{.sampledAt = tick,
                     .durationMicros = usbReady && usbWaitStartedAt ? (tick - usbWaitStartedAt) * 1000 : 0,
@@ -1833,16 +1870,35 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                                                                  false, false);
                     event.accessoryArmed = static_cast<std::uint32_t>(readiness.armed);
                     event.accessoryCount = static_cast<std::uint32_t>(usb.accessoryProfile->size());
+                    for (std::size_t i = 0; i < usb.accessoryProfile->size() && !accessoriesReady; ++i) {
+                        const auto& binding = (*usb.accessoryProfile)[i];
+                        const auto state = input && input->ready()
+                            ? diagnosticCommandState(accessoryObservations[i].status)
+                            : DiagnosticCommandState::deviceUnavailable;
+                        if (state == DiagnosticCommandState::ready)
+                            continue;
+                        if (event.blockerCount < event.blockers.size()) {
+                            event.blockers[event.blockerCount] = {
+                                binding.kind, binding.role, static_cast<std::uint32_t>(binding.index), binding.key, state,
+                                binding.clutchMode.has_value(), binding.handbrakeCeilingPercent != 0};
+                        }
+                        ++event.blockerCount;
+                    }
                 }
-                diagnostics->recordUsbEvent(event);
-                usbCommandsReady = usbReady;
+                if (!lastUsbReadiness || lastUsbReadiness->kind != event.kind ||
+                    lastUsbReadiness->axes != event.axes || lastUsbReadiness->accessories != event.accessories ||
+                    lastUsbReadiness->accessoryArmed != event.accessoryArmed ||
+                    lastUsbReadiness->blockerCount != event.blockerCount || lastUsbReadiness->blockers != event.blockers) {
+                    diagnostics->recordUsbEvent(event);
+                    lastUsbReadiness = event;
+                }
                 if (usbReady)
                     usbWaitStartedAt = 0;
                 else if (!usbWaitStartedAt)
                     usbWaitStartedAt = tick;
             }
         } else if (!sampleExpired) {
-            usbCommandsReady.reset();
+            lastUsbReadiness.reset();
             usbWaitStartedAt = 0;
         }
         const bool usbCanSend = controls.steeringReady || controls.throttleReady || controls.brakeReady ||
@@ -1851,7 +1907,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         if (simulated) {
             hudStatus = HudStatus::simulation;
         } else if (usb.enabled) {
-            hudStatus = usbReady ? HudStatus::usbReady : HudStatus::usbWaiting;
+            hudStatus = usbReady ? HudStatus::usbReady : usbCanSend ? HudStatus::usbPartial : HudStatus::usbWaiting;
         }
         const bool hasRequestedKeys = requestedKeys.any() || pulseKeys.any();
         const bool keyboardOutputPending = hasRequestedKeys || accessoryKeys.hasInjectedKeys();
@@ -2159,6 +2215,7 @@ void updateVehicle(Vehicle* vehicle) {
     std::unique_lock lock(stateMutex);
     const auto now = Clock::now();
     if (vehicle != context.vehicle || now - context.refreshed > contextLifetime) {
+        chrome_axis::setTransmissionHotkeyContext(false);
         suspendTransmission();
         resetSimulator();
         vehicleDelivery = {};
@@ -2178,6 +2235,7 @@ void updateVehicle(Vehicle* vehicle) {
     }
     if (inputFrame.generation != context.generation || now - inputFrame.sampled > inputLifetime) {
         const bool captureForeground = captureTelemetry && foregroundGameWindow();
+        chrome_axis::setTransmissionHotkeyContext(false);
         suspendTransmission(captureForeground ? vehicle : nullptr);
         resetSimulator();
         vehicleDelivery = {};
@@ -2350,6 +2408,10 @@ void stopPlugin() {
     }
     std::scoped_lock lock(stateMutex);
     context = {};
+    transmissionInput = {};
+    transmissionChoiceAvailable = false;
+    lastTransmissionShortcut = 0;
+    transmissionPedals = {};
     appliedAxes = {};
     inputAgeCapture = {};
     drivingCaptureActive.store(false, std::memory_order_relaxed);

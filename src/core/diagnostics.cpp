@@ -34,7 +34,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 13;
+constexpr LONG64 protocolVersion = 14;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate gear and mode changes.
@@ -46,7 +46,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v13.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v14.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -76,15 +76,28 @@ constexpr std::array<std::string_view, 11> accessoryTokens{
     "unconfigured", "waiting", "ready", "profile_error", "inactive", "blocked", "device_unavailable",
     "input_unavailable", "sample_expired", "temporarily_unavailable", "axis_conflict"
 };
+constexpr std::array<std::string_view, 8> commandTokens{
+    "inactive", "waiting_for_vehicle", "waiting_for_neutral", "ready", "device_unavailable",
+    "input_unavailable", "temporarily_unavailable", "sample_expired"
+};
+constexpr std::array<std::string_view, 3> inputKindTokens{"button", "pov", "axis"};
+constexpr std::array<std::string_view, 12> shifterRoleTokens{
+    "accessory", "gear_1", "gear_2", "gear_3", "gear_4", "gear_5", "gear_6", "gear_7", "gear_8",
+    "reverse", "upshift", "downshift"
+};
 static_assert(modeTokens.size() == static_cast<std::size_t>(DiagnosticMode::simulation) + 1);
 static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::clutchRequired) + 1);
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::temporarilyUnavailable) + 1);
 static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::directInputReopened) + 1);
 static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::axisConflict) + 1);
+static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::sampleExpired) + 1);
+static_assert(inputKindTokens.size() == static_cast<std::size_t>(AccessoryKind::Axis) + 1);
+static_assert(shifterRoleTokens.size() == static_cast<std::size_t>(ShifterRole::Downshift) + 1);
 
 constexpr std::size_t drivingCsvColumns = 27;
-constexpr std::size_t captureCsvColumns = 44;
+constexpr std::size_t captureCsvColumns = 51;
 constexpr std::size_t usbCsvColumns = 9;
+constexpr std::size_t transmissionCsvColumns = 5;
 
 std::uint64_t elapsed(std::uint64_t sampledAt, std::uint64_t startedAt) noexcept
 {
@@ -134,6 +147,14 @@ void recordTransition(DiagnosticRead& report) noexcept
         --report.eventCount;
     }
     report.events[report.eventCount++] = event;
+}
+
+DiagnosticTransmission transmissionForSampling(DiagnosticTransmission transmission) noexcept
+{
+    // Timestamps are carried by the next sample at the usual cadence.
+    transmission.shortcutPressedAt = 0;
+    transmission.gearboxSampledAt = 0;
+    return transmission;
 }
 
 } // namespace
@@ -230,6 +251,49 @@ void writeCaptureAxes(std::ostream& output, const std::array<DiagnosticAxisState
         output << csvToken(axis, axisTokens) << ',';
 }
 
+void writeCaptureBlockers(std::ostream& output, const DiagnosticUsbEvent& event)
+{
+    output.put(',');
+    if (!event.blockerCount) {
+        output.put(',');
+        return;
+    }
+    output << event.blockerCount << ',';
+    const auto count = std::min<std::size_t>(event.blockerCount, event.blockers.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i)
+            output.put('|');
+        const auto& blocker = event.blockers[i];
+        const auto role = blocker.clutch ? "clutch" : blocker.progressiveHandbrake ? "handbrake"
+            : csvToken(blocker.role, shifterRoleTokens);
+        // Each entry is role:input_kind:one_based_input_index:virtual_key:state.
+        output << role << ':' << csvToken(blocker.kind, inputKindTokens) << ':'
+            << (static_cast<std::uint64_t>(blocker.index) + 1) << ':' << blocker.key << ':'
+            << csvToken(blocker.state, commandTokens);
+    }
+}
+
+void writeCaptureTransmission(std::ostream& output, const DrivingCaptureSample& sample, std::uint64_t startedAt)
+{
+    const auto& transmission = sample.transmission;
+    output.put(',');
+    if (transmission.shortcutKey)
+        output << transmission.shortcutKey << ',' << transmission.shortcutAvailable;
+    else
+        output.put(',');
+    output.put(',');
+    if (transmission.shortcutPressedAt && transmission.shortcutPressedAt >= startedAt &&
+        transmission.shortcutPressedAt <= sample.sampledAt) {
+        output << elapsed(transmission.shortcutPressedAt, startedAt);
+    }
+    output.put(',');
+    if (transmission.hasRequestedMode)
+        output << (transmission.requestedManual ? "manual" : "auto");
+    output.put(',');
+    if (transmission.gearboxSampledAt && transmission.gearboxSampledAt <= sample.sampledAt)
+        output << sample.sampledAt - transmission.gearboxSampledAt;
+}
+
 } // namespace
 
 void writeDiagnosticCaptureHeader(std::ostream& output)
@@ -237,7 +301,9 @@ void writeDiagnosticCaptureHeader(std::ostream& output)
     writeDrivingHeader(output);
     output << ",record_type,dropped_records,steering_state,throttle_state,brake_state,steering,handbrake,feedback_force,"
               "usb_event,usb_operation,usb_result,usb_duration_us,usb_device_axes,usb_device_accessory_count,"
-              "accessory_state,accessory_armed,accessory_count\r\n";
+              "accessory_state,accessory_armed,accessory_count,usb_blocker_count,usb_blockers,"
+              "transmission_shortcut_key,transmission_shortcut_available,transmission_shortcut_pressed_elapsed_ms,"
+              "transmission_requested_mode,gearbox_sample_age_ms\r\n";
 }
 
 void writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
@@ -276,7 +342,10 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
             output << ',' << static_cast<unsigned>(event.deviceAxisMask)
                    << ',' << static_cast<unsigned>(event.deviceAccessoryCount)
                    << ',' << csvToken(event.accessories, accessoryTokens)
-                   << ',' << event.accessoryArmed << ',' << event.accessoryCount << "\r\n";
+                   << ',' << event.accessoryArmed << ',' << event.accessoryCount;
+            writeCaptureBlockers(output, event);
+            emptyCsvColumns(output, transmissionCsvColumns);
+            output << "\r\n";
             continue;
         }
         const auto& sample = record.driving;
@@ -298,6 +367,8 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
         number(sample.handbrakeAvailable, sample.handbrake);
         number(sample.feedbackForceAvailable, sample.feedbackForce);
         emptyCsvColumns(output, usbCsvColumns - 1);
+        emptyCsvColumns(output, 2); // No USB blockers on a driving or context sample.
+        writeCaptureTransmission(output, sample, startedAt);
         output << "\r\n";
     }
 }
@@ -368,7 +439,7 @@ void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint6
     report_.sampledAt = GetTickCount64();
     report_.snapshot = snapshot;
     report_.performance = performance;
-    if (drivingSession) {
+    if (drivingSession && isDrivingCaptureMode(snapshot.mode)) {
         if (drivingSession_ != drivingSession) {
             drivingSession_ = drivingSession;
             report_.eventCount = 0;
@@ -428,7 +499,7 @@ void DiagnosticPublisher::recordDrivingSample(std::uint64_t captureId, const Dri
     if (sample.mode == lastCaptureSample_.mode && lastCaptureSample_.sampledAt) {
         if (!isDrivingCaptureMode(sample.mode) ||
             (sample.sampledAt - lastCaptureSample_.sampledAt < drivingCaptureInterval &&
-             sample.transmission == lastCaptureSample_.transmission))
+             transmissionForSampling(sample.transmission) == transmissionForSampling(lastCaptureSample_.transmission)))
             return;
     }
     queueCaptureRecord({.driving = sample});

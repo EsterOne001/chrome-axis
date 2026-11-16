@@ -919,14 +919,6 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
 
   private func CanDrive(game: GameInstance, out paused: Bool) -> Bool {
     paused = false;
-    let stateBoard: ref<IBlackboard> = this.player.GetPlayerStateMachineBlackboard();
-    if !IsDefined(stateBoard) {
-      return false;
-    }
-    let state: gamePSMVehicle = IntEnum<gamePSMVehicle>(stateBoard.GetInt(GetAllBlackboardDefs().PlayerStateMachine.Vehicle));
-    if NotEquals(state, gamePSMVehicle.Driving) && NotEquals(state, gamePSMVehicle.DriverCombat) {
-      return false;
-    }
     let boards: ref<BlackboardSystem> = GameInstance.GetBlackboardSystem(game);
     if !IsDefined(boards) {
       return false;
@@ -938,7 +930,15 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     let photoMode: ref<IBlackboard> = boards.Get(GetAllBlackboardDefs().PhotoMode);
     paused = ui.GetBool(GetAllBlackboardDefs().UI_System.IsInMenu) ||
              (IsDefined(photoMode) && photoMode.GetBool(GetAllBlackboardDefs().PhotoMode.IsActive));
-    return !paused;
+    if paused {
+      return false;
+    }
+    let stateBoard: ref<IBlackboard> = this.player.GetPlayerStateMachineBlackboard();
+    if !IsDefined(stateBoard) {
+      return false;
+    }
+    let state: gamePSMVehicle = IntEnum<gamePSMVehicle>(stateBoard.GetInt(GetAllBlackboardDefs().PlayerStateMachine.Vehicle));
+    return Equals(state, gamePSMVehicle.Driving) || Equals(state, gamePSMVehicle.DriverCombat);
   }
 
   public func Refresh(generation: Int32) -> Void {

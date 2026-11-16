@@ -15,10 +15,22 @@ std::atomic<bool> available{};
 HANDLE stopEvent{};
 std::thread keyboardThread;
 
+bool gameForeground() noexcept {
+    DWORD process{};
+    if (const auto window = GetForegroundWindow())
+        GetWindowThreadProcessId(window, &process);
+    return process == GetCurrentProcessId();
+}
+
 LRESULT CALLBACK observeKey(int code, WPARAM message, LPARAM data) noexcept {
     if (code == HC_ACTION) {
         const auto& key = *reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
-        modeKey.update(key.vkCode, (key.flags & LLKHF_UP) == 0, (key.flags & LLKHF_INJECTED) != 0);
+        if (key.vkCode == modeKey.key() && !(key.flags & LLKHF_INJECTED)) {
+            if (gameForeground())
+                modeKey.update(key.vkCode, (key.flags & LLKHF_UP) == 0, false, GetTickCount64());
+            else
+                modeKey.setContext(false, 0);
+        }
     }
     return CallNextHookEx(nullptr, code, message, data);
 }
@@ -41,6 +53,7 @@ void observeKeyboard(HMODULE module, HANDLE stop, std::promise<bool> started) no
         }
     }
     available.store(false, std::memory_order_release);
+    modeKey.setContext(false, 0);
     UnhookWindowsHookEx(hook);
 }
 
@@ -84,13 +97,28 @@ unsigned int transmissionHotkeyBinding() noexcept {
     return modeKey.key();
 }
 
-std::optional<bool> transmissionHotkey(unsigned int key) noexcept {
-    if (!available.load(std::memory_order_acquire))
-        return std::nullopt;
-
-    if (modeKey.needsInitialState(key) && (GetAsyncKeyState(static_cast<int>(key)) & 0x8000) == 0)
-        modeKey.primeReleased(key);
-    return modeKey.down(key);
+void setTransmissionHotkeyContext(bool eligible) noexcept {
+    const bool active = eligible && transmissionHotkeyAvailable();
+    modeKey.setContext(active, active ? GetTickCount64() : 0);
+    if (!active)
+        return;
+    const auto key = modeKey.key();
+    if (const auto initial = modeKey.initialState(key);
+        initial && (GetAsyncKeyState(static_cast<int>(key)) & 0x8000) == 0)
+        modeKey.primeReleased(*initial);
 }
+
+std::optional<std::uint64_t> takeTransmissionHotkeyPress(unsigned int key) noexcept {
+    if (!transmissionHotkeyAvailable())
+        return std::nullopt;
+    const auto press = modeKey.takePress(key, GetTickCount64());
+    if (press && !gameForeground()) {
+        modeKey.setContext(false, 0);
+        return std::nullopt;
+    }
+    return press;
+}
+
+bool transmissionHotkeyAvailable() noexcept { return available.load(std::memory_order_acquire); }
 
 } // namespace chrome_axis

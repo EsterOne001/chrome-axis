@@ -501,6 +501,34 @@ const wchar_t* usbEventTitle(DiagnosticUsbEventKind kind)
     return unavailableValue;
 }
 
+std::wstring usbBlockerName(const DiagnosticUsbBlocker& blocker)
+{
+    if (blocker.clutch)
+        return tr(Text::DlgDiagnosticsClutch);
+    if (blocker.progressiveHandbrake)
+        return tr(Text::DlgDiagnosticsHandbrake);
+    if (blocker.role > ShifterRole::None && blocker.role <= ShifterRole::Downshift)
+        return shifterRoleLabel(blocker.role);
+    if (isAccessoryKey(blocker.key))
+        return accessoryKeyLabel(blocker.key);
+
+    switch (blocker.kind) {
+    case AccessoryKind::Button:
+        if (blocker.index < buttonCount)
+            return tr(Text::DlgInputButton) + std::to_wstring(blocker.index + 1);
+        break;
+    case AccessoryKind::Pov:
+        if (blocker.index < povCount)
+            return tr(Text::DlgInputDpad) + std::to_wstring(blocker.index + 1);
+        break;
+    case AccessoryKind::Axis:
+        if (blocker.index < axisCount)
+            return tr(Text::DlgInputAxis) + fromUtf8(axisName(blocker.index));
+        break;
+    }
+    return unavailableValue;
+}
+
 std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const DeviceInfo> devices)
 {
     std::wstring detail;
@@ -544,6 +572,14 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
         if (event.accessoryCount)
             append(std::wstring(tr(Text::DlgDiagnosticsAccessories)) + L" " + accessoryText(event.accessories) +
                    L" " + std::to_wstring(event.accessoryArmed) + L"/" + std::to_wstring(event.accessoryCount));
+        if (event.kind == DiagnosticUsbEventKind::commandsWaiting && event.blockerCount) {
+            append(tr(Text::DlgDiagnosticsUsbWaitingCommands));
+            const auto count = std::min<std::size_t>(event.blockerCount, event.blockers.size());
+            for (const auto& blocker : std::span(event.blockers).first(count))
+                append(usbBlockerName(blocker) + L" (" + commandState(blocker.state) + L")");
+            if (event.blockerCount > count)
+                append(L"+" + std::to_wstring(event.blockerCount - count));
+        }
         break;
     case DiagnosticUsbEventKind::contextChanged:
         append(modeText(event.mode));
@@ -746,10 +782,37 @@ std::wstring transmissionSummary(const DiagnosticTransmission& transmission, Dia
     if (mode == DiagnosticMode::usb)
         text += L" · " + std::wstring(tr(transmission.sequential ? Text::DlgDiagnosticsTransmissionSequential
                                                                : Text::DlgDiagnosticsTransmissionHPattern));
+    if (transmission.hasRequestedMode && transmission.requestedManual != transmission.manual)
+        text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionModeRequested)) + L" " +
+            tr(transmission.requestedManual ? Text::DlgDiagnosticsTransmissionManual : Text::DlgDiagnosticsTransmissionAuto);
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionSelected)) + L" " + gear(transmission.selectedGear);
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsReportRequested)) + L" " + gear(transmission.requestedGear);
     text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionActual)) + L" " + gear(transmission.engagedGear);
     return text;
+}
+
+std::wstring transmissionShortcut(const DiagnosticTransmission& transmission, std::uint64_t now)
+{
+    if (!isTransmissionHotkey(transmission.shortcutKey))
+        return {};
+    auto text = accessoryKeyLabel(transmission.shortcutKey);
+    if (!transmission.shortcutAvailable)
+        text += L" (" + std::wstring(tr(Text::DlgDiagnosticsTransmissionShortcutPaused)) + L")";
+    text += L" · ";
+    if (transmission.shortcutPressedAt) {
+        text += tr(Text::DlgDiagnosticsTransmissionShortcutPressed);
+        text += L" " + eventAge(transmission.shortcutPressedAt, now);
+    } else {
+        text += tr(Text::DlgDiagnosticsTransmissionShortcutNoPress);
+    }
+    return text;
+}
+
+std::wstring gearboxSampleAge(const DiagnosticTransmission& transmission, std::uint64_t sampledAt)
+{
+    if (!transmission.gearboxSampledAt || transmission.gearboxSampledAt > sampledAt)
+        return unavailableValue;
+    return std::to_wstring(sampledAt - transmission.gearboxSampledAt) + L" ms";
 }
 
 std::wstring clutchSummary(const DiagnosticClutch& clutch)
@@ -867,6 +930,8 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         const auto age = eventAge(read.sampledAt, now);
         line(Text::DlgDiagnosticsMode, std::wstring(modeText(read.snapshot.mode)) + L" · " + age);
         line(Text::DlgDiagnosticsReportPluginProfile, reportLabel(profileText(read.snapshot)));
+        if (const auto shortcut = transmissionShortcut(read.snapshot.transmission, now); !shortcut.empty())
+            line(Text::DlgDiagnosticsTransmissionShortcut, shortcut);
     }
     report += L"\r\n";
     if (read.lastDriveAt)
@@ -899,6 +964,14 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
             if (const auto status = transmissionStatus(snapshot.transmission); *status)
                 detail += L" · " + std::wstring(status);
             line(Text::DlgDiagnosticsTransmission, detail);
+            line(Text::DlgDiagnosticsTransmissionDataAge,
+                 gearboxSampleAge(snapshot.transmission, read.lastDriveAt ? read.lastDriveAt : read.sampledAt));
+        }
+        if (read.lastDriveAt &&
+            (snapshot.transmission.shortcutKey != read.snapshot.transmission.shortcutKey ||
+             snapshot.transmission.shortcutPressedAt != read.snapshot.transmission.shortcutPressedAt)) {
+            if (const auto shortcut = transmissionShortcut(snapshot.transmission, now); !shortcut.empty())
+                line(Text::DlgDiagnosticsTransmissionShortcut, shortcut);
         }
         if (snapshot.clutch.configured)
             line(Text::DlgDiagnosticsClutch, clutchSummary(snapshot.clutch));
@@ -1160,8 +1233,14 @@ void refresh(HWND window, DialogState& state)
     if (!state.missingFiles && state.versionMismatch.empty()) {
         if (read.usbEventCount) {
             const auto& latest = read.usbEvents[read.usbEventCount - 1];
-            setChangedText(window, IDC_MODAL_INTRO, std::wstring(tr(Text::DlgDiagnosticsLatestUsb)) +
-                           L" · " + usbEventTitle(latest.kind) + L" · " + eventAge(latest.sampledAt, now));
+            auto detail = std::wstring(tr(Text::DlgDiagnosticsLatestUsb)) +
+                L" · " + usbEventTitle(latest.kind) + L" · " + eventAge(latest.sampledAt, now);
+            if (latest.kind == DiagnosticUsbEventKind::commandsWaiting && latest.blockerCount) {
+                detail += L" · " + usbBlockerName(latest.blockers.front());
+                if (latest.blockerCount > 1)
+                    detail += L" +" + std::to_wstring(latest.blockerCount - 1);
+            }
+            setChangedText(window, IDC_MODAL_INTRO, detail);
         } else {
             setChangedText(window, IDC_MODAL_INTRO, tr(Text::DlgDiagnosticsIntro));
         }
@@ -1182,11 +1261,25 @@ void refresh(HWND window, DialogState& state)
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORIES, showControls ? accessoryStatus(snapshot) : unavailableValue);
     setChangedText(window, IDC_DIAGNOSTICS_ACCESSORY, showControls ? lastAccessoryKey(snapshot, now) : unavailableValue);
     const bool showTransmission = showControls && snapshot.transmission.configured;
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_LABEL, showTransmission ? tr(Text::DlgDiagnosticsTransmission) : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION,
-                   showTransmission ? transmissionSummary(snapshot.transmission, snapshot.mode) : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS,
-                   showTransmission ? transmissionStatus(snapshot.transmission) : L"");
+    const auto& shortcutSource = connected && isTransmissionHotkey(read.snapshot.transmission.shortcutKey)
+        ? read.snapshot.transmission : snapshot.transmission;
+    const auto shortcut = showControls ? transmissionShortcut(shortcutSource, now) : std::wstring{};
+    auto summary = showTransmission ? transmissionSummary(snapshot.transmission, snapshot.mode) : std::wstring{};
+    if (showTransmission) {
+        summary += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionData)) + L" " +
+            gearboxSampleAge(snapshot.transmission, showLastDrive ? read.lastDriveAt : read.sampledAt);
+    }
+    auto transmissionDetails = showTransmission ? std::wstring(transmissionStatus(snapshot.transmission)) : std::wstring{};
+    if (!shortcut.empty()) {
+        if (!transmissionDetails.empty())
+            transmissionDetails = shortcut + L" · " + transmissionDetails;
+        else
+            transmissionDetails = shortcut;
+    }
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_LABEL,
+                   showTransmission || !shortcut.empty() ? tr(Text::DlgDiagnosticsTransmission) : L"");
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION, showTransmission ? summary : shortcut);
+    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS, showTransmission ? transmissionDetails : L"");
     const bool showClutch = showControls && snapshot.clutch.configured;
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_LABEL, showClutch ? tr(Text::DlgDiagnosticsClutch) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH, showClutch ? clutchSummary(snapshot.clutch) : L"");
