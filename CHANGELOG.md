@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.57
+
+- **Diagnostic USB.** Le rapport copié conserve les incidents USB récents après un changement de véhicule. Il distingue les opérations DirectInput lentes, les erreurs et la reprise d’un périphérique, les cycles rejetés, l’attente de réarmement et les interruptions du contexte du jeu.
+
+[ZIP Vortex](out/Chromaxis-0.4.57.zip)
+
 ## Chrome Axis 0.4.56
 
 - **HUD de conduite.** Le fond du badge reprend la teinte et le réglage d’opacité de la minicarte de Cyberpunk, à 75 % dans le thème standard.

@@ -27,7 +27,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 11;
+constexpr LONG64 protocolVersion = 12;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate gear and mode changes.
@@ -39,7 +39,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v11.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v12.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -271,6 +271,19 @@ void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint6
     ReleaseMutex(mutex_);
 }
 
+void DiagnosticPublisher::recordUsbEvent(const DiagnosticUsbEvent& event) noexcept
+{
+    if (!frame_)
+        return;
+    auto& count = report_.usbEventCount;
+    auto& events = report_.usbEvents;
+    if (count == events.size()) {
+        std::move(events.begin() + 1, events.end(), events.begin());
+        --count;
+    }
+    events[count++] = event;
+}
+
 void DiagnosticPublisher::recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept
 {
     if (!frame_ || !captureId || !sample.sampledAt || !isDrivingCaptureMode(sample.mode))
@@ -386,6 +399,7 @@ DiagnosticRead DiagnosticReader::read() noexcept
             last_.lastDrive.profile.back() = '\0';
             last_.performance.feedbackProfile.back() = '\0';
             last_.eventCount = std::min(last_.eventCount, static_cast<std::uint32_t>(last_.events.size()));
+            last_.usbEventCount = std::min(last_.usbEventCount, static_cast<std::uint32_t>(last_.usbEvents.size()));
         } else {
             last_.connection = DiagnosticConnection::stale;
         }

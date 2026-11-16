@@ -48,6 +48,8 @@ using chrome_axis::DiagnosticCommandState;
 using chrome_axis::DiagnosticDelivery;
 using chrome_axis::DiagnosticFeedbackState;
 using chrome_axis::DiagnosticMode;
+using chrome_axis::DiagnosticUsbEvent;
+using chrome_axis::DiagnosticUsbEventKind;
 using Vehicle = RED4ext::vehicle::BaseObject;
 using UpdateVehicleInput = void (*)(Vehicle*);
 
@@ -90,6 +92,7 @@ struct DrivingContext {
     std::uint64_t session{};
     Clock::time_point refreshed{};
     Clock::time_point vehicleUpdated{};
+    bool menuPaused{};
 };
 
 bool vehicleInputFresh(const DrivingContext& driving, Clock::time_point now) noexcept {
@@ -801,6 +804,7 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
         }
         context.vehicle = current;
         context.refreshed = now;
+        context.menuPaused = mounted && !canDrive;
         drivingVehicle.store(current, std::memory_order_release);
         if (invalidated || !foreground)
             suspendTransmission();
@@ -1190,6 +1194,46 @@ std::uint64_t elapsedMicros(Clock::duration duration) noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
 }
 
+template<std::size_t Size>
+void copyDiagnosticToken(std::array<char, Size>& destination, std::string_view value) noexcept {
+    std::ranges::copy(value.substr(0, Size - 1), destination.begin());
+}
+
+struct UsbReadDiagnostics {
+    chrome_axis::DiagnosticPublisher& publisher;
+    const UsbConfiguration& usb;
+
+    static void observe(void* observerState, const chrome_axis::DirectInputReadEvent& read) noexcept {
+        auto& self = *static_cast<UsbReadDiagnostics*>(observerState);
+        using ReadKind = chrome_axis::DirectInputReadEventKind;
+        auto kind = DiagnosticUsbEventKind::deviceSlow;
+        switch (read.kind) {
+        case ReadKind::slow: break;
+        case ReadKind::pending: kind = DiagnosticUsbEventKind::devicePending; break;
+        case ReadKind::unavailable: kind = DiagnosticUsbEventKind::deviceUnavailable; break;
+        case ReadKind::recovered: kind = DiagnosticUsbEventKind::deviceRecovered; break;
+        }
+        DiagnosticUsbEvent event{.sampledAt = GetTickCount64(), .durationMicros = read.durationMicros,
+                                 .result = static_cast<std::uint32_t>(read.result), .kind = kind,
+                                 .mode = DiagnosticMode::usb};
+        copyDiagnosticToken(event.deviceId, read.deviceId);
+        copyDiagnosticToken(event.operation, read.operation);
+        if (self.usb.profile) {
+            const auto& profile = *self.usb.profile;
+            const std::array axes{&profile.steering, &profile.throttle, &profile.brake};
+            for (std::size_t i = 0; i < axes.size(); ++i) {
+                if (axes[i]->deviceId == read.deviceId)
+                    event.deviceAxisMask |= static_cast<std::uint8_t>(1u << i);
+            }
+        }
+        if (self.usb.accessoryProfile) {
+            event.deviceAccessoryCount = static_cast<std::uint8_t>(std::ranges::count_if(*self.usb.accessoryProfile,
+                [&](const auto& binding) { return binding.deviceId == read.deviceId; }));
+        }
+        self.publisher.recordUsbEvent(event);
+    }
+};
+
 // Called with stateMutex held, so the capture starts and stops atomically
 // with respect to writes in the game callback.
 void updatePerformanceCapture(chrome_axis::PerformanceReport& report, std::uint64_t& leaseUntil,
@@ -1310,11 +1354,19 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     } catch (const std::exception&) {
         warn("Could not initialize the Chrome Axis diagnostics channel.");
     }
+    UsbConfiguration usb;
+    std::optional<UsbReadDiagnostics> usbReadDiagnostics;
+    if (diagnostics)
+        usbReadDiagnostics.emplace(UsbReadDiagnostics{*diagnostics, usb});
+    std::optional<std::pair<DiagnosticMode, bool>> lastUsbContext;
+    std::optional<bool> usbCommandsReady;
+    std::uint64_t usbWaitStartedAt{};
     chrome_axis::DiagnosticSnapshot diagnostic;
     chrome_axis::PerformanceReport performance;
     std::uint64_t performanceLeaseUntil{};
     Clock::time_point nextDiagnostic{};
     Clock::time_point lastMeasuredUsb{};
+    Clock::time_point lastUsbPollFinished{};
     Clock::time_point accessoryBlockedUntil{};
     Clock::time_point nextTimeoutReport{};
     Clock::time_point nextPendingReport{};
@@ -1331,6 +1383,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const auto performanceRequest = diagnostics->performanceRequest();
         std::uint64_t drivingSession{};
         std::optional<chrome_axis::DrivingCaptureSample> captureSample;
+        bool menuPaused = false;
         {
             std::scoped_lock lock(stateMutex);
             // A vehicle transition can invalidate the worker's sample before publishing.
@@ -1346,6 +1399,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 snapshot.mode = DiagnosticMode::gameNotForeground;
             } else if (!foreground) {
                 snapshot.mode = DiagnosticMode::waitingForDriver;
+                menuPaused = context.menuPaused;
             } else {
                 drivingSession = context.session;
                 if (chrome_axis::isDrivingCaptureMode(snapshot.mode) && !vehicleInputFresh(context, now)) {
@@ -1475,9 +1529,21 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         if (captureSample)
             diagnostics->recordDrivingSample(performance.requestId, *captureSample);
+        if (usb.enabled && snapshot.mode != DiagnosticMode::simulation) {
+            const auto usbContext = std::pair{snapshot.mode, menuPaused};
+            if (lastUsbContext != usbContext) {
+                diagnostics->recordUsbEvent({
+                    .sampledAt = GetTickCount64(),
+                    .kind = menuPaused ? DiagnosticUsbEventKind::menuPaused : DiagnosticUsbEventKind::contextChanged,
+                    .mode = snapshot.mode
+                });
+                lastUsbContext = usbContext;
+            }
+        } else {
+            lastUsbContext.reset();
+        }
         diagnostics->publish(snapshot, drivingSession, performance);
     };
-    UsbConfiguration usb;
     chrome_axis::WheelFeedback wheelFeedback;
     Clock::time_point lastFeedbackUpdate{};
     chrome_axis::SimulationReceiver simulation(gameRoot);
@@ -1518,7 +1584,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             diagnostic.feedbackData = {};
         }
         if (!foreground) {
+            usbCommandsReady.reset();
+            usbWaitStartedAt = 0;
             lastMeasuredUsb = {};
+            lastUsbPollFinished = {};
             feedbackRequested.store(false, std::memory_order_relaxed);
             if (accessoryKeys.hasInjectedKeys()) {
                 accessoryKeys.apply({});
@@ -1596,7 +1665,16 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if ((drivingSessionChanged || drivingContextChanged) && input) {
                 info("Driver context resumed. Reopening USB devices and waiting for neutral.");
             }
+            if (input && usb.enabled && !simulated && diagnostics) {
+                DiagnosticUsbEvent event{.sampledAt = GetTickCount64(), .kind = DiagnosticUsbEventKind::directInputReopened,
+                                         .mode = DiagnosticMode::usb};
+                const auto reason = drivingSessionChanged ? "driving_session" : drivingContextChanged ? "driving_context"
+                    : windowChanged ? "window" : "configuration";
+                copyDiagnosticToken(event.operation, reason);
+                diagnostics->recordUsbEvent(event);
+            }
             input.reset();
+            lastUsbPollFinished = {};
             window = foreground;
             retryInitialization = {};
             lastDrivingSession = current.session;
@@ -1631,6 +1709,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             performance.referenceFeedbackGain = 0;
         if (!measuring || !physical)
             lastMeasuredUsb = {};
+        if (!physical)
+            lastUsbPollFinished = {};
         if (changes.feedback) {
             if (input) {
                 input->stopWheelForce();
@@ -1645,13 +1725,21 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         if (physical) {
             if ((!input || !input->ready()) && start >= retryInitialization) {
-                input = std::make_unique<chrome_axis::DirectInput>(window, &logDirectInput);
+                input = std::make_unique<chrome_axis::DirectInput>(window, &logDirectInput,
+                    usbReadDiagnostics ? &UsbReadDiagnostics::observe : nullptr,
+                    usbReadDiagnostics ? &*usbReadDiagnostics : nullptr);
                 if (!input->ready()) {
                     retryInitialization = start + 1s;
                 }
             }
             if (input && input->ready()) {
                 sampledAt = Clock::now();
+                if (diagnostics && lastUsbPollFinished != Clock::time_point{} &&
+                    sampledAt - lastUsbPollFinished > inputLifetime) {
+                    diagnostics->recordUsbEvent({.sampledAt = GetTickCount64(),
+                        .durationMicros = elapsedMicros(sampledAt - lastUsbPollFinished),
+                        .kind = DiagnosticUsbEventKind::pollGap, .mode = DiagnosticMode::usb});
+                }
                 input->beginPoll();
                 readAccessories = usb.accessories && vehicleInputFresh(current, sampledAt);
                 if (usb.reader) {
@@ -1665,8 +1753,17 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 } else if (usb.accessories) {
                     usb.accessories->reset();
                 }
-                const auto duration = Clock::now() - sampledAt;
+                lastUsbPollFinished = Clock::now();
+                const auto duration = lastUsbPollFinished - sampledAt;
                 sampleExpired = duration > inputLifetime;
+                if (sampleExpired && diagnostics) {
+                    const auto tick = GetTickCount64();
+                    diagnostics->recordUsbEvent({.sampledAt = tick, .durationMicros = elapsedMicros(duration),
+                        .kind = DiagnosticUsbEventKind::pollExpired, .mode = DiagnosticMode::usb});
+                    usbCommandsReady.reset();
+                    if (!usbWaitStartedAt)
+                        usbWaitStartedAt = tick;
+                }
                 if (measuring && (usb.reader || readAccessories)) {
                     const bool missedCadence = lastMeasuredUsb != Clock::time_point{} &&
                         sampledAt - lastMeasuredUsb > physicalPollInterval + 1ms;
@@ -1704,6 +1801,35 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             readiness.armed == usb.accessoryProfile->size();
         const bool usbReady = physical && usb.profilesValid() && (!usb.reader || axesReady) &&
             (!usb.accessories || accessoriesReady);
+        if (diagnostics && physical && !sampleExpired && vehicleInputFresh(current, start)) {
+            if (usbCommandsReady != usbReady) {
+                const auto tick = GetTickCount64();
+                DiagnosticUsbEvent event{.sampledAt = tick,
+                    .durationMicros = usbReady && usbWaitStartedAt ? (tick - usbWaitStartedAt) * 1000 : 0,
+                    .kind = usbReady ? DiagnosticUsbEventKind::commandsReady : DiagnosticUsbEventKind::commandsWaiting,
+                    .mode = DiagnosticMode::usb};
+                if (usb.reader) {
+                    const auto& axes = usb.reader->axisStatuses();
+                    for (std::size_t i = 0; i < axes.size(); ++i)
+                        event.axes[i] = diagnosticAxisState(axes[i], false);
+                }
+                if (usb.accessories) {
+                    event.accessories = diagnosticAccessoryState(readiness, accessoriesReady, input && input->ready(),
+                                                                 false, false);
+                    event.accessoryArmed = static_cast<std::uint32_t>(readiness.armed);
+                    event.accessoryCount = static_cast<std::uint32_t>(usb.accessoryProfile->size());
+                }
+                diagnostics->recordUsbEvent(event);
+                usbCommandsReady = usbReady;
+                if (usbReady)
+                    usbWaitStartedAt = 0;
+                else if (!usbWaitStartedAt)
+                    usbWaitStartedAt = tick;
+            }
+        } else if (!sampleExpired) {
+            usbCommandsReady.reset();
+            usbWaitStartedAt = 0;
+        }
         const bool usbCanSend = controls.steeringReady || controls.throttleReady || controls.brakeReady ||
             readiness.armed != 0;
         auto hudStatus = HudStatus::loaded;

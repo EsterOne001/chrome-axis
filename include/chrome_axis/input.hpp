@@ -48,6 +48,18 @@ bool isDeviceId(std::string_view id) noexcept;
 using DirectInputDiagnostic = void (*)(std::string_view deviceId, std::string_view stage,
     HRESULT result, bool available);
 
+enum class DirectInputReadEventKind : std::uint8_t { slow, pending, unavailable, recovered };
+
+struct DirectInputReadEvent {
+    DirectInputReadEventKind kind{};
+    std::string_view deviceId;
+    std::string_view operation;
+    HRESULT result{};
+    std::uint64_t durationMicros{};
+};
+
+using DirectInputReadObserver = void (*)(void*, const DirectInputReadEvent&) noexcept;
+
 enum class WheelForceState { waiting, active, unavailable, neutral };
 // Only available and resumed carry fresh data. Resumed starts a new neutral check.
 enum class DeviceReadStatus { unavailable, pending, available, resumed };
@@ -68,7 +80,8 @@ private:
 // Use each instance from one thread, with a top-level window of this process.
 class DirectInput {
 public:
-    explicit DirectInput(HWND window, DirectInputDiagnostic diagnostic = nullptr);
+    explicit DirectInput(HWND window, DirectInputDiagnostic diagnostic = nullptr,
+                         DirectInputReadObserver readObserver = nullptr, void* observerContext = nullptr);
     ~DirectInput();
     DirectInput(const DirectInput&) = delete;
     DirectInput& operator=(const DirectInput&) = delete;

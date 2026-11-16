@@ -152,6 +152,27 @@ struct DiagnosticEvent {
     DiagnosticFeedbackState feedback{DiagnosticFeedbackState::disabled};
 };
 
+enum class DiagnosticUsbEventKind : std::uint8_t {
+    deviceSlow, devicePending, deviceUnavailable, deviceRecovered, pollExpired, pollGap,
+    commandsWaiting, commandsReady, contextChanged, menuPaused, directInputReopened
+};
+
+struct DiagnosticUsbEvent {
+    std::uint64_t sampledAt{}; // GetTickCount64() at detection.
+    std::uint64_t durationMicros{};
+    std::array<char, 39> deviceId{}; // Lookup key for the application. Omit from exported text.
+    std::array<char, 40> operation{}; // DirectInput API name.
+    std::uint32_t result{};
+    DiagnosticUsbEventKind kind{};
+    DiagnosticMode mode{};
+    std::array<DiagnosticAxisState, 3> axes{};
+    DiagnosticAccessoryState accessories{};
+    std::uint32_t accessoryArmed{};
+    std::uint32_t accessoryCount{};
+    std::uint8_t deviceAxisMask{};
+    std::uint8_t deviceAccessoryCount{};
+};
+
 enum class PerformanceState : std::uint32_t { idle, capturing, complete };
 
 struct PerformanceTiming {
@@ -231,6 +252,8 @@ struct DiagnosticRead {
     std::uint64_t lastDriveAt{};
     std::array<DiagnosticEvent, 8> events{}; // Oldest first. Only status transitions are kept.
     std::uint32_t eventCount{};
+    std::array<DiagnosticUsbEvent, 32> usbEvents{}; // Oldest first, retained across driving sessions.
+    std::uint32_t usbEventCount{};
     PerformanceReport performance{};
     std::uint32_t drivingCaptureSamples{}; // Only visible to the owning reader.
 };
@@ -248,6 +271,7 @@ public:
     // A nonzero driving session identifies a snapshot taken in the driver's seat with game focus.
     void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0,
                  const PerformanceReport& performance = {}) noexcept;
+    void recordUsbEvent(const DiagnosticUsbEvent& event) noexcept;
     void recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept;
     std::optional<PerformanceRequest> performanceRequest() const noexcept;
 

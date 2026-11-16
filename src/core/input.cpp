@@ -20,6 +20,8 @@ using Clock = std::chrono::steady_clock;
 constexpr auto reconnectDelay = std::chrono::milliseconds(500);
 // A temporarily missing USB report can preserve arming, never the old input itself.
 constexpr auto pendingGrace = std::chrono::milliseconds(100);
+constexpr auto slowInputOperation = std::chrono::milliseconds(20);
+constexpr auto slowInputReportInterval = std::chrono::seconds(1);
 constexpr auto forceDuration = std::chrono::milliseconds(100);
 constexpr auto forceRefresh = std::chrono::milliseconds(60);
 static_assert(forceRefresh < forceDuration);
@@ -82,11 +84,13 @@ DevicePtr createDevice(IDirectInput8W& input, const GUID& id, HRESULT* status = 
     return SUCCEEDED(result) ? DevicePtr(device) : DevicePtr{};
 }
 
-bool hasObject(IDirectInputDevice8W& device, DWORD offset, DWORD type) {
+bool hasObject(IDirectInputDevice8W& device, DWORD offset, DWORD type, HRESULT* status = nullptr) {
     DIDEVICEOBJECTINSTANCEW object{};
     object.dwSize = sizeof(object);
-    return SUCCEEDED(device.GetObjectInfo(&object, offset, DIPH_BYOFFSET))
-        && (object.dwType & type) != 0;
+    const auto result = device.GetObjectInfo(&object, offset, DIPH_BYOFFSET);
+    if (status)
+        *status = result;
+    return SUCCEEDED(result) && (object.dwType & type) != 0;
 }
 
 std::array<bool, axisCount> availableAxes(IDirectInputDevice8W& device) {
@@ -189,18 +193,6 @@ struct OpenDevice {
         buttonsPresent.reset();
     }
 
-    HRESULT read(DIJOYSTATE2& state, std::string_view& stage) const {
-        if (needsPolling) {
-            const auto result = device->Poll();
-            if (FAILED(result)) {
-                stage = "Poll";
-                return result;
-            }
-        }
-        stage = "GetDeviceState";
-        return device->GetDeviceState(sizeof(state), &state);
-    }
-
     void report(DirectInputDiagnostic diagnostic, std::string_view id, std::string_view stage,
         HRESULT result, bool available) {
         if (!diagnostic || (lastAvailable == available && (available || (lastStage == stage && lastResult == result))))
@@ -227,6 +219,70 @@ struct OpenDevice {
     bool lastAvailable{};
     std::uint64_t sampleCycle{};
     std::optional<DeviceSample> cachedSample;
+    struct ReadFault {
+        DirectInputReadEventKind kind;
+        std::string_view operation;
+        HRESULT result;
+    };
+    std::optional<ReadFault> reportedFault;
+    Clock::time_point lastSlowReport{};
+    bool reportedReadTimeout{};
+};
+
+class ReadObserver {
+public:
+    ReadObserver(OpenDevice& device, std::string_view id, DirectInputReadObserver callback, void* context) noexcept
+        : device_(device), id_(id), callback_(callback), context_(context) {}
+
+    template <class Call>
+    HRESULT measure(std::string_view operation, Call call) noexcept(noexcept(call())) {
+        if (!callback_)
+            return call();
+        const auto started = Clock::now();
+        const auto result = call();
+        const auto now = Clock::now();
+        const auto duration = now - started;
+        micros_ = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
+        const bool timedOut = duration > pendingGrace;
+        if (duration >= slowInputOperation &&
+            (device_.lastSlowReport == Clock::time_point{} || now - device_.lastSlowReport >= slowInputReportInterval
+             || (timedOut && !device_.reportedReadTimeout))) {
+            device_.lastSlowReport = now;
+            device_.reportedReadTimeout = timedOut;
+            report(DirectInputReadEventKind::slow, operation, result);
+        }
+        return result;
+    }
+
+    void fault(DirectInputReadEventKind kind, std::string_view operation, HRESULT result) const noexcept {
+        if (!callback_)
+            return;
+        const auto& previous = device_.reportedFault;
+        if (previous && previous->kind == kind &&
+            (kind == DirectInputReadEventKind::pending || (previous->operation == operation && previous->result == result))) {
+            return;
+        }
+        device_.reportedFault = OpenDevice::ReadFault{kind, operation, result};
+        report(kind, operation, result);
+    }
+
+    void recovered(std::string_view operation, HRESULT result) const noexcept {
+        if (!device_.reportedFault)
+            return;
+        device_.reportedFault.reset();
+        report(DirectInputReadEventKind::recovered, operation, result);
+    }
+
+private:
+    void report(DirectInputReadEventKind kind, std::string_view operation, HRESULT result) const noexcept {
+        callback_(context_, {kind, id_, operation, result, micros_});
+    }
+
+    OpenDevice& device_;
+    std::string_view id_;
+    DirectInputReadObserver callback_;
+    void* context_;
+    std::uint64_t micros_{};
 };
 
 struct WheelOutput {
@@ -293,14 +349,17 @@ void DeviceReadContinuity::reset() noexcept {
 }
 
 struct DirectInput::Impl {
-    Impl(HWND windowHandle, DirectInputDiagnostic callback)
-        : window(windowHandle), diagnostic(callback), input(createDirectInput(callback)) {}
+    Impl(HWND windowHandle, DirectInputDiagnostic callback, DirectInputReadObserver readObserver, void* observerContext)
+        : window(windowHandle), diagnostic(callback), input(createDirectInput(callback)),
+          readObserver(readObserver), observerContext(observerContext) {}
 
     std::optional<DeviceSample> read(OpenDevice& opened, const std::string& id);
 
     HWND window;
     DirectInputDiagnostic diagnostic;
     InputPtr input;
+    DirectInputReadObserver readObserver;
+    void* observerContext;
     std::unordered_map<std::string, OpenDevice> openDevices;
     std::uint64_t pollCycle{};
     WheelOutput wheel;
@@ -326,8 +385,9 @@ bool isDeviceId(std::string_view id) noexcept {
     return true;
 }
 
-DirectInput::DirectInput(HWND window, DirectInputDiagnostic diagnostic)
-    : impl_(std::make_unique<Impl>(window, diagnostic)) {}
+DirectInput::DirectInput(HWND window, DirectInputDiagnostic diagnostic,
+                         DirectInputReadObserver readObserver, void* observerContext)
+    : impl_(std::make_unique<Impl>(window, diagnostic, readObserver, observerContext)) {}
 
 DirectInput::~DirectInput() = default;
 
@@ -354,11 +414,13 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         return std::nullopt;
     }
     opened.retryAfter = {};
+    ReadObserver observer(opened, id, readObserver, observerContext);
     const auto retry = [&](std::string_view stage, HRESULT result) {
         opened.pendingSince = {};
         opened.continuity.reset();
         opened.retryAfter = Clock::now() + reconnectDelay;
         opened.report(diagnostic, id, stage, result, false);
+        observer.fault(DirectInputReadEventKind::unavailable, stage, result);
         return std::nullopt;
     };
     if (!opened.device) {
@@ -366,28 +428,39 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         auto result = parseDeviceId(id, guid);
         if (FAILED(result))
             return retry("CLSIDFromString", result);
-        result = input->GetDeviceStatus(guid);
+        result = observer.measure("GetDeviceStatus", [&] { return input->GetDeviceStatus(guid); });
         if (result != DI_OK)
             return retry("GetDeviceStatus", result);
-        auto device = createDevice(*input, guid, &result);
+        DevicePtr device;
+        result = observer.measure("CreateDevice", [&] {
+            HRESULT createResult{};
+            device = createDevice(*input, guid, &createResult);
+            return createResult;
+        });
         if (!device)
             return retry("CreateDevice", result);
-        result = device->SetDataFormat(&c_dfDIJoystick2);
+        result = observer.measure("SetDataFormat", [&] { return device->SetDataFormat(&c_dfDIJoystick2); });
         if (FAILED(result))
             return retry("SetDataFormat", result);
-        result = device->SetCooperativeLevel(window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
+        result = observer.measure("SetCooperativeLevel", [&] {
+            return device->SetCooperativeLevel(window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
+        });
         if (FAILED(result))
             return retry("SetCooperativeLevel", result);
-        opened.axes = availableAxes(*device);
-        opened.povs = availablePovs(*device);
+        observer.measure("ProbeAxisAndPovLayout", [&] {
+            opened.axes = availableAxes(*device);
+            opened.povs = availablePovs(*device);
+            return DI_OK;
+        });
         DIDEVCAPS capabilities{};
         capabilities.dwSize = sizeof(capabilities);
-        opened.needsPolling = FAILED(device->GetCapabilities(&capabilities))
+        result = observer.measure("GetCapabilities", [&] { return device->GetCapabilities(&capabilities); });
+        opened.needsPolling = FAILED(result)
             || (capabilities.dwFlags & DIDC_POLLEDDATAFORMAT) != 0;
         opened.device = std::move(device);
     }
     if (!opened.acquired) {
-        const auto result = opened.device->Acquire();
+        const auto result = observer.measure("Acquire", [&] { return opened.device->Acquire(); });
         if (FAILED(result)) {
             if (result != DIERR_OTHERAPPHASPRIO)
                 opened.release();
@@ -397,19 +470,28 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     }
 
     DIJOYSTATE2 state{};
-    std::string_view stage;
     const auto sampledAt = Clock::now();
-    const auto result = opened.read(state, stage);
+    std::string_view stage = "Poll";
+    auto result = opened.needsPolling
+        ? observer.measure(stage, [&] { return opened.device->Poll(); }) : DI_OK;
+    if (SUCCEEDED(result)) {
+        stage = "GetDeviceState";
+        result = observer.measure(stage, [&] { return opened.device->GetDeviceState(sizeof(state), &state); });
+    }
     if (result == E_PENDING) {
         const auto now = Clock::now();
-        if (opened.pendingSince == Clock::time_point{})
+        if (opened.pendingSince == Clock::time_point{}) {
             opened.pendingSince = now;
+            observer.fault(DirectInputReadEventKind::pending, stage, result);
+        }
         if (now - opened.pendingSince >= reconnectDelay) {
             // A device that never supplies a fresh report needs a new DirectInput handle.
             opened.release();
             return retry(stage, result);
         }
         opened.readStatus = opened.continuity.pending(now);
+        if (opened.readStatus == DeviceReadStatus::unavailable && now - opened.pendingSince >= pendingGrace)
+            observer.fault(DirectInputReadEventKind::unavailable, stage, result);
         return std::nullopt;
     }
     if (FAILED(result)) {
@@ -420,6 +502,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     opened.pendingSince = {};
     opened.readStatus = opened.continuity.available(sampledAt);
     opened.report(diagnostic, id, stage, result, true);
+    observer.recovered(stage, result);
 
     DeviceSample sample;
     sample.axes = {state.lX, state.lY, state.lZ, state.lRx, state.lRy, state.lRz,
@@ -455,9 +538,15 @@ std::optional<DeviceSample> DirectInput::sample(const std::string& id, const std
     if (opened.cachedSample) {
         const auto unchecked = buttons & ~opened.buttonsChecked;
         if (unchecked.any()) {
+            ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext);
             for (DWORD index = 0; index < buttonCount; ++index) {
-                if (unchecked.test(index))
-                    opened.buttonsPresent[index] = hasObject(*opened.device, DIJOFS_BUTTON(index), DIDFT_BUTTON);
+                if (unchecked.test(index)) {
+                    observer.measure("GetObjectInfo", [&] {
+                        HRESULT result{};
+                        opened.buttonsPresent[index] = hasObject(*opened.device, DIJOFS_BUTTON(index), DIDFT_BUTTON, &result);
+                        return result;
+                    });
+                }
             }
             opened.buttonsChecked |= unchecked;
         }

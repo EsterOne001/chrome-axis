@@ -56,6 +56,7 @@ struct DialogState {
     const std::filesystem::path& gameRoot;
     const std::filesystem::path& profileRoot;
     std::wstring models;
+    std::span<const DeviceInfo> devices;
     const wchar_t* missingFiles{};
     std::wstring pluginVersion{};
     std::wstring versionMismatch{};
@@ -301,16 +302,33 @@ std::wstring fileVersion(const std::filesystem::path& path, bool omitZeroRevisio
     return version;
 }
 
+std::wstring reportDeviceModel(const DeviceInfo& device)
+{
+    const std::string_view name = device.productName;
+    if (name.find('\\') != name.npos || name.starts_with('/') || name.find(":/") != name.npos)
+        return {};
+
+    // Product names are usually generic, but some drivers append an instance GUID.
+    constexpr std::size_t guidLength = 36;
+    for (auto dash = name.find('-'); dash != name.npos; dash = name.find('-', dash + 1)) {
+        if (dash < 8 || name.size() - (dash - 8) < guidLength)
+            continue;
+        const auto candidate = name.substr(dash - 8, guidLength);
+        if (candidate[13] == '-' && candidate[18] == '-' && candidate[23] == '-' &&
+            candidate.find_first_not_of("0123456789abcdefABCDEF-") == candidate.npos &&
+            std::ranges::count(candidate, '-') == 4)
+            return {};
+    }
+    return reportLabel(fromUtf8(name));
+}
+
 std::wstring detectedModels(std::span<const DeviceInfo> devices)
 {
     constexpr std::size_t modelLimit = 12;
     std::vector<std::wstring> unique;
     std::wstring models;
     for (const auto& device : devices) {
-        if (device.productName.find('\\') != std::string::npos || device.productName.starts_with('/') ||
-            device.productName.find(":/") != std::string::npos || isDeviceId(device.productName))
-            continue;
-        auto model = reportLabel(fromUtf8(device.productName));
+        auto model = reportDeviceModel(device);
         if (model.empty() || std::ranges::find(unique, model) != unique.end())
             continue;
         if (!models.empty())
@@ -469,6 +487,89 @@ std::wstring milliseconds(double micros)
     const auto decimal = formatted.find(L'.');
     formatted[decimal] = tr(Text::mainDecimalSeparator)[0];
     return formatted + L" ms";
+}
+
+const wchar_t* usbEventTitle(DiagnosticUsbEventKind kind)
+{
+    switch (kind) {
+    case DiagnosticUsbEventKind::deviceSlow: return tr(Text::DlgDiagnosticsUsbEventSlow);
+    case DiagnosticUsbEventKind::devicePending: return tr(Text::DlgDiagnosticsUsbEventPending);
+    case DiagnosticUsbEventKind::deviceUnavailable: return tr(Text::DlgDiagnosticsDeviceUnavailable);
+    case DiagnosticUsbEventKind::deviceRecovered: return tr(Text::DlgDiagnosticsUsbEventRecovered);
+    case DiagnosticUsbEventKind::pollExpired: return tr(Text::DlgDiagnosticsUsbEventPollExpired);
+    case DiagnosticUsbEventKind::pollGap: return tr(Text::DlgDiagnosticsUsbEventPollGap);
+    case DiagnosticUsbEventKind::commandsWaiting: return tr(Text::DlgDiagnosticsUsbEventCommandsWaiting);
+    case DiagnosticUsbEventKind::commandsReady: return tr(Text::DlgDiagnosticsUsbEventCommandsReady);
+    case DiagnosticUsbEventKind::contextChanged: return tr(Text::DlgDiagnosticsUsbEventContext);
+    case DiagnosticUsbEventKind::menuPaused: return tr(Text::DlgDiagnosticsUsbEventMenu);
+    case DiagnosticUsbEventKind::directInputReopened: return tr(Text::DlgDiagnosticsUsbEventReopened);
+    }
+    return unavailableValue;
+}
+
+std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const DeviceInfo> devices)
+{
+    std::wstring detail;
+    const auto append = [&](std::wstring_view text) {
+        detail += L" · ";
+        detail += text;
+    };
+    const auto bounded = [](const auto& text) {
+        return std::string_view(text.begin(), std::ranges::find(text, '\0'));
+    };
+    const auto operation = bounded(event.operation);
+    switch (event.kind) {
+    case DiagnosticUsbEventKind::deviceSlow:
+    case DiagnosticUsbEventKind::devicePending:
+    case DiagnosticUsbEventKind::deviceUnavailable:
+    case DiagnosticUsbEventKind::deviceRecovered: {
+        const auto id = bounded(event.deviceId);
+        const auto device = std::ranges::find(devices, id, &DeviceInfo::id);
+        const auto model = device == devices.end() ? std::wstring{} : reportDeviceModel(*device);
+        const auto fallback = id.empty() ? Text::DlgDiagnosticsUsbEventInterface : Text::DlgDiagnosticsUsbEventDevice;
+        append(model.empty() ? std::wstring_view(tr(fallback)) : std::wstring_view(model));
+        for (std::size_t index = 0; index < axisControls.size(); ++index) {
+            if (event.deviceAxisMask & (1u << index))
+                append(tr(axisControls[index].label));
+        }
+        if (event.deviceAccessoryCount)
+            append(std::wstring(tr(Text::DlgDiagnosticsAccessories)) + L" " + std::to_wstring(event.deviceAccessoryCount));
+        if (!operation.empty() && std::ranges::all_of(operation, [](char character) {
+            return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                (character >= '0' && character <= '9') || character == ' ';
+        }))
+            append(fromUtf8(operation));
+        if (event.kind == DiagnosticUsbEventKind::deviceUnavailable || event.kind == DiagnosticUsbEventKind::devicePending)
+            append(std::format(L"0x{:08X}", event.result));
+        break;
+    }
+    case DiagnosticUsbEventKind::commandsWaiting:
+    case DiagnosticUsbEventKind::commandsReady:
+        for (std::size_t index = 0; index < axisControls.size(); ++index)
+            append(std::wstring(tr(axisControls[index].label)) + L" " + axisText(event.axes[index]));
+        if (event.accessoryCount)
+            append(std::wstring(tr(Text::DlgDiagnosticsAccessories)) + L" " + accessoryText(event.accessories) +
+                   L" " + std::to_wstring(event.accessoryArmed) + L"/" + std::to_wstring(event.accessoryCount));
+        break;
+    case DiagnosticUsbEventKind::contextChanged:
+        append(modeText(event.mode));
+        break;
+    case DiagnosticUsbEventKind::directInputReopened:
+        if (operation == "driving_session")
+            append(tr(Text::DlgDiagnosticsUsbReasonSession));
+        else if (operation == "driving_context")
+            append(tr(Text::DlgDiagnosticsUsbReasonContext));
+        else if (operation == "window")
+            append(tr(Text::DlgDiagnosticsUsbReasonWindow));
+        else if (operation == "configuration")
+            append(tr(Text::DlgDiagnosticsUsbReasonConfiguration));
+        break;
+    default:
+        break;
+    }
+    if (event.durationMicros || event.kind == DiagnosticUsbEventKind::pollExpired)
+        append(milliseconds(static_cast<double>(event.durationMicros)));
+    return detail;
 }
 
 std::wstring feedbackStatus(const DiagnosticSnapshot& snapshot)
@@ -826,6 +927,14 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         report += L"\r\n";
         previous = &event;
     }
+    const auto usbEvents = std::span(read.usbEvents).first(std::min<std::size_t>(read.usbEventCount, read.usbEvents.size()));
+    if (!usbEvents.empty()) {
+        report += L"\r\n" + std::wstring(tr(Text::DlgDiagnosticsUsbEvents)) + L"\r\n";
+        for (const auto& event : usbEvents) {
+            report += L"- " + eventAge(event.sampledAt, now) + L" — " + usbEventTitle(event.kind) +
+                usbEventDetails(event, state.devices) + L"\r\n";
+        }
+    }
     if (read.performance.state != PerformanceState::idle) {
         report += L"\r\n" + std::wstring(tr(Text::DlgDiagnosticsPerformanceReport)) + L"\r\n";
         report += performanceStatus(read, now) + L"\r\n";
@@ -1165,7 +1274,7 @@ void showDiagnostics(HWND owner, const std::filesystem::path& profileRoot, std::
 {
     const auto pluginDirectory = profileRoot.parent_path();
     const auto gameRoot = installedGameRoot(pluginDirectory);
-    DialogState state{reader, gameRoot, profileRoot, detectedModels(devices)};
+    DialogState state{reader, gameRoot, profileRoot, detectedModels(devices), devices};
     if (!gameRoot.empty()) {
         const auto files = pluginFiles(pluginDirectory);
         state.missingFiles = missingPluginFilesText(files);

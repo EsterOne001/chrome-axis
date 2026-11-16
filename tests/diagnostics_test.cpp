@@ -411,6 +411,12 @@ int run()
         idle.accessoryCommands = {};
         idle.feedback = DiagnosticFeedbackState::inactive;
         idle.feedbackData = {};
+        const auto usbTick = GetTickCount64();
+        const DiagnosticUsbEvent slowRead{
+            .sampledAt = usbTick, .durationMicros = 505520, .operation = {'P', 'o', 'l', 'l'},
+            .kind = DiagnosticUsbEventKind::deviceSlow, .mode = DiagnosticMode::usb, .deviceAxisMask = 0b100,
+        };
+        publisher.recordUsbEvent(slowRead);
         publisher.publish(idle);
         DiagnosticReader openedAfterAltTab(root);
         const auto retained = openedAfterAltTab.read();
@@ -425,7 +431,10 @@ int run()
             retained.lastDrive.axes[0].inputValue != 0.5f || retained.eventCount != 2 ||
             retained.snapshot.feedbackData.motionAvailable || retained.snapshot.feedbackData.submittedAt ||
             retained.lastDrive.feedbackData.motionAgeMicros != 24000 || !retained.lastDrive.feedbackData.airborne ||
-            retained.events[1].mode != DiagnosticMode::gameNotForeground)
+            retained.events[1].mode != DiagnosticMode::gameNotForeground ||
+            retained.usbEventCount != 1 || retained.usbEvents[0].sampledAt != usbTick ||
+            retained.usbEvents[0].durationMicros != slowRead.durationMicros ||
+            retained.usbEvents[0].operation != slowRead.operation || retained.usbEvents[0].deviceAxisMask != 0b100)
             return 9;
 
         for (std::size_t i = 0; i < retained.events.size() + 1; ++i) {
@@ -439,9 +448,16 @@ int run()
             return 10;
         publisher.publish(snapshot, 2);
         const auto nextDrive = reader.read();
-        if (nextDrive.eventCount != 1 || nextDrive.lastDrive.axes[1].state != DiagnosticAxisState::waitingForNeutral)
+        if (nextDrive.eventCount != 1 || nextDrive.lastDrive.axes[1].state != DiagnosticAxisState::waitingForNeutral ||
+            nextDrive.usbEventCount != 1 || nextDrive.usbEvents[0].kind != DiagnosticUsbEventKind::deviceSlow)
             return 11;
 
+        for (std::size_t i = 0; i <= retained.usbEvents.size(); ++i) {
+            publisher.recordUsbEvent({
+                .sampledAt = usbTick + i, .durationMicros = 100001 + i,
+                .kind = DiagnosticUsbEventKind::pollExpired, .mode = DiagnosticMode::usb,
+            });
+        }
         auto pending = snapshot;
         pending.axes[0].state = DiagnosticAxisState::temporarilyUnavailable;
         pending.axes[0].inputAvailable = 0;
@@ -452,6 +468,10 @@ int run()
         publisher.publish(pending, 2);
         publisher.publish(snapshot, 2);
         const auto resumed = reader.read();
+        if (resumed.usbEventCount != resumed.usbEvents.size() ||
+            resumed.usbEvents.front().durationMicros != 100002 ||
+            resumed.usbEvents.back().durationMicros != 100001 + resumed.usbEvents.size())
+            return 26;
         if (resumed.eventCount != 3 || resumed.events[1].axes[0] != DiagnosticAxisState::temporarilyUnavailable ||
             resumed.events[1].accessories != DiagnosticAccessoryState::temporarilyUnavailable ||
             resumed.events[1].feedback != DiagnosticFeedbackState::waitingForMotion ||
@@ -475,7 +495,7 @@ int run()
     const auto restart = reader.read();
     if (restart.connection != DiagnosticConnection::connected ||
         restart.snapshot.mode != DiagnosticMode::waitingForDriver || restart.lastDriveAt ||
-        restart.eventCount != 1 || restart.events[0].mode != DiagnosticMode::waitingForDriver)
+        restart.eventCount != 1 || restart.events[0].mode != DiagnosticMode::waitingForDriver || restart.usbEventCount)
         return 7;
     if (!checkPercentiles())
         return 24;
