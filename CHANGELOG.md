@@ -6,6 +6,28 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.77 · 17 novembre 2026
+
+Comparée à la **0.4.76**.
+
+- **HUD Painter.** Un préréglage malformé est préservé pendant la sauvegarde des autres. Le sélecteur ouvert se resynchronise après une sauvegarde différée, et sélectionner une couleur ne marque plus le préréglage comme modifié.
+- **Lecteur USB de l’application.** Après un échec, le périphérique concerné est retenté et l’ancien lecteur doit être libéré avant l’ouverture du suivant. Un volant maintenu doit revenir au neutre après la reprise.
+- **Diagnostic et accessoires.** La course d’un pédalier à axe combiné affiche un seuil de repos symétrique. Le calcul du réarmement reste identique. Sous verrou temporaire, l’aperçu conserve les dernières affectations du profil actif et les recharge après déverrouillage. Un changement de profil efface l’ancien aperçu.
+- **Validation.** Release x64, 18 suites CTest, cinq suites ciblées répétées trois fois, cinq démarrages et relances simulés avec trois axes et 14 commandes armées, REDscript avec et sans HUD Painter et CRC des dix fichiers. La reprise du T300RS, du pédalier et du retour de force au deuxième lancement de Cyberpunk, ainsi que la persistance des couleurs après une sauvegarde différée, restent à confirmer en jeu.
+
+SHA-256 `9430fc35df3090fd6446db634391a3c57814837e22d6be0ce1442198ca1719a4`. [ZIP Vortex](out/Chromaxis-0.4.77.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/d9544c267ec28e4592199137daf96fff91cd33c7)
+
+## Chrome Axis 0.4.76 · 17 novembre 2026
+
+Comparée à la **0.4.75**.
+
+- **Protection des profils.** L’application garde la dernière calibration valide et le brouillon du profil actif si le fichier est verrouillé. Elle attend une lecture valide avant la sauvegarde et vérifie les conflits entre axes et accessoires dans les deux sens. Un changement d’actionneur attend la confirmation de la désactivation du retour de force de l’ancien volant.
+- **Lecture USB et affichage.** L’application lit les périphériques indépendamment et reprend l’état USB du HUD. Le diagnostic distingue l’appel DirectInput en cours d’un incident passé et affiche la course calibrée, le seuil et l’état de repos des pédales au réarmement.
+- **Bascule AUTO / MANUEL et HUD Painter.** Un appui bref reste pris en compte si le contexte de conduite arrive en retard. Le raccourci peut se réarmer après un relâchement manqué. Les changements de couleur restent en mémoire si le fichier est illisible. À la sauvegarde, seules les couleurs modifiées sont fusionnées.
+- **Validation.** Release x64, 18 suites CTest, cinq répétitions ciblées des profils, de l’inventaire USB et de la liaison application–plugin, cinq démarrages et relances simulés à 14 commandes prêtes sur 14, REDscript avec et sans HUD Painter et CRC des dix fichiers. La reprise sur T300RS au deuxième lancement et la sauvegarde différée des couleurs restent à vérifier en jeu.
+
+SHA-256 `536c9879db1655e0e683f8e86546dea151f26126a7d3c29cc1012f12bac72f5e`. [ZIP Vortex](out/Chromaxis-0.4.76.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/f0f14a1e111ef7ab312289f4cc454ea3b2a46140)
+
 ## Chrome Axis 0.4.75 · 17 novembre 2026
 
 Comparée à la **0.4.74**.
