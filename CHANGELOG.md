@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.71
+
+- **Fermeture du jeu.** Le plugin rend la main à Cyberpunk après une attente bornée si un appel DirectInput bloque encore. Le nettoyage des périphériques se termine dès que le pilote répond.
+- **Retour de force.** Une désactivation enregistrée dans le dernier profil confirmé est prise en compte au prochain contrôle, même si le fichier de sélection est brièvement verrouillé. Les axes et les accessoires gardent leur état.
+
+[ZIP Vortex](out/Chromaxis-0.4.71.zip)
+
 ## Chrome Axis 0.4.70
 
 - **Reprise USB.** Le plugin conserve les commandes armées si le fichier de sélection du profil est brièvement verrouillé. Il retente la lecture et applique les changements confirmés de profil ou d’activation USB.

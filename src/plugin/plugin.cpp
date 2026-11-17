@@ -6,6 +6,7 @@
 #include "chrome_axis/input.hpp"
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/simulation.hpp"
+#include "deferred_driver_cleanup.hpp"
 #include "driving_inputs.hpp"
 #include "force_output_worker.hpp"
 #include "manual_transmission_backend.hpp"
@@ -216,6 +217,8 @@ RED4ext::v1::PluginHandle plugin{};
 const RED4ext::v1::Sdk* sdk{};
 void* hookTarget{};
 void* originalUpdate{};
+std::mutex driverLogMutex;
+bool driverLoggingEnabled{};
 
 void info(const char* message) {
     if (sdk && sdk->logger) {
@@ -230,7 +233,9 @@ void warn(const char* message) {
 }
 
 void logDirectInput(std::string_view deviceId, std::string_view stage, HRESULT result, bool available) {
-    if (!sdk || !sdk->logger) {
+    // Workers may finish a driver call after RED4ext has unloaded this plugin.
+    std::scoped_lock lock(driverLogMutex);
+    if (!driverLoggingEnabled || !sdk || !sdk->logger) {
         return;
     }
     if (stage.starts_with("force feedback")) {
@@ -388,6 +393,13 @@ struct ForceOutputContext {
         return std::min({input.sampled + inputLifetime, motionSampled + motionLifetime, vehicleUpdated + inputLifetime});
     }
 };
+
+struct DriverWorkers {
+    chrome_axis::ForceOutputWorker<ForceOutputContext> force{&logDirectInput};
+    std::unique_ptr<chrome_axis::DrivingInputs<>> input;
+};
+
+std::unique_ptr<chrome_axis::DeferredDriverCleanup<DriverWorkers>> driverCleanup;
 
 struct AccessoryDelivery {
     unsigned int key{};
@@ -1141,6 +1153,7 @@ private:
     std::optional<chrome_axis::AccessoryProfile> savedAccessories_;
     std::string profileError_, accessoryError_;
     std::string lastProfileWarning_, lastAccessoryWarning_, lastFeedbackWarning_, lastAxisConflictWarning_;
+    bool forceRefreshPending_{};
     bool reportedUsbState_{};
     bool reportedAccessoriesOnly_{};
 };
@@ -1157,9 +1170,18 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
                                                   chrome_axis::DiagnosticSnapshot& diagnostic) {
     UsbConfigurationChanges changes;
     const bool requested = chrome_axis::usbEnabled(root);
-    auto selected = selection_.refresh(root, requested, hasProfileDirectory(), now);
-    if (!selected)
-        return changes; // Keep the live readers armed while the selection file is briefly locked.
+    auto [selected, disabledFeedback] = selection_.refresh(root, requested, directory_, feedbackSettings.enabled, now);
+    if (!selected) {
+        forceRefreshPending_ = forceRefreshPending_ || force;
+        if (disabledFeedback) {
+            feedbackSettings = *disabledFeedback;
+            watchedFeedback_ = {};
+            changes.feedback = true;
+        }
+        return changes;
+    }
+    force = force || forceRefreshPending_;
+    forceRefreshPending_ = false;
     changes.preset = selected->directory != directory_;
     if (changes.preset) {
         directory_ = std::move(selected->directory);
@@ -1550,7 +1572,7 @@ DiagnosticCommandOutput nativeGearOutput(const chrome_axis::DiagnosticTransmissi
     return DiagnosticCommandOutput::nativePending;
 }
 
-void pollInput(std::stop_token stop, const std::filesystem::path& configurationDirectory) {
+void pollInput(std::stop_token stop, const std::filesystem::path& configurationDirectory, DriverWorkers& workers) {
     const auto executable = chrome_axis::modulePath(nullptr);
     const auto gameRoot = executable.parent_path().parent_path().parent_path();
     std::optional<chrome_axis::DiagnosticPublisher> diagnostics;
@@ -1809,7 +1831,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         diagnostics->publish(snapshot, drivingSession, performance, validDrivingSample);
     };
     chrome_axis::WheelFeedback wheelFeedback;
-    chrome_axis::ForceOutputWorker<ForceOutputContext> feedbackOutput(&logDirectInput);
+    auto& feedbackOutput = workers.force;
     auto feedbackState = chrome_axis::WheelForceState::waiting;
     Clock::time_point lastFeedbackUpdate{};
     const auto resetFeedback = [&] {
@@ -1855,20 +1877,18 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             feedbackState = chrome_axis::WheelForceState::waiting;
     };
     chrome_axis::SimulationReceiver simulation(gameRoot);
-    std::unique_ptr<chrome_axis::DrivingInputs<>> input;
+    auto& input = workers.input;
     struct StopWorkers {
-        decltype(feedbackOutput)& force;
-        decltype(input)& readers;
+        DriverWorkers& workers;
 
         ~StopWorkers() {
             feedbackRequested.store(false, std::memory_order_relaxed);
-            // Signal both worker families before either destructor can join.
-            force.requestStop();
-            if (readers)
-                readers->requestStop();
+            workers.force.requestStop();
+            if (workers.input)
+                workers.input->requestStop();
             accessoryKeys.apply({});
         }
-    } stopWorkers{feedbackOutput, input};
+    } stopWorkers{workers};
     std::vector<chrome_axis::DrivingInputDevice> inputDevices;
     bool inputConfigured{};
     bool inputActive{};
@@ -2824,12 +2844,20 @@ void stopPlugin() {
     active.store(false, std::memory_order_release);
     feedbackRequested.store(false, std::memory_order_relaxed);
     drivingVehicle.store(nullptr, std::memory_order_release);
+    {
+        std::scoped_lock lock(driverLogMutex);
+        driverLoggingEnabled = false;
+    }
     accessoryKeys.apply({});
     if (readerThread.joinable()) {
         readerThread.request_stop();
-        if (WaitForSingleObject(readerThread.native_handle(), 1000) == WAIT_TIMEOUT)
-            warn("Waiting for USB workers to finish. A DirectInput call may still be pending.");
         readerThread.join();
+    }
+    if (driverCleanup) {
+        driverCleanup->release();
+        if (!driverCleanup->wait(1000))
+            warn("USB cleanup is still waiting for a DirectInput call. Continuing game shutdown.");
+        driverCleanup.reset();
     }
     transmissionAvailable = false;
     chrome_axis::stopTransmissionHotkey();
@@ -2888,9 +2916,15 @@ bool startPlugin() {
     }
     hookTarget = target;
 
-    readerThread = std::jthread([configurationDirectory](std::stop_token stop) {
+    driverCleanup = std::make_unique<chrome_axis::DeferredDriverCleanup<DriverWorkers>>();
+    {
+        std::scoped_lock lock(driverLogMutex);
+        driverLoggingEnabled = true;
+    }
+    auto* workers = &driverCleanup->workers();
+    readerThread = std::jthread([configurationDirectory, workers](std::stop_token stop) {
         try {
-            pollInput(stop, configurationDirectory);
+            pollInput(stop, configurationDirectory, *workers);
         } catch (const std::exception& failure) {
             feedbackRequested.store(false, std::memory_order_relaxed);
             accessoryKeys.apply({});

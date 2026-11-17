@@ -238,6 +238,45 @@ bool testUsbProfileSelection(const fs::path& root)
     return defaultProfile && defaultProfile->directory == root;
 }
 
+bool testFeedbackStopWhileSelectionLocked(const fs::path& root)
+{
+    const auto directory = root / L"Profils" / preset;
+    fs::create_directories(directory);
+    std::string error;
+    const auto feedbackFile = directory / feedbackFilename;
+    const FeedbackSettings enabled{.enabled = true};
+    if (!selectPreset(root, preset, error) || !setUsbEnabled(root, true, error) ||
+        !saveFeedbackSettings(feedbackFile, enabled, error))
+        return false;
+
+    UsbProfileSelection selection;
+    const auto now = UsbProfileSelection::Clock::time_point{};
+    const auto initial = selection.refresh(root, usbEnabled(root), {}, false, now);
+    if (!initial.selected || initial.selected->directory != directory || initial.disabledFeedback)
+        return false;
+
+    const FeedbackSettings disabled{.strength = 18};
+    if (savePresetSettings(root, *initial.selected, {}, [&] {
+            return saveFeedbackSettings(feedbackFile, disabled, error);
+        }) != PresetSaveResult::saved)
+        return false;
+
+    const auto selectionFile = root / L"active_profile.txt";
+    const HANDLE reader = CreateFileW(selectionFile.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (reader == INVALID_HANDLE_VALUE)
+        return false;
+    const auto stopped = selection.refresh(root, usbEnabled(root), directory, true, now + 250ms);
+    // Even a subsequent settings write may only take effect once the active selection is verified.
+    const bool savedAgain = saveFeedbackSettings(feedbackFile, enabled, error);
+    const auto stillDeferred = selection.refresh(root, usbEnabled(root), directory, false, now + 500ms);
+    CloseHandle(reader);
+    const auto resumed = selection.refresh(root, usbEnabled(root), directory, false, now + 750ms);
+    return !stopped.selected && stopped.disabledFeedback == disabled && savedAgain &&
+        !stillDeferred.selected && !stillDeferred.disabledFeedback &&
+        resumed.selected && resumed.selected->directory == directory && !resumed.disabledFeedback &&
+        loadFeedbackSettings(feedbackFile, error) == enabled;
+}
+
 int runApplicationSide()
 {
     const auto unique = L"chrome-axis-bridge-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
@@ -248,6 +287,8 @@ int runApplicationSide()
     const Fixture fixture{directory};
     if (!testUsbProfileSelection(directory / L"Locked profile"))
         return 17;
+    if (!testFeedbackStopWhileSelectionLocked(directory / L"Locked feedback profile"))
+        return 18;
     const auto game = directory / L"Game A";
     const auto plugin = pluginDirectory(game);
     fs::create_directories(plugin / L"scripts");
