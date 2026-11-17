@@ -1,6 +1,7 @@
 #include "chrome_axis/diagnostics.hpp"
 #include "diagnostic_recording.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -45,6 +46,9 @@ bool testChronologicalExport(const std::filesystem::path& directory)
     const DiagnosticCaptureRecord laterArrival{
         .usb = {.sampledAt = start + 195, .durationMicros = 200000,
                 .kind = DiagnosticUsbEventKind::deviceSlow}, .usbIncident = true};
+    const DiagnosticCaptureRecord beforeStart{
+        .usb = {.sampledAt = start - 77, .durationMicros = 888877,
+                .kind = DiagnosticUsbEventKind::deviceSlow}, .usbIncident = true};
     const auto csv = [&](auto rows) {
         std::ostringstream stream;
         writeDiagnosticCaptureHeader(stream);
@@ -58,7 +62,9 @@ bool testChronologicalExport(const std::filesystem::path& directory)
     writeDiagnosticCaptureRows(ordered, std::array{first}, start, 2);
     const auto source = directory / L"live.csv";
     const auto destination = directory / L"export.csv";
-    const auto original = csv(std::array{first, late, laterArrival});
+    const auto original = csv(std::array{beforeStart, first, late, laterArrival});
+    if (original != csv(std::array{first, late, laterArrival}))
+        return false;
     std::ofstream(source, std::ios::binary) << original;
     const auto read = [](const std::filesystem::path& path) {
         std::ifstream input(path, std::ios::binary);
@@ -124,8 +130,17 @@ int run()
         if (const auto request = publisher->performanceRequest(); request && request->id) {
             if (request->enabled) {
                 if (performance.requestId == request->id && !emittedIncident) {
+                    const auto started = recorder.status().startedAt;
+                    publisher->recordUsbEvent({.sampledAt = started - 77, .durationMicros = 888877,
+                        .kind = DiagnosticUsbEventKind::deviceSlow, .mode = DiagnosticMode::usb});
                     publisher->recordUsbEvent({.sampledAt = GetTickCount64(), .durationMicros = 505520,
                         .kind = DiagnosticUsbEventKind::pollExpired, .mode = DiagnosticMode::usb});
+                    DiagnosticUsbEvent returned{.sampledAt = GetTickCount64(), .durationMicros = 510000,
+                        .kind = DiagnosticUsbEventKind::deviceSlow, .mode = DiagnosticMode::gameNotForeground,
+                        .lane = DiagnosticUsbLane::feedback};
+                    constexpr std::string_view call = "FFB SetParameters";
+                    std::ranges::copy(call, returned.operation.begin());
+                    publisher->recordUsbEvent(returned);
                     emittedIncident = true;
                 }
                 publisher->recordDrivingSample(request->id, {.sampledAt = GetTickCount64(), .mode = DiagnosticMode::usb,
@@ -191,7 +206,14 @@ int run()
     std::ifstream input(result.file, std::ios::binary);
     const std::string csv(std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{});
     const auto header = csv.find("elapsed_ms,mode");
+    const auto force = csv.find("FFB SetParameters");
+    if (force == csv.npos)
+        return 6;
+    const auto start = csv.rfind('\n', force) + 1;
+    const auto forceLine = std::string_view(csv).substr(start, csv.find('\n', force) - start);
     if (!emittedIncident || header == csv.npos || csv.find("elapsed_ms,mode", header + 1) != csv.npos ||
+        csv.find("888877") != csv.npos || forceLine.find(",game_not_foreground,") == forceLine.npos ||
+        forceLine.find(",feedback,") == forceLine.npos ||
         csv.find("505520") == csv.npos || csv.find(",usb,") == csv.npos ||
         csv.find("connection_lost") == csv.npos || csv.find("connection_restored") == csv.npos || result.dropped)
         return 6;

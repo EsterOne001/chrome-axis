@@ -799,20 +799,19 @@ int main()
     }
 
     mock.wheel.feedback = true;
-    const auto forceAxes = input.forceFeedbackAxesFor(inventory[0].id, 0);
-    if (!forceAxes || !(*forceAxes)[0] || mock.wheel.capabilityChecks <= previousCapabilityChecks || mock.pedals.capabilityChecks) {
+    const auto force = input.probeWheelForce(inventory[0].id, 0);
+    if (force != ForceFeedbackProbe::supported || mock.wheel.capabilityChecks <= previousCapabilityChecks ||
+        mock.pedals.capabilityChecks) {
         std::cerr << "Targeted force feedback probing did not verify the selected wheel and actuator\n";
         return 13;
     }
     mock.wheel.axisProbeFailure = ProbeFailure::axisMissingBeforeAcquire;
-    const auto deferredForceAxes = input.forceFeedbackAxesFor(inventory[0].id, 0);
-    if (!deferredForceAxes || !(*deferredForceAxes)[0]) {
+    if (input.probeWheelForce(inventory[0].id, 0) != ForceFeedbackProbe::supported) {
         std::cerr << "An actuator temporarily absent from layout must be retried on an acquired device\n";
         return 16;
     }
     mock.wheel.feedback = false;
-    const auto unsupported = input.forceFeedbackAxesFor(inventory[0].id, 0);
-    if (!unsupported || (*unsupported)[0]) {
+    if (input.probeWheelForce(inventory[0].id, 0) != ForceFeedbackProbe::unsupported) {
         std::cerr << "A readable device without a force capability must be confirmed unsupported\n";
         return 14;
     }
@@ -823,8 +822,20 @@ int main()
         std::cerr << "Inventory lost a controller whose handle was temporarily refused\n";
         return 7;
     }
-    if (input.forceFeedbackAxesFor(inventory[0].id, 0)) {
+    if (input.probeWheelForce(inventory[0].id, 0) != ForceFeedbackProbe::pending) {
         std::cerr << "A temporarily blocked wheel must remain unverified for force feedback\n";
         return 15;
+    }
+    mock.wheel.connected = false;
+    if (input.probeWheelForce(inventory[0].id, 0) != ForceFeedbackProbe::disconnected) {
+        std::cerr << "Only a confirmed absent wheel should be reported as disconnected\n";
+        return 17;
+    }
+    mock.wheel.connected = true;
+    mock.wheel.setupBlocked = false;
+    mock.wheel.feedback = true;
+    if (input.probeWheelForce(inventory[0].id, 0) != ForceFeedbackProbe::supported) {
+        std::cerr << "The targeted force feedback probe must recover after reconnecting\n";
+        return 18;
     }
 }

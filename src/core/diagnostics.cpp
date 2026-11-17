@@ -368,22 +368,29 @@ void writeDiagnosticCaptureHeader(std::ostream& output)
               "clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker,usb_call_lane,feedback_state\r\n";
 }
 
-void writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
-                                std::uint64_t startedAt, std::uint64_t dropped)
+std::size_t writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
+                                       std::uint64_t startedAt, std::uint64_t dropped)
 {
+    const auto sampledAt = [](const DiagnosticCaptureRecord& record) {
+        return record.usbIncident ? record.usb.sampledAt : record.driving.sampledAt;
+    };
     output.imbue(std::locale::classic());
     output << std::defaultfloat << std::dec << std::noboolalpha << std::setprecision(6);
     if (dropped) {
-        if (!records.empty()) {
-            const auto& next = records.front();
-            output << elapsed(next.usbIncident ? next.usb.sampledAt : next.driving.sampledAt, startedAt);
-        }
+        const auto next = std::ranges::find_if(records, [&](const auto& record) { return sampledAt(record) >= startedAt; });
+        if (next != records.end())
+            output << elapsed(sampledAt(*next), startedAt);
         emptyCsvColumns(output, drivingCsvColumns - 1);
         output << ",dropped," << dropped;
         emptyCsvColumns(output, captureCsvColumns - drivingCsvColumns - 2);
         output << "\r\n";
     }
+    std::size_t written{};
     for (const auto& record : records) {
+        // A worker can report an incident late, after a new capture has begun.
+        if (sampledAt(record) < startedAt)
+            continue;
+        ++written;
         if (record.usbIncident) {
             const auto& event = record.usb;
             output << elapsed(event.sampledAt, startedAt) << ',' << csvToken(event.mode, modeTokens);
@@ -443,6 +450,7 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
         writeCaptureClutch(output, sample.clutch);
         output << ",," << csvToken(sample.feedback, feedbackTokens) << "\r\n";
     }
+    return written;
 }
 
 void writeDiagnosticCaptureConnection(std::ostream& output, std::uint64_t startedAt,

@@ -6,6 +6,17 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.84
+
+- La calibration accepte les réponses lentes et régulières sans réutiliser une mesure périmée. Après une expiration, l’assistant rend la main même si l’inventaire USB attend encore un pilote.
+- Les captures analogiques surveillent la continuité du périphérique entre le repos et la butée. Le frein à main et l’embrayage redemandent le repos après une coupure confirmée.
+- Une réassociation de périphérique interrompue peut être reprise depuis le menu Profil. Une réassociation vers un autre actionneur désarme le retour de force et conserve ses réglages.
+- La sélection d’un profil hérité contrôle les conflits d’axes quand l’USB est déjà actif. Une copie de récupération verrouillée reste disponible pour réessai. Un fichier d’accessoires illisible est signalé lorsque les axes restent utilisables.
+- Un changement de configuration invalide le conseil de gain de la mesure en cours, y compris en arrière-plan. L’écran Retour de force distingue un volant déconnecté d’un pilote qui ne répond pas encore.
+- HUD Painter vérifie le type de la copie de récupération avant de la déplacer. Les CSV écartent les incidents antérieurs au début de l’enregistrement et conservent le contexte des appels terminés après Alt+Tab.
+
+[ZIP Vortex](out/Chromaxis-0.4.84.zip)
+
 ## Chrome Axis 0.4.83
 
 - Une restauration de profils interrompue est signalée à la relance avec sa copie de secours. Les affectations incompatibles d’un profil importé sont signalées avant l’activation USB.

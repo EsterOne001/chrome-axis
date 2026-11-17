@@ -147,10 +147,10 @@ public:
             return true;
 
         std::ostringstream output;
-        writeDiagnosticCaptureRows(output, {records_.data(), batch.count}, status_.startedAt, batch.dropped);
+        const auto written = writeDiagnosticCaptureRows(output, {records_.data(), batch.count}, status_.startedAt, batch.dropped);
         if (!file_.append(output.view()))
             return false;
-        status_.rows += batch.count;
+        status_.rows += written;
         status_.dropped += batch.dropped;
         return true;
     }

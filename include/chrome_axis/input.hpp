@@ -155,6 +155,8 @@ private:
     bool pending_{};
 };
 
+enum class ForceFeedbackProbe { pending, disconnected, unsupported, supported };
+
 // Use each instance from one thread, with a top-level window of this process.
 class DirectInput final : public DeviceSampleSource {
 public:
@@ -167,7 +169,7 @@ public:
 
     bool ready() const noexcept;
     std::vector<DeviceInfo> devices() const;
-    std::optional<std::array<bool, axisCount>> forceFeedbackAxesFor(std::string_view id, std::size_t axis) const;
+    ForceFeedbackProbe probeWheelForce(std::string_view id, std::size_t axis) const;
     // Start a sampling cycle when several readers use the same device states.
     void beginPoll() noexcept;
     // Only readers that validate a saved button mapping need its availability checked.

@@ -204,6 +204,22 @@ int main() {
                     && recoverHudColors(game) == Result::conflict && read(colors) == merged,
                 "The sole surviving recovery file from a stopped process must be restored on the next read.");
 
+    const auto wrongTypeGame = game / L"directory-checkpoint";
+    const auto wrongTypeColors = chrome_axis::detail::hudColorFile(wrongTypeGame);
+    const auto wrongTypeBackup = chrome_axis::detail::hudColorSidecar(wrongTypeColors, L".recovery");
+    std::filesystem::create_directories(wrongTypeBackup);
+    std::ofstream(wrongTypeBackup / L"sentinel.txt") << original;
+    ok &= check(recoverHudColors(wrongTypeGame, false) == Result::recoveryRequired
+                    && recoverHudColors(wrongTypeGame) == Result::recoveryRequired
+                    && commitHudColors(wrongTypeGame, edited, {}, false) == Result::recoveryRequired
+                    && !std::filesystem::exists(wrongTypeColors) && read(wrongTypeBackup / L"sentinel.txt") == original,
+                "Startup and save must leave a directory at the recovery path intact and report it for review.");
+    const auto retainedDirectory = wrongTypeBackup.parent_path() / L"retained-directory";
+    ok &= check(MoveFileExW(wrongTypeBackup.c_str(), retainedDirectory.c_str(), MOVEFILE_WRITE_THROUGH)
+                    && commitHudColors(wrongTypeGame, edited, {}, false) == Result::success
+                    && read(wrongTypeColors) == edited && read(retainedDirectory / L"sentinel.txt") == original,
+                "A normal color save must succeed once the unrelated directory has been moved aside.");
+
     interruption = Interruption::rollbackDidNotMove;
     injected = false;
     ok &= check(commitHudColors(game, edited, merged, true) == Result::conflict && injected

@@ -1688,8 +1688,10 @@ bool App::checkProfileRestore()
         return true;
     readProfile();
     updateCalibrationView();
-    auto message = std::wstring(tr(interrupted.backupUsable ? Text::mainProfileRestorePending
-                                                           : Text::mainProfileRecoveryUnavailable));
+    const auto reason = interrupted.backupLocked ? Text::mainProfileRecoveryLocked
+        : !interrupted.backupUsable ? Text::mainProfileRecoveryUnavailable
+        : interrupted.deviceReassignment ? Text::mainReassignRecovery : Text::mainProfileRestorePending;
+    auto message = std::wstring(tr(reason));
     if (!interrupted.backup.empty())
         message += L"\n\n" + interrupted.backup.wstring();
     MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONWARNING);
@@ -1944,7 +1946,9 @@ void App::reassignStoredDevice()
     using Error = chrome_axis::DeviceReplacementError;
     Error error{};
     std::filesystem::path recovery;
-    if (!chrome_axis::replacePresetDevice(directory_, expected, choice->source, choice->target, error, &recovery)) {
+    bool feedbackDisabled{};
+    if (!chrome_axis::replacePresetDevice(directory_, expected, choice->source, choice->target, error, &recovery,
+                                         &feedbackDisabled)) {
         auto reason = Text::mainReassignFailed;
         switch (error) {
         case Error::invalidSelection:
@@ -1955,8 +1959,11 @@ void App::reassignStoredDevice()
         default: break;
         }
         auto failure = std::wstring(tr(reason));
-        if (error == Error::recoveryRequired)
+        if (error == Error::recoveryRequired) {
             failure += L"\n\n" + recovery.wstring();
+            readProfile();
+            updateCalibrationView();
+        }
         MessageBoxW(window_, failure.c_str(), title, MB_OK | MB_ICONERROR);
         return;
     }
@@ -1964,6 +1971,8 @@ void App::reassignStoredDevice()
     profileMessage_ = tr(Text::mainReassignSaved);
     scanDevices();
     rebuildPreview();
+    if (feedbackDisabled)
+        MessageBoxW(window_, tr(Text::mainReassignFeedbackDisabled), title, MB_OK | MB_ICONINFORMATION);
 }
 
 void App::transferProfiles(bool restoring)
@@ -1985,10 +1994,11 @@ void App::transferProfiles(bool restoring)
     const auto initial = std::filesystem::is_directory(backups, directoryError) ? backups : directory_;
     std::filesystem::path chosen;
     const auto interrupted = chrome_axis::readInterruptedProfileRestore(directory_);
-    if (interrupted.pending && !restoring) {
+    if (interrupted.backupLocked || (interrupted.pending && !restoring)) {
         checkProfileRestore();
         return;
     }
+    const bool recoveringDevice = interrupted.deviceReassignment && interrupted.backupUsable;
     if (interrupted.backupUsable) {
         chosen = interrupted.backup;
     } else {
@@ -2007,7 +2017,8 @@ void App::transferProfiles(bool restoring)
         return;
 
     if (restoring) {
-        auto confirmation = std::wstring(tr(interrupted.pending ? Text::mainProfileResumeRestore : Text::mainRestoreConfirm))
+        auto confirmation = std::wstring(tr(recoveringDevice ? Text::mainReassignRecoveryConfirm
+            : interrupted.pending ? Text::mainProfileResumeRestore : Text::mainRestoreConfirm))
             + L"\n\n" + (interrupted.pending ? chosen : directory_).wstring();
         if (dirty_)
             confirmation += L"\n\n" + std::wstring(tr(Text::mainRestoreDiscardDraft));
@@ -2092,12 +2103,14 @@ void App::transferProfiles(bool restoring)
         MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONERROR);
         return;
     }
-    auto message = std::wstring(tr(restoring ? Text::mainRestoreComplete : Text::mainBackupComplete));
+    auto message = std::wstring(tr(recoveringDevice ? Text::mainReassignRecoveryComplete
+        : restoring ? Text::mainRestoreComplete : Text::mainBackupComplete));
     if (restoring) {
         readProfile();
         scanDevices();
         updateLanguageIndicator(chrome_axis::profileLanguageChoice(directory_));
-        message += L"\n\n" + std::wstring(tr(Text::mainRestoreRecovery)) + L"\n" + recovery.wstring();
+        if (!recoveringDevice)
+            message += L"\n\n" + std::wstring(tr(Text::mainRestoreRecovery)) + L"\n" + recovery.wstring();
         if (selectedLanguage_ != chrome_axis::interfaceLanguage())
             message += L"\n\n" + std::wstring(tr(Text::mainLanguageSaved));
         if (failure.axisConflict)
@@ -2233,11 +2246,15 @@ void App::changeUsbMode()
 
     const auto writeUsb = [&] { return chrome_axis::setUsbEnabled(directory_, enable, error); };
     std::optional<Text> validationError;
+    bool unreadableAccessories{};
     bool saved;
     if (enable) {
         using namespace chrome_axis;
         const auto result = savePresetSettings(directory_, preset_, {}, [&] {
             switch (readUsbActivation(activeDirectory())) {
+            case UsbActivationStatus::readyWithUnreadableAccessories:
+                unreadableAccessories = true;
+                [[fallthrough]];
             case UsbActivationStatus::ready:
                 return writeUsb();
             case UsbActivationStatus::commandsMissing: validationError = Text::mainSaveCalibrationOrMapping; break;
@@ -2260,7 +2277,7 @@ void App::changeUsbMode()
         return;
     }
     refreshUsbToggle();
-    profileMessage_ = enable ? tr(Text::mainUsbRequested)
+    profileMessage_ = enable ? tr(unreadableAccessories ? Text::mainUsbUnreadableAccessories : Text::mainUsbRequested)
         : installed_ ? tr(Text::mainUsbDisabled) : tr(Text::mainLocalUsbCleared);
     setText(status_, profileMessage_);
 }
@@ -2922,6 +2939,7 @@ void App::updateCapture()
         capture_.reset();
         calibrationMessage_ = tr(expired ? Text::guideCaptureExpired : Text::guideCaptureInterrupted);
         scanDevices();
+        updateCalibrationView();
         if (IsWindowEnabled(measure_))
             SetFocus(measure_);
         return;

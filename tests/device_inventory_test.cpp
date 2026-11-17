@@ -112,6 +112,25 @@ bool testInventory()
     return closedWhileBlocked && waitFor([&] { return gate->finished.load(); });
 }
 
+bool testTargetedFeedbackInventory()
+{
+    auto scans = std::make_shared<std::atomic<unsigned int>>();
+    DeviceInventory inventory([scans] {
+        const auto count = ++*scans;
+        const auto state = count == 1 ? ForceFeedbackProbe::disconnected
+            : count == 2 ? ForceFeedbackProbe::pending : ForceFeedbackProbe::supported;
+        return DeviceInventoryResult{.feedbackProbe = state};
+    });
+    inventory.refresh();
+    const auto observed = [&](ForceFeedbackProbe status, std::uint64_t revision) {
+        const auto result = inventory.current();
+        return result && result->feedbackProbe == status && result->revision == revision && result->devices.empty();
+    };
+    return waitFor([&] { return observed(ForceFeedbackProbe::disconnected, 1); }) &&
+        waitFor([&] { return observed(ForceFeedbackProbe::pending, 2); }) &&
+        waitFor([&] { return observed(ForceFeedbackProbe::supported, 3); });
+}
+
 bool testPendingLayout()
 {
     auto scans = std::make_shared<std::atomic<unsigned int>>();
@@ -257,6 +276,40 @@ bool testIndependentDeviceCapture()
     }) && wheel.sample->axes[0] == 300;
     return firstWheel && wheelBlocked && wheelExpired && beforePause && !afterPause.updated &&
         !afterRefresh.updated && pedalsResumed && oneOwner && recovered;
+}
+
+bool testSlowCaptureBetweenReads()
+{
+    auto gate = std::make_shared<SampleGate>();
+    AppInput input([gate](const std::string&, const auto&) {
+        DeviceSample sample;
+        sample.axesPresent[0] = true;
+        const auto number = gate->sampleCount.fetch_add(1) + 1;
+        if (number == 2)
+            gate->released.wait(false);
+        sample.sampledAt = DeviceReadClock::now() - (number == 1 ? 75ms : 0ms);
+        sample.axes[0] = number == 1 ? 100 : 200;
+        return CaptureDeviceRead{sample, DeviceReadStatus::available};
+    });
+
+    CaptureDeviceRead first;
+    const bool hasFirst = waitFor([&] {
+        first = input.capture("wheel");
+        return first.sample && first.sample->axes[0] == 100;
+    });
+    const bool nextReadStarted = waitFor([&] { return gate->sampleCount.load() == 2; });
+    if (hasFirst)
+        std::this_thread::sleep_until(first.sample->sampledAt + 130ms);
+    const auto waitingForFresh = input.capture("wheel");
+    SampleGate::release(gate->released);
+
+    CaptureDeviceRead next;
+    const bool hasNext = waitFor([&] {
+        next = input.capture("wheel");
+        return next.sample && next.sample->axes[0] == 200;
+    });
+    return hasFirst && nextReadStarted && !waitingForFresh.sample && !waitingForFresh.updated &&
+        waitingForFresh.status == DeviceReadStatus::pending && hasNext && next.status == DeviceReadStatus::available;
 }
 
 bool testReaderRecoveryAfterFailure()
@@ -541,9 +594,11 @@ int main()
     const auto root = std::filesystem::temp_directory_path() /
         ("chrome-axis-app-state-" + std::to_string(GetCurrentProcessId()));
     const bool inventory = testInventory();
+    const bool feedbackProbe = testTargetedFeedbackInventory();
     const bool pendingLayout = testPendingLayout();
     const bool asyncCapture = testAsynchronousCapture();
     const bool independentCapture = testIndependentDeviceCapture();
+    const bool slowCapture = testSlowCaptureBetweenReads();
     const bool readerRecovery = testReaderRecoveryAfterFailure();
     const bool idleReader = testIdleReaderRestartsAtNeutral();
     const bool capture = testCaptureDuringUnrelatedScan();
@@ -556,14 +611,15 @@ int main()
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
-    if (!inventory || !pendingLayout || !asyncCapture || !independentCapture || !readerRecovery || !idleReader || !capture ||
+    if (!inventory || !feedbackProbe || !pendingLayout || !asyncCapture || !independentCapture || !slowCapture || !readerRecovery || !idleReader || !capture ||
         !guidedCalibration || !shortcut || !usbStatus || !slowCalibration || !analogWarmup || !explicitSelection)
-        std::cerr << "inventory=" << inventory << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
-                  << " independent_capture=" << independentCapture << " reader_recovery=" << readerRecovery
+        std::cerr << "inventory=" << inventory << " feedback_probe=" << feedbackProbe << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
+                  << " independent_capture=" << independentCapture << " slow_capture=" << slowCapture
+                  << " reader_recovery=" << readerRecovery
                   << " idle_reader=" << idleReader << " capture=" << capture
                   << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
                   << " usb_state=" << usbStatus << " slow_calibration=" << slowCalibration
                   << " analog_warmup=" << analogWarmup << " explicit_selection=" << explicitSelection << '\n';
-    return inventory && pendingLayout && asyncCapture && independentCapture && readerRecovery && idleReader && capture &&
+    return inventory && feedbackProbe && pendingLayout && asyncCapture && independentCapture && slowCapture && readerRecovery && idleReader && capture &&
         guidedCalibration && shortcut && usbStatus && slowCalibration && analogWarmup && explicitSelection ? 0 : 1;
 }

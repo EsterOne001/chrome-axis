@@ -144,36 +144,29 @@ void probeInventoryLayout(IDirectInputDevice8W& device, DeviceInfo& info) {
     }
 }
 
-std::optional<std::array<bool, axisCount>> availableForceAxes(IDirectInputDevice8W& device, std::size_t axis,
-                                                             bool acquired) {
-    std::array<bool, axisCount> axes{};
+std::optional<bool> availableForceAxis(IDirectInputDevice8W& device, std::size_t axis, bool acquired) {
     DIDEVCAPS caps{};
     caps.dwSize = sizeof(caps);
     if (FAILED(device.GetCapabilities(&caps)))
         return std::nullopt;
     if (!(caps.dwFlags & DIDC_FORCEFEEDBACK))
-        return axes;
+        return false;
     DIEFFECTINFOW info{};
     info.dwSize = sizeof(info);
     const auto effect = device.GetEffectInfo(&info, GUID_ConstantForce);
     if (effect == DIERR_UNSUPPORTED || effect == DIERR_NOTFOUND)
-        return axes;
+        return false;
     if (FAILED(effect))
         return std::nullopt;
 
-    const auto first = axis == axisCount ? 0 : axis;
-    const auto end = axis == axisCount ? axisCount : axis + 1;
-    for (auto i = first; i < end; ++i) {
-        DIDEVICEOBJECTINSTANCEW object{};
-        object.dwSize = sizeof(object);
-        const auto result = device.GetObjectInfo(&object, axisOffsets[i], DIPH_BYOFFSET);
-        // A calibrated axis can be missing from metadata until the driver acquires the device.
-        if (FAILED(result) && (result != DIERR_OBJECTNOTFOUND || (axis != axisCount && !acquired)))
-            return std::nullopt;
-        axes[i] = SUCCEEDED(result) && (object.dwFlags & DIDOI_FFACTUATOR) != 0 &&
-            (object.dwType & DIDFT_ABSAXIS) != 0;
-    }
-    return axes;
+    DIDEVICEOBJECTINSTANCEW object{};
+    object.dwSize = sizeof(object);
+    const auto result = device.GetObjectInfo(&object, axisOffsets[axis], DIPH_BYOFFSET);
+    // A calibrated axis can be missing from metadata until the driver acquires the device.
+    if (FAILED(result) && (result != DIERR_OBJECTNOTFOUND || !acquired))
+        return std::nullopt;
+    return SUCCEEDED(result) && (object.dwFlags & DIDOI_FFACTUATOR) != 0 &&
+        (object.dwType & DIDFT_ABSAXIS) != 0;
 }
 
 struct Enumeration {
@@ -735,22 +728,26 @@ std::vector<DeviceInfo> DirectInput::devices() const {
     return std::move(enumeration.devices);
 }
 
-std::optional<std::array<bool, axisCount>> DirectInput::forceFeedbackAxesFor(std::string_view id, std::size_t axis) const {
+ForceFeedbackProbe DirectInput::probeWheelForce(std::string_view id, std::size_t axis) const {
     GUID guid{};
-    if (!ready() || axis > axisCount || FAILED(parseDeviceId(id, guid)))
-        return std::nullopt;
+    if (!ready() || axis >= axisCount || FAILED(parseDeviceId(id, guid)))
+        return ForceFeedbackProbe::pending;
     const auto device = createDevice(*impl_->input, guid);
-    if (!device || FAILED(device->SetDataFormat(&c_dfDIJoystick2)))
-        return std::nullopt;
-
-    auto axes = availableForceAxes(*device, axis, false);
-    if (!axes && impl_->window && SUCCEEDED(device->SetCooperativeLevel(impl_->window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND))) {
-        const bool acquired = SUCCEEDED(device->Acquire());
-        axes = availableForceAxes(*device, axis, acquired);
-        if (acquired)
-            device->Unacquire();
+    if (device && SUCCEEDED(device->SetDataFormat(&c_dfDIJoystick2))) {
+        auto supported = availableForceAxis(*device, axis, false);
+        if (!supported && impl_->window && SUCCEEDED(device->SetCooperativeLevel(impl_->window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND))) {
+            const bool acquired = SUCCEEDED(device->Acquire());
+            supported = availableForceAxis(*device, axis, acquired);
+            if (acquired)
+                device->Unacquire();
+        }
+        if (supported)
+            return *supported ? ForceFeedbackProbe::supported : ForceFeedbackProbe::unsupported;
     }
-    return axes;
+
+    const auto status = impl_->input->GetDeviceStatus(guid);
+    return status == DI_NOTATTACHED || status == DIERR_DEVICENOTREG || status == static_cast<HRESULT>(DIERR_UNPLUGGED)
+        ? ForceFeedbackProbe::disconnected : ForceFeedbackProbe::pending;
 }
 
 void DirectInput::beginPoll() noexcept {

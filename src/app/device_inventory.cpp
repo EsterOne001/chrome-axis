@@ -89,10 +89,12 @@ struct DeviceInventory::State {
             if (!stopping && revision == requested) {
                 if (result)
                     retainConfirmedLayout(*answer, *result);
-                retryAfter = std::ranges::any_of(answer->devices, layoutPending)
+                const bool feedbackPending = answer->feedbackProbe == ForceFeedbackProbe::pending ||
+                    answer->feedbackProbe == ForceFeedbackProbe::disconnected;
+                retryAfter = (feedbackPending || std::ranges::any_of(answer->devices, layoutPending))
                     ? Clock::now() + std::chrono::seconds(1) : Clock::time_point{};
                 if (!result || resultRequest != revision || result->available != answer->available ||
-                    result->devices != answer->devices) {
+                    result->devices != answer->devices || result->feedbackProbe != answer->feedbackProbe) {
                     published = std::max(published + 1, revision);
                     answer->revision = published;
                     resultRequest = revision;
@@ -137,20 +139,13 @@ DeviceInventory::DeviceInventory(std::string forceFeedbackDevice, std::size_t st
         // must not start another probe while that call still owns the reader.
         static std::mutex forceProbeMutex;
         const std::unique_lock probe(forceProbeMutex, std::try_to_lock);
-        DeviceInfo device{.id = id};
-        std::optional<std::array<bool, axisCount>> axes;
+        auto result = ForceFeedbackProbe::pending;
         if (probe) {
             const InputWindow window;
             const DirectInput input(window.get());
-            axes = input.forceFeedbackAxesFor(id, steeringAxis);
+            result = input.probeWheelForce(id, steeringAxis);
         }
-        if (axes)
-            device.forceFeedbackAxes = *axes;
-        else if (steeringAxis == axisCount)
-            device.layoutPending.axes.set();
-        else if (steeringAxis < axisCount)
-            device.layoutPending.axes.set(steeringAxis);
-        return DeviceInventoryResult{.devices = {std::move(device)}, .available = axes.has_value()};
+        return DeviceInventoryResult{.feedbackProbe = result};
     })
 {}
 

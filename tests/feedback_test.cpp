@@ -8,6 +8,7 @@
 #include "../src/core/device_layout_worker.hpp"
 #include "../src/core/device_read_recovery.hpp"
 #include "../src/core/wheel_force_retry.hpp"
+#include "../src/plugin/feedback_measurement.hpp"
 #include "../src/plugin/force_output_worker.hpp"
 
 #include <windows.h>
@@ -118,6 +119,50 @@ bool testGainSuggestionMatchesMeasurementSettings()
         return false;
     capture.feedbackSetupSignature = 0;
     return !matchesFeedbackMeasurement(capture, settings, profile, name);
+}
+
+bool testFeedbackMeasurementInvalidation()
+{
+    const FeedbackSettings first{.enabled = true, .strength = 135, .centering = 200};
+    auto next = first;
+    next.centering = 100;
+    Profile profile;
+    profile.steering = {"{11111111-1111-1111-1111-111111111111}", 0, 0, -1000, 1000, 0.02f};
+    constexpr std::string_view name = "Measured";
+    DiagnosticSnapshot diagnostic;
+    std::ranges::copy(name, diagnostic.profile.begin());
+    FeedbackMeasurement measurement;
+    PerformanceReport mixed{.state = PerformanceState::capturing, .requestId = 1};
+    measurement.identify(mixed, first, profile, diagnostic);
+    if (mixed.feedbackSetupSignature != feedbackMeasurementSignature(first, profile))
+        return false;
+    mixed.forceSamples = 10;
+
+    // Settings loaded while the game is in the background invalidate the recorded setup.
+    measurement.invalidate(mixed);
+    measurement.identify(mixed, next, profile, diagnostic);
+    mixed.forceSamples += 120;
+    mixed.submittedEffects += 130; // Includes in-flight outputs completing after the change.
+    mixed.peakContinuousForce = 0.462857f;
+    mixed.state = PerformanceState::complete;
+    if (mixed.referenceFeedbackGain || mixed.feedbackSetupSignature || mixed.feedbackProfile.front() ||
+        matchesFeedbackMeasurement(mixed, first, profile, name) || matchesFeedbackMeasurement(mixed, next, profile, name))
+        return false;
+
+    // Loading settings before the first driving sample must not stamp that request later either.
+    PerformanceReport invalidatedEarly{.state = PerformanceState::capturing, .requestId = 2};
+    measurement.invalidate(invalidatedEarly);
+    measurement.identify(invalidatedEarly, next, profile, diagnostic);
+    if (invalidatedEarly.feedbackSetupSignature || invalidatedEarly.referenceFeedbackGain)
+        return false;
+
+    PerformanceReport fresh{.state = PerformanceState::capturing, .requestId = 3};
+    measurement.identify(fresh, next, profile, diagnostic);
+    fresh.state = PerformanceState::complete;
+    fresh.submittedEffects = 130;
+    fresh.peakContinuousForce = mixed.peakContinuousForce;
+    return matchesFeedbackMeasurement(fresh, next, profile, name) &&
+        !matchesFeedbackMeasurement(fresh, first, profile, name);
 }
 
 struct TestForceContext {
@@ -747,6 +792,8 @@ int main()
         return 94;
     if (!testGainSuggestionMatchesMeasurementSettings())
         return 95;
+    if (!testFeedbackMeasurementInvalidation())
+        return 96;
     using namespace chrome_axis;
     if (const auto result = testWheelForceRecoveryBackoff())
         return result;

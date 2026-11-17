@@ -2,8 +2,11 @@
 
 #include "../core/settings_replace.hpp"
 
+#include <cstddef>
+#include <cstring>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace chrome_axis {
 
@@ -144,10 +147,32 @@ inline HudColorCommitResult hudRecoverySuffixStatus(const std::filesystem::path&
     return error == ERROR_NO_MORE_FILES ? Result::success : hudColorFileError(error);
 }
 
-// Never restore a backup over a target that another writer has put back.
-inline bool restoreMissingHudColorFile(const std::filesystem::path& target,
-                                        const std::filesystem::path& backup) noexcept {
-    return missingHudColorFile(target) && MoveFileExW(backup.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH);
+// Rename the exact file checked by this handle, without replacing a target created by another writer.
+inline HudColorCommitResult restoreMissingHudColorFile(const std::filesystem::path& target,
+                                                        const std::filesystem::path& backup) {
+    using Result = HudColorCommitResult;
+    if (!missingHudColorFile(target))
+        return Result::conflict;
+    const auto file = hudColorHandle(CreateFileW(backup.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!file)
+        return hudColorFileError(GetLastError());
+    FILE_ATTRIBUTE_TAG_INFO type{};
+    if (!GetFileInformationByHandleEx(file.get(), FileAttributeTagInfo, &type, sizeof(type)))
+        return hudColorFileError(GetLastError());
+    if (GetFileType(file.get()) != FILE_TYPE_DISK ||
+        (type.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+        return Result::recoveryRequired;
+
+    const auto& name = target.native();
+    const auto length = name.size() * sizeof(wchar_t);
+    std::vector<std::byte> buffer(sizeof(FILE_RENAME_INFO) + length);
+    auto* info = std::construct_at(reinterpret_cast<FILE_RENAME_INFO*>(buffer.data()));
+    info->FileNameLength = static_cast<DWORD>(length);
+    std::memcpy(buffer.data() + offsetof(FILE_RENAME_INFO, FileName), name.c_str(), length + sizeof(wchar_t));
+    return SetFileInformationByHandle(file.get(), FileRenameInfo, info, static_cast<DWORD>(buffer.size()))
+        ? Result::success : hudColorFileError(GetLastError());
 }
 
 inline HudColorCommitResult recoverHudColorFile(const std::filesystem::path& target,
@@ -157,8 +182,8 @@ inline HudColorCommitResult recoverHudColorFile(const std::filesystem::path& tar
     if (missingHudColorFile(backup))
         return HudColorCommitResult::success;
     if (missingHudColorFile(target)) {
-        return MoveFileExW(backup.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)
-            ? HudColorCommitResult::conflict : hudColorFileError(GetLastError());
+        const auto restored = restoreMissingHudColorFile(target, backup);
+        return restored == HudColorCommitResult::success ? HudColorCommitResult::conflict : restored;
     }
     return HudColorCommitResult::recoveryRequired;
 }
@@ -168,8 +193,8 @@ inline HudColorCommitResult requireHudColorRecovery(const std::filesystem::path&
     const auto pending = hudColorSidecar(target, L".recovery");
     // If rollback already moved the original backup, retain its replacement under the fixed name.
     // A failed move leaves the uniquely named recovery file intact.
-    if (backup != pending && missingHudColorFile(pending))
-        MoveFileExW(backup.c_str(), pending.c_str(), MOVEFILE_WRITE_THROUGH);
+    if (backup != pending)
+        restoreMissingHudColorFile(pending, backup);
     return HudColorCommitResult::recoveryRequired;
 }
 
@@ -180,7 +205,7 @@ inline HudColorCommitResult settleHudColorRecovery(const std::filesystem::path& 
             return requireHudColorRecovery(target, displaced);
     } else {
         const auto archived = stagedSettingsPath(hudColorSidecar(target, L".recovery.saved"));
-        if (!MoveFileExW(displaced.c_str(), archived.c_str(), MOVEFILE_WRITE_THROUGH))
+        if (restoreMissingHudColorFile(archived, displaced) != HudColorCommitResult::success)
             return requireHudColorRecovery(target, displaced);
     }
     return HudColorCommitResult::conflict;
@@ -192,7 +217,7 @@ inline HudColorCommitResult restoreDisplacedHudColors(const std::filesystem::pat
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto current = readHudColorFile(target);
         if (current.result != HudColorCommitResult::success || current.bytes != candidate)
-            return restoreMissingHudColorFile(target, backup)
+            return restoreMissingHudColorFile(target, backup) == HudColorCommitResult::success
                 ? HudColorCommitResult::conflict : requireHudColorRecovery(target, backup);
         auto toRestore = readHudColorFile(backup);
         const auto displaced = stagedSettingsPath(hudColorSidecar(target, L".recovery"));
@@ -201,7 +226,7 @@ inline HudColorCommitResult restoreDisplacedHudColors(const std::filesystem::pat
             // Restore the last writer in that case, unless we know only our candidate was moved.
             const auto moved = readHudColorFile(displaced);
             const bool knownCandidate = moved.result == HudColorCommitResult::success && moved.bytes == candidate;
-            if (!restoreMissingHudColorFile(target, knownCandidate ? backup : displaced))
+            if (restoreMissingHudColorFile(target, knownCandidate ? backup : displaced) != HudColorCommitResult::success)
                 return requireHudColorRecovery(target, moved.result == HudColorCommitResult::conflict ? backup : displaced);
             if (knownCandidate)
                 return settleHudColorRecovery(target, displaced, attempt == 0);
@@ -309,7 +334,7 @@ inline HudColorCommitResult commitHudColors(const std::filesystem::path& gameRoo
     // Win32 does not offer a conditional replace. Inspect the file actually displaced by ReplaceFileW.
     if (!ReplaceFileW(target.c_str(), staged.c_str(), backup.c_str(), 0, nullptr, nullptr)) {
         const auto failure = GetLastError();
-        if (detail::restoreMissingHudColorFile(target, backup))
+        if (detail::restoreMissingHudColorFile(target, backup) == Result::success)
             return Result::conflict;
         if (!detail::missingHudColorFile(backup))
             return Result::recoveryRequired;

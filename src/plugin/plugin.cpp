@@ -9,6 +9,7 @@
 #include "accessory_key_polling.hpp"
 #include "deferred_driver_cleanup.hpp"
 #include "driving_inputs.hpp"
+#include "feedback_measurement.hpp"
 #include "force_output_worker.hpp"
 #include "hud_color_storage.hpp"
 #include "manual_transmission_backend.hpp"
@@ -1239,7 +1240,7 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
     UsbConfigurationChanges changes;
     const bool restorePending = chrome_axis::profileRestorePending(root);
     if (restorePending && !reportedRestorePending_)
-        warn("USB paused while the interrupted profile restore needs recovery. Open Chrome Axis to resume it.");
+        warn("USB paused while a profile operation needs recovery. Open Chrome Axis to resume it.");
     reportedRestorePending_ = restorePending;
     const bool requested = !restorePending && chrome_axis::usbEnabled(root);
     auto [selected, disabledFeedback, feedbackReadError] = selection_.refresh(root, requested, directory_,
@@ -1695,6 +1696,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     std::uint64_t usbWaitStartedAt{};
     chrome_axis::DiagnosticSnapshot diagnostic;
     chrome_axis::PerformanceReport performance;
+    chrome_axis::FeedbackMeasurement feedbackMeasurement;
     std::uint64_t performanceLeaseUntil{};
     Clock::time_point nextDiagnostic{};
     Clock::time_point lastUsbPollFinished{};
@@ -2082,6 +2084,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         if (!simulated && (modeChanged || (foreground && !wasDriving) || start >= nextConfigurationPoll)) {
             nextConfigurationPoll = start + configurationPollInterval;
             changes = usb.refresh(configurationDirectory, start, modeChanged || (foreground && !wasDriving), diagnostic);
+            // A settings change can be observed before the next foreground driving sample.
+            if (changes.feedback || changes.calibration || changes.preset)
+                feedbackMeasurement.invalidate(performance);
         }
         const bool physical = !simulated && (usb.reader || usb.accessories);
         const auto diagnosticSource = simulated ? DiagnosticMode::simulation : !usb.enabled ? DiagnosticMode::usbDisabled
@@ -2214,10 +2219,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool wantFeedback = physical && usb.feedbackSettings.enabled && usb.profile &&
             !usb.profile->steering.deviceId.empty();
         feedbackRequested.store(wantFeedback, std::memory_order_relaxed);
-        if (measuring && (changes.feedback || changes.calibration || changes.preset)) {
-            performance.referenceFeedbackGain = 0;
-            performance.feedbackSetupSignature = 0;
-        }
         if (!physical) {
             lastUsbPollFinished = {};
             if (input && inputActive) {
@@ -2658,11 +2659,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 feedbackState = chrome_axis::WheelForceState::unavailable;
             if (measuring) {
                 performance.motionAge.add(forceDiagnostic.motionAgeMicros);
-                if (!performance.forceSamples) {
-                    performance.referenceFeedbackGain = usb.feedbackSettings.strength;
-                    performance.feedbackSetupSignature = chrome_axis::feedbackMeasurementSignature(usb.feedbackSettings, *usb.profile);
-                    performance.feedbackProfile = diagnostic.profile;
-                }
+                feedbackMeasurement.identify(performance, usb.feedbackSettings, *usb.profile, diagnostic);
                 ++performance.forceSamples;
                 performance.peakContinuousForce = std::max(performance.peakContinuousForce, std::abs(effect.continuousForce));
                 performance.clippedSamples += clipped;

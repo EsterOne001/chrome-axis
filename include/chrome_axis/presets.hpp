@@ -59,7 +59,7 @@ enum class DeviceReplacementError { none, invalidSelection, invalidProfile, devi
 // recoveryDirectory contains the original files that still need to be restored.
 bool replacePresetDevice(const std::filesystem::path& root, const ProfilePreset& expected,
                          std::string_view oldId, std::string_view newId, DeviceReplacementError& error,
-                         std::filesystem::path* recoveryDirectory = nullptr);
+                         std::filesystem::path* recoveryDirectory = nullptr, bool* feedbackDisabled = nullptr);
 
 inline constexpr wchar_t profileLanguageFilename[] = L"language.txt";
 inline constexpr wchar_t profileBackupsFolder[] = L"Sauvegardes";
@@ -71,6 +71,8 @@ struct ProfileRestoreRecovery {
     bool pending{};
     std::filesystem::path backup;
     bool backupUsable{};
+    bool backupLocked{};
+    bool deviceReassignment{};
 };
 
 bool profileRestorePending(const std::filesystem::path& root);

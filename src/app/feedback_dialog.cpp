@@ -217,7 +217,7 @@ void FeedbackDialog::initialise(HWND window)
 
 bool FeedbackDialog::compatibilityUnknown() const noexcept
 {
-    return state == Compatibility::checking || state == Compatibility::unverified;
+    return state == Compatibility::checking || state == Compatibility::disconnected || state == Compatibility::unverified;
 }
 
 bool FeedbackDialog::canSave(const FeedbackSettings& settings) const noexcept
@@ -254,14 +254,22 @@ void FeedbackDialog::updateCompatibility(HWND window) const
 void FeedbackDialog::pollCompatibility(HWND window)
 {
     const auto result = inventory ? inventory->current() : nullptr;
-    if (!result || (!result->available && state == Compatibility::unverified))
+    if (!result)
         return;
-    if (result->available)
+    const auto next = [&] {
+        switch (result->feedbackProbe.value_or(ForceFeedbackProbe::pending)) {
+        case ForceFeedbackProbe::supported: return Compatibility::supported;
+        case ForceFeedbackProbe::unsupported: return Compatibility::unsupported;
+        case ForceFeedbackProbe::disconnected: return Compatibility::disconnected;
+        case ForceFeedbackProbe::pending: return Compatibility::unverified;
+        }
+        return Compatibility::unverified;
+    }();
+    if (next == state)
+        return;
+    state = next;
+    if (!compatibilityUnknown())
         KillTimer(window, feedbackProbeTimer);
-    const auto device = std::ranges::find(result->devices, steeringDevice, &DeviceInfo::id);
-    state = !result->available ? Compatibility::unverified
-        : device == result->devices.end() ? Compatibility::disconnected
-        : device->forceFeedbackAxes[steeringAxis] ? Compatibility::supported : Compatibility::unsupported;
     updateCompatibility(window);
     updateControls(window);
 }

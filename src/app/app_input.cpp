@@ -27,6 +27,7 @@ struct AppInput::State {
         CaptureDeviceRead reading;
         Buttons buttons;
         std::uint64_t number;
+        Clock::time_point completedAt;
     };
 
     struct Device {
@@ -83,6 +84,7 @@ struct AppInput::State {
                     }
                 }
 
+                const auto completedAt = Clock::now();
                 lock.lock();
                 if (stopping || generation != revision)
                     continue;
@@ -100,7 +102,7 @@ struct AppInput::State {
                 interruption |= reading.status == DeviceReadStatus::resumed ||
                     (observedSample && reading.status == DeviceReadStatus::unavailable);
                 observedSample |= reading.sample.has_value();
-                report = Report{std::move(reading), buttons, number};
+                report = Report{std::move(reading), buttons, number, completedAt};
             }
             return Exit::stopped;
         }
@@ -119,7 +121,11 @@ struct AppInput::State {
                 return pending;
 
             auto reading = report->reading;
-            const bool expired = reading.sample && Clock::now() - reading.sample->sampledAt > sampleLifetime;
+            const bool expired = reading.sample && lastRequest - reading.sample->sampledAt > sampleLifetime;
+            // A slow successful read can become too old to use before the next one arrives.
+            // Capture waits for a fresh result while the reader is still making progress.
+            if (expired && capture && lastRequest - report->completedAt < sampleLifetime)
+                return pending;
             if (expired) {
                 reading.sample.reset();
                 reading.status = DeviceReadStatus::unavailable;

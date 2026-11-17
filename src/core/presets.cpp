@@ -24,6 +24,9 @@ constexpr wchar_t profileLockFilename[] = L".chrome_axis_profile_backup.lock";
 constexpr wchar_t profileRestoreJournal[] = L".chrome_axis_profile_restore.pending";
 constexpr wchar_t originalFiles[] = L"Fichiers-originaux";
 constexpr std::string_view backupVersion = "Chrome Axis profile backup 1";
+constexpr std::string_view reassignmentVersion = "Chrome Axis device reassignment 1 ";
+constexpr std::wstring_view reassignmentPrefix = L"Avant-reassociation-";
+constexpr std::wstring_view restorePrefix = L"Avant-restauration-";
 constexpr std::size_t maxNameLength = 64;
 constexpr std::array settingsFiles{profileFilename, accessoryFilename, feedbackFilename};
 constexpr std::array globalFiles{selectionFile, profileLanguageFilename, transmissionHotkeyFilename, usbMarkerFilename};
@@ -36,6 +39,11 @@ std::atomic<unsigned long> temporaryId{};
 bool missing(DWORD error) noexcept
 {
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
+bool sharingLocked(DWORD error) noexcept
+{
+    return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
 }
 
 bool plainDirectory(DWORD attributes) noexcept
@@ -93,7 +101,7 @@ std::optional<std::string> readSmallTextFile(const std::filesystem::path& path, 
 {
     const auto readError = [locked](DWORD error) -> std::optional<std::string> {
         if (locked)
-            *locked = error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
+            *locked = sharingLocked(error);
         return std::nullopt;
     };
     const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
@@ -470,29 +478,61 @@ ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::
         ? ProfileBackupError::none : ProfileBackupError::invalidBackup;
 }
 
-bool validSavedSettings(const std::filesystem::path& path)
+bool validSavedSettings(const std::filesystem::path& path, bool* locked = nullptr,
+                        std::optional<unsigned int> requiredFiles = std::nullopt)
 {
     std::string error;
-    bool hasAxes{}, hasAccessories{}, hasFeedback{};
-    return optionalEntry(path / profileFilename, false, hasAxes)
-        && (!hasAxes || loadProfile(path / profileFilename, error))
-        && optionalEntry(path / accessoryFilename, false, hasAccessories)
-        && (!hasAccessories || loadAccessoryProfile(path / accessoryFilename, error))
-        && optionalEntry(path / feedbackFilename, false, hasFeedback)
-        && (!hasFeedback || loadFeedbackSettings(path / feedbackFilename, error));
+    const auto validate = [&](std::size_t index, const auto& load) {
+        const auto file = path / settingsFiles[index];
+        bool exists{};
+        if (!optionalEntry(file, false, exists)
+            || (requiredFiles && exists != ((*requiredFiles & (1u << index)) != 0)))
+            return false;
+        DWORD readError{};
+        const bool valid = !exists || load(file, error, &readError).has_value();
+        if (locked && sharingLocked(readError))
+            *locked = true;
+        return valid;
+    };
+    return validate(0, loadProfile) && validate(1, loadAccessoryProfile) && validate(2, loadFeedbackSettings);
 }
 
-bool validSnapshot(const std::filesystem::path& path)
+bool validSnapshot(const std::filesystem::path& path, bool* locked = nullptr)
 {
-    const auto selected = readSelection(path / selectionFile);
+    const auto selected = readSelection(path / selectionFile, locked);
     bool hasLanguage{}, hasHotkey{};
-    if (!selected || presetDirectory(path, *selected).empty() || !validSavedSettings(path)
-        || !optionalEntry(path / profileLanguageFilename, false, hasLanguage) || (hasLanguage && !readProfileLanguage(path))
-        || !optionalEntry(path / transmissionHotkeyFilename, false, hasHotkey) || (hasHotkey && !readTransmissionHotkey(path)))
+    if (!selected || presetDirectory(path, *selected).empty() || !validSavedSettings(path, locked)
+        || !optionalEntry(path / profileLanguageFilename, false, hasLanguage)
+        || (hasLanguage && !readProfileLanguage(path, locked))
+        || !optionalEntry(path / transmissionHotkeyFilename, false, hasHotkey))
+        return false;
+    // Read errors on the marker and global preferences must not cause the pending recovery to be discarded.
+    if (locked && (readSmallTextFile(path / backupMarker, locked) != backupVersion || !readSmallTextFile(path / usbMarkerFilename, locked)
+        || (hasHotkey && !readSmallTextFile(path / transmissionHotkeyFilename, locked))))
+        return false;
+    if (hasHotkey && !readTransmissionHotkey(path))
         return false;
     return std::ranges::all_of(listPresets(path), [&](const auto& name) {
-        return validSavedSettings(path / presetsFolder / name);
+        return validSavedSettings(path / presetsFolder / name, locked);
     });
+}
+
+std::optional<unsigned int> reassignmentFiles(const std::filesystem::path& backup, bool* locked = nullptr)
+{
+    const auto marker = readSmallTextFile(backup / backupMarker, locked);
+    if (!marker || marker->size() != reassignmentVersion.size() + 1 || !marker->starts_with(reassignmentVersion)
+        || marker->back() < '1' || marker->back() > '7')
+        return std::nullopt;
+    return static_cast<unsigned int>(marker->back() - '0');
+}
+
+std::filesystem::path reassignmentTarget(const std::filesystem::path& root, const std::filesystem::path& backup,
+                                         bool* locked = nullptr)
+{
+    if (!plainFile(GetFileAttributesW((backup / selectionFile).c_str())))
+        return {};
+    const auto selected = readSelection(backup / selectionFile, locked);
+    return selected ? presetDirectory(root, *selected) : std::filesystem::path{};
 }
 
 bool activeSnapshotAxisConflict(const std::filesystem::path& path)
@@ -506,11 +546,12 @@ bool activeSnapshotAxisConflict(const std::filesystem::path& path)
     return axes && accessories && hasAnalogAccessoryAxisConflict(*axes, *accessories);
 }
 
-std::filesystem::path createRecoveryDirectory(const std::filesystem::path& parent, std::uint32_t* windowsError)
+std::filesystem::path createRecoveryDirectory(const std::filesystem::path& parent, std::uint32_t* windowsError,
+                                              std::wstring_view prefix = restorePrefix)
 {
     SYSTEMTIME time{};
     GetLocalTime(&time);
-    const auto name = std::format(L"Avant-restauration-{:04}{:02}{:02}-{:02}{:02}{:02}", time.wYear, time.wMonth,
+    const auto name = std::format(L"{}{:04}{:02}{:02}-{:02}{:02}{:02}", prefix, time.wYear, time.wMonth,
                                   time.wDay, time.wHour, time.wMinute, time.wSecond);
     DWORD code{};
     for (int index = 0; index < 100; ++index) {
@@ -524,6 +565,13 @@ std::filesystem::path createRecoveryDirectory(const std::filesystem::path& paren
     if (windowsError)
         *windowsError = code;
     return {};
+}
+
+bool beginRecovery(const std::filesystem::path& root, const std::filesystem::path& backup,
+                   std::uint32_t* windowsError = nullptr)
+{
+    const auto name = encodeName(backup.filename().native());
+    return name && writeTextFile(root / profileRestoreJournal, *name, windowsError);
 }
 
 struct RestoreEntry {
@@ -709,12 +757,26 @@ ProfileRestoreRecovery readInterruptedProfileRestore(const std::filesystem::path
     const auto path = extendedPath(root);
     if (path.empty() || !hasRestoreJournal(path))
         return {};
-    const auto name = readSelection(path / profileRestoreJournal);
+    ProfileRestoreRecovery recovery{.pending = true};
+    const auto name = readSelection(path / profileRestoreJournal, &recovery.backupLocked);
+    if (!name)
+        return recovery;
+    recovery.deviceReassignment = name->starts_with(reassignmentPrefix);
     const auto backups = path / profileBackupsFolder;
-    if (!name || !name->starts_with(L"Avant-restauration-") || !plainDirectory(GetFileAttributesW(backups.c_str()))
+    if ((!recovery.deviceReassignment && !name->starts_with(restorePrefix)) || !plainDirectory(GetFileAttributesW(backups.c_str()))
         || !plainDirectory(GetFileAttributesW((backups / *name).c_str())))
-        return {.pending = true};
-    return {true, root / profileBackupsFolder / *name, validSnapshot(backups / *name)};
+        return recovery;
+    recovery.backup = root / profileBackupsFolder / *name;
+    if (recovery.deviceReassignment) {
+        const auto target = reassignmentTarget(path, backups / *name, &recovery.backupLocked);
+        if (!target.empty()) {
+            const auto files = reassignmentFiles(backups / *name, &recovery.backupLocked);
+            recovery.backupUsable = files && validSavedSettings(backups / *name, &recovery.backupLocked, files);
+        }
+    } else {
+        recovery.backupUsable = validSnapshot(backups / *name, &recovery.backupLocked);
+    }
+    return recovery;
 }
 
 ProfilePreset activePreset(const std::filesystem::path& root)
@@ -813,7 +875,9 @@ bool writePresetSelection(const std::filesystem::path& root, std::wstring_view n
 
 bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error)
 {
-    if (!root.is_absolute() || (!name.empty() && !validName(name)) || presetDirectory(root, name).empty()) {
+    const auto target = root.is_absolute() && (name.empty() || validName(name))
+        ? presetDirectory(root, name) : std::filesystem::path{};
+    if (target.empty()) {
         error = "Le profil sélectionné est introuvable.";
         return false;
     }
@@ -824,6 +888,20 @@ bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std
     if (ioError || !lock || hasRestoreJournal(extendedRoot)) {
         error = "Impossible d’enregistrer la sélection dans le dossier Profil.";
         return false;
+    }
+    if (usbEnabled(root)) {
+        std::string details;
+        DWORD axesError{}, accessoriesError{};
+        const auto axes = loadProfile(target / profileFilename, details, &axesError);
+        const auto accessories = loadAccessoryProfile(target / accessoryFilename, details, &accessoriesError);
+        if (sharingLocked(axesError) || sharingLocked(accessoriesError)) {
+            error = "The selected profile is temporarily locked. Try again after it is unlocked.";
+            return false;
+        }
+        if (axes && accessories && hasAnalogAccessoryAxisConflict(*axes, *accessories)) {
+            error = "Disable in-game USB before selecting and repairing this profile's conflicting axes.";
+            return false;
+        }
     }
     return writePresetSelection(root, name, error);
 }
@@ -884,11 +962,13 @@ bool createPreset(const std::filesystem::path& root, std::wstring_view name, std
 
 bool replacePresetDevice(const std::filesystem::path& profileRoot, const ProfilePreset& expected,
                          std::string_view oldId, std::string_view newId, DeviceReplacementError& error,
-                         std::filesystem::path* recoveryDirectory)
+                         std::filesystem::path* recoveryDirectory, bool* feedbackDisabled)
 {
     using Error = DeviceReplacementError;
     if (recoveryDirectory)
         recoveryDirectory->clear();
+    if (feedbackDisabled)
+        *feedbackDisabled = false;
     const auto root = extendedPath(profileRoot);
     const auto directory = extendedPath(expected.directory);
     const auto sameSelection = [&] {
@@ -919,19 +999,23 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         std::filesystem::path backup;
         SettingsSnapshot original;
         SettingsSnapshot replacement;
+        bool tracked{};
         bool changed{};
+        bool attempted{};
     };
-    std::array<Change, 2> changes{};
-    constexpr std::array filenames{profileFilename, accessoryFilename};
+    std::array<Change, settingsFiles.size()> changes{};
     for (std::size_t i = 0; i < changes.size(); ++i) {
         auto& change = changes[i];
-        change.live = directory / filenames[i];
-        change.staged = staging.path / filenames[i];
-        if ((error = readSettings(change.live, change.original)) != Error::none)
+        change.live = directory / settingsFiles[i];
+        change.staged = staging.path / settingsFiles[i];
+        change.tracked = i < 2;
+        if (change.tracked && (error = readSettings(change.live, change.original)) != Error::none)
             return false;
     }
 
-    const auto isUnchanged = [](const Change& change) { return matchesSettings(change.live, change.original); };
+    const auto isUnchanged = [](const Change& change) {
+        return !change.tracked || matchesSettings(change.live, change.original);
+    };
     const auto settingsUnchanged = [&] { return std::ranges::all_of(changes, isUnchanged); };
     std::string details;
     std::optional<Profile> axes;
@@ -952,6 +1036,7 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         error = Error::conflict;
         return false;
     }
+    const bool steeringChanged = axes && axes->steering.deviceId == oldId;
     if (axes) {
         for (auto* axis : {&axes->steering, &axes->throttle, &axes->brake}) {
             if (axis->deviceId == oldId)
@@ -963,14 +1048,12 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         }
     }
 
-    bool changed = false;
-    for (std::size_t i = 0; i < changes.size(); ++i) {
+    for (std::size_t i = 0; i < 2; ++i) {
         auto& change = changes[i];
         auto bytes = change.original.bytes;
         change.changed = replaceDeviceTokens(bytes, i == 1, oldId, newId);
         if (!change.changed)
             continue;
-        changed = true;
         if (!writeSettings(change.staged, bytes) || readSettings(change.staged, change.replacement) != Error::none
             || !change.replacement.present) {
             error = Error::ioError;
@@ -982,9 +1065,34 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
             return false;
         }
     }
-    if (!changed) {
+    if (!changes[0].changed && !changes[1].changed) {
         error = Error::deviceNotMapped;
         return false;
+    }
+    if (steeringChanged) {
+        auto& force = changes[2];
+        force.tracked = true;
+        if ((error = readSettings(force.live, force.original)) != Error::none)
+            return false;
+        if (force.original.present) {
+            DWORD readError{};
+            auto settings = loadFeedbackSettings(force.live, details, &readError);
+            if (!settings && readError) {
+                error = Error::ioError;
+                return false;
+            }
+            // A malformed file already disables force in the plugin. Leave it available for repair.
+            force.changed = settings && settings->enabled;
+            if (force.changed) {
+                settings->enabled = false;
+                if (!saveFeedbackSettings(force.staged, *settings, details)
+                    || readSettings(force.staged, force.replacement) != Error::none || !force.replacement.present) {
+                    error = Error::ioError;
+                    return false;
+                }
+                force.replacement.file.reset();
+            }
+        }
     }
 
     const auto originals = staging.path / originalFiles;
@@ -993,42 +1101,97 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         return false;
     }
     for (std::size_t i = 0; i < changes.size(); ++i)
-        changes[i].backup = originals / filenames[i];
-
-    const auto rollback = [&](Error reason) {
-        bool recovered = true;
-        for (auto it = changes.rbegin(); it != changes.rend(); ++it) {
-            if (!plainFile(GetFileAttributesW(it->backup.c_str())))
-                continue;
-            const DWORD attributes = GetFileAttributesW(it->live.c_str());
-            const bool missingLive = attributes == INVALID_FILE_ATTRIBUTES && missing(GetLastError());
-            // A failed ReplaceFile may already have renamed the original. Do not overwrite a concurrent edit.
-            if (!(missingLive || matchesSettings(it->live, it->replacement))
-                || !MoveFileExW(it->backup.c_str(), it->live.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-                recovered = false;
-        }
-        error = recovered ? reason : Error::recoveryRequired;
-        if (!recovered) {
-            if (recoveryDirectory)
-                *recoveryDirectory = expected.directory / staging.path.filename() / originalFiles;
-            staging.path.clear();
-        }
-        return false;
-    };
+        changes[i].backup = originals / settingsFiles[i];
 
     if (!sameSelection() || !settingsUnchanged()) {
         error = Error::invalidSelection;
         return false;
     }
-    for (auto& change : changes) {
+    const auto backupRoot = root / profileBackupsFolder;
+    if (!ensureDirectory(backupRoot, nullptr)) {
+        error = Error::ioError;
+        return false;
+    }
+    TemporaryDirectory snapshot{createRecoveryDirectory(backupRoot, nullptr, reassignmentPrefix)};
+    const auto selectedName = encodeName(expected.name);
+    unsigned int files{};
+    if (snapshot.path.empty() || !selectedName || !writeTextFile(snapshot.path / selectionFile, *selectedName)) {
+        error = Error::ioError;
+        return false;
+    }
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        if (!changes[i].changed)
+            continue;
+        if (!writeSettings(snapshot.path / settingsFiles[i], changes[i].original.bytes)) {
+            error = Error::ioError;
+            return false;
+        }
+        files |= 1u << i;
+    }
+    if (!writeTextFile(snapshot.path / backupMarker, std::string(reassignmentVersion) + std::to_string(files))
+        || !beginRecovery(root, snapshot.path)) {
+        error = Error::ioError;
+        return false;
+    }
+    auto published = std::exchange(snapshot.path, {});
+    const auto cleanup = [&] {
+        if (!clearRestoreJournal(root, nullptr)) {
+            error = Error::recoveryRequired;
+            if (recoveryDirectory)
+                *recoveryDirectory = profileRoot / profileBackupsFolder / published.filename();
+            return false;
+        }
+        snapshot.path = std::move(published);
+        return true;
+    };
+    const auto rollback = [&](Error reason) {
+        bool recovered = true;
+        for (const auto i : {1u, 0u, 2u}) {
+            const auto& change = changes[i];
+            if (!change.attempted)
+                continue;
+            if (!plainFile(GetFileAttributesW(change.backup.c_str()))) {
+                // If a failed replacement affected the live file, keep the durable snapshot for explicit recovery.
+                recovered &= isUnchanged(change);
+                continue;
+            }
+            const DWORD attributes = GetFileAttributesW(change.live.c_str());
+            const bool missingLive = attributes == INVALID_FILE_ATTRIBUTES && missing(GetLastError());
+            // A failed ReplaceFile may already have renamed the original. Do not overwrite a concurrent edit.
+            if (!(missingLive || matchesSettings(change.live, change.replacement))
+                || !MoveFileExW(change.backup.c_str(), change.live.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                recovered = false;
+        }
+        error = recovered ? reason : Error::recoveryRequired;
+        if (recovered)
+            cleanup();
+        else {
+            // ReplaceFile may have preserved an edit made by another program after our snapshot.
+            staging.path.clear();
+            if (recoveryDirectory)
+                *recoveryDirectory = profileRoot / profileBackupsFolder / published.filename();
+        }
+        return false;
+    };
+
+    if (!sameSelection() || !settingsUnchanged())
+        return rollback(Error::invalidSelection);
+    // Stop force on the previous actuator before publishing a different steering device.
+    for (const auto i : {2u, 0u, 1u}) {
+        auto& change = changes[i];
         if (!change.changed)
             continue;
         if (!sameSelection() || !isUnchanged(change))
             return rollback(Error::invalidSelection);
+        change.attempted = true;
         if (!ReplaceFileW(change.live.c_str(), change.staged.c_str(), change.backup.c_str(), 0, nullptr, nullptr)
             || !matchesSettings(change.backup, change.original))
             return rollback(Error::ioError);
     }
+    if (!cleanup())
+        return false;
+    if (feedbackDisabled)
+        *feedbackDisabled = changes[2].changed;
     error = Error::none;
     return true;
 }
@@ -1152,6 +1315,11 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     if (interrupted.pending) {
         if (recoveryDirectory)
             *recoveryDirectory = interrupted.backup;
+        if (interrupted.backupLocked) {
+            failure = {ProfileBackupStep::copyBackup, ERROR_SHARING_VIOLATION};
+            error = ProfileBackupError::recoveryRequired;
+            return false;
+        }
         std::error_code compareError;
         if (interrupted.backupUsable
             && !std::filesystem::equivalent(source, extendedPath(interrupted.backup), compareError)) {
@@ -1163,6 +1331,35 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     const TemporaryDirectory temporary{createTemporaryDirectory(root.parent_path(), &failure.windowsError)};
     if (temporary.path.empty())
         return fail(ProfileBackupStep::prepareRestore);
+    if (interrupted.deviceReassignment && interrupted.backupUsable) {
+        // The targeted snapshot contains only the changed files of the affected preset.
+        // Leave the journal and the intact snapshot in place if any copy or publication fails.
+        const auto files = reassignmentFiles(source);
+        const auto target = reassignmentTarget(root, source);
+        if (!files || target.empty() || !copySettings(source, temporary.path, &failure.windowsError)
+            || !validSavedSettings(temporary.path, nullptr, files)) {
+            error = ProfileBackupError::recoveryRequired;
+            failure.step = ProfileBackupStep::copyBackup;
+            return false;
+        }
+        for (std::size_t i = 0; i < settingsFiles.size(); ++i) {
+            const auto file = settingsFiles[i];
+            if ((*files & (1u << i)) != 0 &&
+                !MoveFileExW((temporary.path / file).c_str(), (target / file).c_str(),
+                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                failure = {ProfileBackupStep::applyRestore, GetLastError()};
+                error = ProfileBackupError::recoveryRequired;
+                return false;
+            }
+        }
+        if (!clearRestoreJournal(root, &failure.windowsError)) {
+            error = ProfileBackupError::recoveryRequired;
+            failure.step = ProfileBackupStep::applyRestore;
+            return false;
+        }
+        error = ProfileBackupError::none;
+        return true;
+    }
     error = copySnapshot(source, temporary.path, false, &failure.windowsError);
     if (error != ProfileBackupError::none) {
         failure.step = ProfileBackupStep::copyBackup;
@@ -1224,9 +1421,8 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     const auto recoveryLocation = profileRoot / profileBackupsFolder / recovery.path.filename();
     const auto pendingLocation = interrupted.pending ? interrupted.backup : recoveryLocation;
     if (!interrupted.pending) {
-        const auto name = encodeName(recovery.path.filename().native());
         // Commit the recovery location before touching any live setting, including the USB marker.
-        if (!name || !writeTextFile(root / profileRestoreJournal, *name, &failure.windowsError))
+        if (!beginRecovery(root, recovery.path, &failure.windowsError))
             return fail(ProfileBackupStep::prepareRecovery);
     }
     // All failures from here, including unexpected exceptions, must keep the recovery files.

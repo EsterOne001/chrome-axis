@@ -59,8 +59,8 @@ inline std::optional<AccessoryProfile> loadEditorAccessories(const std::filesyst
     return bindings;
 }
 
-enum class UsbActivationStatus { ready, commandsMissing, calibrationLocked, accessoriesLocked, accessoriesUnreadable,
-                                 axisConflict };
+enum class UsbActivationStatus { ready, readyWithUnreadableAccessories, commandsMissing, calibrationLocked,
+                                 accessoriesLocked, accessoriesUnreadable, axisConflict };
 
 // Called with the selected profile locked against concurrent edits and profile changes.
 inline UsbActivationStatus readUsbActivation(const std::filesystem::path& directory)
@@ -73,8 +73,10 @@ inline UsbActivationStatus readUsbActivation(const std::filesystem::path& direct
     if (axes) {
         if (lockedEditorFile(accessoryError))
             return UsbActivationStatus::accessoriesLocked;
-        return bindings && hasAnalogAccessoryAxisConflict(*axes, *bindings) ? UsbActivationStatus::axisConflict
-                                                                           : UsbActivationStatus::ready;
+        if (!bindings)
+            return UsbActivationStatus::readyWithUnreadableAccessories;
+        return hasAnalogAccessoryAxisConflict(*axes, *bindings) ? UsbActivationStatus::axisConflict
+                                                               : UsbActivationStatus::ready;
     }
     if (bindings && std::ranges::any_of(*bindings, isEnabledDrivingAccessory))
         return UsbActivationStatus::ready;

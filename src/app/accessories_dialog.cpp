@@ -362,6 +362,7 @@ private:
     void restoreDeviceSelection();
     void setStatus(const wchar_t* text) const;
     void startSampling(CaptureStage stage, const wchar_t* text);
+    bool rejectDisconnectedRest(const DeviceInfo& device);
     void interruptCapture();
     void setPreviewFocus(bool focused);
     void finishCapture();
@@ -399,6 +400,7 @@ private:
     unsigned int key_{};
     unsigned int handbrakeCeiling_{defaultHandbrakeCeilingPercent};
     ULONGLONG deadline_{};
+    DeviceReadClock::time_point travelStartedAt_{};
     bool modified_{};
     bool validCeiling_{true};
     bool previewPolling_{};
@@ -934,7 +936,13 @@ void AccessoryDialog::startSampling(CaptureStage stage, const wchar_t* text)
         setStatus(tr(Text::DlgAccessoriesCaptureFailed));
         return;
     }
-    input_.invalidate();
+    if (stage == CaptureStage::AxisTravel) {
+        // Discard samples from before the click without clearing a connection loss
+        // observed since the resting position was measured.
+        travelStartedAt_ = DeviceReadClock::now();
+    } else {
+        input_.invalidate();
+    }
     measurements_ = {};
     stage_ = stage;
     captureReadInterrupted_ = false;
@@ -943,6 +951,18 @@ void AccessoryDialog::startSampling(CaptureStage stage, const wchar_t* text)
     SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCancelCapture));
     setStatus(text);
     refreshActions();
+}
+
+bool AccessoryDialog::rejectDisconnectedRest(const DeviceInfo& device)
+{
+    const auto current = inventory_.current();
+    if (!current || !current->available ||
+        std::ranges::find(current->devices, device.id, &DeviceInfo::id) != current->devices.end())
+        return false;
+
+    clearCapture();
+    setStatus(tr(Text::DlgAccessoriesCaptureDeviceRest));
+    return true;
 }
 
 void AccessoryDialog::capture()
@@ -958,6 +978,8 @@ void AccessoryDialog::capture()
     if (!device)
         return;
     if (stage_ == CaptureStage::AwaitingTravel) {
+        if (rejectDisconnectedRest(*device))
+            return;
         startSampling(CaptureStage::AxisTravel,
             tr(sectionText(Text::DlgAccessoriesHoldAtLimit, Text::DlgHandbrakeHoldAtLimit, Text::DlgClutchHoldAtLimit)));
         return;
@@ -989,19 +1011,23 @@ void AccessoryDialog::interruptCapture()
 
 void AccessoryDialog::sample()
 {
-    if (stage_ == CaptureStage::Idle || stage_ == CaptureStage::AwaitingTravel)
+    if (stage_ == CaptureStage::Idle)
         return;
+    const bool awaitingTravel = stage_ == CaptureStage::AwaitingTravel;
     const auto focused = [&] { return IsWindowEnabled(window_) && GetForegroundWindow() == window_; };
+    const auto expired = [&] { return !awaitingTravel && GetTickCount64() >= deadline_; };
     if (!focused()) {
         interruptCapture();
         return;
     }
-    if (GetTickCount64() >= deadline_) {
+    if (expired()) {
         clearCapture();
         setStatus(tr(Text::DlgAccessoriesCaptureExpired));
         return;
     }
     const auto* device = selectedDevice();
+    if (device && (awaitingTravel || stage_ == CaptureStage::AxisTravel) && rejectDisconnectedRest(*device))
+        return;
     const auto reading = device ? input_.capture(device->id) : CaptureDeviceRead{};
     if (!reading.updated)
         return;
@@ -1010,7 +1036,7 @@ void AccessoryDialog::sample()
         interruptCapture();
         return;
     }
-    if (GetTickCount64() >= deadline_) {
+    if (expired()) {
         clearCapture();
         setStatus(tr(Text::DlgAccessoriesCaptureExpired));
         return;
@@ -1025,6 +1051,8 @@ void AccessoryDialog::sample()
         previous_.reset();
         povCapture_.reset();
     }
+    if (awaitingTravel || (stage_ == CaptureStage::AxisTravel && state && state->sampledAt < travelStartedAt_))
+        return;
     if (!state) {
         measurements_ = {};
         povCapture_.reset();
@@ -1072,7 +1100,6 @@ void AccessoryDialog::sample()
     if (!measured)
         return;
     if (stage_ == CaptureStage::AxisRest) {
-        KillTimer(window_, captureTimer);
         rest_ = measured;
         stage_ = CaptureStage::AwaitingTravel;
         SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE,

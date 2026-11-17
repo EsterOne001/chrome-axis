@@ -99,6 +99,20 @@ bool testInterruptedRestores(const std::filesystem::path& fixture)
                         && result == ProfileBackupError::recoveryRequired && recovery == backup,
                    "Do not replace an available recovery snapshot with another backup"))
             return false;
+        if (phase == 0) {
+            const auto file = CreateFileW((backup / profileFilename).c_str(), GENERIC_READ, 0, nullptr,
+                                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (!check(file != INVALID_HANDLE_VALUE, "Could not lock the original recovery"))
+                return false;
+            const std::unique_ptr<void, decltype(&CloseHandle)> lock(file, &CloseHandle);
+            const auto pending = readInterruptedProfileRestore(root);
+            ProfileBackupFailure failure;
+            if (!check(pending.backupLocked && !pending.backupUsable && pending.backup == backup
+                        && !restoreProfileBackup(root, other, result, {}, &recovery, &failure)
+                        && result == ProfileBackupError::recoveryRequired && failure.windowsError == ERROR_SHARING_VIOLATION
+                        && profileRestorePending(root), "A locked recovery must stay pending with its original snapshot"))
+                return false;
+        }
         if (phase == 2) {
             std::ofstream(backup / profileFilename, std::ios::trunc) << "unreadable old settings\n";
             if (!check(!readInterruptedProfileRestore(root).backupUsable,
@@ -114,6 +128,55 @@ bool testInterruptedRestores(const std::filesystem::path& fixture)
             return false;
     }
     return true;
+}
+
+bool testReassignmentRecovery(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto root = fixture / L"Reassignment recovery";
+    const auto snapshot = root / profileBackupsFolder / L"Avant-reassociation-test";
+    const std::string oldWheel = "{11111111-1111-1111-1111-111111111111}";
+    const std::string newWheel = "{22222222-2222-2222-2222-222222222222}";
+    std::filesystem::create_directories(snapshot);
+    std::string error;
+    const Profile original{{oldWheel, 0, 500, 0, 1000, 0.02f}};
+    const AccessoryProfile originalBindings{{.deviceId = oldWheel, .kind = AccessoryKind::Axis, .index = 1,
+                                             .engaged = 1000, .clutchMode = ClutchMode::assist}};
+    FeedbackSettings originalForce;
+    originalForce.enabled = true;
+    originalForce.strength = 185;
+    if (!saveProfile(snapshot / profileFilename, original, error)
+        || !saveAccessoryProfile(snapshot / accessoryFilename, originalBindings, error)
+        || !saveFeedbackSettings(snapshot / feedbackFilename, originalForce, error)
+        || !createPreset(root, L"Circuit", error) || !writeProfileLanguage(root, "en") || !setUsbEnabled(root, true, error))
+        return check(false, "Could not stage the reassignment recovery fixture");
+    const auto target = activePreset(root).directory;
+    auto partial = original;
+    partial.steering.deviceId = newWheel;
+    auto stoppedForce = originalForce;
+    stoppedForce.enabled = false;
+    if (!saveProfile(target / profileFilename, partial, error)
+        || !saveAccessoryProfile(target / accessoryFilename, originalBindings, error)
+        || !saveFeedbackSettings(target / feedbackFilename, stoppedForce, error))
+        return check(false, "Could not stage a partially applied reassignment");
+    std::ofstream(snapshot / L"active_profile.txt") << "Circuit\n";
+    std::ofstream(snapshot / L"chrome_axis_backup.txt") << "Chrome Axis device reassignment 1 7\n";
+    std::ofstream(root / L".chrome_axis_profile_restore.pending") << "Avant-reassociation-test\n";
+    std::ofstream(target / L"Unrelated.txt") << "preserve\n";
+    const auto pending = readInterruptedProfileRestore(root);
+    ProfileBackupError result{};
+    if (!check(pending.pending && pending.deviceReassignment && pending.backupUsable && pending.backup == snapshot
+               && !saveInstallationSettings(root, [] { return true; }) && restoreProfileBackup(root, snapshot, result),
+               "An interrupted reassignment must resume from its targeted snapshot"))
+        return false;
+    const auto restored = loadProfile(target / profileFilename, error);
+    return check(!profileRestorePending(root) && restored && restored->steering.deviceId == oldWheel
+                 && restored->steering.deadzone == original.steering.deadzone
+                 && loadAccessoryProfile(target / accessoryFilename, error) == originalBindings
+                 && loadFeedbackSettings(target / feedbackFilename, error) == originalForce
+                 && usbEnabled(root) && readProfileLanguage(root) == "en" && activePreset(root).name == L"Circuit"
+                 && std::filesystem::is_regular_file(target / L"Unrelated.txt"),
+                 "A targeted recovery must restore only the affected preset and preserve the installation preferences");
 }
 
 bool testImportedAxisConflict(const std::filesystem::path& fixture)
@@ -152,6 +215,32 @@ bool testImportedAxisConflict(const std::filesystem::path& fixture)
     return check(saveAccessoryProfile(root / accessoryFilename, {clutch}, error)
                      && readUsbActivation(root) == UsbActivationStatus::ready,
                  "An explicitly disabled conflicting clutch must not block independent steering");
+}
+
+bool testSelectProfileWithUsb(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto root = fixture / L"Switch while USB active";
+    std::filesystem::create_directories(root);
+    std::string error;
+    const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
+    const Profile axes{{wheel, 0, 500, 0, 1000, 0.02f}};
+    const AccessoryBinding conflict{.deviceId = wheel, .kind = AccessoryKind::Axis, .index = 0,
+                                     .engaged = 1000, .clutchMode = ClutchMode::assist};
+    if (!saveProfile(root / profileFilename, axes, error) || !createPreset(root, L"Legacy", error)
+        || !saveAccessoryProfile(activePreset(root).directory / accessoryFilename, {conflict}, error)
+        || !selectPreset(root, L"", error) || !setUsbEnabled(root, true, error))
+        return check(false, "Could not stage an inactive profile with conflicting axes");
+    if (!check(!selectPreset(root, L"Legacy", error) && error.find("conflicting axes") != std::string::npos
+                && activePreset(root).name.empty() && usbEnabled(root), "USB must stay on the previous valid profile"))
+        return false;
+    std::ofstream(root / accessoryFilename) << "invalid accessory mapping\n";
+    if (!check(readUsbActivation(root) == UsbActivationStatus::readyWithUnreadableAccessories,
+               "Valid axes must remain available with a warning for malformed accessories"))
+        return false;
+    return check(setUsbEnabled(root, false, error) && selectPreset(root, L"Legacy", error)
+                 && readUsbActivation(activePreset(root).directory) == UsbActivationStatus::axisConflict,
+                 "The conflicting profile must remain selectable for repair with USB off");
 }
 
 std::string readBytes(const std::filesystem::path& path)
@@ -515,7 +604,9 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
         return false;
     const bool replacedWhileLocked = replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery);
     CloseHandle(locked);
-    if (!check(!replacedWhileLocked && error == Error::ioError && recovery.empty() && untouched(),
+    if (!check(!replacedWhileLocked && error == Error::ioError && recovery.empty() && untouched()
+               && loadFeedbackSettings(selected.directory / feedbackFilename, details) == feedback
+               && !profileRestorePending(root),
                "An open accessory file must roll back the calibration replacement"))
         return false;
 
@@ -532,11 +623,15 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
     replaceAfter(expectedDigital, "binding=");
     replaceAfter(expectedDigital, progressiveHandbrakePrefix);
     replaceAfter(expectedDigital, nativeShifterPrefix);
-    if (!check(replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery)
+    auto disabledFeedback = feedback;
+    disabledFeedback.enabled = false;
+    bool feedbackDisabled{};
+    if (!check(replacePresetDevice(root, selected, oldWheel, newWheel, error, &recovery, &feedbackDisabled)
                && error == Error::none && recovery.empty() && readBytes(analog) == expectedAnalog
                && readBytes(digital) == expectedDigital && readBytes(note) == "preserve\r\n"
                && activePreset(root).name == selected.name && usbEnabled(root) && readProfileLanguage(root) == "fr"
-               && loadFeedbackSettings(selected.directory / feedbackFilename, details) == feedback
+               && feedbackDisabled && !profileRestorePending(root)
+               && loadFeedbackSettings(selected.directory / feedbackFilename, details) == disabledFeedback
                && loadAccessoryProfile(root / accessoryFilename, details) == bindings,
                "Only exact device tokens in the active profile may change")) {
         std::cerr << "Replacement error: " << static_cast<int>(error) << '\n';
@@ -547,6 +642,27 @@ bool testDeviceReplacement(const std::filesystem::path& fixture)
                && replacedBindings->back().deviceId == newWheel
                && replacedBindings->back().nativeShifterPositions == bindings.back().nativeShifterPositions,
                "Device replacement must preserve the verified native shifter positions"))
+        return false;
+
+    const auto forceFile = selected.directory / feedbackFilename;
+    constexpr std::string_view malformedForce = "unknown force settings\n";
+    std::ofstream(forceFile, std::ios::binary | std::ios::trunc) << malformedForce;
+    if (!check(saveProfile(analog, calibration, details) && saveAccessoryProfile(digital, bindings, details),
+               "Could not seed a malformed force file before reassignment"))
+        return false;
+    {
+        const auto file = CreateFileW(forceFile.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!check(file != INVALID_HANDLE_VALUE, "Could not lock the force settings"))
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> lock(file, &CloseHandle);
+        if (!check(!replacePresetDevice(root, selected, oldWheel, newWheel, error) && error == Error::ioError
+                   && !profileRestorePending(root), "A locked force file must not be bypassed on a steering reassignment"))
+            return false;
+    }
+    if (!check(replacePresetDevice(root, selected, oldWheel, newWheel, error, nullptr, &feedbackDisabled)
+               && !feedbackDisabled && readBytes(forceFile) == malformedForce
+               && saveFeedbackSettings(forceFile, disabledFeedback, details),
+               "A malformed force file must stay available for repair without blocking reassignment"))
         return false;
 
     auto conflictingAxes = calibration;
@@ -911,6 +1027,7 @@ int main()
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
         && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory)
         && testEditorFileLocks(directory) && testUsbActivation(directory)
-        && testInterruptedRestores(directory) && testImportedAxisConflict(directory);
+        && testInterruptedRestores(directory) && testReassignmentRecovery(directory)
+        && testImportedAxisConflict(directory) && testSelectProfileWithUsb(directory);
     return fixture.cleanup() && passed ? 0 : 1;
 }

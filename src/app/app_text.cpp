@@ -51,6 +51,8 @@ constexpr ErrorTranslation errors[]{
     {"Unsupported or unreadable accessory profile version", {L"Version du profil d’accessoires non prise en charge ou illisible.", L"Unsupported or unreadable accessory profile version."}},
     {"Cannot write the accessory profile. Check the destination and its permissions", {L"Vérifiez le dossier du profil et les droits d’écriture.", L"Check the profile directory and its write permissions."}},
     {"Le profil sélectionné est introuvable.", {L"Le profil sélectionné est introuvable.", L"The selected profile could not be found."}},
+    {"The selected profile is temporarily locked. Try again after it is unlocked.", {L"Le profil choisi est temporairement verrouillé. Réessayez après son déverrouillage.", L"The selected profile is temporarily locked. Try again after it is unlocked."}},
+    {"Disable in-game USB before selecting and repairing this profile's conflicting axes.", {L"Désactivez l’USB en jeu avant de sélectionner ce profil et de corriger le conflit d’axes.", L"Disable in-game USB before selecting and repairing this profile's conflicting axes."}},
     {"Impossible d’enregistrer la sélection dans le dossier Profil.", {L"Impossible d’enregistrer la sélection dans le dossier Profil.", L"Could not save the selection in the profile directory."}},
     {"Saisissez un nom de profil valide (64 caractères maximum).", {L"Saisissez un nom de profil valide (64 caractères maximum).", L"Enter a valid profile name (up to 64 characters)."}},
     {"Sélectionnez un profil existant avant d’en créer une copie.", {L"Sélectionnez un profil existant avant d’en créer une copie.", L"Select an existing profile before making a copy."}},
@@ -97,7 +99,7 @@ void initializeLanguage(std::wstring_view commandLine, const std::filesystem::pa
         choice = Language::automatic;
     else {
         const auto interrupted = readInterruptedProfileRestore(profileRoot);
-        const auto& languageRoot = interrupted.pending ? interrupted.backup : profileRoot;
+        const auto& languageRoot = interrupted.pending && !interrupted.deviceReassignment ? interrupted.backup : profileRoot;
         bool locked{};
         auto language = installationLanguage(languageRoot, &locked);
         for (const DWORD delay : {10u, 20u, 30u, 50u}) {

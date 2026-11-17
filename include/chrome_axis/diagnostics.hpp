@@ -325,8 +325,9 @@ struct DiagnosticCaptureBatch {
 };
 
 void writeDiagnosticCaptureHeader(std::ostream& output);
-void writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
-                                std::uint64_t startedAt, std::uint64_t dropped = 0);
+// Returns the number of session records written, excluding the leading dropped-record marker.
+std::size_t writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
+                                       std::uint64_t startedAt, std::uint64_t dropped = 0);
 void writeDiagnosticCaptureConnection(std::ostream& output, std::uint64_t startedAt,
                                       std::uint64_t sampledAt, bool connected);
 
