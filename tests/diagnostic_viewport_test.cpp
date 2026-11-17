@@ -92,10 +92,14 @@ int main()
 
     constexpr RECT narrow{80, 40, 763, 520};
     for (int cycle = 0; cycle < 3; ++cycle) {
+        layout.fit(window, full);
+        SetFocus(details);
         layout.fit(window, narrow);
         const auto viewport = bounds(clip);
         ok &= check(layout.canScroll() && layout.canScrollHorizontally() && contains(narrow, bounds(window))
                     && contains(narrow, bounds(horizontalBar)), "narrow work area contains the dialog and both scrollbars");
+        ok &= check(GetFocus() == details && contains(viewport, bounds(details)),
+                    "the focused Details action remains visible when resizing without another focus event");
         std::array<RECT, buttons.size()> footer{};
         for (std::size_t i = 0; i < buttons.size(); ++i) {
             footer[i] = bounds(GetDlgItem(window, buttons[i]));
@@ -132,26 +136,53 @@ int main()
                                                      nullptr, dialogProc, 0);
     if (!check(accessoryWindow != nullptr, "create the accessory diagnostics window"))
         return 1;
-    const auto accessoryList = GetDlgItem(accessoryWindow, IDC_DIAGNOSTICS_COMMAND_LIST);
+    const auto accessoryClip = GetDlgItem(accessoryWindow, IDC_DIAGNOSTICS_VIEWPORT);
+    const auto accessoryBar = GetDlgItem(accessoryWindow, IDC_DIAGNOSTICS_SCROLL);
+    chrome_axis::DiagnosticViewport accessoryLayout;
+    accessoryLayout.content = CreateDialogParamW(instance, MAKEINTRESOURCEW(IDD_DIAGNOSTICS_ACCESSORIES_CONTENT),
+                                                accessoryClip, dialogProc, 0);
+    if (!check(accessoryLayout.content != nullptr, "create the body of the accessory diagnostics window")) {
+        DestroyWindow(accessoryWindow);
+        return 1;
+    }
+    const auto accessoryList = GetDlgItem(accessoryLayout.content, IDC_DIAGNOSTICS_COMMAND_LIST);
     const auto accessoryClose = GetDlgItem(accessoryWindow, IDCANCEL);
-    const auto accessoryStatus = GetDlgItem(accessoryWindow, IDC_DIAGNOSTICS_COMMAND_SENT);
+    const auto accessoryStatus = GetDlgItem(accessoryLayout.content, IDC_DIAGNOSTICS_COMMAND_SENT);
+    SendMessageW(accessoryList, LB_SETITEMHEIGHT, 0, 24);
     SendMessageW(accessoryList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"First binding"));
     SendMessageW(accessoryList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Second binding"));
     SendMessageW(accessoryList, LB_SETCURSEL, 1, 0);
+    constexpr RECT veryShort{80, 40, 763, 424};
+    accessoryLayout.fitAccessory(accessoryWindow, full);
     const auto fullList = localBounds(accessoryWindow, accessoryList);
     const auto fullClose = localBounds(accessoryWindow, accessoryClose);
     for (int cycle = 0; cycle < 3; ++cycle) {
-        chrome_axis::fitAccessoryDiagnosticsViewport(accessoryWindow, narrow);
+        accessoryLayout.fitAccessory(accessoryWindow, narrow);
         const auto list = bounds(accessoryList);
         const auto closure = bounds(accessoryClose);
         ok &= check(contains(narrow, bounds(accessoryWindow)) && contains(narrow, list) && contains(narrow, closure)
-                    && list.bottom - list.top >= 24 && contains(narrow, bounds(accessoryStatus))
+                    && !accessoryLayout.canScroll() && list.bottom - list.top >= 48 && contains(narrow, bounds(accessoryStatus))
                     && list.bottom < bounds(accessoryStatus).top && bounds(accessoryStatus).bottom < closure.top,
                     "accessory details keep the scrollable list, final reading and Close visible without overlap");
         ok &= check(SendMessageW(accessoryList, LB_GETCURSEL, 0, 0) == 1,
                     "changing accessory details geometry preserves the selected binding");
 
-        chrome_axis::fitAccessoryDiagnosticsViewport(accessoryWindow, full);
+        SetFocus(accessoryList);
+        accessoryLayout.fitAccessory(accessoryWindow, veryShort);
+        const auto shortView = bounds(accessoryClip);
+        const auto shortList = bounds(accessoryList);
+        const auto shortClose = bounds(accessoryClose);
+        ok &= check(accessoryLayout.canScroll() && contains(veryShort, bounds(accessoryBar))
+                    && contains(veryShort, shortClose) && contains(shortView, shortList) && shortList.bottom - shortList.top >= 48
+                    && GetFocus() == accessoryList, "very short accessory diagnostics keep two rows, focus and Close accessible");
+        accessoryLayout.scroll(accessoryWindow, SB_BOTTOM);
+        const auto scrolledClose = bounds(accessoryClose);
+        ok &= check(contains(shortView, bounds(accessoryStatus)) && EqualRect(&shortClose, &scrolledClose),
+                    "the accessory viewport can scroll to the final reading while Close stays fixed");
+        ok &= check(SendMessageW(accessoryList, LB_GETCURSEL, 0, 0) == 1,
+                    "scrolling the whole accessory panel preserves the selected binding");
+
+        accessoryLayout.fitAccessory(accessoryWindow, full);
         const auto wideList = localBounds(accessoryWindow, accessoryList);
         const auto wideClose = localBounds(accessoryWindow, accessoryClose);
         ok &= check(EqualRect(&fullList, &wideList) && EqualRect(&fullClose, &wideClose),

@@ -50,6 +50,8 @@ FittedDialog fitDialog(HWND window, const RECT& workArea, RECT design)
 
 void setScrollRange(HWND bar, int extent, int page, int position)
 {
+    if (!bar)
+        return;
     SCROLLINFO scrollbar{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS};
     scrollbar.nMax = std::max(0, extent - 1);
     scrollbar.nPage = static_cast<UINT>(page);
@@ -132,37 +134,68 @@ void DiagnosticViewport::fit(HWND window, const RECT& workArea)
     placeFooter(window, footer.top - lowerBy, narrow, clientWidth);
     scrollTo(window, previousContentWidth > 0 ? MulDiv(horizontalOffset, contentWidth, previousContentWidth) : 0,
              previousLineHeight > 0 ? MulDiv(verticalOffset, lineHeight, previousLineHeight) : 0);
+    revealFocus(window);
 }
 
-void fitAccessoryDiagnosticsViewport(HWND window, const RECT& workArea)
+void DiagnosticViewport::fitAccessory(HWND window, const RECT& workArea)
 {
-    const auto fitted = fitDialog(window, workArea, {0, 0, 424, 267});
+    RECT body{414, 54, 424, 238};
+    RECT footer{0, 240, 0, 251};
+    RECT list{0, 0, 0, 68};
+    MapDialogRect(window, &body);
+    MapDialogRect(window, &footer);
+    MapDialogRect(content, &list);
+    const int previousLineHeight = lineHeight;
+    lineHeight = footer.bottom - footer.top;
+    const auto [clientWidth, removedWidth, removedHeight] = fitDialog(window, workArea, {0, 0, 424, 267});
+    const auto listItemHeight = static_cast<int>(SendDlgItemMessageW(content, IDC_DIAGNOSTICS_COMMAND_LIST,
+                                                                   LB_GETITEMHEIGHT, 0, 0));
+    const int minimumListHeight = std::min<int>(list.bottom, 2 * std::max(lineHeight, listItemHeight));
+    // Preserve two complete rows before switching to a separate scrollbar for the whole body.
+    const int listReduction = std::min<int>(removedHeight, list.bottom - minimumListHeight);
+    const int verticalBarWidth = body.right - body.left;
+    const int originalBodyHeight = body.bottom - body.top;
+    contentHeight = originalBodyHeight - listReduction;
+    visibleHeight = std::max(0, originalBodyHeight - removedHeight);
+    const bool scrolling = canScroll();
+    contentWidth = visibleWidth = std::max(0, clientWidth - (scrolling ? verticalBarWidth : 0));
+
+    const auto scrollbar = GetDlgItem(window, IDC_DIAGNOSTICS_SCROLL);
+    const auto close = GetDlgItem(window, IDCANCEL);
+    if (!scrolling && GetFocus() == scrollbar)
+        SetFocus(close);
+    SetWindowPos(GetDlgItem(window, IDC_DIAGNOSTICS_VIEWPORT), HWND_BOTTOM, 0, body.top,
+                 visibleWidth, visibleHeight, SWP_NOACTIVATE);
+    SetWindowPos(content, nullptr, 0, -verticalOffset, contentWidth, contentHeight,
+                 SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    SetWindowPos(scrollbar, HWND_TOP, visibleWidth, body.top, verticalBarWidth, visibleHeight,
+                 SWP_NOACTIVATE | (scrolling ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+
+    const int widthReduction = body.right - contentWidth;
     const auto place = [&](int id, RECT geometry) {
-        MapDialogRect(window, &geometry);
-        if (id == IDCANCEL) {
-            geometry.left -= fitted.removedWidth;
-            geometry.top -= fitted.removedHeight;
-        } else {
-            geometry.right = std::max<LONG>(0, geometry.right - fitted.removedWidth);
-            if (id == IDC_MODAL_RESULTS || id == IDC_DIAGNOSTICS_COMMAND_LIST)
-                geometry.bottom = std::max<LONG>(0, geometry.bottom - fitted.removedHeight);
-            else if (id == IDC_DIAGNOSTICS_COMMAND_INPUT || id == IDC_DIAGNOSTICS_COMMAND_OUTPUT
-                     || id == IDC_DIAGNOSTICS_COMMAND_SENT)
-                geometry.top -= fitted.removedHeight;
-        }
-        SetWindowPos(GetDlgItem(window, id), nullptr, std::max<LONG>(0, geometry.left), std::max<LONG>(0, geometry.top),
-                     std::min<LONG>(geometry.right, fitted.clientWidth), geometry.bottom, SWP_NOACTIVATE | SWP_NOZORDER);
+        MapDialogRect(content, &geometry);
+        if (id == IDC_MODAL_RESULTS || id == IDC_DIAGNOSTICS_COMMAND_LIST)
+            geometry.bottom -= listReduction;
+        else if (id == IDC_DIAGNOSTICS_COMMAND_INPUT || id == IDC_DIAGNOSTICS_COMMAND_OUTPUT
+                 || id == IDC_DIAGNOSTICS_COMMAND_SENT)
+            geometry.top -= listReduction;
+        SetWindowPos(GetDlgItem(content, id), nullptr, geometry.left, geometry.top,
+                     std::max<LONG>(0, geometry.right - widthReduction), geometry.bottom, SWP_NOACTIVATE | SWP_NOZORDER);
     };
-    // On a short screen give up list height first so the selected binding and Close stay accessible.
-    place(IDC_MODAL_FORM, {12, 56, 400, 36});
-    place(IDC_MODAL_RESULTS, {12, 98, 400, 135});
-    place(IDC_DIAGNOSTICS_COMMAND_CONTEXT, {24, 63, 376, 21});
-    place(IDC_MODAL_LIST_HEADING, {24, 103, 376, 14});
-    place(IDC_DIAGNOSTICS_COMMAND_LIST, {24, 120, 376, 68});
-    place(IDC_DIAGNOSTICS_COMMAND_INPUT, {24, 192, 376, 11});
-    place(IDC_DIAGNOSTICS_COMMAND_OUTPUT, {24, 205, 376, 11});
-    place(IDC_DIAGNOSTICS_COMMAND_SENT, {24, 218, 376, 11});
-    place(IDCANCEL, {317, 240, 83, 20});
+    place(IDC_MODAL_FORM, {12, 2, 400, 36});
+    place(IDC_MODAL_RESULTS, {12, 44, 400, 135});
+    place(IDC_DIAGNOSTICS_COMMAND_CONTEXT, {24, 9, 376, 21});
+    place(IDC_MODAL_LIST_HEADING, {24, 49, 376, 14});
+    place(IDC_DIAGNOSTICS_COMMAND_LIST, {24, 66, 376, 68});
+    place(IDC_DIAGNOSTICS_COMMAND_INPUT, {24, 138, 376, 11});
+    place(IDC_DIAGNOSTICS_COMMAND_OUTPUT, {24, 151, 376, 11});
+    place(IDC_DIAGNOSTICS_COMMAND_SENT, {24, 164, 376, 11});
+    RECT closeLayout{317, 240, 83, 20};
+    MapDialogRect(window, &closeLayout);
+    SetWindowPos(close, nullptr, std::max<LONG>(0, closeLayout.left - removedWidth), closeLayout.top - removedHeight,
+                 std::min<LONG>(closeLayout.right, clientWidth), closeLayout.bottom, SWP_NOACTIVATE | SWP_NOZORDER);
+    scrollTo(window, 0, previousLineHeight > 0 ? MulDiv(verticalOffset, lineHeight, previousLineHeight) : 0);
+    revealFocus(window);
 }
 
 void DiagnosticViewport::scroll(HWND window, int action, bool horizontal)
@@ -217,6 +250,12 @@ void DiagnosticViewport::showControl(HWND window, HWND control)
     };
     scrollTo(window, reveal(bounds.left, bounds.right, horizontalOffset, visibleWidth),
              reveal(bounds.top, bounds.bottom, verticalOffset, visibleHeight));
+}
+
+void DiagnosticViewport::revealFocus(HWND window)
+{
+    if (const auto focus = GetFocus(); focus && IsChild(content, focus))
+        showControl(window, focus);
 }
 
 } // namespace chrome_axis

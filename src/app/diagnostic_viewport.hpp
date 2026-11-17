@@ -9,6 +9,7 @@ public:
     HWND content{};
 
     void fit(HWND window, const RECT& workArea);
+    void fitAccessory(HWND window, const RECT& workArea);
     void scroll(HWND window, int action, bool horizontal = false);
     void wheel(HWND window, int delta, bool horizontal = false);
     void showControl(HWND window, HWND control);
@@ -17,6 +18,7 @@ public:
 
 private:
     void scrollTo(HWND window, int x, int y);
+    void revealFocus(HWND window);
 
     int contentWidth{};
     int visibleWidth{};
@@ -28,7 +30,5 @@ private:
     int horizontalWheelRemainder{};
     int verticalWheelRemainder{};
 };
-
-void fitAccessoryDiagnosticsViewport(HWND window, const RECT& workArea);
 
 } // namespace chrome_axis

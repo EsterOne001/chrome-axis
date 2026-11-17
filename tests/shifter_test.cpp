@@ -371,6 +371,29 @@ bool savesNativePaddlesFromDifferentDevices()
         roundTripShifterProfile(*pair) && roundTripShifterProfile(*sameDevice);
 }
 
+bool validatesPreviousAnalogRestAfterReconnect()
+{
+    using namespace chrome_axis;
+    AccessoryBinding up{shifterId, AccessoryKind::Axis, 0, 0, 900, 0};
+    AxisCapture rest;
+    rest.axesPresent[0] = rest.axesPresent[1] = true;
+    if (!shifterRestStillNeutral(up, rest))
+        return false;
+    rest.median[0] = 100;
+    if (!shifterRestStillNeutral(up, rest))
+        return false;
+    up.thresholds = {12, 8};
+    if (shifterRestStillNeutral(up, rest))
+        return false;
+    up.thresholds = {};
+    rest.median[0] = 900;
+    if (shifterRestStillNeutral(up, rest))
+        return false;
+    rest.median[0] = 0;
+    rest.axesPresent[0] = false;
+    return !shifterRestStillNeutral(up, rest);
+}
+
 } // namespace
 
 int main()
@@ -406,6 +429,10 @@ int main()
     if (!savesNativePaddlesFromDifferentDevices()) {
         std::cerr << "Native paddle capture did not save and reload a pair using two USB devices\n";
         return 8;
+    }
+    if (!validatesPreviousAnalogRestAfterReconnect()) {
+        std::cerr << "The previous analog rest must still satisfy the paddle's runtime neutral gate\n";
+        return 9;
     }
     return 0;
 }

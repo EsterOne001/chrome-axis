@@ -76,6 +76,7 @@ struct DialogState {
 struct AccessoryDialogState {
     DiagnosticReader& reader;
     std::vector<std::wstring> rowLabels;
+    DiagnosticViewport viewport{};
 };
 
 struct AccessoryView {
@@ -1380,41 +1381,72 @@ void refreshAccessoryDetails(HWND window, AccessoryDialogState& state)
         setChangedText(window, IDC_DIAGNOSTICS_COMMAND_SENT, L"");
 }
 
+INT_PTR CALLBACK diagnosticContentProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+
 INT_PTR CALLBACK accessoryDetailsProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     const auto state = reinterpret_cast<AccessoryDialogState*>(GetWindowLongPtrW(window, DWLP_USER));
     switch (message) {
-    case WM_INITDIALOG:
+    case WM_INITDIALOG: {
         SetWindowLongPtrW(window, DWLP_USER, lParam);
+        auto& initial = *reinterpret_cast<AccessoryDialogState*>(lParam);
+        const auto content = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIAGNOSTICS_ACCESSORIES_CONTENT),
+            GetDlgItem(window, IDC_DIAGNOSTICS_VIEWPORT), diagnosticContentProc, 0);
+        if (!content) {
+            EndDialog(window, -1);
+            return FALSE;
+        }
+        initial.viewport.content = content;
         SetWindowTextW(window, tr(Text::DlgDiagnosticsCommandTitle));
-        SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgDiagnosticsCommandList));
+        SetDlgItemTextW(content, IDC_MODAL_LIST_HEADING, tr(Text::DlgDiagnosticsCommandList));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgDiagnosticsClose));
-        DialogTheme::attach(window, tr(Text::DlgDiagnosticsCommandHeading), IDC_DIAGNOSTICS_COMMAND_CONTEXT,
-                            IDC_DIAGNOSTICS_COMMAND_LIST, {IDCANCEL});
+        DialogTheme::attach(window, tr(Text::DlgDiagnosticsCommandHeading), 0, 0, {IDCANCEL}, DialogDecoration::header);
+        DialogTheme::attach(content, L"", IDC_DIAGNOSTICS_COMMAND_CONTEXT, IDC_DIAGNOSTICS_COMMAND_LIST,
+                            {}, DialogDecoration::content);
         if (const auto work = diagnosticWorkArea(window))
-            fitAccessoryDiagnosticsViewport(window, *work);
-        refreshAccessoryDetails(window, *reinterpret_cast<AccessoryDialogState*>(lParam));
+            initial.viewport.fitAccessory(window, *work);
+        refreshAccessoryDetails(content, initial);
         SetTimer(window, refreshTimer, refreshIntervalMs, nullptr);
-        return TRUE;
+        SetFocus(GetDlgItem(content, IDC_DIAGNOSTICS_COMMAND_LIST));
+        return FALSE;
+    }
     case WM_DPICHANGED:
     case WM_SETTINGCHANGE:
         PostMessageW(window, fitDiagnosticWindow, 0, 0);
         break;
     case WM_EXITSIZEMOVE:
     case fitDiagnosticWindow:
-        if (const auto work = diagnosticWorkArea(window))
-            fitAccessoryDiagnosticsViewport(window, *work);
+        if (const auto work = diagnosticWorkArea(window); state && state->viewport.content && work)
+            state->viewport.fitAccessory(window, *work);
         return TRUE;
+    case WM_VSCROLL:
+        if (state && reinterpret_cast<HWND>(lParam) == GetDlgItem(window, IDC_DIAGNOSTICS_SCROLL)) {
+            state->viewport.scroll(window, LOWORD(wParam));
+            return TRUE;
+        }
+        break;
+    case WM_MOUSEWHEEL:
+        if (state && state->viewport.canScroll()) {
+            state->viewport.wheel(window, GET_WHEEL_DELTA_WPARAM(wParam));
+            return TRUE;
+        }
+        break;
     case WM_TIMER:
         if (wParam == refreshTimer && state) {
-            refreshAccessoryDetails(window, *state);
+            refreshAccessoryDetails(state->viewport.content, *state);
             return TRUE;
         }
         break;
     case WM_COMMAND:
-        if (LOWORD(wParam) == IDC_DIAGNOSTICS_COMMAND_LIST && HIWORD(wParam) == LBN_SELCHANGE && state) {
-            refreshAccessoryDetails(window, *state);
-            return TRUE;
+        if (LOWORD(wParam) == IDC_DIAGNOSTICS_COMMAND_LIST && state && state->viewport.content) {
+            if (HIWORD(wParam) == LBN_SELCHANGE) {
+                refreshAccessoryDetails(state->viewport.content, *state);
+                return TRUE;
+            }
+            if (HIWORD(wParam) == LBN_SETFOCUS) {
+                state->viewport.showControl(window, reinterpret_cast<HWND>(lParam));
+                return TRUE;
+            }
         }
         if (LOWORD(wParam) != IDCANCEL)
             break;
@@ -1584,7 +1616,8 @@ INT_PTR CALLBACK diagnosticContentProc(HWND window, UINT message, WPARAM wParam,
 {
     if (message == WM_INITDIALOG)
         return TRUE;
-    if (message == WM_COMMAND && LOWORD(wParam) == IDC_DIAGNOSTICS_ACCESSORY_DETAILS)
+    if (message == WM_COMMAND && (LOWORD(wParam) == IDC_DIAGNOSTICS_ACCESSORY_DETAILS ||
+                                  LOWORD(wParam) == IDC_DIAGNOSTICS_COMMAND_LIST))
         return SendMessageW(GetAncestor(window, GA_ROOT), message, wParam, lParam);
     return FALSE;
 }

@@ -104,7 +104,11 @@ private:
     void runTimer();
     void beginRestCapture(const std::string& deviceId, bool analog);
     void discardAnalogRest(Text message = Text::DlgShifterCaptureDeviceRest);
+    bool currentDeviceAbsent() const;
     bool dropDisconnectedRest();
+    const AccessoryBinding* priorAnalogUpshift() const;
+    void sampleNeutral(const DeviceSample& sample, const AccessoryBinding* priorAnalog);
+    void recaptureAnalogUpshift(unsigned int previousKey, std::optional<AxisCapture> rest);
     void interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage);
     bool hasCaptureChanges() const { return !draft_.empty() || pending_.has_value() || absentNativePositions_ != 0; }
     bool confirm(Text message) const;
@@ -642,15 +646,79 @@ void ShifterDialog::discardAnalogRest(Text message)
     updateControls();
 }
 
+bool ShifterDialog::currentDeviceAbsent() const
+{
+    const auto current = inventory_.current();
+    return current && current->available &&
+        std::ranges::find(current->devices, deviceId_, &DeviceInfo::id) == current->devices.end();
+}
+
 bool ShifterDialog::dropDisconnectedRest()
 {
-    const auto current = rest_ ? inventory_.current() : nullptr;
-    if (!current || !current->available ||
-        std::ranges::find(current->devices, deviceId_, &DeviceInfo::id) != current->devices.end())
+    if (!rest_ || !currentDeviceAbsent())
         return false;
 
     discardAnalogRest();
     return true;
+}
+
+const AccessoryBinding* ShifterDialog::priorAnalogUpshift() const
+{
+    if (forward_ || step_ != 1 || draft_.size() != 1)
+        return nullptr;
+    const auto& upshift = draft_.front();
+    return upshift.kind == AccessoryKind::Axis && upshift.deviceId == deviceId_ ? &upshift : nullptr;
+}
+
+void ShifterDialog::recaptureAnalogUpshift(unsigned int previousKey, std::optional<AxisCapture> rest)
+{
+    // Only the old shift-up measurement on this device needs replacing.
+    draft_.clear();
+    send(IDC_SHIFTER_LIST, LB_RESETCONTENT);
+    step_ = 0;
+    analog_ = true;
+    digital_.reset();
+    measurements_ = {};
+    rest_ = std::move(rest);
+    position();
+    if (!native_ && isAccessoryKey(previousKey)) {
+        key_.choose(previousKey);
+        updateKeyLabel();
+    }
+    if (stage_ == Stage::AnalogReady)
+        status(tr(rest_ ? Text::DlgShifterUpshiftRestChanged : Text::DlgShifterUpshiftAxisMissing));
+}
+
+void ShifterDialog::sampleNeutral(const DeviceSample& sample, const AccessoryBinding* priorAnalog)
+{
+    status(tr(Text::DlgShifterHoldNeutral));
+    if (digital_ && !digital_->captureNeutral(sample))
+        return;
+    if (digital_ && !priorAnalog) {
+        position();
+        return;
+    }
+    if (priorAnalog && sample.axesPending[priorAnalog->index]) {
+        measurements_ = {};
+        return;
+    }
+    if (!measurements_.add(sample)) {
+        measurements_ = {};
+        if (priorAnalog && !sample.axesPending.any() &&
+            std::ranges::none_of(sample.axesPresent, [](bool present) { return present; }))
+            recaptureAnalogUpshift(priorAnalog->key, std::nullopt);
+        return;
+    }
+    const auto measured = measurements_.result();
+    if (!measured)
+        return;
+    if (priorAnalog && !shifterRestStillNeutral(*priorAnalog, *measured)) {
+        recaptureAnalogUpshift(priorAnalog->key, measured);
+        return;
+    }
+    if (!digital_)
+        rest_ = measured;
+    position();
 }
 
 void ShifterDialog::interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage)
@@ -936,6 +1004,20 @@ void ShifterDialog::poll()
     };
     if (interrupted() || dropDisconnectedRest())
         return;
+    const auto* priorAnalog = priorAnalogUpshift();
+    const auto waitForMixedRest = [&] {
+        if (stage_ != Stage::Neutral) {
+            beginRestCapture(deviceId_, false);
+        } else {
+            digital_.emplace(deviceId_);
+            measurements_ = {};
+        }
+        status(tr(Text::DlgShifterCaptureDeviceRest));
+    };
+    if (digital_ && priorAnalog && currentDeviceAbsent()) {
+        waitForMixedRest();
+        return;
+    }
     const auto reading = input_.capture(deviceId_);
     if (!reading.updated || interrupted())
         return;
@@ -946,6 +1028,10 @@ void ShifterDialog::poll()
     }
     if (waitingWithRest || (stage_ == Stage::AnalogMeasure && sample && sample->sampledAt < travelStartedAt_))
         return;
+    if (digital_ && priorAnalog && reading.needsRest()) {
+        waitForMixedRest();
+        return;
+    }
     if (!sample || reading.needsRest()) {
         if (digital_)
             digital_->deviceInterrupted();
@@ -955,14 +1041,11 @@ void ShifterDialog::poll()
         status(tr(Text::DlgShifterDeviceReadInterrupted));
         return;
     }
+    if (stage_ == Stage::Neutral) {
+        sampleNeutral(*sample, priorAnalog);
+        return;
+    }
     if (digital_) {
-        if (stage_ == Stage::Neutral) {
-            if (digital_->captureNeutral(*sample))
-                position();
-            else
-                status(tr(Text::DlgShifterHoldNeutral));
-            return;
-        }
         const auto result = digital_->sample(*sample, draft_);
         switch (result.status) {
         case ShifterCaptureStatus::Captured:
@@ -984,7 +1067,7 @@ void ShifterDialog::poll()
         return;
     }
 
-    status(tr(stage_ == Stage::Neutral ? Text::DlgShifterHoldNeutral : Text::DlgShifterHoldAtLimit));
+    status(tr(Text::DlgShifterHoldAtLimit));
     if (!measurements_.add(*sample)) {
         measurements_ = {};
         return;
@@ -992,11 +1075,6 @@ void ShifterDialog::poll()
     const auto measured = measurements_.result();
     if (!measured)
         return;
-    if (stage_ == Stage::Neutral) {
-        rest_ = measured;
-        position();
-        return;
-    }
     const auto candidates = axisCandidates(*rest_, *rest_, *measured, false);
     if (candidates.size() == 1) {
         const auto index = candidates.front().axis;

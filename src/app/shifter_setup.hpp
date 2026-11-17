@@ -1,11 +1,22 @@
 #pragma once
 
+#include "chrome_axis/calibration.hpp"
 #include "chrome_axis/shifter.hpp"
 
 #include <algorithm>
 #include <utility>
 
 namespace chrome_axis {
+
+inline bool shifterRestStillNeutral(const AccessoryBinding& binding, const AxisCapture& rest) noexcept
+{
+    if (binding.kind != AccessoryKind::Axis || binding.index >= axisCount)
+        return false;
+    DeviceSample sample;
+    sample.axes = rest.median;
+    sample.axesPresent = rest.axesPresent;
+    return discreteAccessoryLevel(binding, sample, false) == DiscreteAccessoryLevel::neutral;
+}
 
 struct ShifterSetup {
     std::string_view deviceId;
