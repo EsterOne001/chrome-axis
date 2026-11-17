@@ -26,6 +26,7 @@ namespace {
 constexpr UINT_PTR captureTimer = 1;
 constexpr UINT captureInterval = 20;
 constexpr ULONGLONG captureTimeout = 30000;
+constexpr auto mixedConfirmationTimeout = std::chrono::seconds(1);
 constexpr UINT_PTR inventoryTimer = 2;
 constexpr UINT inventoryWatchMs = 80;
 constexpr UINT_PTR previewTimer = 3;
@@ -101,12 +102,15 @@ private:
     void updateNumLockHint();
     void position();
     void captured(AccessoryBinding binding);
+    void commitCapturedPosition();
     void runTimer();
     void beginRestCapture(const std::string& deviceId, bool analog);
     void discardAnalogRest(Text message = Text::DlgShifterCaptureDeviceRest);
     bool currentDeviceAbsent() const;
     bool dropDisconnectedRest();
     const AccessoryBinding* priorAnalogUpshift() const;
+    bool pendingMixedDownshift() const;
+    void pauseMixedDownshift();
     void sampleNeutral(const DeviceSample& sample, const AccessoryBinding* priorAnalog);
     void recaptureAnalogUpshift(unsigned int previousKey, std::optional<AxisCapture> rest);
     void interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage);
@@ -165,6 +169,7 @@ private:
     Stage stage_{Stage::Setup};
     ULONGLONG deadline_{};
     DeviceReadClock::time_point travelStartedAt_{};
+    std::optional<DeviceReadClock::time_point> mixedConfirmationAt_;
     bool analog_{};
     bool native_{};
     std::optional<std::uint64_t> inventoryRevision_;
@@ -287,7 +292,8 @@ void ShifterDialog::updateControls()
     const bool sequential = selectedMode().forward == 0;
     const bool chooseDownshift = selectingDownshiftDevice();
     const bool canCapture = selectedDevice(true) != nullptr;
-    const bool canAdvance = (stage_ == Stage::Captured && (!chooseDownshift || (canCapture && inventory_.current()))) ||
+    const bool canAdvance = (stage_ == Stage::Captured && !mixedConfirmationAt_ &&
+        (!chooseDownshift || (canCapture && inventory_.current()))) ||
         stage_ == Stage::AnalogReady || stage_ == Stage::Paused || stage_ == Stage::NeutralPaused;
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_DEVICE), (setup || chooseDownshift) && !devices_.empty());
     SetDlgItemTextW(window_, IDC_MODAL_DEVICE_LABEL, tr(chooseDownshift ? Text::DlgShifterDownshiftDevice
@@ -455,7 +461,9 @@ void ShifterDialog::focusChanged(bool active)
     if (active)
         refreshDevices();
     else if (!previewRunning_) {
-        if (rest_ && (stage_ == Stage::AnalogReady || stage_ == Stage::AnalogMeasure || stage_ == Stage::Captured))
+        if (pendingMixedDownshift())
+            pauseMixedDownshift();
+        else if (rest_ && (stage_ == Stage::AnalogReady || stage_ == Stage::AnalogMeasure || stage_ == Stage::Captured))
             discardAnalogRest(Text::DlgShifterRecaptureRest);
         else
             input_.invalidate();
@@ -670,6 +678,23 @@ const AccessoryBinding* ShifterDialog::priorAnalogUpshift() const
     return upshift.kind == AccessoryKind::Axis && upshift.deviceId == deviceId_ ? &upshift : nullptr;
 }
 
+bool ShifterDialog::pendingMixedDownshift() const
+{
+    return stage_ == Stage::Captured && digital_ && priorAnalogUpshift();
+}
+
+void ShifterDialog::pauseMixedDownshift()
+{
+    // A new neutral check must precede accepting a downshift on this reader.
+    pending_.reset();
+    mixedConfirmationAt_.reset();
+    KillTimer(window_, captureTimer);
+    input_.invalidate();
+    stage_ = Stage::NeutralPaused;
+    status(tr(Text::DlgShifterCaptureInterrupted));
+    updateControls();
+}
+
 void ShifterDialog::recaptureAnalogUpshift(unsigned int previousKey, std::optional<AxisCapture> rest)
 {
     // Only the old shift-up measurement on this device needs replacing.
@@ -762,6 +787,7 @@ void ShifterDialog::start()
     draft_.clear();
     absentNativePositions_ = 0;
     pending_.reset();
+    mixedConfirmationAt_.reset();
     rest_.reset();
     digital_.reset();
     measurements_ = {};
@@ -929,6 +955,7 @@ void ShifterDialog::position()
 {
     KillTimer(window_, captureTimer);
     pending_.reset();
+    mixedConfirmationAt_.reset();
     if (step_ >= (forward_ ? forward_ + 1 : 2)) {
         input_.invalidate();
         stage_ = Stage::Done;
@@ -960,9 +987,9 @@ void ShifterDialog::captured(AccessoryBinding binding)
     const auto existing = std::ranges::find_if(edited_, [&](const auto& other) {
         return !captureSetup().replaces(other) && sameShifterInput(binding, other);
     });
-    if (!analog_)
-        KillTimer(window_, captureTimer);
     if (native_ && existing != edited_.end()) {
+        if (!analog_)
+            KillTimer(window_, captureTimer);
         stage_ = analog_ ? Stage::AnalogReady : Stage::Paused;
         status(tr(Text::DlgShifterNativeInputConflict));
         updateControls();
@@ -974,6 +1001,8 @@ void ShifterDialog::captured(AccessoryBinding binding)
     binding.nativeSequential = native_ && forward_ == 0;
     pending_ = std::move(binding);
     stage_ = Stage::Captured;
+    if (!analog_ && !pendingMixedDownshift())
+        KillTimer(window_, captureTimer);
     status(tr(selectingDownshiftDevice() ? Text::DlgShifterSelectDownshiftDevice
         : !native_ ? Text::DlgShifterInputDetected
         : forward_ ? Text::DlgShifterNativeCaptured : Text::DlgShifterNativeSequentialCaptured));
@@ -982,28 +1011,40 @@ void ShifterDialog::captured(AccessoryBinding binding)
 
 void ShifterDialog::poll()
 {
+    const bool validatingDownshift = pendingMixedDownshift();
     const bool waitingWithRest = rest_ && (stage_ == Stage::AnalogReady || stage_ == Stage::Captured);
     if (!IsWindowEnabled(window_) ||
-        (!waitingWithRest && stage_ != Stage::Neutral && stage_ != Stage::Position && stage_ != Stage::AnalogMeasure))
+        (!validatingDownshift && !waitingWithRest && stage_ != Stage::Neutral &&
+            stage_ != Stage::Position && stage_ != Stage::AnalogMeasure))
         return;
     const auto interrupted = [&] {
         if (!IsWindowEnabled(window_) || GetForegroundWindow() != window_) {
-            if (waitingWithRest)
+            if (validatingDownshift)
+                pauseMixedDownshift();
+            else if (waitingWithRest)
                 discardAnalogRest(Text::DlgShifterRecaptureRest);
             else
                 interruptCapture(Text::DlgShifterMeasureInterrupted, Text::DlgShifterCaptureInterrupted,
                                  Text::DlgShifterInitialCaptureInterrupted);
             return true;
         }
-        if (!waitingWithRest && GetTickCount64() >= deadline_) {
+        if (!validatingDownshift && !waitingWithRest && GetTickCount64() >= deadline_) {
             interruptCapture(Text::DlgShifterMeasureExpired, Text::DlgShifterCapturePaused,
                              Text::DlgShifterCaptureExpired);
+            return true;
+        }
+        if (mixedConfirmationAt_ && DeviceReadClock::now() - *mixedConfirmationAt_ >= mixedConfirmationTimeout) {
+            pauseMixedDownshift();
             return true;
         }
         return false;
     };
     if (interrupted() || dropDisconnectedRest())
         return;
+    if (validatingDownshift && currentDeviceAbsent()) {
+        pauseMixedDownshift();
+        return;
+    }
     const auto* priorAnalog = priorAnalogUpshift();
     const auto waitForMixedRest = [&] {
         if (stage_ != Stage::Neutral) {
@@ -1021,6 +1062,15 @@ void ShifterDialog::poll()
     const auto reading = input_.capture(deviceId_);
     if (!reading.updated || interrupted())
         return;
+    if (validatingDownshift) {
+        if (reading.needsRest()) {
+            pauseMixedDownshift();
+        } else if (mixedConfirmationAt_ && reading.sample && reading.sample->sampledAt >= *mixedConfirmationAt_) {
+            mixedConfirmationAt_.reset();
+            commitCapturedPosition();
+        }
+        return;
+    }
     const auto& sample = reading.sample;
     if (rest_ && reading.needsRest()) {
         discardAnalogRest();
@@ -1124,7 +1174,22 @@ void ShifterDialog::advance()
     }
     if (stage_ != Stage::Captured || !pending_)
         return;
+    if (pendingMixedDownshift()) {
+        if (currentDeviceAbsent()) {
+            pauseMixedDownshift();
+        } else if (!mixedConfirmationAt_) {
+            // Do not confirm with a report taken before the click.
+            mixedConfirmationAt_ = DeviceReadClock::now();
+            status(tr(Text::DlgShifterConfirmingConnection));
+            updateControls();
+        }
+        return;
+    }
+    commitCapturedPosition();
+}
 
+void ShifterDialog::commitCapturedPosition()
+{
     dropDisconnectedRest();
     const bool chooseDownshift = selectingDownshiftDevice();
     if (chooseDownshift) {

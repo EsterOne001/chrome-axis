@@ -57,14 +57,14 @@ class ChromeAxisHudPaletteEdit {
 class ChromeAxisHudPresetWrite {
   public let key: String;
   public let palette: ref<ChromeAxisHudPalette>;
-  public let existed: Bool;
-  public let handled: Bool;
+  public let session: Int32;
 }
 
 @if(ModuleExists("HudPainter"))
 class ChromeAxisHudPresetWriteBoundary extends Event {
   public let write: ref<ChromeAxisHudPresetWrite>;
   public let begin: Bool;
+  public let observed: Bool;
 }
 
 @if(ModuleExists("HudPainter"))
@@ -138,7 +138,9 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   private let retryDelay: Float;
   private let retryAttempts: Int32;
   private let reloadPending: Bool;
+  private let presetWriteSession: Int32;
   private let activePresetWrite: ref<ChromeAxisHudPresetWrite>;
+  private let observedPresetSaves: array<wref<HudPainterPresetSaved>>;
   private let menuController: wref<inkGameController>;
   private let section: wref<ChromeAxisHudPainterSection>;
   private let picker: wref<CustomColorPickerController>;
@@ -159,8 +161,8 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   }
 
   private cb func OnInitialize() {
-    GameInstance.GetCallbackSystem().RegisterCallback(n"Session/Ready", this, n"OnSessionAvailable");
-    GameInstance.GetCallbackSystem().RegisterCallback(n"Session/Resume", this, n"OnSessionAvailable");
+    GameInstance.GetCallbackSystem().RegisterCallback(n"Session/Ready", this, n"OnSessionReady");
+    GameInstance.GetCallbackSystem().RegisterCallback(n"Session/Resume", this, n"OnSessionResume");
     if this.reloadPending && !IsDefined(this.flushCallback) {
       this.FlushColors(true);
     }
@@ -169,13 +171,21 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   private cb func OnUninitialize() {
     GameInstance.GetCallbackSystem().UnregisterCallback(n"Session/Ready", this);
     GameInstance.GetCallbackSystem().UnregisterCallback(n"Session/Resume", this);
+    this.presetWriteSession += 1;
     this.activePresetWrite = null;
+    ArrayClear(this.observedPresetSaves);
     this.CancelScheduledFlush();
   }
 
-  private cb func OnSessionAvailable(event: ref<GameSessionEvent>) {
-    // A prior session can discard its timer, and a paused session can delay delivery.
+  private cb func OnSessionReady(event: ref<GameSessionEvent>) {
+    // A new game session invalidates outstanding UI write markers.
+    this.presetWriteSession += 1;
     this.activePresetWrite = null;
+    this.RefreshColors(true);
+  }
+
+  private cb func OnSessionResume(event: ref<GameSessionEvent>) {
+    // A paused session may delay the flush without invalidating its pending save.
     this.RefreshColors(true);
   }
 
@@ -272,18 +282,13 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     let write = new ChromeAxisHudPresetWrite();
     write.key = StrLower(name);
     write.palette = this.GetPalette();
-    write.existed = this.HasNativePreset(write.key);
+    write.session = this.presetWriteSession;
     this.QueuePresetWriteBoundary(write, true);
     return write;
   }
 
   public func FinishPresetSave(write: ref<ChromeAxisHudPresetWrite>) -> Void {
     this.QueuePresetWriteBoundary(write, false);
-    // A new name can also be recognized before the UI event is delivered.
-    if !write.existed && this.HasNativePreset(write.key) {
-      this.StoreSuccessfulPreset(write);
-      this.FlushColors();
-    }
   }
 
   private func QueuePresetWriteBoundary(write: ref<ChromeAxisHudPresetWrite>, begin: Bool) -> Void {
@@ -298,37 +303,38 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   }
 
   public func ObservePresetWriteBoundary(event: ref<ChromeAxisHudPresetWriteBoundary>) -> Void {
+    if event.observed || event.write.session != this.presetWriteSession {
+      return;
+    }
+    event.observed = true;
     if event.begin {
-      this.activePresetWrite = event.write.handled ? null : event.write;
+      this.activePresetWrite = event.write;
     } else if Equals(this.activePresetWrite, event.write) {
       this.activePresetWrite = null;
     }
   }
 
-  private func HasNativePreset(key: String) -> Bool {
-    let painter = HudPainterStorage.Get();
-    if IsDefined(painter) {
-      for preset in painter.GetAvailablePresetsList() {
-        let name = preset.name;
-        if Equals(StrLower(name), key) {
-          return true;
-        }
+  public func PresetSaved(event: ref<HudPainterPresetSaved>) -> Void {
+    // The same event can reach the menu component and several game controllers.
+    let received: wref<HudPainterPresetSaved> = event;
+    let index = ArraySize(this.observedPresetSaves) - 1;
+    while index >= 0 {
+      let previous = this.observedPresetSaves[index];
+      if Equals(previous, received) {
+        return;
       }
+      if !IsDefined(previous) {
+        ArrayErase(this.observedPresetSaves, index);
+      }
+      index -= 1;
     }
-    return false;
-  }
+    ArrayPush(this.observedPresetSaves, received);
 
-  public func PresetSaved() -> Void {
     let write = this.activePresetWrite;
-    this.activePresetWrite = null;
-    this.StoreSuccessfulPreset(write);
-    this.FlushColors();
-  }
-
-  private func StoreSuccessfulPreset(write: ref<ChromeAxisHudPresetWrite>) -> Void {
-    if IsDefined(write) && !write.handled {
-      write.handled = true;
+    if IsDefined(write) {
+      this.activePresetWrite = null;
       this.StorePalette(write.key, write.palette, true, true);
+      this.FlushColors();
     }
   }
 
@@ -698,7 +704,6 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   public func OpenMenu(controller: wref<inkGameController>) -> Void {
     if NotEquals(this.menuController, controller) {
       this.section = null;
-      this.activePresetWrite = null;
     }
     this.menuController = controller;
     let root = controller.GetRootCompoundWidget();
@@ -821,6 +826,27 @@ private func ChromeAxis_SetPickerChannels(picker: wref<CustomColorPickerControll
 }
 
 @if(ModuleExists("HudPainter"))
+@addMethod(inkGameController)
+protected cb func OnChromeAxisHudPresetWriteBoundary(event: ref<ChromeAxisHudPresetWriteBoundary>) -> Bool {
+  let menu = ChromeAxisHudPainterMenu.Get();
+  if IsDefined(menu) {
+    menu.ObservePresetWriteBoundary(event);
+  }
+  return false;
+}
+
+// Game controllers can receive the queued result after the HUD Painter view has detached.
+@if(ModuleExists("HudPainter"))
+@addMethod(inkGameController)
+protected cb func OnHudPainterPresetSaved(event: ref<HudPainterPresetSaved>) -> Bool {
+  let menu = ChromeAxisHudPainterMenu.Get();
+  if IsDefined(menu) {
+    menu.PresetSaved(event);
+  }
+  return false;
+}
+
+@if(ModuleExists("HudPainter"))
 class ChromeAxisHudPainterPresetEvents extends inkComponent {
   protected cb func OnCreate() -> ref<inkWidget> {
     let widget = new inkCanvas();
@@ -832,7 +858,7 @@ class ChromeAxisHudPainterPresetEvents extends inkComponent {
   protected cb func OnHudPainterPresetSaved(event: ref<HudPainterPresetSaved>) -> Bool {
     let menu = ChromeAxisHudPainterMenu.Get();
     if IsDefined(menu) {
-      menu.PresetSaved();
+      menu.PresetSaved(event);
     }
     return false;
   }

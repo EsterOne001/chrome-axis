@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.87** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.88** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -32,7 +32,7 @@ Si Windows signale `MSVCP140.dll` ou `VCRUNTIME140.dll` manquant, installez le r
 
 ## Langue
 
-Dans le carré à droite de **Simulation**, cliquez sur le drapeau français en haut à gauche ou sur le drapeau britannique en bas à droite. La moitié choisie s’illumine aussitôt. Relancez Chrome Axis pour appliquer la langue. Vous pouvez aussi choisir **Français**, **English** ou **Automatique (Windows)** dans **Aide → Langue**. Le réglage automatique utilise le français si l’interface de Windows est en français et l’anglais pour les autres langues. La langue de l’application déployée s’enregistre dans le dossier `Profil` du mod et s’applique à tous les profils.
+Dans le carré à droite du bandeau, cliquez sur le drapeau français en haut à gauche ou sur le drapeau britannique en bas à droite. La moitié choisie s’illumine aussitôt. Relancez Chrome Axis pour appliquer la langue. Vous pouvez aussi choisir **Français**, **English** ou **Automatique (Windows)** dans **Aide → Langue**. Le réglage automatique utilise le français si l’interface de Windows est en français et l’anglais pour les autres langues. La langue de l’application déployée s’enregistre dans le dossier `Profil` du mod et s’applique à tous les profils.
 
 Le texte du HUD suit la langue d’affichage de Cyberpunk 2077. Il s’affiche en français si le jeu est en français et en anglais dans les autres langues. Les journaux techniques du plugin utilisent l’anglais.
 
@@ -206,7 +206,7 @@ Pour mesurer les délais, cliquez sur **Démarrer l’enregistrement** dans **Di
 
 Le diagnostic de transmission indique le nombre d’appuis physiques reconnus pour la bascule AUTO / MANUEL et la méthode de détection du dernier appui. Si le HUD reste sur **USB PARTIEL** après avoir relancé Cyberpunk, copiez le diagnostic avant de désactiver puis réactiver l’USB. Le rapport indique quelles commandes sont prêtes et affiche les appels DirectInput toujours en cours, avec leur durée et leur origine, lecteur ou sonde. Un enregistrement démarré pendant le blocage reprend aussi ces appels.
 
-L’enregistrement continue lorsque vous fermez la fenêtre **Diagnostic**. Laissez Chrome Axis ouvert, puis revenez à **Diagnostic… → Arrêter l’enregistrement → Exporter CSV…**. Chaque session est écrite au fil de l’eau dans `Profil/Diagnostics`, avec les données de conduite et les incidents USB. Le fichier indique les lignes perdues si l’application ne vide pas le tampon à temps. La capture peut aussi relever la conduite avec l’USB désactivé. Les percentiles P95/P99 sont des estimations.
+L’enregistrement continue lorsque vous fermez la fenêtre **Diagnostic**. Laissez Chrome Axis ouvert, puis revenez à **Diagnostic… → Arrêter l’enregistrement → Exporter CSV…**. Chaque session est écrite au fil de l’eau dans `Profil/Diagnostics`, avec les données de conduite et les incidents USB. Choisissez une destination distincte pour la copie exportée. Le fichier indique les lignes perdues si l’application ne vide pas le tampon à temps. La capture peut aussi relever la conduite avec l’USB désactivé. Les percentiles P95/P99 sont des estimations.
 
 ## Dossiers du projet
 

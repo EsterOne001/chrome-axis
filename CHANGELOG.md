@@ -6,6 +6,16 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.88
+
+- La calibration guidée vérifie la continuité de chaque périphérique entre les positions. La reprise conserve les mesures des autres appareils.
+- La capture contrôle la reconnexion jusqu’à la validation des palettes mixtes analogiques et numériques sur le même périphérique.
+- La réassociation protège les fichiers validés jusqu’à la clôture du journal de reprise.
+- L’export CSV demande une destination distincte du fichier source et identifie aussi un verrou sur une plage d’octets.
+- HUD Painter associe les couleurs à un succès de sauvegarde du préréglage. La validation Nexus vérifie le contenu du ZIP contre les sources de la version ou contre son empreinte de livraison.
+
+[ZIP Vortex](out/Chromaxis-0.4.88.zip)
+
 ## Chrome Axis 0.4.87
 
 - La calibration guidée redemande les positions du périphérique dont l’absence a été confirmée. Les mesures des autres périphériques sont conservées.

@@ -20,7 +20,7 @@
 | Jeu et catégorie | Cyberpunk 2077 · Gameplay |
 | Version du mod | 0.4.15 |
 | Compatibilité ciblée | Windows x64 · Cyberpunk 2077 2.5 · exécutable 3.0.88.46235 |
-| ZIP du mod | [ChromeAxis-0.4.15-Cyberpunk-2.5.zip](../out/ChromeAxis-0.4.15-Cyberpunk-2.5.zip) |
+| ZIP du mod | [Chromaxis-0.4.15.zip](../out/archives/versions/Chromaxis-0.4.15.zip) |
 | SHA-256 | `D0888D8782011692F997C1AA0D31824BD166C7E857B9E06A0C4AED1EEF707191` |
 | Requirements | [RED4ext 1.31.1](https://www.nexusmods.com/cyberpunk2077/mods/2380?tab=files) et [redscript 0.5.32](https://www.nexusmods.com/cyberpunk2077/mods/1511?tab=files) |
 
@@ -31,7 +31,7 @@ Le ZIP inclut le plugin, l’application `ChromeAxis.exe`, le HUD et les deux gu
 Créez le ZIP de la nouvelle version avec la [procédure de compilation](../README.md#compilation). Depuis la racine du dépôt, lancez la [commande de publication](Publish-ChromeAxis.ps1) dans PowerShell 7.2 ou plus récent. Elle lit la version dans le nom `ChromeAxis-X.Y.Z-Cyberpunk-A.B.zip` et accepte les ZIP jusqu’à 100 Mio.
 
 ```powershell
-.\NexusMods\Publish-ChromeAxis.ps1 -Archive .\out\ChromeAxis-0.4.15-Cyberpunk-2.5.zip -WhatIf
+.\NexusMods\Publish-ChromeAxis.ps1 -Archive .\out\archives\versions\Chromaxis-0.4.15.zip -ExpectedSha256 D0888D8782011692F997C1AA0D31824BD166C7E857B9E06A0C4AED1EEF707191 -WhatIf
 ```
 
 `-WhatIf` vérifie le ZIP et affiche la cible localement. Pour envoyer une nouvelle version, utilisez la [clé API personnelle Nexus Mods](https://www.nexusmods.com/settings/api-keys) d’un compte autorisé à gérer Chrome Axis.
@@ -106,7 +106,7 @@ Les captures montrent l’application 0.4.15 avec un profil vierge et sans péri
 | Game and category | Cyberpunk 2077 · Gameplay |
 | Mod version | 0.4.15 |
 | Target compatibility | Windows x64 · Cyberpunk 2077 2.5 · executable 3.0.88.46235 |
-| Mod ZIP | [ChromeAxis-0.4.15-Cyberpunk-2.5.zip](../out/ChromeAxis-0.4.15-Cyberpunk-2.5.zip) |
+| Mod ZIP | [Chromaxis-0.4.15.zip](../out/archives/versions/Chromaxis-0.4.15.zip) |
 | SHA-256 | `D0888D8782011692F997C1AA0D31824BD166C7E857B9E06A0C4AED1EEF707191` |
 | Requirements | [RED4ext 1.31.1](https://www.nexusmods.com/cyberpunk2077/mods/2380?tab=files) and [redscript 0.5.32](https://www.nexusmods.com/cyberpunk2077/mods/1511?tab=files) |
 
@@ -117,7 +117,7 @@ The ZIP includes the plugin, the `ChromeAxis.exe` app, the HUD and both user gui
 Create the new release ZIP with the [build procedure](../README.en.md#build). From the repository root, run the [publishing command](Publish-ChromeAxis.ps1) in PowerShell 7.2 or later. It reads the version from `ChromeAxis-X.Y.Z-Cyberpunk-A.B.zip` and accepts ZIP files up to 100 MiB.
 
 ```powershell
-.\NexusMods\Publish-ChromeAxis.ps1 -Archive .\out\ChromeAxis-0.4.15-Cyberpunk-2.5.zip -WhatIf
+.\NexusMods\Publish-ChromeAxis.ps1 -Archive .\out\archives\versions\Chromaxis-0.4.15.zip -ExpectedSha256 D0888D8782011692F997C1AA0D31824BD166C7E857B9E06A0C4AED1EEF707191 -WhatIf
 ```
 
 `-WhatIf` validates the ZIP and shows the target locally. To upload a new release, use a [personal Nexus Mods API key](https://www.nexusmods.com/settings/api-keys) from an account with permission to manage Chrome Axis.

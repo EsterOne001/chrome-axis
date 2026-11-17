@@ -281,32 +281,85 @@ bool writeChronologicalRecording(const std::filesystem::path& source, const std:
     return output.append(buffer) && output.flush();
 }
 
+enum class ExportDestination { missing, distinct, source, unavailable };
+
+ExportDestination identifyDestination(HANDLE source, const std::filesystem::path& destination)
+{
+    const auto target = CreateFileW(destination.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                    FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (target == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+            return ExportDestination::missing;
+        return ExportDestination::unavailable;
+    }
+    const std::unique_ptr<void, decltype(&CloseHandle)> guard(target, CloseHandle);
+    FILE_ID_INFO sourceInfo{}, targetInfo{};
+    if (GetFileInformationByHandleEx(source, FileIdInfo, &sourceInfo, sizeof(sourceInfo)) &&
+        GetFileInformationByHandleEx(target, FileIdInfo, &targetInfo, sizeof(targetInfo)))
+        return sourceInfo.VolumeSerialNumber == targetInfo.VolumeSerialNumber
+            && std::ranges::equal(sourceInfo.FileId.Identifier, targetInfo.FileId.Identifier)
+            ? ExportDestination::source : ExportDestination::distinct;
+
+    // Some older file systems and network shares only provide the legacy identifier.
+    BY_HANDLE_FILE_INFORMATION sourceLegacy{}, targetLegacy{};
+    if (!GetFileInformationByHandle(source, &sourceLegacy) || !GetFileInformationByHandle(target, &targetLegacy) ||
+        !(sourceLegacy.nFileIndexHigh || sourceLegacy.nFileIndexLow) ||
+        !(targetLegacy.nFileIndexHigh || targetLegacy.nFileIndexLow))
+        return ExportDestination::unavailable;
+    return sourceLegacy.dwVolumeSerialNumber == targetLegacy.dwVolumeSerialNumber
+        && sourceLegacy.nFileIndexHigh == targetLegacy.nFileIndexHigh
+        && sourceLegacy.nFileIndexLow == targetLegacy.nFileIndexLow
+        ? ExportDestination::source : ExportDestination::distinct;
+}
+
+DiagnosticExportState exportReadError(DWORD error) noexcept
+{
+    return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
+        ? DiagnosticExportState::sourceLocked : DiagnosticExportState::failed;
+}
+
 DiagnosticExportState exportRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
 {
     std::filesystem::path staged;
     bool created = false;
+    auto failure = DiagnosticExportState::failed;
     try {
+        // Hold the source stable until publication, including aliases resolving to the source.
+        const auto file = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+            return exportReadError(GetLastError());
+        const std::unique_ptr<void, decltype(&CloseHandle)> guard(file, CloseHandle);
+        const auto initialDestination = identifyDestination(file, destination);
+        if (initialDestination == ExportDestination::unavailable)
+            return DiagnosticExportState::failed;
+        if (initialDestination == ExportDestination::source)
+            return DiagnosticExportState::sameSource;
+
+        // A shared range lock lets the CSV passes read while also detecting exclusive byte-range locks.
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0)
+            return DiagnosticExportState::failed;
+        OVERLAPPED range{};
+        if (!LockFileEx(file, LOCKFILE_FAIL_IMMEDIATELY, 0, size.LowPart, static_cast<DWORD>(size.HighPart), &range))
+            return exportReadError(GetLastError());
         staged = detail::stagedSettingsPath(destination);
-        bool written{};
-        {
-            // Both passes and the sorted fast path must observe the same version of the recording.
-            // Release the read lock before publication so an export can also replace its source.
-            const auto file = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (file == INVALID_HANDLE_VALUE) {
-                const auto error = GetLastError();
-                return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
-                    ? DiagnosticExportState::sourceLocked : DiagnosticExportState::failed;
-            }
-            const std::unique_ptr<void, decltype(&CloseHandle)> guard(file, CloseHandle);
-            written = writeChronologicalRecording(source, staged, created);
+        if (writeChronologicalRecording(source, staged, created)) {
+            // Publish without replacement when the destination was absent at the start.
+            const auto current = initialDestination == ExportDestination::missing
+                ? ExportDestination::missing : identifyDestination(file, destination);
+            if ((current == ExportDestination::missing &&
+                 MoveFileExW(staged.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) ||
+                (current == ExportDestination::distinct && detail::replaceSettingsFile(staged, destination)))
+                return DiagnosticExportState::complete;
+            if (current == ExportDestination::source || identifyDestination(file, destination) == ExportDestination::source)
+                failure = DiagnosticExportState::sameSource;
         }
-        if (written && detail::replaceSettingsFile(staged, destination))
-            return DiagnosticExportState::complete;
     } catch (const std::exception&) {}
     if (created)
         DeleteFileW(staged.c_str());
-    return DiagnosticExportState::failed;
+    return failure;
 }
 
 } // namespace

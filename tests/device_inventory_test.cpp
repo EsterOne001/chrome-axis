@@ -550,6 +550,22 @@ bool testGuidedCalibrationWaitsForLayout()
     return completed && completed->median[0] == sample.axes[0] && !completed->axesPresent[1];
 }
 
+bool testGuidedDeviceRecovery()
+{
+    std::optional<std::uint64_t> wheel;
+    std::optional<std::uint64_t> pedals;
+    if (guidedDeviceRecovered(wheel, 0) || guidedDeviceRecovered(pedals, 11))
+        return false;
+    if (guidedDeviceRecovered(wheel, 0) || !guidedDeviceRecovered(wheel, 12) ||
+        guidedDeviceRecovered(pedals, 11))
+        return false;
+    // A fresh reader (for example after switching windows) starts at zero.
+    if (guidedDeviceRecovered(wheel, 0) || guidedDeviceRecovered(wheel, 12) ||
+        !guidedDeviceRecovered(wheel, 13))
+        return false;
+    return wheel == 13 && pedals == 11;
+}
+
 bool testSlowGuidedCalibration()
 {
     CalibrationCapture capture;
@@ -667,6 +683,7 @@ int main()
     const bool idleReader = testIdleReaderRestartsAtNeutral();
     const bool capture = testCaptureDuringUnrelatedScan();
     const bool guidedCalibration = testGuidedCalibrationWaitsForLayout();
+    const bool guidedRecovery = testGuidedDeviceRecovery();
     const bool shortcut = testShortcut(root);
     const bool usbStatus = testUsbStatus();
     const bool slowCalibration = testSlowGuidedCalibration();
@@ -676,15 +693,15 @@ int main()
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
     if (!inventory || !feedbackProbe || !feedbackRefresh || !pendingLayout || !asyncCapture || !independentCapture || !slowCapture || !readerRecovery || !idleReader || !capture ||
-        !guidedReadLimit || !guidedCalibration || !shortcut || !usbStatus || !slowCalibration || !analogWarmup || !explicitSelection)
+        !guidedReadLimit || !guidedCalibration || !guidedRecovery || !shortcut || !usbStatus || !slowCalibration || !analogWarmup || !explicitSelection)
         std::cerr << "inventory=" << inventory << " feedback_probe=" << feedbackProbe << " feedback_refresh=" << feedbackRefresh
                   << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
                   << " independent_capture=" << independentCapture << " slow_capture=" << slowCapture
                   << " guided_read_limit=" << guidedReadLimit << " reader_recovery=" << readerRecovery
                   << " idle_reader=" << idleReader << " capture=" << capture
-                  << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
+                  << " guided_calibration=" << guidedCalibration << " guided_recovery=" << guidedRecovery << " shortcut=" << shortcut
                   << " usb_state=" << usbStatus << " slow_calibration=" << slowCalibration
                   << " analog_warmup=" << analogWarmup << " explicit_selection=" << explicitSelection << '\n';
     return inventory && feedbackProbe && feedbackRefresh && pendingLayout && asyncCapture && independentCapture && slowCapture && readerRecovery && idleReader && capture &&
-        guidedReadLimit && guidedCalibration && shortcut && usbStatus && slowCalibration && analogWarmup && explicitSelection ? 0 : 1;
+        guidedReadLimit && guidedCalibration && guidedRecovery && shortcut && usbStatus && slowCalibration && analogWarmup && explicitSelection ? 0 : 1;
 }

@@ -1101,6 +1101,7 @@ const wchar_t* exportStatusText(DiagnosticExportState state)
     case DiagnosticExportState::complete: return tr(Text::DlgDiagnosticsCsvComplete);
     case DiagnosticExportState::failed: return tr(Text::DlgDiagnosticsCsvError);
     case DiagnosticExportState::sourceLocked: return tr(Text::DlgDiagnosticsCsvSourceLocked);
+    case DiagnosticExportState::sameSource: return tr(Text::DlgDiagnosticsCsvSameSource);
     }
     return L"";
 }

@@ -165,6 +165,14 @@ struct AppInput::State {
             queued = deliveredExpiry = interruption = observedSample = false;
         }
 
+        std::optional<std::uint64_t> latestRecoveryToken()
+        {
+            std::scoped_lock lock(mutex);
+            if (!report || !report->reading.sample)
+                return std::nullopt;
+            return report->reading.sample->recoveryToken;
+        }
+
         void stop()
         {
             std::scoped_lock lock(mutex);
@@ -244,6 +252,15 @@ CaptureDeviceRead AppInput::capture(const std::string& id)
 CaptureDeviceRead AppInput::captureGuidedPosition(const std::string& id)
 {
     return request(id, {}, Purpose::guidedCalibration);
+}
+
+std::optional<std::uint64_t> AppInput::latestRecoveryToken(const std::string& id) const
+{
+    std::scoped_lock lock(state_->mutex);
+    const auto it = state_->devices.find(id);
+    if (it == state_->devices.end() || !it->second.device)
+        return std::nullopt;
+    return it->second.device->latestRecoveryToken();
 }
 
 CaptureDeviceRead AppInput::request(const std::string& id, const Buttons& buttons, Purpose purpose)

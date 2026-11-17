@@ -3,10 +3,13 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)]
-    [string] $Archive
+    [string] $Archive,
+    [ValidatePattern('^[A-Fa-f0-9]{64}$')]
+    [string] $ExpectedSha256
 )
 
-. (Join-Path (Split-Path -Parent $PSScriptRoot) 'tools/Release-Package.ps1')
+$repository = Split-Path -Parent $PSScriptRoot
+. (Join-Path $repository 'tools/Release-Package.ps1')
 
 $apiBase = 'https://api.nexusmods.com/v3'
 $modUrl = 'https://www.nexusmods.com/cyberpunk2077/mods/38104'
@@ -67,7 +70,12 @@ $gameVersion = $archiveName.Groups['game'].Value
 if (-not $gameVersion) {
     $gameVersion = '2.5'
 }
-Confirm-ChromeAxisPackage -ArchivePath $file.FullName -Version $version
+$verification = if ($ExpectedSha256) {
+    @{ ExpectedSha256 = $ExpectedSha256 }
+} else {
+    @{ RepositoryRoot = $repository }
+}
+Confirm-ChromeAxisPackage -ArchivePath $file.FullName -Version $version @verification
 if (-not $PSCmdlet.ShouldProcess("$modUrl (file 9ka2kySGT)", "Publish $($file.Name) as the main file")) {
     return
 }

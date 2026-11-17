@@ -951,6 +951,9 @@ private:
     void selectCalibrationScope();
     void beginCalibration(const CalibrationScope& scope);
     void invalidateDisconnectedCalibration();
+    void invalidateCalibrationDevice(std::string_view id, bool interruptUnmeasuredCapture);
+    bool observeCalibrationDeviceRecovery(std::string_view id, std::uint64_t recovery);
+    void watchCalibrationConnections();
     void measureStep();
     void previousStep();
     void retryAxis(std::size_t channel);
@@ -1082,6 +1085,7 @@ private:
     std::chrono::steady_clock::time_point guideMotionStart_{};
     CalibrationScope calibrationScope_{};
     CalibrationScope calibrationRetryRequired_{};
+    std::array<std::optional<std::uint64_t>, commands.size()> calibrationRecoveryTokens_{};
     std::array<std::wstring, commands.size()> calibrationDeviceNames_{};
     std::array<Step, calibrationSteps.size()> steps_{};
     std::size_t step_{}, stepCount_{};
@@ -2629,6 +2633,7 @@ void App::beginCalibration(const CalibrationScope& scope)
         return;
     calibrationScope_ = scope;
     calibrationRetryRequired_ = {};
+    calibrationRecoveryTokens_ = {};
     const auto planned = std::ranges::copy_if(calibrationSteps, steps_.begin(),
         [&scope](const Step& step) { return scope[step.channel]; });
     stepCount_ = static_cast<std::size_t>(planned.out - steps_.begin());
@@ -2658,12 +2663,19 @@ void App::invalidateDisconnectedCalibration()
 {
     if (!calibrating_ || !inventoryAvailable_)
         return;
+    for (std::size_t channel = 0; channel < calibrationScope_.size(); ++channel)
+        if (calibrationScope_[channel] && !device(deviceId(channel)))
+            invalidateCalibrationDevice(deviceId(channel), true);
+}
+
+void App::invalidateCalibrationDevice(std::string_view id, bool interruptUnmeasuredCapture)
+{
     const auto planned = std::span(steps_).first(stepCount_);
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
     bool changed = false;
     std::optional<std::size_t> restartAt;
     for (std::size_t channel = 0; channel < calibrationScope_.size(); ++channel) {
-        if (!calibrationScope_[channel] || device(deviceId(channel)))
+        if (!calibrationScope_[channel] || deviceId(channel) != id)
             continue;
         const auto axisSteps = std::ranges::equal_range(planned, channel, {}, &Step::channel);
         const auto first = static_cast<std::size_t>(axisSteps.begin() - planned.begin());
@@ -2673,7 +2685,7 @@ void App::invalidateDisconnectedCalibration()
         const bool captured = std::ranges::any_of(positions, [](const auto& position) {
             return std::ranges::any_of(position.axesPresent, std::identity{});
         });
-        if (axes[channel]->deviceId.empty() && !captured && !(currentAxis && capture_))
+        if (axes[channel]->deviceId.empty() && !captured && !(currentAxis && capture_ && interruptUnmeasuredCapture))
             continue;
 
         calibrationRetryRequired_[channel] = true;
@@ -2696,11 +2708,45 @@ void App::invalidateDisconnectedCalibration()
         reviewPreview_.emplace(measured_);
 }
 
+bool App::observeCalibrationDeviceRecovery(std::string_view id, std::uint64_t recovery)
+{
+    for (std::size_t channel = 0; channel < calibrationScope_.size(); ++channel) {
+        if (!calibrationScope_[channel] || deviceId(channel) != id)
+            continue;
+        if (!chrome_axis::guidedDeviceRecovered(calibrationRecoveryTokens_[channel], recovery))
+            return false;
+        invalidateCalibrationDevice(id, captureHadSignal_);
+        return true;
+    }
+    return false;
+}
+
+void App::watchCalibrationConnections()
+{
+    const std::string_view capturing = capture_ ? deviceId(steps_[step_].channel) : std::string_view{};
+    std::array<std::string_view, commands.size()> watched{};
+    for (std::size_t channel = 0; channel < calibrationScope_.size(); ++channel) {
+        const auto& id = deviceId(channel);
+        if (!calibrationScope_[channel] || id == capturing || !device(id) ||
+            std::ranges::find(watched, id) != watched.end())
+            continue;
+        watched[channel] = id;
+        std::optional<std::uint64_t> recovery;
+        if (reviewingCalibration())
+            recovery = input_->latestRecoveryToken(id);
+        else if (const auto read = input_->captureGuidedPosition(id); read.sample)
+            recovery = read.sample->recoveryToken;
+        if (recovery && observeCalibrationDeviceRecovery(id, *recovery))
+            updateCalibrationView();
+    }
+}
+
 void App::measureStep()
 {
     if (!calibrating_ || capture_)
         return;
     if (step_ == stepCount_) {
+        watchCalibrationConnections();
         finishCalibration();
         return;
     }
@@ -2970,6 +3016,8 @@ void App::tick()
             refreshUsbToggle();
     }
     updateCalibrationMotion(foreground);
+    if (calibrating_ && foreground)
+        watchCalibrationConnections();
     if (capture_ && foreground) {
         updateCapture();
         return;
@@ -2987,6 +3035,10 @@ void App::updateCapture()
 {
     const auto channel = steps_[step_].channel;
     const auto reading = input_->captureGuidedPosition(deviceId(channel));
+    if (reading.sample && observeCalibrationDeviceRecovery(deviceId(channel), reading.sample->recoveryToken) && !capture_) {
+        updateCalibrationView();
+        return;
+    }
     const bool expired = std::chrono::steady_clock::now() >= captureDeadline_;
     if (expired || !chrome_axis::collectGuidedCalibrationReading(*capture_, reading, captureHadSignal_)) {
         capture_.reset();

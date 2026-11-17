@@ -22,7 +22,7 @@ CHROME_AXIS_TEXT(guideReviewInstruction, L"Relâchez les commandes, puis actionn
 CHROME_AXIS_TEXT(guideReviewReconnect, L"Rebranchez le périphérique déconnecté pour vérifier ses commandes. Ses mesures sont conservées.", L"Reconnect the disconnected device to verify its controls. Its measurements are kept.")
 CHROME_AXIS_TEXT(guideReviewRetryReconnected, L"Refaites les axes marqués après la reconnexion du périphérique.", L"After reconnecting the device, recalibrate the marked axes.")
 CHROME_AXIS_TEXT(guideRetryReconnect, L"Rebranchez le même périphérique pour reprendre la mesure.", L"Reconnect the same device to resume measurement.")
-CHROME_AXIS_TEXT(guideReconnectedMeasureAgain, L"Le périphérique a été débranché. Reprenez la mesure de cet axe.", L"The device disconnected. Measure this axis again.")
+CHROME_AXIS_TEXT(guideReconnectedMeasureAgain, L"Connexion du périphérique interrompue. Reprenez la mesure de cet axe.", L"The device connection was interrupted. Measure this axis again.")
 CHROME_AXIS_TEXT(guideCaptureInterrupted, L"Lecture interrompue. Vérifiez ce périphérique et relancez cette capture. Les autres positions sont conservées.", L"Signal interrupted. Check this device and capture this position again. Other positions are kept.")
 CHROME_AXIS_TEXT(guideCaptureExpired, L"Mesure expirée. Réessayez cette position lorsque le périphérique répond. Les autres positions sont conservées.", L"Measurement timed out. Try this position again once the device is responding. Other positions are kept.")
 CHROME_AXIS_TEXT(guideReviewWindowPaused, L"Aperçu en pause", L"Preview paused")

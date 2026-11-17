@@ -602,9 +602,10 @@ struct SettingsSnapshot {
     bool present{};
 };
 
-DeviceReplacementError readSettings(const std::filesystem::path& path, SettingsSnapshot& snapshot)
+DeviceReplacementError readSettings(const std::filesystem::path& path, SettingsSnapshot& snapshot,
+                                    DWORD shareMode = FILE_SHARE_READ | FILE_SHARE_DELETE)
 {
-    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, shareMode, nullptr,
                                    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (file == INVALID_HANDLE_VALUE)
         return missing(GetLastError()) ? DeviceReplacementError::none : DeviceReplacementError::ioError;
@@ -1191,17 +1192,31 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         if (!change.published || !matchesSettings(change.backup, change.original))
             return rollback(Error::ioError);
     }
-    const bool matchesPublication = std::ranges::all_of(changes, [](const Change& change) {
-        return !change.tracked || matchesSettings(change.live, change.changed ? change.replacement : change.original);
-    });
-    if (!sameSelection() || !matchesPublication)
-        return rollback(Error::invalidSelection);
-    if (!cleanup())
-        return false;
-    if (feedbackDisabled)
-        *feedbackDisabled = changes[2].changed;
-    error = Error::none;
-    return true;
+    {
+        // Deny writes and renames of the validated files until the journal is removed.
+        SettingsSnapshot selection;
+        std::array<SettingsSnapshot, settingsFiles.size()> liveSettings;
+        bool stable = readSettings(root / selectionFile, selection, FILE_SHARE_READ) == Error::none;
+        for (std::size_t i = 0; stable && i < changes.size(); ++i) {
+            const auto& change = changes[i];
+            if (!change.tracked)
+                continue;
+            const auto& publishedSettings = change.changed ? change.replacement : change.original;
+            auto& live = liveSettings[i];
+            stable = readSettings(change.live, live, FILE_SHARE_READ) == Error::none && live.present == publishedSettings.present
+                && (!live.present || (revisionFrom(live.info) == revisionFrom(publishedSettings.info)
+                                      && live.bytes == publishedSettings.bytes));
+        }
+        if (stable && sameSelection()) {
+            if (!cleanup())
+                return false;
+            if (feedbackDisabled)
+                *feedbackDisabled = changes[2].changed;
+            error = Error::none;
+            return true;
+        }
+    }
+    return rollback(Error::invalidSelection);
 }
 
 std::optional<std::string> readProfileLanguage(const std::filesystem::path& root, bool* locked)

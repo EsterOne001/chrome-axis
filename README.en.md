@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.87** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.88** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -26,7 +26,7 @@ If Windows reports a missing `MSVCP140.dll` or `VCRUNTIME140.dll`, install the M
 
 ## Language
 
-In the square to the right of **Simulation**, click the French flag in the upper left or the British flag in the lower right. The selected half lights up immediately. Restart Chrome Axis to apply the language. You can also choose **Français**, **English** or **Automatic (Windows)** under **Help → Language**. Automatic mode uses French when the Windows display language is French and English for other display languages. The deployed app saves the language in the mod's `Profil` folder, and the choice applies to all profiles.
+In the square at the right of the banner, click the French flag in the upper left or the British flag in the lower right. The selected half lights up immediately. Restart Chrome Axis to apply the language. You can also choose **Français**, **English** or **Automatic (Windows)** under **Help → Language**. Automatic mode uses French when the Windows display language is French and English for other display languages. The deployed app saves the language in the mod's `Profil` folder, and the choice applies to all profiles.
 
 The HUD follows Cyberpunk 2077’s on-screen language. It uses French when the game is set to French and English for other game languages. The plugin logs use English.
 
@@ -196,7 +196,7 @@ To measure delays, click **Start recording** in **Diagnostics…**, switch to Cy
 
 Transmission diagnostics show how many physical presses the AUTO / MANUAL shortcut recognized and how the latest press was detected. If the HUD stays on **PARTIAL USB** after restarting Cyberpunk, copy diagnostics before disabling and enabling USB input again. The report shows which controls are ready and lists ongoing DirectInput calls with their duration and whether they came from the reader or the device probe. A recording started during a stall also includes these calls.
 
-Recording continues when you close **Diagnostics**. Leave Chrome Axis open, then return to **Diagnostics… → Stop recording → Export CSV…**. Each session is written as it runs to `Profil/Diagnostics`, including driving data and USB incidents. The file marks records lost when the app cannot drain the buffer in time. Recording also supports driving with USB disabled. P95 and P99 timings are estimates.
+Recording continues when you close **Diagnostics**. Leave Chrome Axis open, then return to **Diagnostics… → Stop recording → Export CSV…**. Each session is written as it runs to `Profil/Diagnostics`, including driving data and USB incidents. Choose a separate destination for the exported copy. The file marks records lost when the app cannot drain the buffer in time. Recording also supports driving with USB disabled. P95 and P99 timings are estimates.
 
 ## Project folders
 

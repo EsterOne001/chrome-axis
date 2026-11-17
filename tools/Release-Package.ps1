@@ -44,7 +44,9 @@ function Confirm-ChromeAxisPackage {
         [string] $ArchivePath,
         [version] $Version,
         [string] $RepositoryRoot,
-        [string] $BuildPath
+        [string] $BuildPath,
+        [ValidatePattern('^[A-Fa-f0-9]{64}$')]
+        [string] $ExpectedSha256
     )
 
     $ErrorActionPreference = 'Stop'
@@ -68,6 +70,9 @@ function Confirm-ChromeAxisPackage {
     $files = @{}
     $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
     try {
+        if ($ExpectedSha256 -and (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash -ne $ExpectedSha256) {
+            throw 'ZIP SHA-256 differs from the validated release checksum.'
+        }
         foreach ($entry in $archive.Entries) {
             $name = $entry.FullName.Replace('\', '/')
             if (-not $seen.Add($name.TrimEnd('/'))) {
@@ -94,23 +99,24 @@ function Confirm-ChromeAxisPackage {
         Confirm-ChromeAxisBinary $files[$exe] $binaryVersion $false
         Confirm-ChromeAxisBinary $files[$dll] $binaryVersion $true
 
-        if ($BuildPath) {
-            foreach ($name in $sourceFiles.Keys) {
-                $relativeSource = $sourceFiles[$name]
-                $sourcePath = if ($relativeSource) {
-                    Join-Path $RepositoryRoot $relativeSource
-                } else {
-                    Join-Path $BuildPath "Release/$([IO.Path]::GetFileName($name))"
-                }
-                $stream = $files[$name].Open()
-                try {
-                    $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream))
-                } finally {
-                    $stream.Dispose()
-                }
-                if ($actual -cne (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash) {
-                    throw "ZIP entry differs from its Release build or source file: $name"
-                }
+        foreach ($name in $sourceFiles.Keys) {
+            $relativeSource = $sourceFiles[$name]
+            $sourcePath = if ($relativeSource -and $RepositoryRoot) {
+                Join-Path $RepositoryRoot $relativeSource
+            } elseif (!$relativeSource -and $BuildPath) {
+                Join-Path $BuildPath "Release/$([IO.Path]::GetFileName($name))"
+            }
+            if (!$sourcePath) {
+                continue
+            }
+            $stream = $files[$name].Open()
+            try {
+                $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream))
+            } finally {
+                $stream.Dispose()
+            }
+            if ($actual -cne (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash) {
+                throw "ZIP entry differs from its Release build or source file: $name"
             }
         }
     } finally {

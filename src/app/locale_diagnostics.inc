@@ -265,6 +265,7 @@ CHROME_AXIS_TEXT(DlgDiagnosticsCsvExporting, L"Exportation du CSV en cours…", 
 CHROME_AXIS_TEXT(DlgDiagnosticsCsvComplete, L"Fichier CSV exporté.", L"CSV file exported.")
 CHROME_AXIS_TEXT(DlgDiagnosticsCsvError, L"Le fichier CSV n’a pas pu être enregistré.", L"The CSV file could not be saved.")
 CHROME_AXIS_TEXT(DlgDiagnosticsCsvSourceLocked, L"Le CSV source est utilisé. Fermez-le ou attendez la fin de l’écriture.", L"The source CSV is in use. Close it or wait for the write to finish.")
+CHROME_AXIS_TEXT(DlgDiagnosticsCsvSameSource, L"Choisissez un autre fichier pour conserver l’enregistrement d’origine.", L"Choose a different file to keep the original recording.")
 CHROME_AXIS_TEXT(DlgDiagnosticsNativeReady, L"Position native prête", L"Native position ready")
 CHROME_AXIS_TEXT(DlgDiagnosticsNativePending, L"Rapport sélectionné · passage en attente", L"Gear selected · shift pending")
 CHROME_AXIS_TEXT(DlgDiagnosticsNativeEngaged, L"Rapport engagé par la boîte native", L"Gear engaged by the native transmission")

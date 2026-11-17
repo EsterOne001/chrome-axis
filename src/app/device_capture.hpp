@@ -24,6 +24,20 @@ inline bool restartAnalogCapture(const CaptureDeviceRead& reading, bool measurin
     return reading.needsRest() && (!measuringRest || hadSignal);
 }
 
+inline bool guidedDeviceRecovered(std::optional<std::uint64_t>& lastRecovery, std::uint64_t recovery) noexcept
+{
+    if (!lastRecovery) {
+        lastRecovery = recovery;
+        return false;
+    }
+    // Zero also occurs after reopening the reader on focus change. Only a
+    // new, non-zero token confirms the driver observed a connection break.
+    if (!recovery || recovery == *lastRecovery)
+        return false;
+    lastRecovery = recovery;
+    return true;
+}
+
 inline bool collectGuidedCalibrationReading(CalibrationCapture& capture, const CaptureDeviceRead& reading,
                                             bool& hadSignal)
 {

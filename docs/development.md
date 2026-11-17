@@ -28,11 +28,13 @@ Après un déplacement du dépôt, utilisez par exemple `-BuildDirectory dev-msv
 
 Passez `-SdkSource` pour réutiliser une copie locale du SDK RED4ext de la révision épinglée dans CMake. Le script affiche le chemin choisi. Lors d’un lancement sans `-SdkSource`, CMake utilise l’archive et le SHA-256 épinglés, y compris si le dossier de compilation contient un ancien chemin de SDK local.
 
-Pour prévalider un ZIP destiné à la publication sans appeler Nexus Mods, utilisez la simulation. Le script contrôle le contenu du ZIP, l’architecture et la version des deux binaires avant la simulation de publication.
+Pour prévalider un ZIP destiné à la publication sans appeler Nexus Mods, utilisez la simulation. Le script compare les fichiers de données du ZIP aux sources de cette version et contrôle l’architecture et la version des deux binaires.
 
 ```powershell
 pwsh -NoProfile -File .\NexusMods\Publish-ChromeAxis.ps1 -Archive .\out\Chromaxis-X.Y.Z.zip -WhatIf
 ```
+
+Pour vérifier une archive validée depuis un autre checkout, passez avec `-ExpectedSha256` l’empreinte de cette archive enregistrée lors de sa compilation. Le script compare alors l’archive entière à cette empreinte.
 
 ## Vérifier un changement REDscript
 

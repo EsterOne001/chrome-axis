@@ -70,9 +70,25 @@ bool testChronologicalExport(const std::filesystem::path& directory)
         std::ifstream input(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>{input}, {});
     };
+    const auto exportState = [](const std::filesystem::path& input, const std::filesystem::path& output) {
+        DiagnosticRecorder exporter({}, {});
+        if (!exporter.startExport(input, output))
+            return DiagnosticExportState::idle;
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (exporter.exportState() == DiagnosticExportState::exporting && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(5ms);
+        return exporter.exportState();
+    };
+    const auto sourceAlias = directory / L"." / L"LIVE.CSV";
+    const auto hardLink = directory / L"recording-link.csv";
+    const auto sortedCopy = directory / L"sorted-copy.csv";
     if (!exportDiagnosticRecording(source, destination) || read(destination) != ordered.str() ||
-        read(source) != original || !exportDiagnosticRecording(destination, destination) ||
-        read(destination) != ordered.str())
+        !exportDiagnosticRecording(destination, sortedCopy) || read(sortedCopy) != ordered.str() ||
+        exportState(source, source) != DiagnosticExportState::sameSource ||
+        exportState(source, sourceAlias) != DiagnosticExportState::sameSource ||
+        !CreateHardLinkW(hardLink.c_str(), source.c_str(), nullptr) ||
+        exportState(source, hardLink) != DiagnosticExportState::sameSource ||
+        read(source) != original || read(hardLink) != original)
         return false;
 
     // A failed background export must preserve the existing destination.
@@ -84,17 +100,8 @@ bool testChronologicalExport(const std::filesystem::path& directory)
     if (handle == INVALID_HANDLE_VALUE)
         return false;
     const std::unique_ptr<void, decltype(&CloseHandle)> locked(handle, CloseHandle);
-    {
-        DiagnosticRecorder exporter({}, {});
-        if (!exporter.startExport(unordered, destination))
-            return false;
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
-        while (exporter.exportState() == DiagnosticExportState::exporting &&
-               std::chrono::steady_clock::now() < deadline)
-            std::this_thread::sleep_for(5ms);
-        if (exporter.exportState() != DiagnosticExportState::failed || read(destination) != "existing export")
-            return false;
-    }
+    if (exportState(unordered, destination) != DiagnosticExportState::failed || read(destination) != "existing export")
+        return false;
 
     const auto sourceBusyExport = directory / L"source-busy-export.csv";
     std::ofstream(sourceBusyExport, std::ios::binary) << "existing export";
@@ -104,13 +111,24 @@ bool testChronologicalExport(const std::filesystem::path& directory)
         if (writer == INVALID_HANDLE_VALUE)
             return false;
         const std::unique_ptr<void, decltype(&CloseHandle)> writing(writer, CloseHandle);
-        DiagnosticRecorder exporter({}, {});
-        if (!exporter.startExport(unordered, sourceBusyExport))
+        if (exportState(unordered, sourceBusyExport) != DiagnosticExportState::sourceLocked ||
+            read(sourceBusyExport) != "existing export")
             return false;
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
-        while (exporter.exportState() == DiagnosticExportState::exporting && std::chrono::steady_clock::now() < deadline)
-            std::this_thread::sleep_for(5ms);
-        if (exporter.exportState() != DiagnosticExportState::sourceLocked || read(sourceBusyExport) != "existing export")
+    }
+    {
+        // An exclusive range can be held even though a second read handle opens successfully.
+        const auto reader = CreateFileW(unordered.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (reader == INVALID_HANDLE_VALUE)
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> reading(reader, CloseHandle);
+        OVERLAPPED range{};
+        range.Offset = 5;
+        if (!LockFileEx(reader, LOCKFILE_FAIL_IMMEDIATELY | LOCKFILE_EXCLUSIVE_LOCK, 0, 4, 0, &range))
+            return false;
+        const auto result = exportState(unordered, sourceBusyExport);
+        if (!UnlockFileEx(reader, 0, 4, 0, &range) || result != DiagnosticExportState::sourceLocked ||
+            read(sourceBusyExport) != "existing export")
             return false;
     }
     if (!exportDiagnosticRecording(unordered, sourceBusyExport) || read(sourceBusyExport) != ordered.str())
