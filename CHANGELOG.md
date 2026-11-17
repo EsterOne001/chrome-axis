@@ -6,6 +6,26 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.71 · 17 novembre 2026
+
+Comparée à la **0.4.70**.
+
+- **Fermeture de Cyberpunk.** Le plugin demande l’arrêt des lecteurs USB et du retour de force puis attend leur nettoyage pendant une seconde au maximum. Si un appel DirectInput reste bloqué, il rend la main au jeu. Une tâche de nettoyage conserve une référence à la DLL jusqu’au retour du pilote.
+- **Retour de force.** La désactivation enregistrée dans le dernier profil confirmé est appliquée au prochain contrôle, même si le fichier de sélection reste verrouillé. Les axes et accessoires restent armés. La réactivation attend que le fichier de sélection soit de nouveau lisible.
+- **Validation.** Release x64, 17 suites CTest réussies, compilation REDscript avec et sans HUD Painter et CRC des dix fichiers du ZIP. Les suites de fermeture et de liaison application–plugin ont réussi 24 fois chacune. Le banc de fermeture couvre deux appels pilote simulés encore bloqués. La fermeture de Cyberpunk après une conduite avec le T300RS, puis celle de Vortex, restent à confirmer sur le matériel réel.
+
+SHA-256 `5a26f9f9fbe9478b1cc52bf8496c29e6a63af25fe9514bc046834351c6110dc8`. [ZIP Vortex](out/Chromaxis-0.4.71.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/7df97de35ab196adbfe1ac11b1be731a87e6f507)
+
+## Chrome Axis 0.4.70 · 17 novembre 2026
+
+Comparée à la **0.4.69**.
+
+- **Reprise USB et profils.** Si Windows verrouille brièvement le fichier de sélection du profil, le plugin conserve les commandes armées. Il retente la lecture toutes les 250 ms pendant une seconde au maximum à partir du premier échec. Une désactivation USB ou un changement de profil confirmé reste pris en compte.
+- **Sauvegarde et restauration.** Les messages FR et EN identifient l’étape qui a échoué et le code Windows disponible. Le test utilise un dossier et un verrou propres à chaque exécution. L’ancien échec intermittent de sauvegarde ne s’est pas reproduit lors de la validation.
+- **Validation.** Release x64, 16 suites CTest réussies, 60 restaurations parallèles réussies sans dossier résiduel et compilation REDscript avec et sans HUD Painter. Le code Windows 32 a été vérifié dans les deux langues en déclenchant une erreur de copie avec l’EXE du ZIP. La continuité des commandes et du retour de force sur le T300RS reste à confirmer en jeu.
+
+SHA-256 `043d4edd3c60c99aa7e19963086bb79280582602ffdbfdcb2082a73ecd3f4011`. [ZIP Vortex](out/Chromaxis-0.4.70.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/4bfec84a55cfac5df7ad80ec42c2af25332b40a5)
+
 ## Chrome Axis 0.4.69
 
 - **Diagnostic de l’embrayage.** La raison du passage bloqué distingue le réarmement, la détection en cours, le signal indisponible et la valeur lue sous 65 %. En séquentiel, le diagnostic invite à refaire un appui refusé lorsque la pédale atteint le seuil.
