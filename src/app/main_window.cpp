@@ -2156,17 +2156,34 @@ void App::changeUsbMode()
             MessageBoxW(window_, message, title, MB_OK | MB_ICONWARNING);
             return;
         }
-        const bool accessoriesAvailable = accessoryPreview_.status() == chrome_axis::AccessoryPreviewStatus::available;
-        if ((!accessoriesAvailable || accessoryPreview_.bindings().empty()) && !chrome_axis::loadProfile(path_, error)) {
-            MessageBoxW(window_, accessoriesAvailable ? tr(Text::mainSaveCalibrationOrMapping) : accessoryProfileStatus(),
-                title, MB_OK | MB_ICONWARNING);
-            return;
-        }
     }
-    if (!chrome_axis::saveInstallationSettings(directory_,
-            [&] { return chrome_axis::setUsbEnabled(directory_, enable, error); })) {
-        MessageBoxW(window_, tr(Text::mainUsbStateFailed),
-            title, MB_OK | MB_ICONERROR);
+
+    const auto writeUsb = [&] { return chrome_axis::setUsbEnabled(directory_, enable, error); };
+    std::optional<Text> validationError;
+    bool saved;
+    if (enable) {
+        using namespace chrome_axis;
+        const auto result = savePresetSettings(directory_, preset_, {}, [&] {
+            if (loadProfile(path_, error))
+                return writeUsb();
+            DWORD readError{};
+            const auto bindings = loadEditorAccessories(activeDirectory() / accessoryFilename, error, &readError);
+            if (bindings && !bindings->empty())
+                return writeUsb();
+            validationError = bindings ? Text::mainSaveCalibrationOrMapping
+                : readError == ERROR_LOCK_VIOLATION || readError == ERROR_SHARING_VIOLATION ? Text::mainAccessoriesLocked
+                : Text::mainAccessoriesUnavailable;
+            return false;
+        });
+        if (result == PresetSaveResult::changed)
+            validationError = Text::mainActiveProfileChanged;
+        saved = result == PresetSaveResult::saved;
+    } else {
+        saved = chrome_axis::saveInstallationSettings(directory_, writeUsb);
+    }
+    if (!saved) {
+        MessageBoxW(window_, tr(validationError.value_or(Text::mainUsbStateFailed)), title,
+            MB_OK | (validationError ? MB_ICONWARNING : MB_ICONERROR));
         return;
     }
     refreshUsbToggle();

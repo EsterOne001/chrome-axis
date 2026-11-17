@@ -71,7 +71,10 @@ struct DiagnosticAccessoryCommand {
     std::uint8_t handbrakeAvailable{};
 };
 
-enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive, neutral, waitingForMotion };
+enum class DiagnosticFeedbackState : std::uint32_t {
+    disabled, waiting, active, unavailable, inactive, neutral, waitingForMotion,
+    waitingForDriver, settingsLocked, settingsUnavailable, settingsInvalid
+};
 
 enum class DiagnosticDelivery : std::uint32_t { unavailable, applied, gameKept };
 enum class DiagnosticUsbReadiness : std::uint8_t { waiting, partial, ready };
@@ -303,6 +306,7 @@ struct DrivingCaptureSample {
     bool steeringAvailable{};
     bool handbrakeAvailable{};
     bool feedbackForceAvailable{};
+    DiagnosticFeedbackState feedback{DiagnosticFeedbackState::disabled};
 };
 
 struct DiagnosticCaptureRecord {

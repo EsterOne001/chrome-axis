@@ -1120,6 +1120,7 @@ public:
     std::optional<chrome_axis::AccessoryProfile> accessoryProfile;
     std::optional<chrome_axis::AccessoryReader> accessories;
     chrome_axis::FeedbackSettings feedbackSettings;
+    std::optional<DiagnosticFeedbackState> feedbackIssue;
 
 private:
     void clearWatches() noexcept {
@@ -1147,16 +1148,36 @@ void reportChangedWarning(std::string& previous, std::string_view warning) {
         warn(previous.c_str());
 }
 
+DiagnosticFeedbackState feedbackSettingsIssue(DWORD error) noexcept {
+    if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION)
+        return DiagnosticFeedbackState::settingsLocked;
+    return error ? DiagnosticFeedbackState::settingsUnavailable : DiagnosticFeedbackState::settingsInvalid;
+}
+
+const char* feedbackSettingsWarning(DiagnosticFeedbackState issue) noexcept {
+    switch (issue) {
+    case DiagnosticFeedbackState::settingsLocked: return "Force feedback settings are temporarily locked.";
+    case DiagnosticFeedbackState::settingsInvalid: return "Invalid force feedback settings.";
+    default: return "Force feedback settings are unreadable.";
+    }
+}
+
 UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& root, Clock::time_point now, bool force,
                                                   chrome_axis::DiagnosticSnapshot& diagnostic) {
     UsbConfigurationChanges changes;
     const bool requested = chrome_axis::usbEnabled(root);
-    auto [selected, disabledFeedback] = selection_.refresh(root, requested, directory_, feedbackSettings.enabled, now);
+    auto [selected, disabledFeedback, feedbackReadError] = selection_.refresh(root, requested, directory_,
+                                                                               feedbackSettings.enabled, now);
     if (!selected) {
         forceRefreshPending_ = forceRefreshPending_ || force;
-        if (disabledFeedback) {
-            feedbackSettings = *disabledFeedback;
+        if (disabledFeedback || feedbackReadError) {
+            feedbackSettings = disabledFeedback.value_or(chrome_axis::FeedbackSettings{});
+            if (feedbackReadError) {
+                feedbackIssue = feedbackSettingsIssue(*feedbackReadError);
+                reportChangedWarning(lastFeedbackWarning_, feedbackSettingsWarning(*feedbackIssue));
+            }
             watchedFeedback_ = {};
+            forceRefreshPending_ = true;
             changes.feedback = true;
         }
         return changes;
@@ -1252,17 +1273,20 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
         const auto feedbackPath = directory_ / chrome_axis::feedbackFilename;
         if (watchedFeedback_.changed(feedbackPath, now, force)) {
             std::string error;
-            const auto updated = chrome_axis::loadFeedbackSettings(feedbackPath, error);
-            watchedFeedback_.readFinished(updated.has_value(), now);
+            DWORD readError{};
+            const auto updated = chrome_axis::loadFeedbackSettings(feedbackPath, error, &readError);
+            watchedFeedback_.readFinished(updated.has_value(), now, readError);
             const auto next = updated.value_or(chrome_axis::FeedbackSettings{});
-            changes.feedback = feedbackSettings != next;
+            const auto issue = updated ? std::nullopt : std::optional{feedbackSettingsIssue(readError)};
+            changes.feedback = feedbackSettings != next || feedbackIssue != issue;
             feedbackSettings = next;
-            reportChangedWarning(lastFeedbackWarning_, error);
+            feedbackIssue = issue;
+            reportChangedWarning(lastFeedbackWarning_, feedbackIssue ? feedbackSettingsWarning(*feedbackIssue) : "");
         }
     } else {
         changes.calibration = profile.has_value();
         changes.accessories = accessoryProfile.has_value();
-        changes.feedback = feedbackSettings.enabled;
+        changes.feedback = feedbackSettings.enabled || feedbackIssue.has_value();
         reader.reset();
         accessories.reset();
         profile.reset();
@@ -1275,6 +1299,7 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
         clutchMode.reset();
         clearWatches();
         feedbackSettings = {};
+        feedbackIssue.reset();
         lastFeedbackWarning_.clear();
         profileError_ = requested ? "The selected USB profile is unavailable." : "";
         accessoryError_.clear();
@@ -1376,7 +1401,7 @@ DiagnosticFeedbackState diagnosticFeedbackState(chrome_axis::WheelForceState sta
     if (!motionAvailable)
         return DiagnosticFeedbackState::waitingForMotion;
     switch (state) {
-    case chrome_axis::WheelForceState::waiting: return DiagnosticFeedbackState::waiting;
+    case chrome_axis::WheelForceState::waiting: return DiagnosticFeedbackState::waitingForDriver;
     case chrome_axis::WheelForceState::active: return DiagnosticFeedbackState::active;
     case chrome_axis::WheelForceState::unavailable: return DiagnosticFeedbackState::unavailable;
     case chrome_axis::WheelForceState::neutral: return DiagnosticFeedbackState::neutral;
@@ -1651,6 +1676,17 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     snapshot.mode = DiagnosticMode::waitingForVehicleInput;
                 }
             }
+            if (!drivingSession) {
+                if (snapshot.feedback != DiagnosticFeedbackState::disabled && !usb.feedbackIssue)
+                    snapshot.feedback = DiagnosticFeedbackState::inactive;
+                snapshot.feedbackData = {};
+            } else if (snapshot.mode == DiagnosticMode::waitingForVehicleInput &&
+                       (snapshot.feedback == DiagnosticFeedbackState::active ||
+                        snapshot.feedback == DiagnosticFeedbackState::neutral ||
+                        snapshot.feedback == DiagnosticFeedbackState::waitingForDriver)) {
+                snapshot.feedback = DiagnosticFeedbackState::waitingForMotion;
+                snapshot.feedbackData = {};
+            }
             if (context.session != diagnosticSession) {
                 diagnosticSession = context.session;
                 diagnostic.lastAccessoryKey = 0;
@@ -1752,10 +1788,11 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     .steeringAvailable = steeringApplied,
                     .handbrakeAvailable = handbrake.has_value(),
                     .feedbackForceAvailable = feedbackApplied,
+                    .feedback = snapshot.feedback,
                 };
             } else if (capturing) {
                 captureSample = chrome_axis::DrivingCaptureSample{.sampledAt = tick, .mode = snapshot.mode,
-                                                                  .transmission = snapshot.transmission};
+                    .transmission = snapshot.transmission, .feedback = snapshot.feedback};
             }
             const bool hasPedalDelivery = hasDelivery && snapshot.mode == DiagnosticMode::usb &&
                 snapshot.profileLoaded && vehicleDelivery.pedalTick;
@@ -1828,9 +1865,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         if (!drivingSession) {
             snapshot.accessories = DiagnosticAccessoryState::inactive;
             snapshot.accessoryArmed = 0;
-            if (snapshot.feedback != DiagnosticFeedbackState::disabled)
-                snapshot.feedback = DiagnosticFeedbackState::inactive;
-            snapshot.feedbackData = {};
         }
         if (usb.enabled && snapshot.mode != DiagnosticMode::simulation) {
             const auto usbContext = std::pair{snapshot.mode, menuPaused};
@@ -2005,9 +2039,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             collectFeedback();
             wasDriving = false;
             lastAxisStatuses.reset();
-            if (start >= nextDiagnostic && diagnostics) {
-                diagnostic.feedback = usb.feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
-                                                                    : DiagnosticFeedbackState::disabled;
+            if (diagnostics && (start >= nextDiagnostic || changes.feedback)) {
+                diagnostic.feedback = !simulated && usb.feedbackIssue ? *usb.feedbackIssue
+                    : usb.feedbackSettings.enabled ? DiagnosticFeedbackState::inactive : DiagnosticFeedbackState::disabled;
                 publishDiagnostics(foreground, current);
             }
             std::this_thread::sleep_until(start + idlePollInterval);
@@ -2579,7 +2613,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const auto diagnosticAt = Clock::now();
         const bool reportPending = diagnostics && physical && diagnosticAt >= nextPendingReport &&
             (readiness.temporarilyUnavailable || axisPending());
-        if (diagnostics && (diagnosticAt >= nextDiagnostic || (sampleExpired && diagnosticAt >= nextTimeoutReport) ||
+        if (diagnostics && (changes.feedback || diagnosticAt >= nextDiagnostic || (sampleExpired && diagnosticAt >= nextTimeoutReport) ||
             reportPending)) {
             if (sampleExpired)
                 nextTimeoutReport = diagnosticAt + diagnosticIssueDuration;
@@ -2638,7 +2672,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     row.travelAvailable = observation.travel.has_value();
                 }
             }
-            diagnostic.feedback = simulated && usb.feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
+            diagnostic.feedback = !simulated && usb.feedbackIssue ? *usb.feedbackIssue
+                : simulated && usb.feedbackSettings.enabled ? DiagnosticFeedbackState::inactive
                 : !usb.feedbackSettings.enabled ? DiagnosticFeedbackState::disabled
                 : !wantFeedback ? DiagnosticFeedbackState::unavailable
                 : diagnosticFeedbackState(feedbackState, controls.steeringReady, forceDiagnostic.motionAvailable != 0);

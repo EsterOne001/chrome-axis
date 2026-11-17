@@ -10,6 +10,7 @@ namespace chrome_axis {
 struct UsbProfileRefresh {
     std::optional<ProfilePreset> selected;
     std::optional<FeedbackSettings> disabledFeedback;
+    std::optional<DWORD> feedbackReadError;
 };
 
 class UsbProfileSelection {
@@ -22,10 +23,13 @@ public:
     {
         UsbProfileRefresh result{.selected = refresh(root, requested, !directory.empty(), now)};
         if (!result.selected && feedbackEnabled) {
-            // The prior profile remains live. Apply a saved stop even while the selector is unreadable.
+            // The prior profile remains live. Check whether it can still safely generate force.
             std::string error;
-            auto settings = loadFeedbackSettings(directory / feedbackFilename, error);
-            if (settings && !settings->enabled)
+            DWORD readError{};
+            auto settings = loadFeedbackSettings(directory / feedbackFilename, error, &readError);
+            if (!settings)
+                result.feedbackReadError = readError;
+            else if (!settings->enabled)
                 result.disabledFeedback = settings;
         }
         return result;

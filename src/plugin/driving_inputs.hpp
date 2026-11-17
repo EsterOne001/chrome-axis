@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <span>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -62,7 +63,7 @@ private:
 
 // Each DirectInput instance and its COM objects stay on their device's thread.
 // The consumer copies reports and discrete transitions without calling the driver.
-template <class Driver = DirectInput>
+template <class Driver = DirectInput, class WorkerThread = std::jthread>
 class DrivingInputs final : public DeviceSampleSource {
 public:
     using Clock = DeviceReadClock;
@@ -93,9 +94,12 @@ public:
             worker->stop();
     }
 
-    // Returns false if a previous worker is still closing this device.
+    // Returns false while a previous worker is closing or a reader has yet to start.
     bool configure(HWND window, std::span<const DrivingInputDevice> devices) {
         reap();
+        std::erase_if(startRetries_, [&](const auto& retry) {
+            return std::ranges::find(devices, retry.first, &DrivingInputDevice::id) == devices.end();
+        });
         std::array<const DrivingInputDevice*, 2> paddles{};
         for (const auto& device : devices) {
             if (!device.discrete)
@@ -124,8 +128,21 @@ public:
                     configured = false;
                     continue;
                 }
-                auto worker = std::make_unique<Worker>(device.id, interval_, lifetime_, logger_);
-                found = active_.try_emplace(device.id, Entry{std::move(worker)}).first;
+                const auto retry = startRetries_.find(device.id);
+                if (retry != startRetries_.end() && Clock::now() < retry->second) {
+                    configured = false;
+                    continue;
+                }
+                auto worker = tryStartWorker(device.id);
+                if (!worker) {
+                    startRetries_.insert_or_assign(device.id, Clock::now() + workerRetryDelay);
+                    configured = false;
+                    continue;
+                }
+                const bool recovering = retry != startRetries_.end();
+                if (recovering)
+                    startRetries_.erase(retry);
+                found = active_.try_emplace(device.id, Entry{.worker = std::move(worker), .needsRearm = recovering}).first;
             }
             auto& entry = found->second;
             const bool trackPaddle = split && (&device == paddles[0] || &device == paddles[1]);
@@ -165,14 +182,11 @@ public:
         for (auto& [id, entry] : active_) {
             auto& report = entry.report;
             if (entry.worker->finished() && entry.config.active && now >= entry.restartAfter) {
-                entry.restartAfter = now + std::chrono::seconds(1);
-                try {
-                    auto replacement = std::make_unique<Worker>(id, interval_, lifetime_, logger_);
+                entry.restartAfter = now + workerRetryDelay;
+                if (auto replacement = tryStartWorker(id)) {
                     replacement->configure(entry.config);
                     entry.worker = std::move(replacement);
                     entry.needsRearm = true;
-                } catch (const std::system_error&) {
-                    // The other devices remain available if this thread cannot be created.
                 }
             }
             const auto start = replays_.size();
@@ -322,6 +336,7 @@ public:
     }
 
 private:
+    static constexpr auto workerRetryDelay = std::chrono::seconds(1);
     static constexpr std::size_t discreteQueueCapacity = 16;
     // Covers the 100 ms press lifetime plus its preceding 100 ms of paddle
     // evidence at the production 5 ms cadence, without spending FIFO slots.
@@ -641,8 +656,17 @@ private:
         std::uint64_t discreteRevision_{};
         bool discreteOverflow_{};
         std::atomic<bool> finished_{};
-        std::jthread thread_;
+        WorkerThread thread_;
     };
+
+    std::unique_ptr<Worker> tryStartWorker(const std::string& id) {
+        try {
+            return std::make_unique<Worker>(id, interval_, lifetime_, logger_);
+        } catch (const std::system_error&) {
+            // A thread startup failure on one device leaves the other readers available.
+            return {};
+        }
+    }
 
     struct Entry {
         std::unique_ptr<Worker> worker;
@@ -669,6 +693,7 @@ private:
     Clock::duration interval_, lifetime_;
     DirectInputDiagnostic logger_{};
     std::unordered_map<std::string, Entry> active_;
+    std::unordered_map<std::string, Clock::time_point> startRetries_;
     std::array<Entry*, 2> splitPaddles_{}; // Node addresses survive rehash; configure rebuilds the pair.
     std::vector<std::unique_ptr<Worker>> retired_;
     std::vector<Replay> replays_;

@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.79
+
+- Le diagnostic du retour de force distingue une désactivation, des réglages verrouillés, illisibles ou invalides, et l’attente de données du véhicule ou du pilote. La cause figure aussi dans le rapport et l’export CSV.
+- HUD Painter reprend une sauvegarde en attente lorsqu’une nouvelle session de jeu rend le rappel précédent caduc. Les rappels annulés ne déclenchent aucune nouvelle écriture.
+- Le plugin retente la création d’un lecteur DirectInput qui a échoué au démarrage et continue de lire les autres périphériques.
+- L’application revérifie le profil actif et ses commandes sous verrou avant d’autoriser l’USB en jeu.
+
+[ZIP Vortex](out/Chromaxis-0.4.79.zip)
+
 ## Chrome Axis 0.4.78
 
 - HUD Painter retente automatiquement la sauvegarde des couleurs après un problème temporaire d’accès au fichier. Les tentatives s’espacent jusqu’à huit secondes et continuent après la fermeture du menu pendant la partie.

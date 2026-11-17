@@ -1,8 +1,7 @@
 #include "chrome_axis/feedback.hpp"
 
+#include "settings_read.hpp"
 #include "settings_replace.hpp"
-
-#include <windows.h>
 
 #include <algorithm>
 #include <array>
@@ -10,6 +9,7 @@
 #include <cmath>
 #include <fstream>
 #include <numbers>
+#include <sstream>
 #include <string_view>
 
 namespace chrome_axis {
@@ -46,19 +46,21 @@ float centeredPulse(float phase) noexcept
 
 } // namespace
 
-std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path& path, std::string& error)
+std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path& path, std::string& error,
+                                                    DWORD* readError)
 {
     error.clear();
-    std::error_code status;
-    if (!std::filesystem::exists(path, status) && !status)
+    auto text = detail::readSettingsText(path, 1024);
+    if (readError)
+        *readError = text.error;
+    if (text.error == ERROR_FILE_NOT_FOUND || text.error == ERROR_PATH_NOT_FOUND)
         return FeedbackSettings{};
 
-    std::ifstream file(path, std::ios::ate);
-    if (!file || file.tellg() > 1024) {
-        error = "Force feedback settings are unreadable.";
+    if (text.error || text.invalidSize) {
+        error = text.error ? "Force feedback settings are unreadable." : "Invalid force feedback settings.";
         return std::nullopt;
     }
-    file.seekg(0);
+    std::istringstream file(std::move(text.contents));
     std::array<int, keys.size()> values{};
     values[centeringKey] = FeedbackSettings{}.centering;
     values[impactStrengthKey] = FeedbackSettings{}.impactStrength;
@@ -67,6 +69,8 @@ std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path
     std::array<bool, keys.size()> seen{};
     std::string line;
     while (std::getline(file, line)) {
+        if (line.ends_with('\r'))
+            line.pop_back();
         if (line.empty())
             continue;
         const auto separator = line.find('=');

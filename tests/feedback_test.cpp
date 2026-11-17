@@ -763,7 +763,9 @@ int main()
     const auto path = std::filesystem::current_path()
         / (L"feedback-test-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
     std::string error;
-    const auto defaults = loadFeedbackSettings(path, error);
+    DWORD readError{};
+    const auto defaults = loadFeedbackSettings(path, error, &readError);
+    const bool missing = readError == ERROR_FILE_NOT_FOUND && error.empty();
     {
         std::ofstream file(path, std::ios::trunc);
         file << "version=1\nenabled=1\nstrength=35\nimpacts=0\ninvert=1\n";
@@ -790,17 +792,25 @@ int main()
         loadFeedbackSettings(path, error) == settings;
     settings.impactStrength = 0;
     const bool muteRoundTrip = saveFeedbackSettings(path, settings, error) && loadFeedbackSettings(path, error) == settings;
+    const HANDLE lock = CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    bool sharingLocked = false;
+    if (lock != INVALID_HANDLE_VALUE) {
+        sharingLocked = !loadFeedbackSettings(path, error, &readError) && readError == ERROR_SHARING_VIOLATION;
+        CloseHandle(lock);
+    }
+    const bool unlocked = loadFeedbackSettings(path, error, &readError) == settings && !readError && error.empty();
     {
         std::ofstream file(path, std::ios::trunc);
         file << "version=1\nenabled=1\nstrength=100\nimpacts=1\ninvert=0\ncentering=49\n";
     }
-    const bool rejected = !loadFeedbackSettings(path, error) && !error.empty();
+    const bool rejected = !loadFeedbackSettings(path, error, &readError) && !readError && !error.empty();
     {
         std::ofstream file(path, std::ios::trunc);
         file << "version=1\nenabled=1\nstrength=100\nimpacts=1\ninvert=0\nimpact_strength=-1\n";
     }
     const bool rejectedNegativeImpact = !loadFeedbackSettings(path, error) && !error.empty();
     std::filesystem::remove(path);
-    return defaults == FeedbackSettings{} && legacy && previous && roundTrip && muteRoundTrip && rejectedSave &&
-        rejectedCentering && rejectedImpact && rejected && rejectedNegativeImpact ? 0 : 9;
+    return defaults == FeedbackSettings{} && missing && legacy && previous && roundTrip && muteRoundTrip &&
+        sharingLocked && unlocked && rejectedSave && rejectedCentering && rejectedImpact && rejected &&
+        rejectedNegativeImpact ? 0 : 9;
 }

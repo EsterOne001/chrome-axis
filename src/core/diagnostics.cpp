@@ -34,7 +34,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 20;
+constexpr LONG64 protocolVersion = 21;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate transmission changes.
@@ -47,7 +47,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v20.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v21.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -59,6 +59,10 @@ std::string_view csvToken(T value, const std::array<std::string_view, Size>& tok
 constexpr std::array<std::string_view, 7> modeTokens{
     "waiting_for_driver", "game_not_foreground", "waiting_for_vehicle_input", "usb_disabled", "profile_unavailable",
     "usb", "simulation"
+};
+constexpr std::array<std::string_view, 11> feedbackTokens{
+    "disabled", "waiting", "active", "unavailable", "inactive", "neutral", "waiting_for_motion",
+    "waiting_for_driver", "settings_locked", "settings_unavailable", "settings_invalid"
 };
 constexpr std::array<std::string_view, 15> shiftTokens{
     "automatic", "ready", "unavailable", "outside_range", "stop_to_change_direction", "already_engaged",
@@ -96,6 +100,7 @@ constexpr std::array<std::string_view, 12> shifterRoleTokens{
     "reverse", "upshift", "downshift"
 };
 static_assert(modeTokens.size() == static_cast<std::size_t>(DiagnosticMode::simulation) + 1);
+static_assert(feedbackTokens.size() == static_cast<std::size_t>(DiagnosticFeedbackState::settingsInvalid) + 1);
 static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::selectorAmbiguous) + 1);
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::temporarilyUnavailable) + 1);
 static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::operationRunning) + 1);
@@ -111,7 +116,7 @@ static_assert(shifterRoleTokens.size() == static_cast<std::size_t>(ShifterRole::
 constexpr std::size_t drivingCsvColumns = 27;
 constexpr std::size_t clutchCsvColumns = 4;
 constexpr std::size_t transmissionCsvColumns = 7;
-constexpr std::size_t captureCsvColumns = 47 + transmissionCsvColumns + clutchCsvColumns;
+constexpr std::size_t captureCsvColumns = 48 + transmissionCsvColumns + clutchCsvColumns;
 constexpr std::size_t drivingTransmissionColumn = 13; // Index of transmission_mode in a CSV row.
 constexpr std::size_t drivingTransmissionColumns = 6;
 constexpr std::size_t usbCsvColumns = 9;
@@ -358,7 +363,7 @@ void writeDiagnosticCaptureHeader(std::ostream& output)
               "transmission_shortcut_key,transmission_shortcut_available,transmission_shortcut_pressed_elapsed_ms,"
               "transmission_shortcut_press_count,transmission_shortcut_source,"
               "transmission_requested_mode,gearbox_sample_age_ms,"
-              "clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker,usb_call_lane\r\n";
+              "clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker,usb_call_lane,feedback_state\r\n";
 }
 
 void writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
@@ -407,7 +412,7 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
             output.put(',');
             if (running)
                 output << csvToken(event.lane, usbLaneTokens);
-            output << "\r\n";
+            output << ",\r\n";
             continue;
         }
         const auto& sample = record.driving;
@@ -434,7 +439,7 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
         emptyCsvColumns(output, 2); // No USB blockers on a driving or context sample.
         writeCaptureTransmission(output, sample, startedAt);
         writeCaptureClutch(output, sample.clutch);
-        output << ",\r\n";
+        output << ",," << csvToken(sample.feedback, feedbackTokens) << "\r\n";
     }
 }
 
@@ -598,6 +603,7 @@ void DiagnosticPublisher::recordDrivingSample(std::uint64_t captureId, const Dri
         return;
     if (sample.mode == lastCaptureSample_.mode && lastCaptureSample_.sampledAt &&
         (!isDrivingCaptureMode(sample.mode) || sample.sampledAt - lastCaptureSample_.sampledAt < drivingCaptureInterval) &&
+        sample.feedback == lastCaptureSample_.feedback &&
         sample.clutch.signal == lastCaptureSample_.clutch.signal &&
         sample.clutch.rest == lastCaptureSample_.clutch.rest &&
         sample.clutch.blocker == lastCaptureSample_.clutch.blocker &&

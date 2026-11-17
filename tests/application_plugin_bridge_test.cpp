@@ -336,7 +336,7 @@ bool testFeedbackStopWhileSelectionLocked(const fs::path& root)
     UsbProfileSelection selection;
     const auto now = UsbProfileSelection::Clock::time_point{};
     const auto initial = selection.refresh(root, usbEnabled(root), {}, false, now);
-    if (!initial.selected || initial.selected->directory != directory || initial.disabledFeedback)
+    if (!initial.selected || initial.selected->directory != directory || initial.disabledFeedback || initial.feedbackReadError)
         return false;
 
     const FeedbackSettings disabled{.strength = 18};
@@ -353,11 +353,23 @@ bool testFeedbackStopWhileSelectionLocked(const fs::path& root)
     // Even a subsequent settings write may only take effect once the active selection is verified.
     const bool savedAgain = saveFeedbackSettings(feedbackFile, enabled, error);
     const auto stillDeferred = selection.refresh(root, usbEnabled(root), directory, false, now + 500ms);
+    const HANDLE feedbackReader = CreateFileW(feedbackFile.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (feedbackReader == INVALID_HANDLE_VALUE) {
+        CloseHandle(reader);
+        return false;
+    }
+    const auto lockedFeedback = selection.refresh(root, usbEnabled(root), directory, true, now + 625ms);
+    CloseHandle(feedbackReader);
+    const auto unlockedFeedback = selection.refresh(root, usbEnabled(root), directory, false, now + 700ms);
     CloseHandle(reader);
     const auto resumed = selection.refresh(root, usbEnabled(root), directory, false, now + 750ms);
-    return !stopped.selected && stopped.disabledFeedback == disabled && savedAgain &&
-        !stillDeferred.selected && !stillDeferred.disabledFeedback &&
+    return !stopped.selected && stopped.disabledFeedback == disabled && !stopped.feedbackReadError && savedAgain &&
+        !stillDeferred.selected && !stillDeferred.disabledFeedback && !stillDeferred.feedbackReadError &&
+        !lockedFeedback.selected && !lockedFeedback.disabledFeedback &&
+        lockedFeedback.feedbackReadError == static_cast<DWORD>(ERROR_SHARING_VIOLATION) &&
+        !unlockedFeedback.selected && !unlockedFeedback.disabledFeedback && !unlockedFeedback.feedbackReadError &&
         resumed.selected && resumed.selected->directory == directory && !resumed.disabledFeedback &&
+        !resumed.feedbackReadError &&
         loadFeedbackSettings(feedbackFile, error) == enabled;
 }
 

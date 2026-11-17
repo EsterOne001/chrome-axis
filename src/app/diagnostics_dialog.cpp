@@ -179,6 +179,10 @@ const wchar_t* feedbackText(DiagnosticFeedbackState state)
     case DiagnosticFeedbackState::inactive: return tr(Text::DlgDiagnosticsInactive);
     case DiagnosticFeedbackState::neutral: return tr(Text::DlgDiagnosticsFeedbackNeutral);
     case DiagnosticFeedbackState::waitingForMotion: return tr(Text::DlgDiagnosticsFeedbackWaitingMotion);
+    case DiagnosticFeedbackState::waitingForDriver: return tr(Text::DlgDiagnosticsFeedbackWaitingDriver);
+    case DiagnosticFeedbackState::settingsLocked: return tr(Text::DlgDiagnosticsFeedbackSettingsLocked);
+    case DiagnosticFeedbackState::settingsUnavailable: return tr(Text::DlgDiagnosticsFeedbackSettingsUnavailable);
+    case DiagnosticFeedbackState::settingsInvalid: return tr(Text::DlgDiagnosticsFeedbackSettingsInvalid);
     }
     return unavailableValue;
 }
@@ -387,6 +391,20 @@ AccessoryView accessoryView(const DiagnosticRead& read)
     if (read.lastDriveAt && (!connected || mode == DiagnosticMode::gameNotForeground || mode == DiagnosticMode::waitingForDriver))
         return {read.lastDrive, read.lastDriveAt, true};
     return {read.snapshot, connected ? read.sampledAt : 0, false};
+}
+
+const wchar_t* currentFeedbackChange(const DiagnosticRead& read, const AccessoryView& view)
+{
+    const auto settingsIssue = [](DiagnosticFeedbackState state) {
+        return state == DiagnosticFeedbackState::settingsLocked || state == DiagnosticFeedbackState::settingsUnavailable ||
+            state == DiagnosticFeedbackState::settingsInvalid;
+    };
+    const auto current = read.snapshot.feedback;
+    const auto displayed = view.snapshot.feedback;
+    if (view.historical && read.connection == DiagnosticConnection::connected && current != displayed &&
+        (settingsIssue(current) || settingsIssue(displayed)))
+        return feedbackText(current);
+    return nullptr;
 }
 
 std::wstring accessoryViewContext(const AccessoryView& view, std::uint64_t now)
@@ -1100,15 +1118,17 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
              localProfile.name.empty() ? tr(Text::mainDefaultProfile) : reportLabel(localProfile.name));
     line(Text::DlgDiagnosticsReportModels, state.models);
 
+    const auto view = accessoryView(read);
     if (read.sampledAt) {
         const auto age = eventAge(read.sampledAt, now);
         line(Text::DlgDiagnosticsMode, std::wstring(modeText(read.snapshot.mode)) + L" · " + age);
         line(Text::DlgDiagnosticsReportPluginProfile, reportLabel(profileText(read.snapshot)));
         if (const auto shortcut = transmissionShortcut(read.snapshot.transmission, now); !shortcut.empty())
             line(Text::DlgDiagnosticsTransmissionShortcut, shortcut);
+        if (const auto* currentFeedback = currentFeedbackChange(read, view))
+            line(Text::DlgDiagnosticsFeedbackCurrent, currentFeedback);
     }
     report += L"\r\n";
-    const auto view = accessoryView(read);
     if (view.sampledAt)
         line(view.historical ? Text::DlgDiagnosticsReportLastDrive : Text::DlgDiagnosticsReportCurrentSample,
              std::wstring(modeText(view.snapshot.mode)) + L" · " + eventAge(view.sampledAt, now));
@@ -1506,7 +1526,10 @@ void refresh(HWND window, DialogState& state)
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_TRAVEL, showClutch && snapshot.mode == DiagnosticMode::usb
         ? std::wstring(tr(Text::DlgDiagnosticsClutchRawTravel)) + L" " + clutchTravelSummary(snapshot.clutch)
         : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
+    std::wstring feedback = showControls ? feedbackStatus(snapshot) : unavailableValue;
+    if (const auto* currentFeedback = currentFeedbackChange(read, view))
+        feedback += L" · " + std::wstring(tr(Text::DlgDiagnosticsCommandCurrent)) + L" — " + currentFeedback;
+    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, feedback);
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");
     refreshPerformance(window, state, read);

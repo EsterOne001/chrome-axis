@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.78** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.79** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -184,7 +184,7 @@ Open **Diagnostics…** in **USB Hardware** or the **Help** menu. This panel sho
 
 - **Steering, throttle and brake.** The panel distinguishes an unavailable device, a missing axis and a control waiting to return to neutral. An armed control is ready. The applied value appears when Chrome Axis has actually changed the control in the game.
 - **Accessories.** See how many bindings are armed and the last key Windows accepted. **Details…** and the copied report show each binding’s input, mode, status and last accepted key-down. Your transmission mod determines which gear the game selects.
-- **Force feedback.** See whether an effect is active, waiting or unavailable, based on the driver's response.
+- **Force feedback.** The panel shows whether an effect is active, waiting for vehicle or driver data, disabled, or blocked by a settings read error. The copied report and CSV recording also show the reason.
 
 The panel indicates when Cyberpunk is out of focus or its plugin data is stale. The last applied value helps diagnose an input after Alt-Tab. You can keep the app open during this USB test.
 

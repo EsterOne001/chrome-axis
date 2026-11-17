@@ -291,6 +291,13 @@ bool testStaleWrites(const std::filesystem::path& fixture)
     if (!check(createPreset(root, L"Pilote", error)
                   && savePresetSettings(root, preset, accessoriesCheck, shouldNotSave) == PresetSaveResult::changed,
                "A save for a preset that is no longer active must be rejected")
+        || !check(savePresetSettings(root, preset, {}, [&] { return setUsbEnabled(root, true, error); }) ==
+                   PresetSaveResult::changed && !usbEnabled(root),
+                  "A changed active profile must prevent the previous window from enabling USB")
+        || !check(savePresetSettings(root, activePreset(root), {}, [&] { return setUsbEnabled(root, true, error); }) ==
+                   PresetSaveResult::saved && usbEnabled(root), "The active profile can enable USB")
+        || !check(saveInstallationSettings(root, [&] { return setUsbEnabled(root, false, error); }) && !usbEnabled(root),
+                  "Disabling USB must not require the previous profile to remain active")
         || !check(selectPreset(root, L"", error)
                   && savePresetSettings(root, preset, accessoriesCheck, [&] {
                       return savePresetSettings(root, preset, accessoriesCheck, shouldNotSave) == PresetSaveResult::ioError

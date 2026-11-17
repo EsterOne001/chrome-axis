@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.78** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.79** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -194,7 +194,7 @@ Ouvrez **Diagnostic…** dans **Matériel USB** ou dans le menu **Aide**. Le pan
 
 - **Direction, accélérateur et frein.** Le panneau distingue un périphérique introuvable, un axe absent et une commande qui attend de revenir au neutre. Une commande armée est prête. La valeur appliquée apparaît quand Chrome Axis a effectivement modifié cette commande dans le jeu.
 - **Accessoires.** Le panneau montre combien d’affectations sont armées et la dernière touche que Windows a acceptée. **Détails…** et le rapport copié indiquent l’entrée, le mode, l’état et le dernier envoi accepté pour chaque commande. Le rapport engagé dépend du mod de transmission.
-- **Retour de force.** Le panneau indique si un effet est actif, en attente ou indisponible selon le résultat des appels au pilote.
+- **Retour de force.** Le panneau distingue un effet actif, l’attente de données du véhicule ou du pilote, une désactivation et un problème de lecture des réglages. La cause figure aussi dans le rapport copié et dans l’enregistrement CSV.
 
 Le panneau indique quand Cyberpunk n’est plus au premier plan ou quand les données du plugin ne sont plus récentes. La dernière valeur appliquée aide à diagnostiquer un essai après Alt-Tab. Pour l’USB, l’application peut rester ouverte pendant cet essai.
 

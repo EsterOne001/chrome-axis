@@ -1,5 +1,7 @@
 #pragma once
 
+#include <windows.h>
+
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -26,7 +28,8 @@ struct FeedbackSettings {
     bool operator==(const FeedbackSettings&) const = default;
 };
 
-std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path& file, std::string& error);
+std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path& file, std::string& error,
+                                                    DWORD* readError = nullptr);
 bool saveFeedbackSettings(const std::filesystem::path& file, const FeedbackSettings& settings, std::string& error);
 
 struct FeedbackSample {

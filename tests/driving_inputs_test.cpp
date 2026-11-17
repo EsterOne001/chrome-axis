@@ -20,6 +20,7 @@ struct TestDriver {
         std::atomic<unsigned int> slowAttempts{};
         std::atomic<unsigned int> slowFinishes{};
         std::atomic<unsigned int> opens{};
+        std::atomic<long> wheelPosition{};
         std::atomic<bool> pressed{};
         std::atomic<bool> pedalConnected{true};
         std::atomic<bool> blockWheel{};
@@ -68,6 +69,7 @@ struct TestDriver {
                 activeCall->end();
             }
             sample.axesPresent[0] = wanted.axes[0];
+            sample.axes[0] = state->wheelPosition;
             if (wanted.axes[1] && state->slowAttempts < 2) {
                 ++state->slowAttempts;
                 std::this_thread::sleep_for(120ms);
@@ -98,6 +100,69 @@ bool waitUntil(Action&& action)
         std::this_thread::sleep_for(1ms);
     } while (Clock::now() < until);
     return false;
+}
+
+class FailFirstThread {
+public:
+    static inline unsigned int starts{};
+
+    explicit FailFirstThread(auto&& task) : thread_(launch(std::forward<decltype(task)>(task))) {}
+
+    void request_stop() noexcept { thread_.request_stop(); }
+
+private:
+    static std::jthread launch(auto&& task)
+    {
+        if (++starts == 1)
+            throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+        return std::jthread(std::forward<decltype(task)>(task));
+    }
+
+    std::jthread thread_;
+};
+
+int checkInitialThreadFailure()
+{
+    TestDriver::State fake;
+    fake.wheelPosition = 750;
+    TestDriver::state = &fake;
+    FailFirstThread::starts = 0;
+    DrivingInputs<TestDriver, FailFirstThread> input(5ms, 100ms);
+    std::array devices{DrivingInputDevice{wheel, {}}, DrivingInputDevice{pedals, {}}};
+    for (auto& device : devices)
+        device.objects.axes.set(0);
+    const auto window = GetDesktopWindow();
+    const auto configure = [&] { return input.configure(window, devices); };
+    if (configure() || FailFirstThread::starts != 2 || configure() || FailFirstThread::starts != 2)
+        return 61;
+
+    Profile profile;
+    profile.steering = {wheel, 0, 0, -1000, 1000, 0.02f};
+    profile.brake = {pedals, 0, 0, 0, 1000, 0.02f};
+    ControlReader controls(profile);
+    const auto poll = [&] {
+        input.beginPoll(Clock::now());
+        return controls.poll(input);
+    };
+    if (!waitUntil([&] { return poll().brakeReady; }) || controls.axisStatuses()[0] != AxisStatus::deviceUnavailable)
+        return 62;
+    fake.pressed = true;
+    if (!waitUntil([&] { return poll().values.brake == 1.0f; }))
+        return 63;
+
+    bool brakeInterrupted{};
+    if (!waitUntil([&] {
+            const bool configured = configure();
+            brakeInterrupted |= poll().values.brake != 1.0f;
+            return configured && controls.axisStatuses()[0] == AxisStatus::waitingForNeutral;
+        }) || brakeInterrupted || FailFirstThread::starts != 3)
+        return 64;
+
+    fake.wheelPosition = 0;
+    return waitUntil([&] {
+        const auto current = poll();
+        return current.steeringReady && current.values.brake == 1.0f;
+    }) ? 0 : 65;
 }
 
 int checkIsolatedDiscovery(bool assigned)
@@ -703,7 +768,8 @@ int checkPaddleEvidenceAtPress()
 
 int main()
 {
-    for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkBlockedWorkerTelemetry(),
+    for (const auto result : {checkInitialThreadFailure(), checkIsolatedDiscovery(false), checkIsolatedDiscovery(true),
+                              checkBlockedWorkerTelemetry(),
                               checkCoalescedArming(),
                               checkBufferedTransitions(false), checkBufferedTransitions(true),
                               checkPaddleBatchOrdering(), checkPaddleEvidenceAtPress(),

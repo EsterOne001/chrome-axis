@@ -89,7 +89,8 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   private let palette: ref<ChromeAxisHudPalette>;
   private let activePresetKey: String;
   private let edits: array<ref<ChromeAxisHudPaletteEdit>>;
-  private let flushScheduled: Bool;
+  private let flushCallback: ref<ChromeAxisHudColorFlush>;
+  private let flushDelaySystem: wref<DelaySystem>;
   private let flushDelayId: DelayID;
   private let retryDelay: Float;
   private let pendingPresetKey: String;
@@ -112,6 +113,23 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
       .RegisterCallback(n"InkWidget/Spawn", this, n"OnHudPainterWidgetSpawn")
       .AddTarget(inkWidgetTarget.Library(r"base\\gameplay\\gui\\hud_painter.inkwidget", n"ColorPicker"))
       .AddTarget(inkWidgetTarget.Controller(n"HudPainter.CustomColorPickerController"));
+  }
+
+  private cb func OnInitialize() {
+    GameInstance.GetCallbackSystem().RegisterCallback(n"Session/Ready", this, n"OnSessionReady");
+  }
+
+  private cb func OnUninitialize() {
+    GameInstance.GetCallbackSystem().UnregisterCallback(n"Session/Ready", this);
+    this.CancelScheduledFlush();
+  }
+
+  private cb func OnSessionReady(event: ref<GameSessionEvent>) {
+    // The service outlives the session that may have discarded this delay.
+    if IsDefined(this.flushCallback) {
+      this.CancelScheduledFlush();
+      this.FlushColors(true);
+    }
   }
 
   public func GetPalette() -> ref<ChromeAxisHudPalette> {
@@ -158,7 +176,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   }
 
   private func ScheduleFlush(seconds: Float) -> Bool {
-    if this.flushScheduled {
+    if IsDefined(this.flushCallback) {
       return false;
     }
     let delay = GameInstance.GetDelaySystem(GetGameInstance());
@@ -167,24 +185,33 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     }
     let callback = new ChromeAxisHudColorFlush();
     callback.menu = this;
+    this.flushDelaySystem = delay;
     this.flushDelayId = delay.DelayCallback(callback, seconds, false);
-    this.flushScheduled = true;
+    this.flushCallback = callback;
     return true;
+  }
+
+  private func CancelScheduledFlush() -> Void {
+    if IsDefined(this.flushCallback) {
+      this.flushCallback = null;
+      if IsDefined(this.flushDelaySystem) {
+        this.flushDelaySystem.CancelDelay(this.flushDelayId);
+      }
+      this.flushDelaySystem = null;
+    }
   }
 
   private func EndFlush() -> Void {
     this.retryDelay = 0.0;
-    if this.flushScheduled {
-      let delay = GameInstance.GetDelaySystem(GetGameInstance());
-      if IsDefined(delay) {
-        delay.CancelDelay(this.flushDelayId);
-      }
-      this.flushScheduled = false;
-    }
+    this.CancelScheduledFlush();
   }
 
-  public func FlushAfterInput() -> Void {
-    this.flushScheduled = false;
+  public func FlushAfterInput(callback: wref<ChromeAxisHudColorFlush>) -> Void {
+    if NotEquals(this.flushCallback, callback) {
+      return;
+    }
+    this.flushCallback = null;
+    this.flushDelaySystem = null;
     this.FlushColors(true);
   }
 
@@ -358,7 +385,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
       if this.ScheduleFlush(seconds) {
         this.retryDelay = seconds;
       }
-      if this.flushScheduled {
+      if IsDefined(this.flushCallback) {
         status = ChromeAxisHudSaveStatus.RetryingFile;
       }
     } else {
@@ -613,7 +640,7 @@ class ChromeAxisHudColorFlush extends DelayCallback {
 
   public func Call() -> Void {
     if IsDefined(this.menu) {
-      this.menu.FlushAfterInput();
+      this.menu.FlushAfterInput(this);
     }
   }
 }
