@@ -6,6 +6,16 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.75 · 17 novembre 2026
+
+Comparée à la **0.4.74**.
+
+- **Diagnostic DirectInput.** Le rapport affiche l’appel en cours et sa durée pour chaque périphérique, en distinguant le lecteur principal de la sonde. L’état courant reste disponible quand l’historique se remplit et figure dans un CSV démarré pendant le blocage. Le code d’erreur d’une lecture est enregistré avant le nettoyage du périphérique.
+- **Sonde USB et profils verrouillés.** Si la sonde se bloque plus d’une seconde au démarrage et qu’aucune commande n’est encore confirmée, la vérification peut reprendre sur la connexion déjà acquise après le premier relevé brut. Le plugin garde les réglages validés du même profil jusqu’à une seconde si `chrome_axis.ini` ou `accessories.ini` est verrouillé, et les relit toutes les 250 ms. La désactivation USB reste prise en compte au prochain contrôle.
+- **Validation.** Release x64, 18 suites CTest réussies, essais simulés de blocage et de relance, essais avec des verrous Windows, REDscript avec et sans HUD Painter et CRC des dix fichiers. Le banc de démarrage et de relance retrouve les trois axes et les 14 commandes sur 14. Les essais en jeu sur T300RS restent à faire pour cette version. L’audit a aussi reproduit des risques lors de la sauvegarde dans l’application si les fichiers de profil restent verrouillés, notamment l’écrasement d’une calibration existante.
+
+SHA-256 `70b440d2f53e7a3522ea044ccd3cf86a8a719c799960759d4802d3b7734c9a27`. [ZIP Vortex](out/Chromaxis-0.4.75.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/e54fc7519202a04206b6965100f70b3132e8cf09)
+
 ## Chrome Axis 0.4.74 · 17 novembre 2026
 
 Comparée à la **0.4.73**.
