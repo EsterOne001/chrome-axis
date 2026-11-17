@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.78
+
+- HUD Painter retente automatiquement la sauvegarde des couleurs après un problème temporaire d’accès au fichier. Les tentatives s’espacent jusqu’à huit secondes et continuent après la fermeture du menu pendant la partie.
+
+[ZIP Vortex](out/Chromaxis-0.4.78.zip)
+
 ## Chrome Axis 0.4.77
 
 - Le lecteur USB de l’application se relance après un échec de démarrage ou de lecture. Chaque appareil conserve son lecteur propre jusqu’à la fin d’un appel en cours.
