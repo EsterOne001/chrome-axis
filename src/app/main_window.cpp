@@ -1913,26 +1913,59 @@ void App::transferProfiles(bool restoring)
         return;
 
     using Error = chrome_axis::ProfileBackupError;
+    using Step = chrome_axis::ProfileBackupStep;
     Error error{};
+    chrome_axis::ProfileBackupFailure failure;
     const auto fallback = chrome_axis::languageCode(chrome_axis::profileLanguageChoice(directory_));
     std::error_code sameDirectoryError;
     const bool choseActiveFolder = !restoring && std::filesystem::equivalent(chosen, directory_, sameDirectoryError);
     const auto path = restoring ? chosen : (choseActiveFolder ? backups : chosen) / backupFolderName();
     std::filesystem::path recovery;
-    const bool complete = restoring ? chrome_axis::restoreProfileBackup(directory_, path, error, fallback, &recovery)
-                                    : chrome_axis::createProfileBackup(directory_, path, error, fallback);
+    const bool complete = restoring
+        ? chrome_axis::restoreProfileBackup(directory_, path, error, fallback, &recovery, &failure)
+        : chrome_axis::createProfileBackup(directory_, path, error, fallback, &failure);
     if (!complete) {
         auto reason = Text::mainProfileBackupIO;
         switch (error) {
         case Error::invalidLocation: reason = Text::mainProfileBackupInvalidLocation; break;
-        case Error::invalidBackup: reason = Text::mainProfileBackupInvalid; break;
+        case Error::invalidBackup:
+            reason = restoring && failure.step == Step::prepareRecovery ? Text::mainProfileRestorePrepareRecovery
+                : restoring ? Text::mainProfileBackupInvalid : Text::mainProfileBackupInvalidSettings;
+            break;
         case Error::destinationExists: reason = Text::mainProfileBackupExists; break;
         case Error::recoveryRequired: reason = Text::mainProfileBackupRecoveryRequired; break;
+        case Error::ioError:
+            switch (failure.step) {
+            case Step::lock: reason = Text::mainProfileBackupLock; break;
+            case Step::prepareBackup: reason = Text::mainProfileBackupPrepare; break;
+            case Step::copyProfile: reason = Text::mainProfileBackupCopy; break;
+            case Step::finishBackup: reason = Text::mainProfileBackupFinish; break;
+            case Step::prepareRestore: reason = Text::mainProfileRestorePrepare; break;
+            case Step::copyBackup: reason = Text::mainProfileRestoreCopy; break;
+            case Step::prepareRecovery: reason = Text::mainProfileRestorePrepareRecovery; break;
+            case Step::applyRestore: reason = Text::mainProfileRestoreApply; break;
+            case Step::none: break;
+            }
+            break;
         default: break;
         }
         auto message = std::wstring(tr(reason));
         if (error == Error::recoveryRequired)
             message += L"\n\n" + recovery.wstring();
+        const auto code = failure.windowsError;
+        if (code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION ||
+            (failure.step == Step::lock && (code == ERROR_FILE_EXISTS || code == ERROR_ALREADY_EXISTS))) {
+            message += L"\n\n";
+            message += tr(Text::mainProfileBackupInUse);
+        } else if (code == ERROR_ACCESS_DENIED) {
+            message += L"\n\n";
+            message += tr(Text::mainProfileBackupAccessDenied);
+        }
+        if (code != ERROR_SUCCESS) {
+            message += L"\n\n";
+            message += tr(Text::mainProfileBackupWindowsError);
+            message += L" " + std::to_wstring(code);
+        }
         MessageBoxW(window_, message.c_str(), title, MB_OK | MB_ICONERROR);
         return;
     }

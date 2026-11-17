@@ -87,18 +87,30 @@ std::optional<std::string> encodeName(std::wstring_view name)
     return result;
 }
 
-std::optional<std::string> readSmallTextFile(const std::filesystem::path& path)
+std::optional<std::string> readSmallTextFile(const std::filesystem::path& path, bool* locked = nullptr)
 {
+    const auto readError = [locked](DWORD error) -> std::optional<std::string> {
+        if (locked)
+            *locked = error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
+        return std::nullopt;
+    };
     const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
                                       OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
-        return missing(GetLastError()) ? std::optional(std::string{}) : std::nullopt;
+    if (handle == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        return missing(error) ? std::optional(std::string{}) : readError(error);
+    }
     const std::unique_ptr<void, decltype(&CloseHandle)> file(handle, &CloseHandle);
     BY_HANDLE_FILE_INFORMATION information{};
     std::array<char, maxNameLength * 4 + 8> bytes{};
     DWORD count{};
-    if (!GetFileInformationByHandle(handle, &information) || !plainFile(information.dwFileAttributes)
-        || !ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr) || count >= bytes.size())
+    if (!GetFileInformationByHandle(handle, &information))
+        return readError(GetLastError());
+    if (!plainFile(information.dwFileAttributes))
+        return std::nullopt;
+    if (!ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr))
+        return readError(GetLastError());
+    if (count >= bytes.size())
         return std::nullopt;
 
     std::string_view text(bytes.data(), count);
@@ -111,9 +123,9 @@ std::optional<std::string> readSmallTextFile(const std::filesystem::path& path)
     return std::string(text);
 }
 
-std::optional<std::wstring> readSelection(const std::filesystem::path& path)
+std::optional<std::wstring> readSelection(const std::filesystem::path& path, bool* locked = nullptr)
 {
-    const auto contents = readSmallTextFile(path);
+    const auto contents = readSmallTextFile(path, locked);
     if (!contents)
         return std::nullopt;
     if (contents->empty())
@@ -145,70 +157,104 @@ std::filesystem::path temporaryPath(const std::filesystem::path& parent)
     return parent / (L".chrome_axis_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(id));
 }
 
-bool writeTextFile(const std::filesystem::path& target, std::string_view contents)
+bool reportWindowsFailure(std::uint32_t* output, DWORD code) noexcept
+{
+    if (output)
+        *output = code;
+    return false;
+}
+
+bool writeTextFile(const std::filesystem::path& target, std::string_view contents,
+                   std::uint32_t* windowsError = nullptr)
 {
     const DWORD attributes = GetFileAttributesW(target.c_str());
-    if (!plainFile(attributes) && (attributes != INVALID_FILE_ATTRIBUTES || !missing(GetLastError())))
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const auto code = GetLastError();
+        if (!missing(code))
+            return reportWindowsFailure(windowsError, code);
+    } else if (!plainFile(attributes)) {
         return false;
+    }
 
     for (int attempt = 0; attempt < 8; ++attempt) {
         const auto temporary = temporaryPath(target.parent_path());
         const HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                         FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) {
-            if (GetLastError() == ERROR_FILE_EXISTS)
+            const auto code = GetLastError();
+            if (code == ERROR_FILE_EXISTS)
                 continue;
-            return false;
+            return reportWindowsFailure(windowsError, code);
         }
 
         auto text = std::string(contents);
         text += '\n';
         const auto length = static_cast<DWORD>(text.size());
         DWORD written{};
-        const bool complete = WriteFile(file, text.data(), length, &written, nullptr) && written == length
-            && FlushFileBuffers(file);
+        const bool writeSucceeded = WriteFile(file, text.data(), length, &written, nullptr);
+        const bool writtenAll = writeSucceeded && written == length;
+        auto code = writeSucceeded ? ERROR_SUCCESS : GetLastError();
+        const bool complete = writtenAll && FlushFileBuffers(file);
+        if (writtenAll && !complete)
+            code = GetLastError();
         CloseHandle(file);
-        if (complete && MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            return true;
+        if (complete) {
+            if (MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                return true;
+            code = GetLastError();
+        }
         DeleteFileW(temporary.c_str());
-        return false;
+        return reportWindowsFailure(windowsError, code);
     }
-    return false;
+    return reportWindowsFailure(windowsError, ERROR_FILE_EXISTS);
 }
 
-std::filesystem::path createTemporaryDirectory(const std::filesystem::path& parent)
+std::filesystem::path createTemporaryDirectory(const std::filesystem::path& parent, std::uint32_t* windowsError = nullptr)
 {
+    DWORD code{};
     for (int attempt = 0; attempt < 8; ++attempt) {
         auto path = temporaryPath(parent);
         if (CreateDirectoryW(path.c_str(), nullptr))
             return path;
-        if (GetLastError() != ERROR_ALREADY_EXISTS)
+        code = GetLastError();
+        if (code != ERROR_ALREADY_EXISTS)
             break;
     }
+    if (windowsError)
+        *windowsError = code;
     return {};
 }
 
-bool copySavedFile(const std::filesystem::path& source, const std::filesystem::path& destination)
+bool copySavedFile(const std::filesystem::path& source, const std::filesystem::path& destination,
+                   std::uint32_t* windowsError = nullptr)
 {
     const DWORD attributes = GetFileAttributesW(source.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES && missing(GetLastError()))
-        return true;
-    if (!plainFile(attributes) || !CopyFileExW(source.c_str(), destination.c_str(),
-                                              nullptr, nullptr, nullptr, COPY_FILE_FAIL_IF_EXISTS | COPY_FILE_COPY_SYMLINK))
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const auto code = GetLastError();
+        return missing(code) || reportWindowsFailure(windowsError, code);
+    }
+    if (!plainFile(attributes))
         return false;
+    if (!CopyFileExW(source.c_str(), destination.c_str(), nullptr, nullptr, nullptr,
+                     COPY_FILE_FAIL_IF_EXISTS | COPY_FILE_COPY_SYMLINK))
+        return reportWindowsFailure(windowsError, GetLastError());
     const DWORD copiedAttributes = GetFileAttributesW(destination.c_str());
+    if (copiedAttributes == INVALID_FILE_ATTRIBUTES)
+        return reportWindowsFailure(windowsError, GetLastError());
     if (!plainFile(copiedAttributes))
         return false;
     // An exported or named copy needs to remain editable even if the source is read-only.
     const auto writable = copiedAttributes & ~FILE_ATTRIBUTE_READONLY;
     return copiedAttributes == writable ||
-        SetFileAttributesW(destination.c_str(), writable ? writable : FILE_ATTRIBUTE_NORMAL);
+        SetFileAttributesW(destination.c_str(), writable ? writable : FILE_ATTRIBUTE_NORMAL) ||
+        reportWindowsFailure(windowsError, GetLastError());
 }
 
-bool copySettings(const std::filesystem::path& source, const std::filesystem::path& destination)
+bool copySettings(const std::filesystem::path& source, const std::filesystem::path& destination,
+                  std::uint32_t* windowsError = nullptr)
 {
     return std::ranges::all_of(settingsFiles, [&](const auto filename) {
-        return copySavedFile(source / filename, destination / filename);
+        return copySavedFile(source / filename, destination / filename, windowsError);
     });
 }
 
@@ -229,6 +275,17 @@ void removeTemporaryDirectory(const std::filesystem::path& path)
 bool validLanguage(std::string_view language)
 {
     return language == "auto" || language == "fr" || language == "en";
+}
+
+bool writeProfileLanguageFile(const std::filesystem::path& root, std::string_view language,
+                              std::uint32_t* windowsError = nullptr)
+{
+    if (!root.is_absolute() || !validLanguage(language))
+        return false;
+    const auto attributes = GetFileAttributesW(root.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES)
+        return reportWindowsFailure(windowsError, GetLastError());
+    return plainDirectory(attributes) && writeTextFile(root / profileLanguageFilename, language, windowsError);
 }
 
 bool samePathPart(const std::filesystem::path& left, const std::filesystem::path& right)
@@ -284,9 +341,12 @@ bool optionalEntry(const std::filesystem::path& path, bool directory, bool& exis
     return exists ? (directory ? plainDirectory(attributes) : plainFile(attributes)) : missing(GetLastError());
 }
 
-bool ensureDirectory(const std::filesystem::path& path)
+bool ensureDirectory(const std::filesystem::path& path, std::uint32_t* windowsError)
 {
-    return CreateDirectoryW(path.c_str(), nullptr) || plainDirectory(GetFileAttributesW(path.c_str()));
+    if (CreateDirectoryW(path.c_str(), nullptr))
+        return true;
+    const auto code = GetLastError();
+    return plainDirectory(GetFileAttributesW(path.c_str())) || reportWindowsFailure(windowsError, code);
 }
 
 struct TemporaryDirectory {
@@ -303,11 +363,16 @@ struct TemporaryDirectory {
 
 struct ProfileLock {
     explicit ProfileLock(const std::filesystem::path& parent)
-        : handle(CreateFileW((parent / profileLockFilename).c_str(), DELETE, 0, nullptr, CREATE_NEW,
-                             FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT, nullptr))
-    {}
+    {
+        const auto path = parent / profileLockFilename;
+        handle = CreateFileW(path.c_str(), DELETE, 0, nullptr, CREATE_NEW,
+                             FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (handle == INVALID_HANDLE_VALUE)
+            failure = GetLastError();
+    }
 
     HANDLE handle;
+    DWORD failure{};
 
     ~ProfileLock()
     {
@@ -319,14 +384,14 @@ struct ProfileLock {
 };
 
 ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::filesystem::path& destination,
-                                bool allowEmpty)
+                                bool allowEmpty, std::uint32_t* windowsError)
 {
     bool foundProfile = false;
     const auto copyFile = [&](const wchar_t* filename, bool profileSetting) {
         bool exists{};
         if (!optionalEntry(source / filename, false, exists))
             return ProfileBackupError::invalidBackup;
-        if (exists && !copySavedFile(source / filename, destination / filename))
+        if (exists && !copySavedFile(source / filename, destination / filename, windowsError))
             return ProfileBackupError::ioError;
         foundProfile |= exists && profileSetting;
         return ProfileBackupError::none;
@@ -346,7 +411,7 @@ ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::
         return ProfileBackupError::invalidBackup;
     if (hasProfiles) {
         const auto target = destination / presetsFolder;
-        if (!ensureDirectory(target))
+        if (!ensureDirectory(target, windowsError))
             return ProfileBackupError::ioError;
         std::error_code error;
         std::filesystem::directory_iterator it(profiles, error);
@@ -360,14 +425,21 @@ ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::
             if (!plainDirectory(attributes) || !validName(name.native()))
                 return ProfileBackupError::invalidBackup;
             const auto copied = target / name;
-            if (!CreateDirectoryW(copied.c_str(), nullptr) || !copySettings(it->path(), copied))
+            if (!CreateDirectoryW(copied.c_str(), nullptr)) {
+                reportWindowsFailure(windowsError, GetLastError());
+                return ProfileBackupError::ioError;
+            }
+            if (!copySettings(it->path(), copied, windowsError))
                 return ProfileBackupError::ioError;
             foundProfile = foundProfile || std::ranges::any_of(settingsFiles, [&](const auto filename) {
                 return plainFile(GetFileAttributesW((copied / filename).c_str()));
             });
         }
-        if (error)
+        if (error) {
+            if (windowsError && error.category() == std::system_category())
+                *windowsError = static_cast<std::uint32_t>(error.value());
             return ProfileBackupError::ioError;
+        }
     }
 
     bool marked{};
@@ -407,19 +479,23 @@ bool validSnapshot(const std::filesystem::path& path)
     });
 }
 
-std::filesystem::path createRecoveryDirectory(const std::filesystem::path& parent)
+std::filesystem::path createRecoveryDirectory(const std::filesystem::path& parent, std::uint32_t* windowsError)
 {
     SYSTEMTIME time{};
     GetLocalTime(&time);
     const auto name = std::format(L"Avant-restauration-{:04}{:02}{:02}-{:02}{:02}{:02}", time.wYear, time.wMonth,
                                   time.wDay, time.wHour, time.wMinute, time.wSecond);
+    DWORD code{};
     for (int index = 0; index < 100; ++index) {
         const auto path = parent / (index == 0 ? name : name + L"-" + std::to_wstring(index + 1));
         if (CreateDirectoryW(path.c_str(), nullptr))
             return path;
-        if (GetLastError() != ERROR_ALREADY_EXISTS)
+        code = GetLastError();
+        if (code != ERROR_ALREADY_EXISTS)
             break;
     }
+    if (windowsError)
+        *windowsError = code;
     return {};
 }
 
@@ -430,9 +506,13 @@ struct RestoreEntry {
     bool applied{};
 };
 
-bool moveEntry(const std::filesystem::path& from, const std::filesystem::path& to, const wchar_t* filename)
+bool moveEntry(const std::filesystem::path& from, const std::filesystem::path& to, const wchar_t* filename,
+               std::uint32_t* windowsError = nullptr)
 {
-    return MoveFileExW((from / filename).c_str(), (to / filename).c_str(), MOVEFILE_WRITE_THROUGH);
+    const auto source = from / filename;
+    const auto destination = to / filename;
+    return MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) ||
+        reportWindowsFailure(windowsError, GetLastError());
 }
 
 struct FileHandleCloser {
@@ -593,12 +673,20 @@ bool conflictingInputs(const std::optional<Profile>& axes, const std::optional<A
 
 ProfilePreset activePreset(const std::filesystem::path& root)
 {
+    return readActivePreset(root).value_or(ProfilePreset{});
+}
+
+std::optional<ProfilePreset> readActivePreset(const std::filesystem::path& root)
+{
     if (!root.is_absolute())
-        return {};
-    const auto selected = readSelection(root / selectionFile);
+        return ProfilePreset{};
+    bool locked{};
+    const auto selected = readSelection(root / selectionFile, &locked);
+    if (locked)
+        return std::nullopt;
     if (!selected)
-        return {};
-    return {*selected, presetDirectory(root, *selected)};
+        return ProfilePreset{};
+    return ProfilePreset{*selected, presetDirectory(root, *selected)};
 }
 
 std::optional<ProfileFileRevision> profileFileRevision(const std::filesystem::path& path)
@@ -903,13 +991,21 @@ std::optional<std::string> readProfileLanguage(const std::filesystem::path& root
 
 bool writeProfileLanguage(const std::filesystem::path& root, std::string_view language)
 {
-    return root.is_absolute() && validLanguage(language) && plainDirectory(GetFileAttributesW(root.c_str()))
-        && writeTextFile(root / profileLanguageFilename, language);
+    return writeProfileLanguageFile(root, language);
 }
 
 bool createProfileBackup(const std::filesystem::path& profileRoot, const std::filesystem::path& backupDirectory,
-                         ProfileBackupError& error, std::string_view fallbackLanguage)
+                         ProfileBackupError& error, std::string_view fallbackLanguage,
+                         ProfileBackupFailure* detailsOutput)
 {
+    ProfileBackupFailure localFailure;
+    auto& failure = detailsOutput ? *detailsOutput : localFailure;
+    failure = {};
+    const auto fail = [&](ProfileBackupStep step) {
+        error = ProfileBackupError::ioError;
+        failure.step = step;
+        return false;
+    };
     const auto root = extendedPath(profileRoot);
     const auto destination = extendedPath(backupDirectory);
     bool hasRoot{};
@@ -920,8 +1016,8 @@ bool createProfileBackup(const std::filesystem::path& profileRoot, const std::fi
     }
     const ProfileLock lock(root.parent_path());
     if (!lock) {
-        error = ProfileBackupError::ioError;
-        return false;
+        failure.windowsError = lock.failure;
+        return fail(ProfileBackupStep::lock);
     }
     if (GetFileAttributesW(destination.c_str()) != INVALID_FILE_ATTRIBUTES) {
         error = ProfileBackupError::destinationExists;
@@ -931,36 +1027,33 @@ bool createProfileBackup(const std::filesystem::path& profileRoot, const std::fi
     const auto backups = root / profileBackupsFolder;
     if (insideOrSame(parent.lexically_normal(), backups.lexically_normal())
         && insideOrSame(backups.lexically_normal(), parent.lexically_normal())
-        && (!ensureDirectory(root) || !ensureDirectory(parent))) {
-        error = ProfileBackupError::ioError;
-        return false;
-    }
+        && (!ensureDirectory(root, &failure.windowsError) || !ensureDirectory(parent, &failure.windowsError)))
+        return fail(ProfileBackupStep::prepareBackup);
     if (!plainDirectory(GetFileAttributesW(parent.c_str()))) {
         error = ProfileBackupError::invalidLocation;
         return false;
     }
-    const TemporaryDirectory temporary{createTemporaryDirectory(parent)};
-    if (temporary.path.empty()) {
-        error = ProfileBackupError::ioError;
+    const TemporaryDirectory temporary{createTemporaryDirectory(parent, &failure.windowsError)};
+    if (temporary.path.empty())
+        return fail(ProfileBackupStep::prepareBackup);
+    error = copySnapshot(root, temporary.path, true, &failure.windowsError);
+    if (error != ProfileBackupError::none) {
+        failure.step = ProfileBackupStep::copyProfile;
         return false;
     }
-    error = copySnapshot(root, temporary.path, true);
-    if (error != ProfileBackupError::none)
-        return false;
     if (!validSnapshot(temporary.path)) {
         error = ProfileBackupError::invalidBackup;
         return false;
     }
     std::string details;
     if ((!fallbackLanguage.empty() && !readProfileLanguage(temporary.path)
-         && !writeProfileLanguage(temporary.path, fallbackLanguage))
+         && !writeProfileLanguageFile(temporary.path, fallbackLanguage, &failure.windowsError))
         || (!readTransmissionHotkey(temporary.path)
             && !saveTransmissionHotkey(temporary.path, defaultTransmissionHotkey, details))
-        || !writeTextFile(temporary.path / backupMarker, backupVersion)) {
-        error = ProfileBackupError::ioError;
-        return false;
-    }
+        || !writeTextFile(temporary.path / backupMarker, backupVersion, &failure.windowsError))
+        return fail(ProfileBackupStep::finishBackup);
     if (!MoveFileExW(temporary.path.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        failure = {ProfileBackupStep::finishBackup, GetLastError()};
         error = GetFileAttributesW(destination.c_str()) != INVALID_FILE_ATTRIBUTES
             ? ProfileBackupError::destinationExists : ProfileBackupError::ioError;
         return false;
@@ -970,8 +1063,16 @@ bool createProfileBackup(const std::filesystem::path& profileRoot, const std::fi
 
 bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::filesystem::path& backupDirectory,
                           ProfileBackupError& error, std::string_view fallbackLanguage,
-                          std::filesystem::path* recoveryDirectory)
+                          std::filesystem::path* recoveryDirectory, ProfileBackupFailure* detailsOutput)
 {
+    ProfileBackupFailure localFailure;
+    auto& failure = detailsOutput ? *detailsOutput : localFailure;
+    failure = {};
+    const auto fail = [&](ProfileBackupStep step) {
+        error = ProfileBackupError::ioError;
+        failure.step = step;
+        return false;
+    };
     if (recoveryDirectory)
         recoveryDirectory->clear();
     const auto root = extendedPath(profileRoot);
@@ -985,28 +1086,26 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     }
     const ProfileLock lock(root.parent_path());
     if (!lock) {
-        error = ProfileBackupError::ioError;
-        return false;
+        failure.windowsError = lock.failure;
+        return fail(ProfileBackupStep::lock);
     }
 
-    const TemporaryDirectory temporary{createTemporaryDirectory(root.parent_path())};
-    if (temporary.path.empty()) {
-        error = ProfileBackupError::ioError;
+    const TemporaryDirectory temporary{createTemporaryDirectory(root.parent_path(), &failure.windowsError)};
+    if (temporary.path.empty())
+        return fail(ProfileBackupStep::prepareRestore);
+    error = copySnapshot(source, temporary.path, false, &failure.windowsError);
+    if (error != ProfileBackupError::none) {
+        failure.step = ProfileBackupStep::copyBackup;
         return false;
     }
-    error = copySnapshot(source, temporary.path, false);
-    if (error != ProfileBackupError::none)
-        return false;
     if (!validSnapshot(temporary.path)) {
         error = ProfileBackupError::invalidBackup;
         return false;
     }
 
     const auto backups = root / profileBackupsFolder;
-    if (!ensureDirectory(root) || !ensureDirectory(backups)) {
-        error = ProfileBackupError::ioError;
-        return false;
-    }
+    if (!ensureDirectory(root, &failure.windowsError) || !ensureDirectory(backups, &failure.windowsError))
+        return fail(ProfileBackupStep::prepareRecovery);
     std::array<RestoreEntry, restoreEntries.size()> entries{};
     bool previousLanguage = false;
     bool previousHotkey = false;
@@ -1015,10 +1114,8 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
         const auto filename = restoreEntries[i];
         const bool directory = filename == presetsFolder;
         if (!optionalEntry(root / filename, directory, entry.present)
-            || !optionalEntry(temporary.path / filename, directory, entry.incoming)) {
-            error = ProfileBackupError::ioError;
-            return false;
-        }
+            || !optionalEntry(temporary.path / filename, directory, entry.incoming))
+            return fail(ProfileBackupStep::prepareRestore);
         if (filename == profileLanguageFilename)
             previousLanguage = entry.present;
         else if (filename == transmissionHotkeyFilename)
@@ -1028,26 +1125,29 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
             entry.present = false;
     }
 
-    TemporaryDirectory recovery{createRecoveryDirectory(backups)};
-    if (recovery.path.empty()) {
-        error = ProfileBackupError::ioError;
+    TemporaryDirectory recovery{createRecoveryDirectory(backups, &failure.windowsError)};
+    if (recovery.path.empty())
+        return fail(ProfileBackupStep::prepareRecovery);
+    error = copySnapshot(root, recovery.path, true, &failure.windowsError);
+    if (error != ProfileBackupError::none) {
+        failure.step = ProfileBackupStep::prepareRecovery;
         return false;
     }
-    error = copySnapshot(root, recovery.path, true);
-    if (error != ProfileBackupError::none)
-        return false;
     const auto originals = recovery.path / originalFiles;
     std::string details;
-    if (!CreateDirectoryW(originals.c_str(), nullptr)
-        || !writeTextFile(recovery.path / backupMarker, backupVersion)
-        || (!previousHotkey && !saveTransmissionHotkey(recovery.path, defaultTransmissionHotkey, details))
-        || (!previousLanguage && !fallbackLanguage.empty() && !writeProfileLanguage(recovery.path, fallbackLanguage))) {
-        error = ProfileBackupError::ioError;
-        return false;
+    if (!CreateDirectoryW(originals.c_str(), nullptr)) {
+        failure.windowsError = GetLastError();
+        return fail(ProfileBackupStep::prepareRecovery);
     }
+    if (!writeTextFile(recovery.path / backupMarker, backupVersion, &failure.windowsError)
+        || (!previousHotkey && !saveTransmissionHotkey(recovery.path, defaultTransmissionHotkey, details))
+        || (!previousLanguage && !fallbackLanguage.empty()
+            && !writeProfileLanguageFile(recovery.path, fallbackLanguage, &failure.windowsError)))
+        return fail(ProfileBackupStep::prepareRecovery);
 
     const auto recoveryLocation = profileRoot / profileBackupsFolder / recovery.path.filename();
     const auto rollback = [&] {
+        failure.step = ProfileBackupStep::applyRestore;
         bool recovered = true;
         for (std::size_t i = entries.size(); i-- > 0;) {
             if (entries[i].applied)
@@ -1068,14 +1168,14 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     for (std::size_t i = entries.size(); i-- > 0;) {
         if (!entries[i].present)
             continue;
-        if (!moveEntry(root, originals, restoreEntries[i]))
+        if (!moveEntry(root, originals, restoreEntries[i], &failure.windowsError))
             return rollback();
         entries[i].saved = true;
     }
     for (std::size_t i = 0; i < entries.size(); ++i) {
         if (!entries[i].incoming)
             continue;
-        if (!moveEntry(temporary.path, root, restoreEntries[i]))
+        if (!moveEntry(temporary.path, root, restoreEntries[i], &failure.windowsError))
             return rollback();
         entries[i].applied = true;
     }

@@ -4,6 +4,8 @@
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/presets.hpp"
 
+#include <objbase.h>
+
 #include <array>
 #include <fstream>
 #include <iostream>
@@ -11,13 +13,32 @@
 
 namespace {
 
+std::filesystem::path extendedPath(const std::filesystem::path& path)
+{
+    auto normalized = path.lexically_normal().make_preferred().native();
+    if (normalized.starts_with(LR"(\\?\)"))
+        return normalized;
+    if (normalized.starts_with(LR"(\\)"))
+        return LR"(\\?\UNC\)" + normalized.substr(2);
+    return LR"(\\?\)" + normalized;
+}
+
 struct Fixture {
     std::filesystem::path directory;
 
-    ~Fixture()
+    ~Fixture() { cleanup(); }
+
+    bool cleanup()
     {
-        std::error_code ignored;
-        std::filesystem::remove_all(directory, ignored);
+        if (directory.empty())
+            return true;
+        std::error_code error;
+        std::filesystem::remove_all(extendedPath(directory), error);
+        directory.clear();
+        if (error)
+            std::cerr << "Could not clean up the profile test directory: " << error.message()
+                      << " (" << error.value() << ")\n";
+        return !error;
     }
 };
 
@@ -280,6 +301,7 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     constexpr unsigned int newerHotkey = 'K';
     std::string error;
     ProfileBackupError backupError{};
+    ProfileBackupFailure failure;
     if (!check(std::filesystem::create_directory(root), "Could not set up a profile folder")
         || !check(saveProfile(root / profileFilename, calibration, error)
                   && saveAccessoryProfile(root / accessoryFilename, bindings, error)
@@ -312,7 +334,30 @@ bool testProfileBackups(const std::filesystem::path& fixture)
         return false;
 
     std::filesystem::create_directories(root / profileBackupsFolder / L"Older");
-    if (!check(createProfileBackup(root, backup, backupError, "fr")
+    const auto lockPath = fixture / L".chrome_axis_profile_backup.lock";
+    std::ofstream(lockPath) << "another profile operation";
+    const bool backedUpWhileBusy = createProfileBackup(root, backup, backupError, {}, &failure);
+    std::filesystem::remove(lockPath);
+    if (!check(!backedUpWhileBusy && backupError == ProfileBackupError::ioError
+               && failure.step == ProfileBackupStep::lock && failure.windowsError == ERROR_FILE_EXISTS
+               && !std::filesystem::exists(backup),
+               "A competing profile operation must report the failed lock and original Windows error"))
+        return false;
+
+    const auto copyBlocked = CreateFileW((root / profileFilename).c_str(), GENERIC_READ, 0, nullptr,
+                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (!check(copyBlocked != INVALID_HANDLE_VALUE, "Could not lock the live calibration against copying"))
+        return false;
+    const bool backedUpWhileCopyBlocked = createProfileBackup(root, backup, backupError, {}, &failure);
+    CloseHandle(copyBlocked);
+    if (!check(!backedUpWhileCopyBlocked && backupError == ProfileBackupError::ioError
+               && failure.step == ProfileBackupStep::copyProfile && failure.windowsError == ERROR_SHARING_VIOLATION
+               && !std::filesystem::exists(backup),
+               "An unreadable settings file must report a copy failure and must not publish the backup"))
+        return false;
+
+    if (!check(createProfileBackup(root, backup, backupError, "fr", &failure)
+               && failure.step == ProfileBackupStep::none && failure.windowsError == ERROR_SUCCESS
                && readProfileLanguage(backup) == "fr" && !readProfileLanguage(root)
                && readTransmissionHotkey(backup) == exportedHotkey
                && !std::filesystem::exists(named / transmissionHotkeyFilename),
@@ -357,9 +402,11 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (!check(locked != INVALID_HANDLE_VALUE, "Could not hold the live calibration file open"))
         return false;
-    const bool restoredWhileLocked = restoreProfileBackup(root, backup, backupError);
+    const bool restoredWhileLocked = restoreProfileBackup(root, backup, backupError, {}, &recovery, &failure);
     CloseHandle(locked);
     if (!check(!restoredWhileLocked && backupError == ProfileBackupError::ioError
+               && failure.step == ProfileBackupStep::applyRestore && failure.windowsError == ERROR_SHARING_VIOLATION
+               && recovery.empty()
                && activePreset(root).name == L"Plus récent" && readProfileLanguage(root) == "en"
                && !usbEnabled(root) && loadAccessoryProfile(root / accessoryFilename, error) == AccessoryProfile{}
                && readTransmissionHotkey(root) == newerHotkey,
@@ -434,9 +481,9 @@ bool testProfileBackups(const std::filesystem::path& fixture)
         || !check(restoreProfileBackup(longRoot, legacy, backupError, {}, &recovery),
                   "A recovery path exceeding MAX_PATH must not block a restore"))
         return false;
-    auto recoveredFile = recovery / L"Profils" / longName / profileFilename;
+    const auto recoveredFile = recovery / L"Profils" / longName / profileFilename;
     if (!check(recoveredFile.native().size() >= MAX_PATH
-               && std::filesystem::is_regular_file(LR"(\\?\)" + recoveredFile.make_preferred().native())
+               && std::filesystem::is_regular_file(extendedPath(recoveredFile))
                && restoreProfileBackup(longRoot, recovery, backupError) && activePreset(longRoot).name == longName,
                "The long recovery path must remain usable as a restore source"))
         return false;
@@ -444,10 +491,19 @@ bool testProfileBackups(const std::filesystem::path& fixture)
     const auto empty = fixture / L"Missing profile folder";
     const auto internal = root / profileBackupsFolder / L"Current";
     const auto emptyBackup = fixture / L"Empty";
-    return check(createProfileBackup(root, internal, backupError)
-                 && restoreProfileBackup(root, internal, backupError),
-                 "Backups under the installed Profil directory must round-trip")
-        && check(createProfileBackup(empty, emptyBackup, backupError)
+    const auto checkInternalBackup = [&](bool succeeded, const char* action) {
+        if (!succeeded)
+            std::cerr << action << " under the installed Profil directory failed (result "
+                      << static_cast<int>(backupError) << ", step " << static_cast<int>(failure.step)
+                      << ", Windows error " << failure.windowsError << ")\n";
+        return succeeded;
+    };
+    if (!checkInternalBackup(createProfileBackup(root, internal, backupError, {}, &failure), "Creating a backup")
+        || !checkInternalBackup(restoreProfileBackup(root, internal, backupError, {}, nullptr, &failure),
+                                "Restoring a backup"))
+        return false;
+
+    return check(createProfileBackup(empty, emptyBackup, backupError)
                  && readTransmissionHotkey(emptyBackup) == defaultTransmissionHotkey
                  && restoreProfileBackup(root, emptyBackup, backupError) && activePreset(root).name.empty()
                  && !std::filesystem::exists(root / profileFilename) && readProfileLanguage(root) == "fr"
@@ -460,10 +516,27 @@ bool testProfileBackups(const std::filesystem::path& fixture)
 int main()
 {
     using namespace chrome_axis;
-    const auto root = std::filesystem::current_path() / (L"chrome-axis-presets-" + std::to_wstring(GetCurrentProcessId()));
-    if (!check(std::filesystem::create_directory(root), "Expected a new test directory"))
+    GUID id{};
+    wchar_t identifier[39]{};
+    if (!check(SUCCEEDED(CoCreateGuid(&id)) && StringFromGUID2(id, identifier, 39) != 0,
+               "Could not generate a unique profile test directory name"))
         return 1;
-    const Fixture fixture{root};
+    std::error_code directoryError;
+    const auto parent = std::filesystem::temp_directory_path(directoryError);
+    const auto directory = parent / (L"chrome-axis-presets-" + std::wstring(identifier));
+    if (directoryError || !std::filesystem::create_directory(directory, directoryError)) {
+        std::cerr << "Could not reserve a unique profile test directory (Windows error "
+                  << directoryError.value() << ")\n";
+        return 1;
+    }
+    Fixture fixture{directory};
+    // Profile transactions lock the parent directory, so each run needs its own parent.
+    const auto root = directory / L"Selection";
+    if (!std::filesystem::create_directory(root, directoryError)) {
+        std::cerr << "Could not create the test profile directory (Windows error "
+                  << directoryError.value() << ")\n";
+        return 1;
+    }
 
     const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
     const Profile calibration{{wheel, 0, 500, 0, 1000, 0.02f}};
@@ -513,7 +586,8 @@ int main()
         return 1;
 
     std::ofstream(root / L"active_profile.txt", std::ios::trunc) << "../other\n";
-    return check(activePreset(root).directory.empty(), "Corrupt selection must not activate a different profile")
+    const bool passed = check(activePreset(root).directory.empty(), "Corrupt selection must not activate a different profile")
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
-        && testProfileBackups(root) && testDeviceReplacement(root) && testStaleWrites(root) ? 0 : 1;
+        && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory);
+    return fixture.cleanup() && passed ? 0 : 1;
 }

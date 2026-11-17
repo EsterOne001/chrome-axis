@@ -11,6 +11,7 @@
 #include "manual_transmission_backend.hpp"
 #include "manual_transmission_input.hpp"
 #include "transmission_hotkey.hpp"
+#include "usb_profile_selection.hpp"
 
 #include <RED4ext/RED4ext.hpp>
 #include <RED4ext/Scripting/Natives/vehicleBaseObject.hpp>
@@ -1135,6 +1136,7 @@ private:
     }
 
     std::filesystem::path directory_;
+    chrome_axis::UsbProfileSelection selection_;
     WatchedProfile watchedProfile_, watchedAccessories_, watchedFeedback_;
     std::optional<chrome_axis::AccessoryProfile> savedAccessories_;
     std::string profileError_, accessoryError_;
@@ -1155,14 +1157,16 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
                                                   chrome_axis::DiagnosticSnapshot& diagnostic) {
     UsbConfigurationChanges changes;
     const bool requested = chrome_axis::usbEnabled(root);
-    auto selected = requested ? chrome_axis::activePreset(root) : chrome_axis::ProfilePreset{};
-    changes.preset = selected.directory != directory_;
+    auto selected = selection_.refresh(root, requested, hasProfileDirectory(), now);
+    if (!selected)
+        return changes; // Keep the live readers armed while the selection file is briefly locked.
+    changes.preset = selected->directory != directory_;
     if (changes.preset) {
-        directory_ = std::move(selected.directory);
+        directory_ = std::move(selected->directory);
         diagnostic.profile.fill(0);
-        if (!selected.name.empty()) {
-            WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, selected.name.data(),
-                static_cast<int>(selected.name.size()), diagnostic.profile.data(),
+        if (!selected->name.empty()) {
+            WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, selected->name.data(),
+                static_cast<int>(selected->name.size()), diagnostic.profile.data(),
                 static_cast<int>(diagnostic.profile.size() - 1), nullptr, nullptr);
         }
         clearWatches();

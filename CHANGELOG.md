@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.70
+
+- **Reprise USB.** Le plugin conserve les commandes armées si le fichier de sélection du profil est brièvement verrouillé. Il retente la lecture et applique les changements confirmés de profil ou d’activation USB.
+- **Sauvegarde et restauration.** L’application précise l’étape qui a échoué. Le test utilise un dossier temporaire unique et nettoie les chemins longs.
+
+[ZIP Vortex](out/Chromaxis-0.4.70.zip)
+
 ## Chrome Axis 0.4.69
 
 - **Diagnostic de l’embrayage.** La raison du passage bloqué distingue le réarmement, la détection en cours, le signal indisponible et la valeur lue sous 65 %. En séquentiel, le diagnostic invite à refaire un appui refusé lorsque la pédale atteint le seuil.

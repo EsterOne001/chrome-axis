@@ -3,6 +3,7 @@
 #include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/simulation.hpp"
+#include "../src/plugin/usb_profile_selection.hpp"
 
 #include <array>
 #include <chrono>
@@ -185,6 +186,58 @@ int runPluginSide(const fs::path& fixture)
     return finished && !invalidSettings ? 0 : 11;
 }
 
+bool testUsbProfileSelection(const fs::path& root)
+{
+    const auto namedDirectory = root / L"Profils" / preset;
+    const auto selectionFile = root / L"active_profile.txt";
+    fs::create_directories(namedDirectory);
+    std::string error;
+    if (!selectPreset(root, preset, error) || !setUsbEnabled(root, true, error))
+        return false;
+
+    UsbProfileSelection selection, fresh, expires, disabled;
+    const auto start = UsbProfileSelection::Clock::time_point{};
+    const auto first = selection.refresh(root, usbEnabled(root), false, start);
+    if (!first || first->directory != namedDirectory)
+        return false;
+
+    const HANDLE reader = CreateFileW(selectionFile.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (reader == INVALID_HANDLE_VALUE)
+        return false;
+    const bool detectedSharingLock = !readActivePreset(root);
+    const auto initial = fresh.refresh(root, usbEnabled(root), false, start);
+    const bool deferred = !selection.refresh(root, usbEnabled(root), true, start)
+        && !selection.refresh(root, usbEnabled(root), true, start + 250ms);
+    const bool keptDuringLongLock = !expires.refresh(root, usbEnabled(root), true, start);
+    const auto expired = expires.refresh(root, usbEnabled(root), true, start + 1s);
+    const bool deferredBeforeDisable = !disabled.refresh(root, usbEnabled(root), true, start);
+    const bool switchedOff = setUsbEnabled(root, false, error) && !usbEnabled(root);
+    const auto afterDisable = disabled.refresh(root, usbEnabled(root), true, start + 250ms);
+    const bool switchedOn = setUsbEnabled(root, true, error) && usbEnabled(root);
+    const auto reenabledWhileLocked = disabled.refresh(root, usbEnabled(root), false, start + 500ms);
+    CloseHandle(reader);
+    if (!detectedSharingLock || !initial || !initial->directory.empty() || !deferred
+        || !keptDuringLongLock || !expired || !expired->directory.empty()
+        || !deferredBeforeDisable || !switchedOff || !afterDisable || !afterDisable->directory.empty()
+        || !switchedOn || !reenabledWhileLocked || !reenabledWhileLocked->directory.empty())
+        return false;
+
+    const auto unchanged = selection.refresh(root, usbEnabled(root), true, start + 500ms);
+    if (!unchanged || unchanged->directory != namedDirectory || !selectPreset(root, L"", error))
+        return false;
+    const auto changed = selection.refresh(root, usbEnabled(root), true, start + 750ms);
+    if (!changed || changed->directory != root)
+        return false;
+
+    // A corrupt selection fails immediately. A missing file means the default profile.
+    std::ofstream(selectionFile, std::ios::binary) << "../invalid";
+    const auto invalid = selection.refresh(root, usbEnabled(root), true, start + 1s);
+    if (!invalid || !invalid->directory.empty() || !fs::remove(selectionFile))
+        return false;
+    const auto defaultProfile = selection.refresh(root, usbEnabled(root), false, start + 1250ms);
+    return defaultProfile && defaultProfile->directory == root;
+}
+
 int runApplicationSide()
 {
     const auto unique = L"chrome-axis-bridge-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
@@ -193,6 +246,8 @@ int runApplicationSide()
     if (!fs::create_directory(directory))
         return 1;
     const Fixture fixture{directory};
+    if (!testUsbProfileSelection(directory / L"Locked profile"))
+        return 17;
     const auto game = directory / L"Game A";
     const auto plugin = pluginDirectory(game);
     fs::create_directories(plugin / L"scripts");
