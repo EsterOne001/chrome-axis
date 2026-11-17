@@ -6,6 +6,17 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.74 · 17 novembre 2026
+
+Comparée à la **0.4.73**.
+
+- **Détection DirectInput.** Si une sonde renvoie une erreur générique, le plugin peut vérifier la commande sur la connexion déjà acquise. Le banc a reproduit le défaut de détection de la 0.4.73 et la reprise avec ce changement.
+- **Diagnostic USB.** Lorsqu’un cycle reste bloqué plus de 250 ms, le rapport identifie le périphérique et l’opération encore en cours quand elle est connue. Il distingue les lectures lentes des cycles démarrés en retard.
+- **Bascule AUTO / MANUEL.** Une touche tenue pendant une interruption doit être relâchée avant de pouvoir basculer à nouveau. Le rapport et le CSV indiquent le nombre d’appuis reconnus et la source du dernier appui.
+- **Validation.** Release x64, 18 suites CTest réussies, trois suites ciblées répétées cinq fois, REDscript avec et sans HUD Painter et CRC des dix fichiers. En jeu sur T300RS, les deux relevés après redémarrage du PC puis après relance du jeu seul ont atteint 14 commandes prêtes sur 14, sans relevé expiré ou lecture temporairement indisponible. Le blocage antérieur n’a pas été reproduit sur ces deux essais et sa cause reste à identifier. L’audit hors jeu a montré que la ligne d’un appel actif peut disparaître de l’historique et qu’un verrou bref des réglages peut encore désarmer les commandes.
+
+SHA-256 `fff5fe6f11d68972535b70e44720a5ff1fb4ba9cb4a69abfb06d999d09587345`. [ZIP Vortex](out/Chromaxis-0.4.74.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/b9c8c4a4c633744e90284fb7374f93d6af1df954)
+
 ## Chrome Axis 0.4.73 · 17 novembre 2026
 
 Comparée à la **0.4.72**.
