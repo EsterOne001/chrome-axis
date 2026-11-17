@@ -394,7 +394,21 @@ int runApplicationSide()
     if (!waitFor([&] { return setUsbEnabled(root, false, error); }) ||
         !waitFor([&] { return application.read().snapshot.mode == DiagnosticMode::usbDisabled; }))
         return 14;
-    return child.finish() ? 0 : 12;
+    if (!child.finish() || application.read().connection != DiagnosticConnection::stale)
+        return 12;
+
+    fs::remove(directory / L"done");
+    if (!saveTransmissionHotkey(root, 'J', error) || !child.start() || !simulation.enable())
+        return 19;
+    if (!waitFor([&] {
+        simulation.heartbeat();
+        const auto read = application.read();
+        return read.connection == DiagnosticConnection::connected &&
+            read.snapshot.mode == DiagnosticMode::simulation &&
+            read.snapshot.transmission.shortcutKey == 'J' && read.performance.state == PerformanceState::idle;
+    }))
+        return 20;
+    return child.finish() ? 0 : 21;
 }
 
 } // namespace

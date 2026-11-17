@@ -843,7 +843,8 @@ std::wstring transmissionStatus(const DiagnosticSnapshot& snapshot)
     case DiagnosticShiftState::neutralTransition: return tr(Text::DlgDiagnosticsTransmissionNeutral);
     case DiagnosticShiftState::expired: return tr(Text::DlgDiagnosticsTransmissionExpired);
     case DiagnosticShiftState::recalibrationNeeded: return tr(Text::DlgDiagnosticsTransmissionRecalibration);
-    case DiagnosticShiftState::selectorUnavailable: return tr(Text::DlgDiagnosticsTransmissionSelector);
+    case DiagnosticShiftState::selectorUnavailable: return tr(snapshot.transmission.sequential
+        ? Text::DlgDiagnosticsTransmissionPaddles : Text::DlgDiagnosticsTransmissionSelector);
     case DiagnosticShiftState::selectorAmbiguous: return tr(Text::DlgDiagnosticsTransmissionAmbiguous);
     case DiagnosticShiftState::pending: return tr(Text::DlgDiagnosticsTransmissionPending);
     case DiagnosticShiftState::clutchRequired:
@@ -911,10 +912,16 @@ std::wstring transmissionShortcut(const DiagnosticTransmission& transmission, st
     auto text = accessoryKeyLabel(transmission.shortcutKey);
     if (!transmission.shortcutAvailable)
         text += L" (" + std::wstring(tr(Text::DlgDiagnosticsTransmissionShortcutPaused)) + L")";
+    text += L" · " + std::wstring(tr(Text::DlgDiagnosticsTransmissionShortcutCount)) + L" " +
+        std::to_wstring(transmission.shortcutPressCount);
     text += L" · ";
     if (transmission.shortcutPressedAt) {
         text += tr(Text::DlgDiagnosticsTransmissionShortcutPressed);
         text += L" " + eventAge(transmission.shortcutPressedAt, now);
+        if (transmission.shortcutSource == DiagnosticShortcutSource::hook)
+            text += L" (" + std::wstring(tr(Text::DlgDiagnosticsTransmissionShortcutHook)) + L")";
+        if (transmission.shortcutSource == DiagnosticShortcutSource::poll)
+            text += L" (" + std::wstring(tr(Text::DlgDiagnosticsTransmissionShortcutPoll)) + L")";
     } else {
         text += tr(Text::DlgDiagnosticsTransmissionShortcutNoPress);
     }
@@ -1097,7 +1104,9 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         }
         if (view.historical &&
             (snapshot.transmission.shortcutKey != read.snapshot.transmission.shortcutKey ||
-             snapshot.transmission.shortcutPressedAt != read.snapshot.transmission.shortcutPressedAt)) {
+             snapshot.transmission.shortcutPressedAt != read.snapshot.transmission.shortcutPressedAt ||
+             snapshot.transmission.shortcutPressCount != read.snapshot.transmission.shortcutPressCount ||
+             snapshot.transmission.shortcutSource != read.snapshot.transmission.shortcutSource)) {
             if (const auto shortcut = transmissionShortcut(snapshot.transmission, now); !shortcut.empty())
                 line(Text::DlgDiagnosticsTransmissionShortcut, shortcut);
         }
@@ -1178,7 +1187,8 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
             line(control.label, performanceTiming(read.performance.*control.timing));
         line(Text::DlgDiagnosticsPerformanceExpired, std::to_wstring(read.performance.expiredReads));
         line(Text::DlgDiagnosticsPerformanceTransient, std::to_wstring(read.performance.transientReads));
-        line(Text::DlgDiagnosticsPerformanceUsbOverruns, std::to_wstring(read.performance.usbIntervalOverruns));
+        line(Text::DlgDiagnosticsPerformanceUsbSlowReads, std::to_wstring(read.performance.usbSlowReads));
+        line(Text::DlgDiagnosticsPerformanceUsbLateStarts, std::to_wstring(read.performance.usbLateStarts));
         line(Text::DlgDiagnosticsPerformanceFeedbackOverruns, std::to_wstring(read.performance.feedbackIntervalOverruns));
         line(Text::DlgDiagnosticsPerformanceAccepted, std::to_wstring(read.performance.submittedEffects));
         const auto& capture = read.performance;
@@ -1343,8 +1353,10 @@ void refreshPerformance(HWND window, const DialogState& state, const DiagnosticR
             L"    " + tr(Text::DlgDiagnosticsPerformanceTransient) + L" · " + std::to_wstring(performance.transientReads)
         : L"");
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_OVERRUNS, showResults
-        ? std::wstring(tr(Text::DlgDiagnosticsPerformanceUsbOverruns)) + L" · " +
-            std::to_wstring(performance.usbIntervalOverruns) + L"    " +
+        ? std::wstring(tr(Text::DlgDiagnosticsPerformanceUsbSlowReads)) + L" · " +
+            std::to_wstring(performance.usbSlowReads) + L"    " +
+            tr(Text::DlgDiagnosticsPerformanceUsbLateStarts) + L" · " +
+            std::to_wstring(performance.usbLateStarts) + L"    " +
             tr(Text::DlgDiagnosticsPerformanceFeedbackOverruns) + L" · " +
             std::to_wstring(performance.feedbackIntervalOverruns)
         : L"");

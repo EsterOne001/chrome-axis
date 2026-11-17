@@ -50,10 +50,9 @@ public:
             present_.set(index, SUCCEEDED(result) && present);
             deferred_.reset(index);
         } else {
-            // Another driver error can follow a refused acquisition. Keep
-            // the fallback eligible until this connection confirms the layout.
-            if (objectProbeDeferred(result))
-                deferred_.set(index);
+            // An inconclusive result on the discovery handle can succeed on
+            // the acquired reader, even if the driver reports a generic error.
+            deferred_.set(index);
             retryAt_[index] = completedAt + std::chrono::milliseconds(500);
         }
         return true;

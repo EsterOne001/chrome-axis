@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.73** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.74** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -192,7 +192,9 @@ When the game directory is recognized, the panel names a missing DLL or script a
 
 After the test, click **Copy diagnostics** at the bottom of the panel. The clipboard report includes the active profile, device models detected by the app, installed versions and up to eight recent state changes. It distinguishes the current state from the last driving state. For each axis it pairs the calibrated reading with the requested command when they come from the same sample. The last value actually written appears separately with its age. The report is copied locally and omits installation paths and device identifiers. Deploy the app and plugin together from the same ZIP so the panel can read the game's data.
 
-To measure delays, click **Start recording** in **Diagnostics…**, switch to Cyberpunk, and drive with USB enabled. Switch back, click **Stop recording**, and choose **Copy diagnostics**. The report summarizes USB read and force feedback call durations, the age of input when applied in game, and the number of expired reads. It also reports vehicle data age, effects accepted by the driver, and clipping from continuous force or from collisions and landings. Use the manual validation procedure to measure frame time.
+To measure delays, click **Start recording** in **Diagnostics…**, switch to Cyberpunk, and drive with USB enabled. Switch back, click **Stop recording**, and choose **Copy diagnostics**. The report summarizes USB read and force feedback call durations, the age of input when applied in game, and the number of expired reads. It counts slow USB reads and late cycle starts separately. It also reports vehicle data age, effects accepted by the driver, and clipping from continuous force or from collisions and landings. Use the manual validation procedure to measure frame time.
+
+Transmission diagnostics show how many physical presses the AUTO / MANUAL shortcut recognized and how the latest press was detected. If the HUD stays on **PARTIAL USB** after restarting Cyberpunk, copy diagnostics before disabling and enabling USB input again. The report shows which controls are ready, which are still waiting, and whether a USB reader call is still running.
 
 Recording continues when you close **Diagnostics**. Leave Chrome Axis open, then return to **Diagnostics… → Stop recording → Export CSV…**. Each session is written as it runs to `Profil/Diagnostics`, including driving data and USB incidents. The file marks records lost when the app cannot drain the buffer in time. Recording also supports driving with USB disabled. P95 and P99 timings are estimates.
 

@@ -194,8 +194,13 @@ HudFrame hudFrame;
 Clock::time_point lastUsbSignal{};
 chrome_axis::Simulator simulator;
 chrome_axis::ManualTransmissionInput transmissionInput;
-unsigned int lastTransmissionShortcut{};
-std::uint64_t transmissionShortcutPressedAt{};
+struct TransmissionShortcutHistory {
+    unsigned int key{};
+    std::uint64_t pressedAt{};
+    std::uint64_t pressCount{};
+    chrome_axis::DiagnosticShortcutSource source{};
+};
+TransmissionShortcutHistory transmissionShortcut;
 chrome_axis::ClutchShiftAssist clutchAssist;
 chrome_axis::KeyboardClutchProbe keyboardClutch;
 std::optional<float> probePosition;
@@ -883,8 +888,11 @@ chrome_axis::PedalRoutingDecision updateTransmission(Vehicle* vehicle, chrome_ax
             if (!press)
                 break;
             ++physicalPresses;
-            lastTransmissionShortcut = hotkey;
-            transmissionShortcutPressedAt = *press;
+            transmissionShortcut.key = hotkey;
+            transmissionShortcut.pressedAt = press->timestamp;
+            ++transmissionShortcut.pressCount;
+            transmissionShortcut.source = press->source == chrome_axis::TransmissionHotkeySource::hook
+                ? chrome_axis::DiagnosticShortcutSource::hook : chrome_axis::DiagnosticShortcutSource::poll;
         }
     }
     auto intent = transmissionInput.update(hardware, gear, simulated,
@@ -948,7 +956,7 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
         invalidated = mountedChanged || context.vehicle != current || (current && now - context.refreshed > contextLifetime);
         if (mountedChanged) {
             transmissionInput = {};
-            lastTransmissionShortcut = 0;
+            transmissionShortcut = {};
             transmissionPedals = {};
         }
         if (invalidated) {
@@ -1481,6 +1489,7 @@ chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend:
                                                            bool driving, Clock::time_point now) noexcept {
     using chrome_axis::DiagnosticShiftState;
     const auto hotkey = chrome_axis::transmissionHotkeyBinding();
+    const bool currentShortcut = transmissionShortcut.key == hotkey;
     const bool shortcutSource = inputFrame.nativeShifterVerified || inputFrame.nativeSequential || inputFrame.simulated;
     chrome_axis::DiagnosticTransmission result{
         .configured = inputFrame.nativeShifter || inputFrame.nativeSequential || inputFrame.simulated ||
@@ -1489,7 +1498,9 @@ chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend:
         .engagedGear = state.gearCount > 0 ? state.engagedGear : -2,
         .sequential = inputFrame.nativeSequential,
         .shortcutKey = hotkey,
-        .shortcutPressedAt = lastTransmissionShortcut == hotkey ? transmissionShortcutPressedAt : 0,
+        .shortcutPressedAt = currentShortcut ? transmissionShortcut.pressedAt : 0,
+        .shortcutPressCount = transmissionShortcut.pressCount,
+        .shortcutSource = currentShortcut ? transmissionShortcut.source : chrome_axis::DiagnosticShortcutSource::none,
         .hasRequestedMode = transmissionInput.hasSource(),
         .requestedManual = transmissionInput.manualSelected(),
         .shortcutAvailable = transmissionAvailable && driving && shortcutSource &&
@@ -2232,8 +2243,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             input->drainCycles([&](const auto& cycle) {
                 if (measuring) {
                     performance.usbRead.add(cycle.durationMicros);
-                    performance.usbIntervalOverruns += cycle.missedCadence ||
-                        cycle.durationMicros > elapsedMicros(physicalPollInterval);
+                    performance.usbSlowReads += cycle.durationMicros > elapsedMicros(physicalPollInterval);
+                    performance.usbLateStarts += cycle.missedCadence;
                 }
             });
             if (sampleExpired) {
@@ -2877,7 +2888,7 @@ void stopPlugin() {
     std::scoped_lock lock(stateMutex);
     context = {};
     transmissionInput = {};
-    lastTransmissionShortcut = 0;
+    transmissionShortcut = {};
     transmissionPedals = {};
     appliedAxes = {};
     inputAgeCapture = {};

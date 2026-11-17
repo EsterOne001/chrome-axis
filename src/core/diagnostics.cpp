@@ -34,10 +34,10 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 16;
+constexpr LONG64 protocolVersion = 17;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
-constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate gear and mode changes.
+constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate transmission changes.
 static_assert(std::is_trivially_copyable_v<DiagnosticFrame>);
 
 void close(HANDLE handle) noexcept
@@ -46,7 +46,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v16.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v17.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -82,6 +82,7 @@ constexpr std::array<std::string_view, 8> commandTokens{
     "inactive", "waiting_for_vehicle", "waiting_for_neutral", "ready", "device_unavailable",
     "input_unavailable", "temporarily_unavailable", "sample_expired"
 };
+constexpr std::array<std::string_view, 3> shortcutSourceTokens{"", "hook", "poll"};
 constexpr std::array<std::string_view, 3> clutchRestTokens{"unknown", "in_range", "out_of_range"};
 constexpr std::array<std::string_view, 6> clutchBlockerTokens{
     "none", "waiting_for_neutral", "signal_pending", "signal_unavailable", "below_threshold", "retry_paddle"
@@ -97,6 +98,7 @@ static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState:
 static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::layoutRecovered) + 1);
 static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::selectorAmbiguous) + 1);
 static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::sampleExpired) + 1);
+static_assert(shortcutSourceTokens.size() == static_cast<std::size_t>(DiagnosticShortcutSource::poll) + 1);
 static_assert(clutchRestTokens.size() == static_cast<std::size_t>(DiagnosticClutchRest::outOfRange) + 1);
 static_assert(clutchBlockerTokens.size() == static_cast<std::size_t>(DiagnosticClutchBlocker::retryPaddle) + 1);
 static_assert(inputKindTokens.size() == static_cast<std::size_t>(AccessoryKind::Axis) + 1);
@@ -104,11 +106,11 @@ static_assert(shifterRoleTokens.size() == static_cast<std::size_t>(ShifterRole::
 
 constexpr std::size_t drivingCsvColumns = 27;
 constexpr std::size_t clutchCsvColumns = 4;
-constexpr std::size_t captureCsvColumns = 51 + clutchCsvColumns;
+constexpr std::size_t transmissionCsvColumns = 7;
+constexpr std::size_t captureCsvColumns = 46 + transmissionCsvColumns + clutchCsvColumns;
 constexpr std::size_t drivingTransmissionColumn = 13; // Index of transmission_mode in a CSV row.
 constexpr std::size_t drivingTransmissionColumns = 6;
 constexpr std::size_t usbCsvColumns = 9;
-constexpr std::size_t transmissionCsvColumns = 5;
 
 std::uint64_t elapsed(std::uint64_t sampledAt, std::uint64_t startedAt) noexcept
 {
@@ -303,6 +305,10 @@ void writeCaptureTransmission(std::ostream& output, const DrivingCaptureSample& 
         output << elapsed(transmission.shortcutPressedAt, startedAt);
     }
     output.put(',');
+    if (transmission.shortcutKey)
+        output << transmission.shortcutPressCount;
+    output << ',' << csvToken(transmission.shortcutSource, shortcutSourceTokens);
+    output.put(',');
     if (transmission.hasRequestedMode)
         output << (transmission.requestedManual ? "manual" : "auto");
     output.put(',');
@@ -331,6 +337,7 @@ void writeDiagnosticCaptureHeader(std::ostream& output)
               "usb_event,usb_operation,usb_result,usb_duration_us,usb_device_axes,usb_device_accessory_count,"
               "accessory_state,accessory_armed,accessory_count,usb_blocker_count,usb_blockers,"
               "transmission_shortcut_key,transmission_shortcut_available,transmission_shortcut_pressed_elapsed_ms,"
+              "transmission_shortcut_press_count,transmission_shortcut_source,"
               "transmission_requested_mode,gearbox_sample_age_ms,"
               "clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker\r\n";
 }

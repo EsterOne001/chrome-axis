@@ -16,6 +16,15 @@ public:
 
     explicit PhysicalModeKey(unsigned int key) noexcept : key_(key) {}
 
+    static constexpr std::optional<std::uint64_t> eventTimestamp(std::uint64_t receivedAt,
+                                                                 std::uint32_t eventAt) noexcept {
+        // KBDLLHOOKSTRUCT::time has only the low 32 bits of the Windows tick count.
+        const std::uint32_t age = static_cast<std::uint32_t>(receivedAt) - eventAt;
+        if (age > pressLifetime || age > receivedAt)
+            return std::nullopt;
+        return receivedAt - age;
+    }
+
     unsigned int key() const noexcept { return key_.load(std::memory_order_relaxed); }
     std::uint64_t sampleRevision() const noexcept { return revision_.load(std::memory_order_relaxed); }
 
@@ -25,23 +34,23 @@ public:
         std::scoped_lock lock(mutex_);
         if (key != this->key()) {
             key_.store(key, std::memory_order_relaxed);
-            rearm();
+            clearPresses();
+            phase_ = Phase::initial;
+            sampleSync_ = SampleSync::matched;
+            lastHookAt_ = 0;
         }
     }
 
     void setContext(bool active, std::uint64_t now) noexcept {
         std::scoped_lock lock(mutex_);
         if (!active) {
-            if (contextAt_)
-                rearm();
-            contextStart_ = contextAt_ = 0;
+            endContext();
             return;
         }
         if (now < contextAt_)
             return;
         if (!contextFresh(now)) {
-            if (contextAt_)
-                rearm();
+            endContext();
             contextStart_ = now;
         }
         contextAt_ = now;
@@ -61,22 +70,34 @@ public:
             phase_ = Phase::released;
     }
 
-    void update(unsigned int key, bool pressed, bool injected, std::uint64_t tick) noexcept {
+    void update(unsigned int key, bool pressed, bool injected, std::optional<std::uint64_t> tick,
+                bool foreground = true) noexcept {
         if (injected)
             return;
         std::scoped_lock lock(mutex_);
-        // The hook may have read the clock just before the same context was refreshed.
-        const auto sinceTick = contextAt_ > tick ? contextAt_ - tick : tick - contextAt_;
-        if (key != this->key() || !contextAt_ || tick < contextStart_ || sinceTick > contextLifetime)
+        if (key != this->key())
             return;
-        const auto previous = phase_;
+        if (!foreground)
+            endContext();
+        if (tick) {
+            if (*tick < lastHookAt_)
+                return;
+            lastHookAt_ = *tick;
+        }
+        const auto previousPhase = phase_;
+        const auto previousSync = sampleSync_;
         if (pressed && (phase_ == Phase::initial || phase_ == Phase::released)) {
             sampleSync_ = sampleSync_ == SampleSync::awaitingUp ? SampleSync::awaitingUpThenDown : SampleSync::awaitingDown;
         } else if (!pressed && phase_ != Phase::released) {
             sampleSync_ = SampleSync::awaitingUp;
         }
-        acceptLevel(pressed, tick);
-        if (phase_ != previous)
+        // Outside the current driving context, only remember the physical level. A late async
+        // down must not turn an ineligible press or an already counted hold into a new edge.
+        if (tick && hookInContext(*tick))
+            acceptLevel(pressed, {*tick, true});
+        else
+            phase_ = pressed ? Phase::waitingForRelease : Phase::released;
+        if (phase_ != previousPhase || sampleSync_ != previousSync)
             ++revision_;
     }
 
@@ -105,25 +126,28 @@ public:
             break;
         }
         sampleSync_ = SampleSync::matched;
-        acceptLevel(pressed, now);
+        acceptLevel(pressed, {now, false});
     }
 
-    std::optional<std::uint64_t> takePress(unsigned int key, std::uint64_t now) noexcept {
+    std::optional<std::uint64_t> takePress(unsigned int key, std::uint64_t now, bool* fromHook = nullptr) noexcept {
         std::scoped_lock lock(mutex_);
         if (key != this->key() || !contextFresh(now))
             return std::nullopt;
         discardExpired(now);
         // A press can arrive in the interval between reading the clock and taking this lock.
-        if (!count_ || presses_[head_] > now)
+        if (!count_ || presses_[head_].timestamp > now)
             return std::nullopt;
         const auto press = presses_[head_];
         pop();
-        return press;
+        if (fromHook)
+            *fromHook = press.fromHook;
+        return press.timestamp;
     }
 
 private:
     enum class Phase { initial, waitingForRelease, released, pressed };
     enum class SampleSync { matched, awaitingDown, awaitingUp, awaitingUpThenDown };
+    struct Press { std::uint64_t timestamp{}; bool fromHook{}; };
     static constexpr std::uint64_t contextLifetime = 100; // ms
     static constexpr std::uint64_t pressLifetime = 200; // ms
 
@@ -131,26 +155,41 @@ private:
         return contextAt_ && now >= contextAt_ && now - contextAt_ <= contextLifetime;
     }
 
-    void acceptLevel(bool pressed, std::uint64_t tick) noexcept {
+    bool hookInContext(std::uint64_t tick) const noexcept {
+        // The event may predate the latest refresh while belonging to the same context.
+        const auto sinceTick = contextAt_ > tick ? contextAt_ - tick : tick - contextAt_;
+        return contextAt_ && tick >= contextStart_ && sinceTick <= contextLifetime;
+    }
+
+    void acceptLevel(bool pressed, Press press) noexcept {
         if (!pressed) {
             phase_ = Phase::released;
         } else if (phase_ == Phase::initial) {
             phase_ = Phase::waitingForRelease;
         } else if (phase_ == Phase::released) {
             phase_ = Phase::pressed;
-            discardExpired(tick);
+            discardExpired(press.timestamp);
             if (count_ < presses_.size()) {
-                presses_[(head_ + count_) % presses_.size()] = tick;
+                presses_[(head_ + count_) % presses_.size()] = press;
                 ++count_;
             }
         }
     }
 
-    void rearm() noexcept {
+    void clearPresses() noexcept {
         ++revision_;
-        phase_ = Phase::initial;
-        sampleSync_ = SampleSync::matched;
         head_ = count_ = 0;
+    }
+
+    void endContext() noexcept {
+        if (!contextAt_)
+            return;
+        contextStart_ = contextAt_ = 0;
+        clearPresses();
+        if (phase_ == Phase::pressed)
+            phase_ = Phase::waitingForRelease;
+        else if (phase_ == Phase::released && sampleSync_ == SampleSync::matched)
+            phase_ = Phase::initial;
     }
 
     void pop() noexcept {
@@ -159,7 +198,7 @@ private:
     }
 
     void discardExpired(std::uint64_t now) noexcept {
-        while (count_ && now >= presses_[head_] && now - presses_[head_] > pressLifetime)
+        while (count_ && now >= presses_[head_].timestamp && now - presses_[head_].timestamp > pressLifetime)
             pop();
     }
 
@@ -167,10 +206,11 @@ private:
     mutable std::mutex mutex_;
     std::uint64_t contextStart_{};
     std::uint64_t contextAt_{};
+    std::uint64_t lastHookAt_{};
     std::atomic<std::uint64_t> revision_{};
     Phase phase_{Phase::initial};
     SampleSync sampleSync_{SampleSync::matched};
-    std::array<std::uint64_t, pressCapacity> presses_{};
+    std::array<Press, pressCapacity> presses_{};
     std::size_t head_{}, count_{};
 };
 

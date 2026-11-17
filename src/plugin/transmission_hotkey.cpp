@@ -26,10 +26,8 @@ LRESULT CALLBACK observeKey(int code, WPARAM message, LPARAM data) noexcept {
     if (code == HC_ACTION) {
         const auto& key = *reinterpret_cast<const KBDLLHOOKSTRUCT*>(data);
         if (key.vkCode == modeKey.key() && !(key.flags & LLKHF_INJECTED)) {
-            if (gameForeground())
-                modeKey.update(key.vkCode, (key.flags & LLKHF_UP) == 0, false, GetTickCount64());
-            else
-                modeKey.setContext(false, 0);
+            const auto eventAt = PhysicalModeKey::eventTimestamp(GetTickCount64(), key.time);
+            modeKey.update(key.vkCode, (key.flags & LLKHF_UP) == 0, false, eventAt, gameForeground());
         }
     }
     return CallNextHookEx(nullptr, code, message, data);
@@ -115,13 +113,16 @@ void sampleTransmissionHotkey(unsigned int key, bool pressed, std::uint64_t obse
     modeKey.sample(key, pressed, GetTickCount64(), observedRevision);
 }
 
-std::optional<std::uint64_t> takeTransmissionHotkeyPress(unsigned int key) noexcept {
-    const auto press = modeKey.takePress(key, GetTickCount64());
-    if (press && !gameForeground()) {
+std::optional<TransmissionHotkeyPress> takeTransmissionHotkeyPress(unsigned int key) noexcept {
+    bool fromHook{};
+    const auto timestamp = modeKey.takePress(key, GetTickCount64(), &fromHook);
+    if (!timestamp)
+        return std::nullopt;
+    if (!gameForeground()) {
         modeKey.setContext(false, 0);
         return std::nullopt;
     }
-    return press;
+    return TransmissionHotkeyPress{*timestamp, fromHook ? TransmissionHotkeySource::hook : TransmissionHotkeySource::poll};
 }
 
 bool transmissionHotkeyAvailable() noexcept { return available.load(std::memory_order_acquire); }

@@ -107,6 +107,8 @@ enum class DiagnosticShiftState : std::uint8_t {
     selectorAmbiguous
 };
 
+enum class DiagnosticShortcutSource : std::uint8_t { none, hook, poll };
+
 struct DiagnosticTransmission {
     bool configured{};
     bool manual{};
@@ -117,6 +119,8 @@ struct DiagnosticTransmission {
     bool sequential{};
     std::uint32_t shortcutKey{};
     std::uint64_t shortcutPressedAt{}; // GetTickCount64() of the last recognized press.
+    std::uint64_t shortcutPressCount{}; // Physical presses consumed during the current driving session.
+    DiagnosticShortcutSource shortcutSource{}; // Source of the last recognized press on shortcutKey.
     bool hasRequestedMode{};
     bool requestedManual{};
     bool shortcutAvailable{};
@@ -245,7 +249,8 @@ struct PerformanceReport {
     float peakRequestedForce{}; // Absolute normalized peak before limiting.
     float peakLimitedForce{}; // Absolute normalized peak after limiting.
     float peakSubmittedForce{}; // Absolute normalized peak of the effects accepted by the driver.
-    std::uint64_t usbIntervalOverruns{};
+    std::uint64_t usbSlowReads{};
+    std::uint64_t usbLateStarts{};
     std::uint64_t feedbackIntervalOverruns{};
     float peakContinuousForce{};
     int referenceFeedbackGain{};

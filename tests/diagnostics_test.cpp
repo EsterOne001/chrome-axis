@@ -80,7 +80,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
         performance.peakRequestedForce = 1.625f;
         performance.peakLimitedForce = 1.0f;
         performance.peakSubmittedForce = 0.875f;
-        performance.usbIntervalOverruns = 4;
+        performance.usbSlowReads = 4;
+        performance.usbLateStarts = 9;
         performance.feedbackIntervalOverruns = 5;
         performance.peakContinuousForce = 1.125f;
         performance.referenceFeedbackGain = 130;
@@ -99,7 +100,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
         sample.transmission = {
             .configured = true, .manual = true, .selectedGear = 3, .requestedGear = 3, .engagedGear = 2,
             .shift = DiagnosticShiftState::pending, .sequential = true, .shortcutKey = VK_F8,
-            .shortcutPressedAt = sample.sampledAt, .hasRequestedMode = true, .requestedManual = true,
+            .shortcutPressedAt = sample.sampledAt, .shortcutPressCount = 1, .shortcutSource = DiagnosticShortcutSource::hook,
+            .hasRequestedMode = true, .requestedManual = true,
             .shortcutAvailable = true, .gearboxSampledAt = sample.sampledAt,
         };
         sample.clutch = {0.7f, 0.4f, true, true, true, false, true, true};
@@ -109,6 +111,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
         sample.transmission.shortcutPressedAt = sample.sampledAt;
         sample.transmission.gearboxSampledAt = sample.sampledAt - 2;
         publisher.recordDrivingSample(start, sample); // Timestamps alone do not force a row.
+        sample.transmission.shortcutPressCount += 2;
+        publisher.recordDrivingSample(start, sample); // Two presses are visible even when the mode is unchanged.
         const auto availableClutch = sample.clutch;
         sample.clutch.inputAvailable = false;
         sample.clutch.signal = DiagnosticCommandState::temporarilyUnavailable;
@@ -116,6 +120,9 @@ int testPerformanceCapture(const std::filesystem::path& root)
         publisher.recordDrivingSample(start, sample); // A blocker change keeps its own row.
         sample.clutch = availableClutch;
         sample.sampledAt += 5;
+        sample.transmission.shortcutPressedAt = sample.sampledAt;
+        ++sample.transmission.shortcutPressCount;
+        sample.transmission.shortcutSource = DiagnosticShortcutSource::poll;
         sample.transmission.engagedGear = 3;
         sample.transmission.shift = DiagnosticShiftState::accepted;
         sample.shiftDelayMicros = 9900;
@@ -153,12 +160,13 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.performance.clippedSamples != 3 || live.performance.impactClippedSamples != 2 ||
             live.performance.submittedEffects != 13 || live.performance.peakRequestedForce != 1.625f ||
             live.performance.peakLimitedForce != 1.0f || live.performance.peakSubmittedForce != 0.875f ||
-            live.performance.usbIntervalOverruns != 4 || live.performance.feedbackIntervalOverruns != 5 ||
+            live.performance.usbSlowReads != 4 || live.performance.usbLateStarts != 9 ||
+            live.performance.feedbackIntervalOverruns != 5 ||
             live.performance.peakContinuousForce != 1.125f || live.performance.referenceFeedbackGain != 130 ||
-            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 4)
+            live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 5)
             return 15;
 
-        std::array<DiagnosticCaptureRecord, 8> records;
+        std::array<DiagnosticCaptureRecord, 9> records;
         const auto firstBatch = owner.drainCapture(std::span(records).first(3));
         if (!firstBatch.available || firstBatch.finished || firstBatch.dropped || firstBatch.count != 3 ||
             observer.drainCapture(records).available)
@@ -190,18 +198,22 @@ int testPerformanceCapture(const std::filesystem::path& root)
             finished.clippedSamples != 3 || finished.impactClippedSamples != 2 || finished.submittedEffects != 13)
             return 17;
         const auto tail = owner.drainCapture(std::span(records).subspan(3));
-        if (!tail.available || !tail.finished || tail.count != 5 || tail.dropped ||
+        if (!tail.available || !tail.finished || tail.count != 6 || tail.dropped ||
             records.front().driving.transmission.shift != DiagnosticShiftState::pending ||
-            records[1].driving.clutch.blocker != DiagnosticClutchBlocker::signalPending ||
-            records[1].driving.clutch.inputAvailable ||
-            records[2].driving.transmission.shortcutPressedAt != performance.startedAt + 5 ||
-            records[2].driving.shiftDelayMicros != 9900 || records[3].driving.mode != DiagnosticMode::usbDisabled ||
-            !records[3].driving.speedAvailable || records[3].driving.speedMps != 12.5f ||
-            records[4].driving.mode != DiagnosticMode::waitingForVehicleInput ||
+            records[1].driving.transmission.shortcutPressCount != 3 ||
+            records[1].driving.transmission.shortcutSource != DiagnosticShortcutSource::hook ||
+            records[1].driving.transmission.manual != records[0].driving.transmission.manual ||
+            records[2].driving.clutch.blocker != DiagnosticClutchBlocker::signalPending ||
+            records[2].driving.clutch.inputAvailable ||
+            records[3].driving.transmission.shortcutPressedAt != performance.startedAt + 10 ||
+            records[3].driving.transmission.shortcutSource != DiagnosticShortcutSource::poll ||
+            records[3].driving.shiftDelayMicros != 9900 || records[4].driving.mode != DiagnosticMode::usbDisabled ||
+            !records[4].driving.speedAvailable || records[4].driving.speedMps != 12.5f ||
             records[5].driving.mode != DiagnosticMode::waitingForVehicleInput ||
-            records[5].driving.transmission.shortcutKey != 'L' ||
-            records[5].driving.transmission.configured || records[6].driving.transmission.engagedGear != 2 ||
-            !records[7].usbIncident || records[7].usb.durationMicros != 52100 ||
+            records[6].driving.mode != DiagnosticMode::waitingForVehicleInput ||
+            records[6].driving.transmission.shortcutKey != 'L' ||
+            records[6].driving.transmission.configured || records[7].driving.transmission.engagedGear != 2 ||
+            !records[8].usbIncident || records[8].usb.durationMicros != 52100 ||
             owner.drainCapture(records).count || observer.read().drivingCaptureSamples ||
             observer.drainCapture(records).available)
             return 22;
@@ -218,13 +230,15 @@ int testPerformanceCapture(const std::filesystem::path& root)
             "\r\n10,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,3,accepted,9900,1,0,1,1,1,1,1,driving,";
         if (!text.starts_with("elapsed_ms,mode,vehicle,speed_mps,engine_rpm,") ||
             text.find(pendingRow) == std::string::npos || text.find(acceptedRow) == std::string::npos ||
-            text.find(",119,1,0,manual,0,inactive,,unknown,none\r\n") == std::string::npos ||
+            text.find(",transmission_shortcut_press_count,transmission_shortcut_source,") == std::string::npos ||
+            text.find(",119,1,0,1,hook,manual,0,inactive,,unknown,none\r\n") == std::string::npos ||
+            text.find(",119,1,5,3,hook,manual,2,inactive,,unknown,none\r\n") == std::string::npos ||
             text.find(",temporarily_unavailable,,unknown,signal_pending\r\n") == std::string::npos ||
-            text.find(",119,1,5,manual,7,inactive,,unknown,none\r\n") == std::string::npos ||
+            text.find(",119,1,10,4,poll,manual,7,inactive,,unknown,none\r\n") == std::string::npos ||
             text.find("\r\n30,usb_disabled,") == std::string::npos ||
             text.find("\r\n50,waiting_for_vehicle_input,") == std::string::npos ||
             text.find("\r\n70,waiting_for_vehicle_input,,,,,,,,,,,,manual,,2,2,2,accepted,,,,,,,,,context,") == std::string::npos ||
-            text.find(",76,0,,manual,,,,,\r\n") == std::string::npos ||
+            text.find(",76,0,,0,,manual,,,,,\r\n") == std::string::npos ||
             text.find(",context,") == std::string::npos ||
             text.find(",device_slow,\"Poll\",0x80070005,52100,") == std::string::npos ||
             text.find(privateId) != std::string::npos ||
@@ -376,8 +390,8 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     const auto text = csv.str();
     constexpr std::string_view blockersCell =
         ",5,gear_1:button:2:0:waiting_for_neutral|clutch:axis:3:0:temporarily_unavailable|"
-        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,,,,,\r\n";
-    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,,,,,,\r\n") == std::string::npos ||
+        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,,,,,,,\r\n";
+    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,0,,,,,,,\r\n") == std::string::npos ||
         text.find(",clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker\r\n") == std::string::npos ||
         text.find(",waiting_for_neutral,-0.034,out_of_range,waiting_for_neutral\r\n") == std::string::npos ||
         text.find(",clutch_required,") == std::string::npos ||
@@ -394,7 +408,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     std::string row;
     while (std::getline(lines, row)) {
         // These fixtures contain no quoted commas, so all row types share the same column count.
-        if (std::ranges::count(row, ',') != 54)
+        if (std::ranges::count(row, ',') != 56)
             return false;
     }
     return true;
@@ -586,6 +600,10 @@ int run()
         .activeAvailable = 1,
     };
     snapshot.transmission = {true, true, 0, 0, -1, DiagnosticShiftState::stopToChangeDirection};
+    snapshot.transmission.shortcutKey = 'J';
+    snapshot.transmission.shortcutPressedAt = GetTickCount64();
+    snapshot.transmission.shortcutPressCount = 2;
+    snapshot.transmission.shortcutSource = DiagnosticShortcutSource::hook;
     snapshot.feedback = DiagnosticFeedbackState::active;
     snapshot.feedbackData = {
         .motionAgeMicros = 16500,

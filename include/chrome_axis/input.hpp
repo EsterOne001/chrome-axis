@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cstddef>
@@ -80,6 +81,7 @@ struct DirectInputReadEvent {
 };
 
 using DirectInputReadObserver = void (*)(void*, const DirectInputReadEvent&) noexcept;
+using DirectInputActiveCall = std::atomic<const char*>; // Non-owning name with static storage.
 
 enum class WheelForceState { waiting, active, unavailable, neutral };
 
@@ -119,7 +121,8 @@ private:
 class DirectInput final : public DeviceSampleSource {
 public:
     explicit DirectInput(HWND window, DirectInputDiagnostic diagnostic = nullptr,
-                         DirectInputReadObserver readObserver = nullptr, void* observerContext = nullptr);
+                         DirectInputReadObserver readObserver = nullptr, void* observerContext = nullptr,
+                         DirectInputActiveCall* activeCall = nullptr);
     ~DirectInput();
     DirectInput(const DirectInput&) = delete;
     DirectInput& operator=(const DirectInput&) = delete;

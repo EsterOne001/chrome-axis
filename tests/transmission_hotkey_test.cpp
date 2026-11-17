@@ -9,6 +9,7 @@ using chrome_axis::PhysicalModeKey;
 using chrome_axis::TransmissionSource;
 
 constexpr unsigned int shortcut = 'J';
+enum class DrivingPause { none, explicitPause, expired };
 
 void sampleLevel(PhysicalModeKey& key, unsigned int virtualKey, bool pressed, std::uint64_t tick)
 {
@@ -47,7 +48,8 @@ bool mergesAsynchronousLevelsWithHookEvents()
     sampleLevel(key, shortcut, false, 100);
     key.update(shortcut, true, false, 101);
     sampleLevel(key, shortcut, false, 102); // The hook sees key-down before Windows publishes the new level.
-    if (key.takePress(shortcut, 102) != 101 || key.takePress(shortcut, 102))
+    bool fromHook{};
+    if (key.takePress(shortcut, 102, &fromHook) != 101 || !fromHook || key.takePress(shortcut, 102))
         return false;
     sampleLevel(key, shortcut, true, 103);
     key.update(shortcut, false, false, 104);
@@ -58,7 +60,7 @@ bool mergesAsynchronousLevelsWithHookEvents()
     sampleLevel(key, shortcut, false, 106);
     sampleLevel(key, shortcut, true, 107);
     key.update(shortcut, true, false, 108); // Even a late callback cannot duplicate the sampled hold.
-    if (key.takePress(shortcut, 108) != 107 || key.takePress(shortcut, 108))
+    if (key.takePress(shortcut, 108, &fromHook) != 107 || fromHook || key.takePress(shortcut, 108))
         return false;
     key.update(shortcut, false, false, 109);
     // The listener still captures two taps entirely between vehicle updates.
@@ -99,7 +101,7 @@ bool discardsStaleContextAndRearmsOnBindingChange()
     return !key.takePress('F', 300);
 }
 
-bool ignoresLateDownForTheSameHold(bool simulation)
+bool ignoresLateDownForTheSameHold(bool simulation, DrivingPause pause)
 {
     PhysicalModeKey key(shortcut);
     ManualTransmissionInput transmission;
@@ -116,15 +118,18 @@ bool ignoresLateDownForTheSameHold(bool simulation)
     if (initial.manual != hardware || !first.toggledByKey || first.manual != simulation)
         return false;
 
+    if (pause == DrivingPause::explicitPause)
+        key.setContext(false, 0);
+    const unsigned int offset = pause == DrivingPause::expired ? 150 : 0;
     for (const auto tick : {1030u, 1050u, 1085u}) {
-        const auto stale = frame(false, tick);
+        const auto stale = frame(false, tick + offset);
         if (stale.toggledByKey || stale.manual != first.manual)
             return false;
     }
-    const auto late = frame(true, 1090);
-    const auto continuedHold = frame(true, 1105);
-    const auto released = frame(false, 1110);
-    const auto second = frame(true, 1120);
+    const auto late = frame(true, 1090 + offset);
+    const auto continuedHold = frame(true, 1105 + offset);
+    const auto released = frame(false, 1110 + offset);
+    const auto second = frame(true, 1120 + offset);
     return !late.toggledByKey && late.manual == first.manual &&
         !continuedHold.toggledByKey && continuedHold.manual == first.manual &&
         !released.toggledByKey && released.manual == first.manual &&
@@ -173,6 +178,52 @@ bool rearmsAfterListenerStopsMidPress()
     return key.takePress(shortcut, 220) == 220 && !key.takePress(shortcut, 220);
 }
 
+bool rearmsWhenActuallyReleasedOutsideDriving(bool gameInForeground)
+{
+    PhysicalModeKey key(shortcut);
+    key.setContext(true, 100);
+    sampleLevel(key, shortcut, false, 100);
+    key.update(shortcut, true, false, 101);
+    if (key.takePress(shortcut, 102) != 101)
+        return false;
+
+    if (gameInForeground)
+        key.setContext(false, 0); // In-game menu, where the keyboard listener still sees the game in front.
+    key.update(shortcut, false, false, 104, gameInForeground);
+    key.update(shortcut, true, false, 105, gameInForeground);
+    key.update(shortcut, false, false, 106, gameInForeground);
+    key.setContext(true, 110);
+    sampleLevel(key, shortcut, true, 111); // Delayed down from outside driving.
+    if (key.takePress(shortcut, 111))
+        return false;
+
+    key.update(shortcut, true, false, 112);
+    return key.takePress(shortcut, 112) == 112 && !key.takePress(shortcut, 112);
+}
+
+bool usesOriginalWindowsEventTime()
+{
+    using Key = PhysicalModeKey;
+    if (Key::eventTimestamp(0x1'0000'0010ull, 0xffff'fff0u) != 0xffff'fff0ull ||
+        Key::eventTimestamp(2000, 1800) != 1800 || Key::eventTimestamp(2000, 1799) ||
+        Key::eventTimestamp(2000, 2001) || Key::eventTimestamp(12, 0xffff'fff0u))
+        return false;
+
+    Key key(shortcut);
+    key.setContext(true, 2000);
+    sampleLevel(key, shortcut, false, 2000);
+    key.update(shortcut, true, false, Key::eventTimestamp(2010, 1950));
+    sampleLevel(key, shortcut, false, 2012);
+    sampleLevel(key, shortcut, true, 2015); // Async down is from the same ineligible press.
+    if (key.takePress(shortcut, 2015))
+        return false;
+
+    key.update(shortcut, false, false, Key::eventTimestamp(2018, 2016));
+    key.update(shortcut, true, false, Key::eventTimestamp(2025, 2021));
+    bool fromHook{};
+    return key.takePress(shortcut, 2025, &fromHook) == 2021 && fromHook && !key.takePress(shortcut, 2025);
+}
+
 } // namespace
 
 int main()
@@ -194,12 +245,22 @@ int main()
         std::cerr << "The key could not rearm after the Windows listener stopped mid-press\n";
         return 4;
     }
-    if (!ignoresLateDownForTheSameHold(true) || !ignoresLateDownForTheSameHold(false)) {
-        std::cerr << "One held J toggled twice when the Windows key state changed late\n";
-        return 5;
+    for (const auto pause : {DrivingPause::none, DrivingPause::explicitPause, DrivingPause::expired}) {
+        if (!ignoresLateDownForTheSameHold(true, pause) || !ignoresLateDownForTheSameHold(false, pause)) {
+            std::cerr << "One held J toggled twice when the Windows key state changed late\n";
+            return 5;
+        }
     }
     if (!ignoresSamplesCapturedBeforeHookTransitions()) {
         std::cerr << "An old sample overrode a more recent hook transition\n";
         return 6;
+    }
+    if (!rearmsWhenActuallyReleasedOutsideDriving(true) || !rearmsWhenActuallyReleasedOutsideDriving(false)) {
+        std::cerr << "The shortcut must recognize a true release outside driving without queuing an inactive press\n";
+        return 7;
+    }
+    if (!usesOriginalWindowsEventTime()) {
+        std::cerr << "A delayed event crossed the context boundary or its Windows timestamp was misread\n";
+        return 8;
     }
 }

@@ -22,12 +22,14 @@ struct TestDriver {
         std::atomic<unsigned int> opens{};
         std::atomic<bool> pressed{};
         std::atomic<bool> pedalConnected{true};
+        std::atomic<bool> blockWheel{};
     };
 
     static inline State* state{};
 
-    TestDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver observer, void* observerContext)
-        : observer(observer), observerContext(observerContext) {
+    TestDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver observer, void* observerContext,
+               DirectInputActiveCall* activeCall)
+        : observer(observer), observerContext(observerContext), activeCall(activeCall) {
         ++state->opens;
     }
 
@@ -54,6 +56,11 @@ struct TestDriver {
             sample.axes[0] = state->pressed ? 1000 : 0;
             sample.buttons.set(0, state->pressed);
         } else {
+            if (state->blockWheel) {
+                activeCall->store("GetDeviceState", std::memory_order_relaxed);
+                state->blockWheel.wait(true);
+                activeCall->store(nullptr, std::memory_order_relaxed);
+            }
             sample.axesPresent[0] = wanted.axes[0];
             if (wanted.axes[1] && state->slowAttempts < 2) {
                 ++state->slowAttempts;
@@ -70,6 +77,7 @@ struct TestDriver {
 
     DirectInputReadObserver observer{};
     void* observerContext{};
+    DirectInputActiveCall* activeCall{};
     bool pedalFault{};
     std::uint64_t recovery{};
 };
@@ -156,6 +164,48 @@ int checkIsolatedDiscovery(bool assigned)
     return 0;
 }
 
+int checkBlockedWorkerTelemetry()
+{
+    TestDriver::State fake;
+    fake.blockWheel = true;
+    TestDriver::state = &fake;
+    DrivingInputs<TestDriver> input(5ms, 100ms);
+    struct UnblockWheel {
+        std::atomic<bool>& blocked;
+        ~UnblockWheel() {
+            blocked = false;
+            blocked.notify_one();
+        }
+    } unblock{fake.blockWheel};
+
+    std::array devices{DrivingInputDevice{wheel, {}}, DrivingInputDevice{pedals, {}}};
+    for (auto& device : devices)
+        device.objects.axes.set(0);
+    if (!input.configure(GetDesktopWindow(), devices))
+        return 48;
+
+    unsigned int waitingEvents{};
+    const auto poll = [&] {
+        input.beginPoll(Clock::now());
+        input.drainEvents([&](const std::string& id, const auto& event) {
+            if (id == wheel && event.kind == DirectInputReadEventKind::slow &&
+                std::string_view(event.operation.data()) == "Active GetDeviceState" &&
+                event.durationMicros >= 250000)
+                ++waitingEvents;
+        });
+    };
+    if (!waitUntil([&] { poll(); return waitingEvents != 0; }))
+        return 49;
+    for (int i = 0; i < 10; ++i)
+        poll();
+
+    DeviceReadStatus wheelStatus{}, pedalStatus{};
+    const auto pedal = input.sample(pedals, {}, &pedalStatus);
+    const auto wheelSample = input.sample(wheel, {}, &wheelStatus);
+    return waitingEvents == 1 && pedal && pedalStatus == DeviceReadStatus::available &&
+        !wheelSample && wheelStatus == DeviceReadStatus::unavailable ? 0 : 50;
+}
+
 int checkCoalescedArming()
 {
     Profile profile;
@@ -197,7 +247,7 @@ struct TransitionDriver {
 
     static inline State* state{};
 
-    TransitionDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*) {}
+    TransitionDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*, DirectInputActiveCall*) {}
     bool ready() const noexcept { return true; }
 
     std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,
@@ -445,7 +495,7 @@ struct SplitPaddleDriver {
 
     static inline State* state{};
 
-    SplitPaddleDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*) {}
+    SplitPaddleDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*, DirectInputActiveCall*) {}
     bool ready() const noexcept { return true; }
 
     std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,
@@ -625,7 +675,8 @@ int checkPaddleEvidenceAtPress()
 
 int main()
 {
-    for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkCoalescedArming(),
+    for (const auto result : {checkIsolatedDiscovery(false), checkIsolatedDiscovery(true), checkBlockedWorkerTelemetry(),
+                              checkCoalescedArming(),
                               checkBufferedTransitions(false), checkBufferedTransitions(true),
                               checkPaddleBatchOrdering(), checkPaddleEvidenceAtPress(),
                               checkSplitPaddleSampling(false, OpponentInterruption::none),

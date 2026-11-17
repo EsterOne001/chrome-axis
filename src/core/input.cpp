@@ -218,11 +218,18 @@ InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = n
 struct OpenDevice {
     ~OpenDevice() { release(); }
 
-    void release() {
+    void release(DirectInputActiveCall* activeCall = nullptr) {
         if (device) {
-            if (acquired)
+            if (acquired) {
+                if (activeCall)
+                    activeCall->store("Unacquire", std::memory_order_relaxed);
                 device->Unacquire();
+            }
+            if (activeCall)
+                activeCall->store("Release device", std::memory_order_relaxed);
             device.reset();
+            if (activeCall)
+                activeCall->store(nullptr, std::memory_order_relaxed);
         }
         acquired = false;
         continuity.reset();
@@ -278,15 +285,22 @@ struct OpenDevice {
 
 class ReadObserver {
 public:
-    ReadObserver(OpenDevice& device, std::string_view id, DirectInputReadObserver callback, void* context) noexcept
-        : device_(device), id_(id), callback_(callback), context_(context) {}
+    ReadObserver(OpenDevice& device, std::string_view id, DirectInputReadObserver callback, void* context,
+                 DirectInputActiveCall* activeCall = nullptr) noexcept
+        : device_(device), id_(id), callback_(callback), context_(context), activeCall_(activeCall) {}
 
     template <class Call>
-    HRESULT measure(std::string_view operation, Call call) noexcept(noexcept(call())) {
-        if (!callback_)
+    HRESULT measure(const char* operation, Call call) noexcept(noexcept(call())) {
+        if (!callback_ && !activeCall_)
             return call();
         const auto started = Clock::now();
+        if (activeCall_)
+            activeCall_->store(operation, std::memory_order_relaxed);
         const auto result = call();
+        if (activeCall_)
+            activeCall_->store(nullptr, std::memory_order_relaxed);
+        if (!callback_)
+            return result;
         const auto now = Clock::now();
         const auto duration = now - started;
         micros_ = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
@@ -342,12 +356,13 @@ private:
     std::string_view id_;
     DirectInputReadObserver callback_;
     void* context_;
+    DirectInputActiveCall* activeCall_;
     std::uint64_t micros_{};
 };
 
 enum class LayoutProbe { quiet, discovery, readHandle };
 
-auto probeObject(IDirectInputDevice8W& device, ReadObserver& observer, std::string_view operation,
+auto probeObject(IDirectInputDevice8W& device, ReadObserver& observer, const char* operation,
                  DWORD type, DWORD offset, LayoutProbe probe) {
     bool present = false;
     const auto result = observer.measure(operation, [&] {
@@ -368,7 +383,7 @@ auto probeObject(IDirectInputDevice8W& device, ReadObserver& observer, std::stri
 
 template <std::size_t Count, class Offset>
 void refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& wanted,
-                    IDirectInputDevice8W& device, ReadObserver& observer, std::string_view operation,
+                    IDirectInputDevice8W& device, ReadObserver& observer, const char* operation,
                     DWORD type, Offset offset, LayoutProbe probe = LayoutProbe::quiet) {
     layout.refresh(wanted, Clock::now(), [&](std::size_t index) {
         return probeObject(device, observer, operation, type, offset(index), probe);
@@ -430,7 +445,7 @@ public:
 
 private:
     bool open(ReadObserver& observer) {
-        const auto setup = [&](std::string_view operation, auto&& call) {
+        const auto setup = [&](const char* operation, auto&& call) {
             const auto result = observer.measure(operation, call);
             if (FAILED(result))
                 observer.layout(DirectInputReadEventKind::layoutPending, operation, result);
@@ -494,7 +509,7 @@ void probeOnReadHandle(OpenDevice& opened, const DeviceObjectSelection& wanted, 
 
     constexpr auto objectCount = axisCount + buttonCount + povCount;
     const auto probe = [&](auto& layout, const auto& flags, std::size_t index,
-                           std::string_view operation, DWORD type, DWORD offset) {
+                           const char* operation, DWORD type, DWORD offset) {
         return flags[index] && layout.refreshOne(index, now, [&](std::size_t) {
             return probeObject(*opened.device, observer, operation, type, offset, LayoutProbe::readHandle);
         });
@@ -616,9 +631,23 @@ void DeviceReadContinuity::reset() noexcept {
 }
 
 struct DirectInput::Impl {
-    Impl(HWND windowHandle, DirectInputDiagnostic callback, DirectInputReadObserver readObserver, void* observerContext)
-        : window(windowHandle), diagnostic(callback), input(createDirectInput(callback)),
-          readObserver(readObserver), observerContext(observerContext), wheel(readObserver, observerContext) {}
+    Impl(HWND windowHandle, DirectInputDiagnostic callback, DirectInputReadObserver readObserver, void* observerContext,
+         DirectInputActiveCall* activeCall)
+        : window(windowHandle), diagnostic(callback), readObserver(readObserver), observerContext(observerContext),
+          activeCall(activeCall), wheel(readObserver, observerContext) {
+        HRESULT result{};
+        const auto started = Clock::now();
+        if (activeCall)
+            activeCall->store("DirectInput8Create", std::memory_order_relaxed);
+        input = createDirectInput(callback, &result);
+        if (activeCall)
+            activeCall->store(nullptr, std::memory_order_relaxed);
+        if (!input && readObserver) {
+            const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started);
+            readObserver(observerContext, {DirectInputReadEventKind::unavailable, {}, "DirectInput8Create",
+                FAILED(result) ? result : E_FAIL, static_cast<std::uint64_t>(duration.count())});
+        }
+    }
 
     std::optional<DeviceSample> read(OpenDevice& opened, const std::string& id,
                                      const DeviceObjectSelection& wanted, bool rawPovs = false);
@@ -628,6 +657,7 @@ struct DirectInput::Impl {
     InputPtr input;
     DirectInputReadObserver readObserver;
     void* observerContext;
+    DirectInputActiveCall* activeCall;
     std::unordered_map<std::string, OpenDevice> openDevices;
     std::uint64_t pollCycle{};
     WheelOutput wheel;
@@ -655,8 +685,8 @@ bool isDeviceId(std::string_view id) noexcept {
 }
 
 DirectInput::DirectInput(HWND window, DirectInputDiagnostic diagnostic,
-                         DirectInputReadObserver readObserver, void* observerContext)
-    : impl_(std::make_unique<Impl>(window, diagnostic, readObserver, observerContext)) {}
+                         DirectInputReadObserver readObserver, void* observerContext, DirectInputActiveCall* activeCall)
+    : impl_(std::make_unique<Impl>(window, diagnostic, readObserver, observerContext, activeCall)) {}
 
 DirectInput::~DirectInput() = default;
 
@@ -684,7 +714,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         return std::nullopt;
     }
     opened.retryAfter = {};
-    ReadObserver observer(opened, id, readObserver, observerContext);
+    ReadObserver observer(opened, id, readObserver, observerContext, activeCall);
     const auto retry = [&](std::string_view stage, HRESULT result) {
         opened.recovery.failed((stage == "GetDeviceStatus" && result == DI_NOTATTACHED) ||
             result == static_cast<HRESULT>(DIERR_UNPLUGGED) || result == DIERR_INPUTLOST);
@@ -724,7 +754,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         const auto result = observer.measure("Acquire", [&] { return opened.device->Acquire(); });
         if (FAILED(result)) {
             if (result != DIERR_OTHERAPPHASPRIO)
-                opened.release();
+                opened.release(activeCall);
             return retry("Acquire", result);
         }
         opened.acquired = true;
@@ -732,7 +762,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
 
     DIJOYSTATE2 state{};
     const auto sampledAt = Clock::now();
-    std::string_view stage = "Poll";
+    const char* stage = "Poll";
     // Devices that do not require polling return DI_NOEFFECT, which is a successful HRESULT.
     auto result = observer.measure(stage, [&] { return opened.device->Poll(); });
     if (SUCCEEDED(result)) {
@@ -746,7 +776,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
             observer.fault(DirectInputReadEventKind::pending, stage, result);
         if (pending.reopen) {
             // A device that never supplies a fresh report needs a new DirectInput handle.
-            opened.release();
+            opened.release(activeCall);
             return retry(stage, result);
         }
         opened.readStatus = opened.continuity.pending(now);
@@ -756,7 +786,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     }
     if (FAILED(result)) {
         // Reopen and check the layout again after a connection loss.
-        opened.release();
+        opened.release(activeCall);
         return retry(stage, result);
     }
     opened.readStatus = opened.continuity.available(sampledAt);
@@ -818,7 +848,7 @@ std::optional<DeviceSample> DirectInput::sampleConfigured(const std::string& id,
     }
     status = opened.readStatus;
     if (opened.cachedSample) {
-        ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext);
+        ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext, impl_->activeCall);
         refreshObjects(opened.buttons, wanted.buttons, *opened.device, observer,
             "GetObjectInfo button", DIDFT_BUTTON, [](std::size_t index) { return DIJOFS_BUTTON(static_cast<DWORD>(index)); });
         opened.cachedSample->buttonsPresent = opened.buttons.present();
@@ -848,7 +878,7 @@ std::optional<DeviceSample> DirectInput::sampleForDriving(const std::string& id,
         wanted.buttons & opened.buttons.pending(), wanted.povs & opened.povs.pending()};
     auto layout = impl_->drivingLayout->read(id, unresolved, opened.layoutConnection);
     if (layout.fallback != DeviceObjectSelection{}) {
-        ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext);
+        ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext, impl_->activeCall);
         probeOnReadHandle(opened, layout.fallback, observer);
     }
     // A slow fallback cannot renew the report's timestamp. The input worker

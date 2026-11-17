@@ -182,7 +182,7 @@ bool physicalPressRequiresFreshDrivingContext()
     keyboard.update(VK_F8, false, false, 109);
     keyboard.update(VK_F8, true, false, 207); // Game context has not refreshed in 101 ms.
     keyboard.setContext(true, 208);
-    if (keyboard.takePress(VK_F8, 209) || !keyboard.initialState(VK_F8))
+    if (keyboard.takePress(VK_F8, 209) || keyboard.initialState(VK_F8))
         return false;
     keyboard.update(VK_F8, false, false, 210);
     keyboard.update(VK_F8, true, false, 211);
@@ -195,7 +195,7 @@ bool physicalPressRequiresFreshDrivingContext()
     if (keyboard.takePress(VK_F8, 481)) // A pending press cannot survive an expired context.
         return false;
     keyboard.setContext(true, 482);
-    return !keyboard.takePress(VK_F8, 483) && keyboard.initialState(VK_F8).has_value();
+    return !keyboard.takePress(VK_F8, 483) && !keyboard.initialState(VK_F8);
 }
 
 bool physicalPressSurvivesConcurrentContextRefresh()

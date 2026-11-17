@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.74
+
+- **Détection USB.** Si le sondage d’un axe ou d’un bouton renvoie une erreur sans confirmer son absence, la connexion qui lit déjà le périphérique peut vérifier la commande. Un test rejoue le cas d’un volant encore en attente après la relance alors qu’un autre périphérique répond.
+- **Bascule AUTO / MANUEL.** Une touche maintenue au retour d’une interruption attend un relâchement. L’instant fourni par Windows permet d’écarter un appui de l’ancien contexte livré en retard.
+- **Diagnostic.** L’application et le CSV distinguent les appuis reçus par l’écouteur des appuis détectés par lecture de secours. La mesure USB sépare les lectures lentes des départs de cycle en retard. Le rapport identifie la commande DirectInput encore en cours pendant un blocage du lecteur.
+
+[ZIP Vortex](out/Chromaxis-0.4.74.zip)
+
 ## Chrome Axis 0.4.73
 
 - **Bascule AUTO / MANUEL.** Si l’écouteur a déjà reconnu un appui, sa confirmation tardive par la lecture directe est comptée dans le même appui. Le prochain appui attend un relâchement confirmé. Une lecture est écartée si un événement clavier intervient entre la prise d’état et son traitement.

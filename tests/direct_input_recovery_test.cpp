@@ -21,7 +21,7 @@ constexpr char pedalsId[] = "{22222222-2222-2222-2222-222222222222}";
 constexpr GUID wheelGuid{0x11111111, 0x1111, 0x1111, {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11}};
 constexpr GUID pedalsGuid{0x22222222, 0x2222, 0x2222, {0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}};
 
-enum class ProbeFailure { pending, accessDenied, errorAfterAcquireDenial };
+enum class ProbeFailure { pending, accessDenied, errorAfterAcquireDenial, genericOnDiscovery };
 
 struct MockController {
     ProbeFailure axisProbeFailure{ProbeFailure::pending};
@@ -49,6 +49,7 @@ struct MockDriver {
     MockController wheel;
     MockController pedals;
     DWORD samplingThread{GetCurrentThreadId()};
+    HRESULT factoryResult{DI_OK};
 };
 
 MockDriver* driver{};
@@ -181,7 +182,8 @@ public:
             if (!acquired_ && controller_.acquisitionRequired) {
                 if (controller_.axisProbeFailure == ProbeFailure::accessDenied)
                     return DIERR_OTHERAPPHASPRIO;
-                if (controller_.axisProbeFailure == ProbeFailure::errorAfterAcquireDenial && controller_.deniedAcquires)
+                if (controller_.axisProbeFailure == ProbeFailure::genericOnDiscovery ||
+                    (controller_.axisProbeFailure == ProbeFailure::errorAfterAcquireDenial && controller_.deniedAcquires))
                     return E_FAIL;
                 return E_PENDING;
             }
@@ -476,6 +478,54 @@ bool recoverAfterMetadataError(ProbeFailure failure)
     }, 2s);
 }
 
+bool coldOpenAfterGenericProbeError()
+{
+    MockDriver mock;
+    mock.wheel.acquisitionRequired = false;
+    mock.pedals.acquisitionRequired = false;
+    driver = &mock;
+    const auto window = GetDesktopWindow();
+    DeviceObjectSelection wanted;
+    wanted.axes.set(0);
+    DeviceReadStatus wheelStatus{}, pedalStatus{};
+    {
+        DirectInput firstReader(window);
+        if (!waitFor([&] {
+            const auto sample = firstReader.sampleForDriving(wheelId, wanted, wheelStatus);
+            return sample && sample->axesPresent[0];
+        }))
+            return false;
+    }
+
+    mock.wheel.acquisitionRequired = true;
+    mock.wheel.axisProbeFailure = ProbeFailure::genericOnDiscovery;
+    DirectInput wheelReader(window);
+    DirectInput pedalReader(window);
+    if (!waitFor([&] {
+        const auto sample = pedalReader.sampleForDriving(pedalsId, wanted, pedalStatus);
+        return sample && sample->axesPresent[0];
+    }))
+        return false;
+
+    bool sawPendingWheel = false;
+    bool pedalInterrupted = false;
+    const bool recovered = waitFor([&] {
+        const auto pedal = pedalReader.sampleForDriving(pedalsId, wanted, pedalStatus);
+        pedalInterrupted |= !pedal || !pedal->axesPresent[0] || pedalStatus != DeviceReadStatus::available;
+        const auto wheel = wheelReader.sampleForDriving(wheelId, wanted, wheelStatus);
+        if (!wheel || wheelStatus != DeviceReadStatus::available)
+            return false;
+        sawPendingWheel |= wheel->axesPending[0] && wheel->axes[0] == 630;
+        return wheel->axesPresent[0] && !wheel->axesPending[0] && wheel->axes[0] == 630;
+    }, 3s);
+    if (recovered && sawPendingWheel && !pedalInterrupted && mock.wheel.readerAxisChecks)
+        return true;
+    std::cerr << "Cold reopen: wheel pending=" << sawPendingWheel << ", recovered=" << recovered
+              << ", acquired reader probes=" << mock.wheel.readerAxisChecks.load()
+              << ", pedals interrupted=" << pedalInterrupted << '\n';
+    return false;
+}
+
 bool independentDiscovery(MockDriver& mock)
 {
     MockController& wheel = mock.wheel;
@@ -512,11 +562,28 @@ bool independentDiscovery(MockDriver& mock)
 // still calls the same DirectInput interfaces on its real sampling/probe paths.
 HRESULT WINAPI DirectInput8Create(HINSTANCE, DWORD, REFIID, LPVOID* output, LPUNKNOWN)
 {
+    if (FAILED(driver->factoryResult)) {
+        *output = nullptr;
+        return driver->factoryResult;
+    }
     *output = new MockInput(*driver);
     return S_OK;
 }
 
 namespace {
+
+bool reportDirectInputInitializationFailure()
+{
+    MockDriver mock;
+    mock.factoryResult = E_OUTOFMEMORY;
+    driver = &mock;
+    bool reported = false;
+    DirectInput input(GetDesktopWindow(), nullptr, [](void* context, const DirectInputReadEvent& event) noexcept {
+        *static_cast<bool*>(context) = event.kind == DirectInputReadEventKind::unavailable &&
+            event.operation == "DirectInput8Create" && event.result == E_OUTOFMEMORY;
+    }, &reported);
+    return !input.ready() && reported;
+}
 
 HWND WINAPI mockForegroundWindow() {
     return reinterpret_cast<HWND>(1);
@@ -562,6 +629,11 @@ bool forceWithDeferredActuator(bool invalidateDuringAcquire)
 
 int main()
 {
+    if (!reportDirectInputInitializationFailure()) {
+        std::cerr << "DirectInput initialization failure did not preserve its operation and HRESULT\n";
+        return 9;
+    }
+
     if (!forceWithDeferredActuator(false) || !forceWithDeferredActuator(true)) {
         std::cerr << "Force feedback did not recover deferred actuator metadata or safely stop\n";
         return 6;
@@ -585,6 +657,10 @@ int main()
     if (!recoverAfterMetadataError(ProbeFailure::errorAfterAcquireDenial)) {
         std::cerr << "An acquisition refusal followed by a different metadata error prevented recovery\n";
         return 4;
+    }
+    if (!coldOpenAfterGenericProbeError()) {
+        std::cerr << "Cold reopen left the wheel pending after a generic layout error or interrupted the pedals\n";
+        return 8;
     }
 
     driver = &mock;
