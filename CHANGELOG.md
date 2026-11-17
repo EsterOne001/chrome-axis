@@ -6,6 +6,19 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.87 · 17 novembre 2026
+
+Comparée à la **0.4.86**.
+
+- **Calibration guidée et palettes.** Un débranchement confirmé impose de reprendre les positions du périphérique concerné. L’assistant conserve les mesures des autres appareils et les zones mortes choisies. Si les deux palettes partagent le même appareil, la reprise d’une capture interrompue de la palette « − » numérique revérifie le repos de la palette « + » analogique. En simulation, le profil réparé s’arme au nouveau repos et les deux palettes passent les rapports.
+- **Embrayage expérimental.** Si une perte de lecture interrompt l’atténuation, la protection de l’accélérateur reste active jusqu’à ce qu’une lecture valide confirme son retour au repos.
+- **Réassociation des profils.** Si une édition concurrente intervient pendant l’opération, l’application déclenche une reprise. Le journal reste disponible et l’édition concurrente est préservée dans `Avant-reprise`.
+- **Export du diagnostic.** L’export travaille sur une version stable du CSV pendant la lecture et le tri. Si le fichier source est encore en cours d’écriture, l’interface affiche un message dans la langue choisie et préserve l’export existant.
+- **HUD Painter.** Les couleurs enregistrées sont associées à la confirmation du préréglage correspondant. Le banc a rejoué un écrasement refusé suivi d’une sauvegarde réussie sur un autre préréglage.
+- **Validation.** Release x64, 20 tests CTest, trois captures guidées à 150 ms par lecture et essais Windows simulés de reconnexion USB et d’Alt+Tab. Le REDscript du ZIP compile sur une copie du cache Cyberpunk 2.5 avec et sans HUD Painter. La réponse du volant physique et la livraison des événements HUD Painter restent à confirmer en jeu.
+
+SHA-256 `9c5f78b060a846dcd92bbcf843e4bc2a4b21d656ab5879d2f87ce06243cf0463`. [ZIP Vortex](out/Chromaxis-0.4.87.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/634affc5524485ae8ad4c02a48b2c2a149f763d9)
+
 ## Chrome Axis 0.4.86 · 17 novembre 2026
 
 Comparée à la **0.4.85**.
