@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.81
+
+- HUD Painter conserve la dernière palette valide et les modifications en attente quand le fichier de couleurs est vide, illisible ou trop volumineux. Les erreurs persistantes ont un message dédié et des réessais bornés.
+- La sauvegarde détecte une modification concurrente du fichier, préserve les données déplacées et relit le document avant de fusionner à nouveau les couleurs modifiées. Si la récupération est interrompue et que deux versions subsistent, les copies sont préservées et HUD Painter signale la reprise à effectuer.
+- Le CSV associe un appel DirectInput en cours au contexte du relevé. Un appel de retour de force encore bloqué après Alt+Tab conserve son nom, sa voie et sa durée avec le jeu en arrière-plan.
+
+[ZIP Vortex](out/Chromaxis-0.4.81.zip)
+
 ## Chrome Axis 0.4.80
 
 - HUD Painter reprend la lecture des couleurs après déverrouillage, y compris menu fermé. Les écritures reprennent lors d’un changement de session et utilisent un fichier temporaire vérifié avant de remplacer le JSON. Les rappels comparent deux références de même type.

@@ -8,6 +8,7 @@
 #include <ostream>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace chrome_axis {
 
@@ -339,7 +340,8 @@ void writeCaptureClutch(std::ostream& output, const DiagnosticClutch& clutch)
 
 } // namespace
 
-DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt) noexcept
+DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt,
+                                     DiagnosticMode mode) noexcept
 {
     return {
         .sampledAt = observedAt,
@@ -347,7 +349,7 @@ DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, st
         .deviceId = operation.deviceId,
         .operation = operation.operation,
         .kind = DiagnosticUsbEventKind::operationRunning,
-        .mode = DiagnosticMode::usb,
+        .mode = mode,
         .deviceAxisMask = operation.deviceAxisMask,
         .deviceAccessoryCount = operation.deviceAccessoryCount,
         .lane = operation.lane
@@ -502,13 +504,15 @@ DiagnosticPublisher::~DiagnosticPublisher()
 }
 
 void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession,
-                                  const PerformanceReport& performance, bool validDrivingSample) noexcept
+                                  const PerformanceReport& performance, bool validDrivingSample,
+                                  std::span<const DiagnosticUsbOperation> usbOperations) noexcept
 {
     if (!frame_)
         return;
     report_.sampledAt = GetTickCount64();
     report_.snapshot = snapshot;
     report_.performance = performance;
+    updateUsbOperations(usbOperations);
     if (drivingSession && isDrivingCaptureMode(snapshot.mode)) {
         if (drivingSession_ != drivingSession) {
             drivingSession_ = drivingSession;
@@ -549,9 +553,10 @@ void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint6
 
 void DiagnosticPublisher::updateUsbOperations(std::span<const DiagnosticUsbOperation> operations) noexcept
 {
-    if (!frame_ || (operations.empty() && !report_.usbOperationCount))
+    const bool captureKnownOperations = std::exchange(captureRunningOperations_, false);
+    if (operations.empty() && !report_.usbOperationCount)
         return;
-    const auto now = GetTickCount64();
+    const auto now = report_.sampledAt;
     const auto previous = std::span(report_.usbOperations).first(report_.usbOperationCount);
     operations = operations.first(std::min(operations.size(), report_.usbOperations.size()));
     const auto longCall = [now](const auto& operation) {
@@ -565,8 +570,13 @@ void DiagnosticPublisher::updateUsbOperations(std::span<const DiagnosticUsbOpera
             return prior.deviceId == operation.deviceId && prior.lane == operation.lane &&
                 prior.startedAt == operation.startedAt && prior.operation == operation.operation;
         });
-        if (!known)
-            recordUsbEvent(usbOperationEvent(operation, now));
+        if (!known || captureKnownOperations) {
+            const auto event = usbOperationEvent(operation, now, report_.snapshot.mode);
+            if (!known)
+                recordUsbEvent(event);
+            else
+                queueCaptureRecord({.usb = event, .usbIncident = true});
+        }
     }
     const auto end = std::ranges::copy_if(operations, report_.usbOperations.begin(), longCall).out;
     report_.usbOperationCount = static_cast<std::uint32_t>(end - report_.usbOperations.begin());
@@ -661,14 +671,11 @@ std::optional<PerformanceRequest> DiagnosticPublisher::performanceRequest() noex
         ? frame_->request : PerformanceRequest{};
     ReleaseMutex(mutex_);
     const bool newRequest = request.id != observedRequest_.id;
-    if (newRequest)
+    if (newRequest) {
         lastCaptureSample_ = {};
-    observedRequest_ = request;
-    if (newRequest && request.enabled) {
-        const auto now = GetTickCount64();
-        for (const auto& operation : std::span(report_.usbOperations).first(report_.usbOperationCount))
-            queueCaptureRecord({.usb = usbOperationEvent(operation, now), .usbIncident = true});
+        captureRunningOperations_ = request.enabled;
     }
+    observedRequest_ = request;
     return request;
 }
 

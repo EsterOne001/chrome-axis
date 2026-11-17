@@ -1230,7 +1230,7 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         report += L"\r\n" + std::wstring(tr(live ? Text::DlgDiagnosticsUsbOperations
                                                   : Text::DlgDiagnosticsLastUsbOperations)) + L"\r\n";
         for (const auto& operation : usbOperations) {
-            const auto event = usbOperationEvent(operation, live ? now : read.sampledAt);
+            const auto event = usbOperationEvent(operation, live ? now : read.sampledAt, read.snapshot.mode);
             report += L"- " + std::wstring(usbEventTitle(event, live)) + usbEventDetails(event, state.devices) + L"\r\n";
         }
     }
@@ -1453,7 +1453,7 @@ void refresh(HWND window, DialogState& state)
             const auto feedback = std::ranges::find(calls, DiagnosticUsbLane::feedback, &DiagnosticUsbOperation::lane);
             const auto highlighted = feedback != calls.end() ? feedback
                 : std::ranges::min_element(calls, {}, &DiagnosticUsbOperation::startedAt);
-            const auto event = usbOperationEvent(*highlighted, now);
+            const auto event = usbOperationEvent(*highlighted, now, mode);
             auto detail = std::wstring(usbEventTitle(event, true)) + usbEventDetails(event, state.devices);
             if (calls.size() > 1)
                 detail += L" · +" + std::to_wstring(calls.size() - 1);

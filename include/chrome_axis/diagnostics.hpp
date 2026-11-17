@@ -236,7 +236,8 @@ struct DiagnosticUsbEvent {
     DiagnosticUsbLane lane{}; // Used by operationRunning.
 };
 
-DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt) noexcept;
+DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt,
+                                     DiagnosticMode mode) noexcept;
 
 enum class PerformanceState : std::uint32_t { idle, capturing, complete };
 
@@ -362,14 +363,14 @@ public:
 
     // Always publish live status. Retain this reading only when the driving commands are usable.
     void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0,
-                 const PerformanceReport& performance = {}, bool validDrivingSample = true) noexcept;
-    // Supply all current calls before performanceRequest() and publish().
-    void updateUsbOperations(std::span<const DiagnosticUsbOperation> operations) noexcept;
+                 const PerformanceReport& performance = {}, bool validDrivingSample = true,
+                 std::span<const DiagnosticUsbOperation> usbOperations = {}) noexcept;
     void recordUsbEvent(const DiagnosticUsbEvent& event) noexcept;
     void recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept;
     std::optional<PerformanceRequest> performanceRequest() noexcept;
 
 private:
+    void updateUsbOperations(std::span<const DiagnosticUsbOperation> operations) noexcept;
     void queueCaptureRecord(const DiagnosticCaptureRecord& row) noexcept;
     void flushCaptureRecords() noexcept; // Shared frame mutex held.
 
@@ -381,6 +382,7 @@ private:
     std::uint64_t drivingSession_{};
     std::uint64_t publisherId_{};
     PerformanceRequest observedRequest_{};
+    bool captureRunningOperations_{};
     DrivingCaptureSample lastCaptureSample_{};
     std::array<DiagnosticCaptureRecord, 256> pending_{};
     std::size_t pendingHead_{};

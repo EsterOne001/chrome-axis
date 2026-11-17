@@ -445,8 +445,6 @@ bool testUsbOperations(const std::filesystem::path& root)
         const auto tick = GetTickCount64();
         DiagnosticSnapshot driving{.mode = DiagnosticMode::usb};
         driving.axes[0] = {.state = DiagnosticAxisState::armed, .value = 0.25f, .appliedAt = tick};
-        publisher.publish(driving, 1);
-        const auto driveAt = reader.read().lastDriveAt;
 
         const auto operation = [&](std::uint64_t began, std::string_view name, DiagnosticUsbLane lane) {
             DiagnosticUsbOperation call{.startedAt = began, .lane = lane, .deviceAxisMask = 1};
@@ -456,24 +454,28 @@ bool testUsbOperations(const std::filesystem::path& root)
         };
         const auto readerCall = operation(tick - 1000, "GetDeviceState", DiagnosticUsbLane::reader);
         const auto probeCall = operation(tick - 700, "Probe GetObjectInfo axis", DiagnosticUsbLane::probe);
-        const auto forceCall = operation(tick - 500, "FFB SetParameters", DiagnosticUsbLane::feedback);
+        const auto forceCall = operation(tick - 500, "FFB Stop", DiagnosticUsbLane::feedback);
         const auto shortCall = operation(tick + 60000, "Poll", DiagnosticUsbLane::reader);
         std::array calls{readerCall, probeCall, forceCall, shortCall};
-        publisher.updateUsbOperations(calls);
-        publisher.updateUsbOperations(calls);
+        publisher.publish(driving, 1, {}, true, std::span(calls).first(2));
+        const auto driveAt = reader.read().lastDriveAt;
         const DiagnosticSnapshot background{.mode = DiagnosticMode::gameNotForeground};
-        publisher.publish(background);
+        publisher.publish(background, 0, {}, false, calls);
+        publisher.publish(background, 0, {}, false, calls);
         const auto started = reader.read();
         if (started.usbOperationCount != 3 || started.usbEventCount != 3 ||
             started.usbOperations[0].startedAt != readerCall.startedAt ||
             started.usbOperations[1].lane != DiagnosticUsbLane::probe ||
             started.usbOperations[2].lane != DiagnosticUsbLane::feedback ||
+            started.usbEvents[0].mode != DiagnosticMode::usb ||
+            started.usbEvents[1].mode != DiagnosticMode::usb ||
+            started.usbEvents[2].mode != DiagnosticMode::gameNotForeground ||
+            started.usbEvents[2].durationMicros < 500000 ||
             started.lastDriveAt != driveAt || started.lastDrive.axes[0].value != 0.25f)
             return false;
         for (std::size_t i = 0; i <= started.usbEvents.size(); ++i)
             publisher.recordUsbEvent({.sampledAt = tick + i + 10, .kind = DiagnosticUsbEventKind::contextChanged});
-        publisher.updateUsbOperations(calls);
-        publisher.publish(background);
+        publisher.publish(background, 0, {}, false, calls);
         const auto retained = reader.read();
         if (retained.usbOperationCount != 3 || retained.usbEventCount != retained.usbEvents.size() ||
             std::ranges::any_of(retained.usbEvents, [](const auto& event) {
@@ -487,38 +489,53 @@ bool testUsbOperations(const std::filesystem::path& root)
             return false;
         publisher.performanceRequest();
         calls[0] = operation(tick - 350, "Acquire", DiagnosticUsbLane::reader);
-        publisher.updateUsbOperations(calls);
-        publisher.updateUsbOperations(calls);
-        publisher.publish(background);
+        publisher.publish(background, 0, {}, false, calls);
+        publisher.publish(background, 0, {}, false, calls);
         const auto progressed = reader.read();
         if (progressed.usbOperationCount != 3 || progressed.usbOperations[0].operation != calls[0].operation)
             return false;
 
+        // Returning to the foreground does not duplicate an existing call in
+        // the CSV. A new effect is recorded with its own observed context.
+        publisher.publish(driving, 1, {}, true, calls);
+        calls[2] = operation(tick - 300, "FFB SetParameters", DiagnosticUsbLane::feedback);
+        publisher.publish(driving, 1, {}, true, calls);
         std::array<DiagnosticCaptureRecord, 8> rows;
         const auto stream = reader.drainCapture(rows);
-        if (stream.count != 4 || rows[0].usb.operation != readerCall.operation ||
+        if (stream.count != 4 || rows[0].usb.operation != calls[0].operation ||
             rows[1].usb.operation != probeCall.operation || rows[2].usb.operation != forceCall.operation ||
-            rows[3].usb.operation != calls[0].operation || rows[0].usb.durationMicros < 1000000 ||
-            rows[3].usb.durationMicros < 350000)
+            rows[3].usb.operation != calls[2].operation || rows[0].usb.durationMicros < 350000 ||
+            rows[2].usb.durationMicros < 500000 || rows[2].usb.lane != DiagnosticUsbLane::feedback ||
+            rows[3].usb.lane != DiagnosticUsbLane::feedback || rows[3].usb.mode != DiagnosticMode::usb ||
+            std::ranges::any_of(std::span(rows).first(3), [](const auto& row) {
+                return row.usb.mode != DiagnosticMode::gameNotForeground;
+            }))
             return false;
         std::ostringstream csv;
         writeDiagnosticCaptureRows(csv, std::span(rows).first(stream.count), tick);
         const auto text = csv.str();
         if (text.find(deviceId) != std::string::npos || text.find("0x00000000") != std::string::npos ||
-            text.find(",operation_running,\"GetDeviceState\",,") == std::string::npos ||
+            text.find(",operation_running,\"GetDeviceState\",,") != std::string::npos ||
             text.find(",operation_running,\"Probe GetObjectInfo axis\",,") == std::string::npos ||
             text.find(",operation_running,\"Acquire\",,") == std::string::npos ||
-            text.find(",operation_running,\"FFB SetParameters\",,") == std::string::npos ||
             text.find(",reader,\r\n") == std::string::npos || text.find(",probe,\r\n") == std::string::npos ||
             text.find(",feedback,\r\n") == std::string::npos)
             return false;
+        bool recordedStop{}, recordedEffect{};
+        std::istringstream csvRows(text);
+        for (std::string row; std::getline(csvRows, row);) {
+            if (row.find(",operation_running,\"FFB Stop\",,") != std::string::npos)
+                recordedStop = row.find(",game_not_foreground,") != std::string::npos && row.ends_with(",feedback,\r");
+            if (row.find(",operation_running,\"FFB SetParameters\",,") != std::string::npos)
+                recordedEffect = row.find(",usb,") != std::string::npos && row.ends_with(",feedback,\r");
+        }
+        if (!recordedStop || !recordedEffect)
+            return false;
 
-        publisher.updateUsbOperations({});
         publisher.publish(background);
         if (reader.read().usbOperationCount != 0)
             return false;
-        publisher.updateUsbOperations(calls);
-        publisher.publish(background);
+        publisher.publish(background, 0, {}, false, calls);
         if (reader.read().usbOperationCount != 3)
             return false;
     }

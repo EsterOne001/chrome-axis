@@ -1016,7 +1016,7 @@ void transmissionForHud(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std:
     }
 }
 
-void commitHudColors(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* out, std::int64_t) {
+void commitHudColors(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
     RED4ext::CString json, previousJson;
     bool existed{};
     RED4ext::GetParameter(frame, &json);
@@ -1026,10 +1026,21 @@ void commitHudColors(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* o
     if (!out)
         return;
     try {
-        *out = chrome_axis::commitHudColors(hudStorageGameRoot, {json.c_str(), json.Length()},
-                                          {previousJson.c_str(), previousJson.Length()}, existed);
+        *out = static_cast<std::int32_t>(chrome_axis::commitHudColors(
+            hudStorageGameRoot, {json.c_str(), json.Length()}, {previousJson.c_str(), previousJson.Length()}, existed));
     } catch (const std::exception&) {
-        *out = false;
+        *out = static_cast<std::int32_t>(chrome_axis::HudColorCommitResult::unavailable);
+    }
+}
+
+void recoverHudColors(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
+    ++frame->code;
+    if (!out)
+        return;
+    try {
+        *out = static_cast<std::int32_t>(chrome_axis::recoverHudColors(hudStorageGameRoot));
+    } catch (const std::exception&) {
+        *out = static_cast<std::int32_t>(chrome_axis::HudColorCommitResult::unavailable);
     }
 }
 
@@ -1094,8 +1105,14 @@ void registerNative() {
     colors->AddParam("String", "json");
     colors->AddParam("String", "previousJson");
     colors->AddParam("Bool", "existed");
-    colors->SetReturnType("Bool");
+    colors->SetReturnType("Int32");
     rtti->RegisterFunction(colors);
+
+    constexpr auto recoverColorsName = "ChromeAxis_RecoverHudColors";
+    auto* recoverColors = RED4ext::CGlobalFunction::Create(recoverColorsName, recoverColorsName, &recoverHudColors);
+    recoverColors->flags = {.isNative = true, .isStatic = true};
+    recoverColors->SetReturnType("Int32");
+    rtti->RegisterFunction(recoverColors);
     info("Driver context native registered.");
 }
 
@@ -1688,7 +1705,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 usbReadDiagnostics->describeDevice(entry, id, operation);
             });
         }
-        diagnostics->updateUsbOperations(std::span(usbOperations).first(activeOperationCount));
         const auto performanceRequest = diagnostics->performanceRequest();
         std::uint64_t drivingSession{};
         std::optional<chrome_axis::DrivingCaptureSample> captureSample;
@@ -1924,7 +1940,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 captureSample->axes[i] = snapshot.axes[i].state;
             diagnostics->recordDrivingSample(performance.requestId, *captureSample);
         }
-        diagnostics->publish(snapshot, drivingSession, performance, validDrivingSample);
+        diagnostics->publish(snapshot, drivingSession, performance, validDrivingSample,
+                             std::span(usbOperations).first(activeOperationCount));
     };
     chrome_axis::WheelFeedback wheelFeedback;
     auto& feedbackOutput = workers.force;

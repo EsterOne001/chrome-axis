@@ -1,4 +1,14 @@
+#include <windows.h>
+
+// Interpose at the final OS calls in this executable only. After injecting a competing
+// rename we call the real ReplaceFileW, preserving Windows sharing and backup semantics.
+BOOL WINAPI testReplaceHudColors(LPCWSTR, LPCWSTR, LPCWSTR, DWORD, LPVOID, LPVOID);
+BOOL WINAPI testWriteHudColors(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+#define ReplaceFileW testReplaceHudColors
+#define WriteFile testWriteHudColors
 #include "hud_color_storage.hpp"
+#undef WriteFile
+#undef ReplaceFileW
 
 #include <fstream>
 #include <iostream>
@@ -9,6 +19,27 @@ namespace {
 constexpr std::string_view original = R"({"presets":{"night":{"transmission":[255,0,0]}}})";
 constexpr std::string_view edited = R"({"presets":{"night":{"transmission":[255,0,0],"border":[0,255,126]}}})";
 constexpr std::string_view external = R"({"presets":{"Préréglage":{"border":[15,10,20]}}})";
+constexpr std::string_view merged = R"({"presets":{"Préréglage":{"border":[15,10,20]},"night":{"border":[0,255,126]}}})";
+constexpr std::string_view later = R"({"presets":{"Dernier":{"transmission":[20,30,40]}}})";
+
+enum class Interruption { none, concurrentReplace, concurrentRestore, concurrentReplaceLater,
+                          replacementDidNotMove, rollbackDidNotMove, lockedDuringRollback };
+Interruption interruption{};
+bool injected{};
+bool shortWrite{};
+chrome_axis::detail::HudColorHandle rollbackLock;
+
+bool publishExternal(const std::filesystem::path& path, std::string_view contents) {
+    auto staged = path;
+    staged += L".external-test";
+    {
+        std::ofstream output(staged, std::ios::binary);
+        output << contents;
+        if (!output)
+            return false;
+    }
+    return MoveFileExW(staged.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
 
 std::string read(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -23,8 +54,52 @@ bool check(bool condition, const char* description) {
 
 } // namespace
 
+BOOL WINAPI testReplaceHudColors(LPCWSTR target, LPCWSTR staged, LPCWSTR backup, DWORD flags,
+                                 LPVOID exclude, LPVOID reserved) {
+    if (interruption == Interruption::replacementDidNotMove) {
+        interruption = Interruption::none;
+        injected = MoveFileExW(target, backup, MOVEFILE_WRITE_THROUGH) != 0;
+        SetLastError(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2);
+        return FALSE;
+    }
+    if (interruption == Interruption::concurrentReplace) {
+        interruption = Interruption::none;
+        injected = publishExternal(target, external);
+    } else if (interruption == Interruption::concurrentReplaceLater) {
+        interruption = Interruption::none;
+        injected = injected && publishExternal(target, later);
+    } else if (interruption == Interruption::lockedDuringRollback) {
+        interruption = Interruption::none;
+        injected = publishExternal(target, external);
+        const auto replaced = ReplaceFileW(target, staged, backup, flags, exclude, reserved);
+        rollbackLock = chrome_axis::detail::hudColorHandle(CreateFileW(target, GENERIC_READ, 0, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        injected = injected && static_cast<bool>(rollbackLock);
+        return replaced;
+    } else if (interruption == Interruption::concurrentRestore || interruption == Interruption::rollbackDidNotMove) {
+        const auto duringRollback = interruption == Interruption::concurrentRestore
+            ? Interruption::concurrentReplaceLater : Interruption::replacementDidNotMove;
+        interruption = Interruption::none;
+        injected = publishExternal(target, external);
+        const auto replaced = ReplaceFileW(target, staged, backup, flags, exclude, reserved);
+        interruption = duringRollback;
+        return replaced;
+    }
+    return ReplaceFileW(target, staged, backup, flags, exclude, reserved);
+}
+
+BOOL WINAPI testWriteHudColors(HANDLE file, LPCVOID bytes, DWORD size, LPDWORD actual, LPOVERLAPPED overlapped) {
+    if (shortWrite) {
+        shortWrite = false;
+        size /= 2;
+    }
+    return WriteFile(file, bytes, size, actual, overlapped);
+}
+
 int main() {
     using chrome_axis::commitHudColors;
+    using chrome_axis::recoverHudColors;
+    using Result = chrome_axis::HudColorCommitResult;
     const auto game = chrome_axis::detail::stagedSettingsPath(std::filesystem::temp_directory_path()
                                                               / L"chrome-axis-hud-test");
     if (!std::filesystem::create_directory(game))
@@ -38,34 +113,110 @@ int main() {
     } fixture{game};
     const auto directory = game / L"r6" / L"storages" / L"ChromeAxisHUD";
     const auto colors = directory / L"colors.json";
+    const auto backup = directory / L"colors.json.recovery";
 
-    bool ok = check(commitHudColors(game, original, {}, false) && read(colors) == original,
+    bool ok = check(recoverHudColors(game) == Result::success && !std::filesystem::exists(directory),
+                    "A fresh installation must not create lock files during recovery.");
+    ok &= check(commitHudColors(game, original, {}, false) == Result::success && read(colors) == original,
                     "A first save must create the documented color file.");
-    ok &= check(!commitHudColors(game, edited, {}, false) && read(colors) == original,
+    ok &= check(commitHudColors(game, edited, {}, false) == Result::conflict && read(colors) == original,
                 "A file appearing since the initial read must not be overwritten.");
 
     {
         const auto lock = chrome_axis::detail::hudColorHandle(CreateFileW(colors.c_str(), GENERIC_READ,
             FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         ok &= check(static_cast<bool>(lock), "Could not simulate a reader that prevents replacement.");
-        ok &= check(!commitHudColors(game, edited, original, true) && read(colors) == original,
+        ok &= check(commitHudColors(game, edited, original, true) == Result::retry && read(colors) == original,
                     "A locked file must retain its original data.");
     }
-    ok &= check(commitHudColors(game, edited, original, true) && read(colors) == edited,
+    {
+        const auto lock = chrome_axis::detail::hudColorHandle(CreateFileW(colors.c_str(), GENERIC_READ,
+            0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        ok &= check(static_cast<bool>(lock) && recoverHudColors(game) == Result::retry,
+                    "The recovery probe must distinguish a file's lock from empty contents.");
+    }
+    {
+        Result lockResult{};
+        const auto lock = chrome_axis::detail::lockHudColorFile(colors, lockResult);
+        ok &= check(lockResult == Result::success && commitHudColors(game, edited, original, true) == Result::retry,
+                    "A parallel Chrome Axis writer must report transient lock contention.");
+    }
+    ok &= check(commitHudColors(game, edited, original, true) == Result::success && read(colors) == edited,
                 "The pending colors must replace the original file after the lock is released.");
 
-    ok &= check(commitHudColors(game, external, edited, true) && read(colors) == external,
+    ok &= check(commitHudColors(game, external, edited, true) == Result::success && read(colors) == external,
                 "An unrelated preset with a UTF-8 name must remain byte-for-byte intact when written.");
-    ok &= check(!commitHudColors(game, edited, original, true) && read(colors) == external,
+    ok &= check(commitHudColors(game, edited, original, true) == Result::conflict && read(colors) == external,
                 "A stale merge must leave the more recent data untouched.");
 
     constexpr auto prettyWindows = "{\r\n  \"presets\": {}\r\n}\r\n";
     constexpr auto prettyRead = "{\n  \"presets\": {}\n}\n";
-    ok &= check(commitHudColors(game, prettyWindows, external, true)
-                    && commitHudColors(game, edited, prettyRead, true) && read(colors) == edited,
+    ok &= check(commitHudColors(game, prettyWindows, external, true) == Result::success
+                    && commitHudColors(game, edited, prettyRead, true) == Result::success && read(colors) == edited,
                 "The compare step must accept Windows line endings translated by RedFileSystem.");
+
+    interruption = Interruption::concurrentReplace;
+    injected = false;
+    ok &= check(commitHudColors(game, original, edited, true) == Result::conflict && injected
+                    && read(colors) == external,
+                "A real update immediately before publication must be restored, and the merge retried.");
+    ok &= check(commitHudColors(game, merged, external, true) == Result::success && read(colors) == merged,
+                "Retrying against the newly published version must preserve both edits.");
+
+    shortWrite = true;
+    ok &= check(commitHudColors(game, edited, merged, true) == Result::unavailable && !shortWrite
+                    && read(colors) == merged,
+                "An incomplete candidate must never replace the previous document.");
+
+    interruption = Interruption::replacementDidNotMove;
+    injected = false;
+    ok &= check(commitHudColors(game, edited, merged, true) == Result::conflict && injected
+                    && read(colors) == merged && !std::filesystem::exists(backup),
+                "A partial Windows replacement must recover the displaced document without overwriting a new one.");
+
+    ok &= check(MoveFileExW(colors.c_str(), backup.c_str(), MOVEFILE_WRITE_THROUGH)
+                    && recoverHudColors(game) == Result::conflict && read(colors) == merged,
+                "The sole surviving recovery file from a stopped process must be restored on the next read.");
+
+    interruption = Interruption::rollbackDidNotMove;
+    injected = false;
+    ok &= check(commitHudColors(game, edited, merged, true) == Result::conflict && injected
+                    && read(colors) == external && !std::filesystem::exists(backup),
+                "A partial rollback must put the first external edit back without losing it.");
+
+    ok &= check(publishExternal(colors, "") && recoverHudColors(game) == Result::empty,
+                "An unlocked empty file must be recognized without rewriting it.");
+    const auto large = std::string(chrome_axis::detail::maxHudColorBytes + 1, 'a');
+    ok &= check(publishExternal(colors, large) && recoverHudColors(game) == Result::tooLarge
+                    && commitHudColors(game, edited, large, true) == Result::tooLarge && read(colors) == large,
+                "An oversized file must be reported separately and preserved.");
     ok &= check(std::distance(std::filesystem::directory_iterator(directory),
                              std::filesystem::directory_iterator()) == 1,
                 "A staged file must be cleaned up after success and after a rejected replacement.");
+
+    ok &= check(publishExternal(colors, edited), "Unable to prepare the second concurrent replace.");
+    interruption = Interruption::concurrentRestore;
+    injected = false;
+    ok &= check(commitHudColors(game, original, edited, true) == Result::conflict && injected
+                    && read(colors) == later,
+                "An update arriving during recovery must also be recovered.");
+    bool preservedFirst{};
+    for (const auto& file : std::filesystem::directory_iterator(directory)) {
+        if (file.path().filename().wstring().starts_with(L"colors.json.recovery."))
+            preservedFirst |= read(file.path()) == external;
+    }
+    ok &= check(preservedFirst, "Keep a recovery copy of the older competing update when two replace operations race.");
+
+    interruption = Interruption::lockedDuringRollback;
+    injected = false;
+    ok &= check(commitHudColors(game, edited, later, true) == Result::recoveryRequired && injected,
+                "An unreadable target during rollback must leave an explicit recovery state.");
+    rollbackLock.reset();
+    ok &= check(read(colors) == edited && read(backup) == external
+                    && recoverHudColors(game) == Result::recoveryRequired,
+                "A live file and a pending recovery file must both survive an ambiguous publication.");
+    ok &= check(commitHudColors(game, original, edited, true) == Result::recoveryRequired
+                    && read(colors) == edited && read(backup) == external,
+                "A later save must not proceed silently while both ambiguous versions exist.");
     return ok ? 0 : 1;
 }
