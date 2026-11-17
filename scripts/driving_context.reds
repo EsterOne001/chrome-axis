@@ -65,12 +65,13 @@ enum ChromeAxisHudSaveStatus {
   FileTooLarge = 7,
   ReloadingExternalEdit = 8,
   ExternalEditPending = 9,
-  RecoveryRequired = 10
+  RecoveryRequired = 10,
+  RecoveryScanDenied = 11
 }
 
 @if(ModuleExists("HudPainter"))
 enum ChromeAxisHudFileState {
-  // The first seven values match the results of the native storage functions.
+  // Values 0–6 and 9 match the results of the native storage functions.
   Available = 0,
   Busy = 1,
   Conflict = 2,
@@ -79,12 +80,13 @@ enum ChromeAxisHudFileState {
   Unavailable = 5,
   RecoveryRequired = 6,
   Invalid = 7,
-  ReadFailed = 8
+  ReadFailed = 8,
+  RecoveryScanDenied = 9
 }
 
 @if(ModuleExists("HudPainter"))
 private func ChromeAxis_HudFileState(result: Int32) -> ChromeAxisHudFileState {
-  return result >= 0 && result <= 6 ? IntEnum<ChromeAxisHudFileState>(result) : ChromeAxisHudFileState.Unavailable;
+  return (result >= 0 && result <= 6) || result == 9 ? IntEnum<ChromeAxisHudFileState>(result) : ChromeAxisHudFileState.Unavailable;
 }
 
 @if(ModuleExists("HudPainter"))
@@ -377,8 +379,8 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     let previous: String;
     let existed: Bool;
     let colors = this.ReadColors(state, previous, existed);
-    if Equals(state, ChromeAxisHudFileState.RecoveryRequired) {
-      // The readable file can still drive the HUD. No edit may overwrite either copy.
+    if Equals(state, ChromeAxisHudFileState.RecoveryRequired) || Equals(state, ChromeAxisHudFileState.RecoveryScanDenied) {
+      // Use the valid document for display. Leave edits pending until the recovery state is known.
       if IsDefined(colors) {
         this.colors = colors;
       }
@@ -449,6 +451,10 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
       case ChromeAxisHudFileState.RecoveryRequired:
         status = ChromeAxisHudSaveStatus.RecoveryRequired;
         this.CancelScheduledFlush();
+        break;
+      case ChromeAxisHudFileState.RecoveryScanDenied:
+        status = ChromeAxisHudSaveStatus.RecoveryScanDenied;
+        this.ScheduleRetry(3);
         break;
       default:
         this.CancelScheduledFlush();
@@ -536,10 +542,13 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     }
     // Check recovery paths without reading the existing document twice.
     let recovery = ChromeAxis_HudFileState(ChromeAxis_RecoverHudColors(false));
-    if Equals(recovery, ChromeAxisHudFileState.RecoveryRequired) && Equals(present, FileSystemStatus.True) {
+    let scanDenied = Equals(recovery, ChromeAxisHudFileState.RecoveryScanDenied);
+    if (Equals(recovery, ChromeAxisHudFileState.RecoveryRequired) || scanDenied) && Equals(present, FileSystemStatus.True) {
       let readState: ChromeAxisHudFileState;
-      state = recovery;
-      return this.ReadPresentColors(readState, previous, false);
+      let colors = this.ReadPresentColors(readState, previous, scanDenied);
+      existed = true;
+      state = scanDenied && !IsDefined(colors) ? readState : recovery;
+      return colors;
     }
     if NotEquals(recovery, ChromeAxisHudFileState.Available) && NotEquals(recovery, ChromeAxisHudFileState.Conflict) {
       state = recovery;
@@ -955,6 +964,9 @@ class ChromeAxisHudPainterSection extends inkComponent {
       case ChromeAxisHudSaveStatus.RecoveryRequired:
         return this.french ? "Récupération requise · Vérifiez colors.json.recovery*" :
           "Recovery required · Check colors.json.recovery*";
+      case ChromeAxisHudSaveStatus.RecoveryScanDenied:
+        return this.french ? "Couleurs en lecture seule · Dossier de récupération inaccessible" :
+          "Colors are read-only · Recovery folder listing denied";
       case ChromeAxisHudSaveStatus.InvalidPreset:
         return this.french ? "Préréglage Chrome Axis illisible · Couleurs non enregistrables" :
           "Chrome Axis preset unreadable · Colors cannot be saved";

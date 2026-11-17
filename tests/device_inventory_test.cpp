@@ -131,6 +131,40 @@ bool testTargetedFeedbackInventory()
         waitFor([&] { return observed(ForceFeedbackProbe::supported, 3); });
 }
 
+bool testClassifiedFeedbackInventoryRefresh()
+{
+    struct Probe {
+        std::atomic<ForceFeedbackProbe> result{ForceFeedbackProbe::supported};
+        std::atomic<unsigned int> scans{};
+    };
+    const auto probe = std::make_shared<Probe>();
+    DeviceInventory inventory([probe] {
+        ++probe->scans;
+        return DeviceInventoryResult{.feedbackProbe = probe->result.load()};
+    });
+    const auto observed = [&](ForceFeedbackProbe expected) {
+        const auto result = inventory.current();
+        return result && result->feedbackProbe == expected;
+    };
+    inventory.refresh();
+    if (!waitFor([&] { return observed(ForceFeedbackProbe::supported); }))
+        return false;
+
+    probe->result = ForceFeedbackProbe::disconnected;
+    for (int event = 0; event < 3; ++event)
+        inventory.refreshAfterDeviceChange();
+    if (inventory.current() || !waitFor([&] { return observed(ForceFeedbackProbe::disconnected); }) || probe->scans != 2)
+        return false;
+
+    probe->result = ForceFeedbackProbe::unsupported;
+    inventory.refreshAfterDeviceChange();
+    if (!waitFor([&] { return observed(ForceFeedbackProbe::unsupported); }))
+        return false;
+    probe->result = ForceFeedbackProbe::supported;
+    inventory.refreshAfterDeviceChange();
+    return !inventory.current() && waitFor([&] { return observed(ForceFeedbackProbe::supported); });
+}
+
 bool testPendingLayout()
 {
     auto scans = std::make_shared<std::atomic<unsigned int>>();
@@ -310,6 +344,34 @@ bool testSlowCaptureBetweenReads()
     });
     return hasFirst && nextReadStarted && !waitingForFresh.sample && !waitingForFresh.updated &&
         waitingForFresh.status == DeviceReadStatus::pending && hasNext && next.status == DeviceReadStatus::available;
+}
+
+bool testGuidedSlowCaptureLimit()
+{
+    AppInput input([](const std::string& id, const auto&) {
+        DeviceSample sample;
+        sample.axesPresent[0] = true;
+        sample.sampledAt = DeviceReadClock::now() - (id == "slow" ? 150ms : 240ms);
+        sample.axes[0] = 275;
+        return CaptureDeviceRead{sample, DeviceReadStatus::available};
+    });
+
+    const auto expired = [](const CaptureDeviceRead& reading) {
+        return reading.updated && !reading.sample && reading.status == DeviceReadStatus::unavailable;
+    };
+    const bool guidedAccepts = waitFor([&] {
+        const auto reading = input.captureGuidedPosition("slow");
+        return reading.sample && reading.sample->axes[0] == 275 && reading.status == DeviceReadStatus::available;
+    });
+    const bool guidedRejectsTooSlow = waitFor([&] { return expired(input.captureGuidedPosition("very slow")); });
+    bool previewLeaked{};
+    const bool previewRejects = waitFor([&] {
+        DeviceReadStatus status{};
+        previewLeaked |= input.sample("slow", {}, &status).has_value();
+        return status == DeviceReadStatus::unavailable;
+    });
+    const bool digitalRejects = waitFor([&] { return expired(input.capture("slow")); });
+    return guidedAccepts && guidedRejectsTooSlow && previewRejects && !previewLeaked && digitalRejects;
 }
 
 bool testReaderRecoveryAfterFailure()
@@ -595,10 +657,12 @@ int main()
         ("chrome-axis-app-state-" + std::to_string(GetCurrentProcessId()));
     const bool inventory = testInventory();
     const bool feedbackProbe = testTargetedFeedbackInventory();
+    const bool feedbackRefresh = testClassifiedFeedbackInventoryRefresh();
     const bool pendingLayout = testPendingLayout();
     const bool asyncCapture = testAsynchronousCapture();
     const bool independentCapture = testIndependentDeviceCapture();
     const bool slowCapture = testSlowCaptureBetweenReads();
+    const bool guidedReadLimit = testGuidedSlowCaptureLimit();
     const bool readerRecovery = testReaderRecoveryAfterFailure();
     const bool idleReader = testIdleReaderRestartsAtNeutral();
     const bool capture = testCaptureDuringUnrelatedScan();
@@ -611,15 +675,16 @@ int main()
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
-    if (!inventory || !feedbackProbe || !pendingLayout || !asyncCapture || !independentCapture || !slowCapture || !readerRecovery || !idleReader || !capture ||
-        !guidedCalibration || !shortcut || !usbStatus || !slowCalibration || !analogWarmup || !explicitSelection)
-        std::cerr << "inventory=" << inventory << " feedback_probe=" << feedbackProbe << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
+    if (!inventory || !feedbackProbe || !feedbackRefresh || !pendingLayout || !asyncCapture || !independentCapture || !slowCapture || !readerRecovery || !idleReader || !capture ||
+        !guidedReadLimit || !guidedCalibration || !shortcut || !usbStatus || !slowCalibration || !analogWarmup || !explicitSelection)
+        std::cerr << "inventory=" << inventory << " feedback_probe=" << feedbackProbe << " feedback_refresh=" << feedbackRefresh
+                  << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
                   << " independent_capture=" << independentCapture << " slow_capture=" << slowCapture
-                  << " reader_recovery=" << readerRecovery
+                  << " guided_read_limit=" << guidedReadLimit << " reader_recovery=" << readerRecovery
                   << " idle_reader=" << idleReader << " capture=" << capture
                   << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
                   << " usb_state=" << usbStatus << " slow_calibration=" << slowCalibration
                   << " analog_warmup=" << analogWarmup << " explicit_selection=" << explicitSelection << '\n';
-    return inventory && feedbackProbe && pendingLayout && asyncCapture && independentCapture && slowCapture && readerRecovery && idleReader && capture &&
-        guidedCalibration && shortcut && usbStatus && slowCalibration && analogWarmup && explicitSelection ? 0 : 1;
+    return inventory && feedbackProbe && feedbackRefresh && pendingLayout && asyncCapture && independentCapture && slowCapture && readerRecovery && idleReader && capture &&
+        guidedReadLimit && guidedCalibration && shortcut && usbStatus && slowCalibration && analogWarmup && explicitSelection ? 0 : 1;
 }

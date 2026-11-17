@@ -59,7 +59,7 @@ int testPerformanceCapture(const std::filesystem::path& root)
         const auto start = owner.requestPerformanceCapture(true);
         const auto startRequest = publisher.performanceRequest();
         if (!start || !owner.ownsPerformanceCapture() || !startRequest || startRequest->id != start ||
-            !startRequest->enabled || startRequest->leaseUntil <= GetTickCount64() ||
+            !startRequest->enabled || !startRequest->startedAt || startRequest->leaseUntil <= GetTickCount64() ||
             observer.requestPerformanceCapture(false) || observer.requestPerformanceCapture(true))
             return 14;
 
@@ -590,22 +590,65 @@ bool testPartialDrivingSample(const std::filesystem::path& root)
         after.lastDrive.axes[0].delivery == DiagnosticDelivery::applied;
 }
 
+bool staleIncidentsKeepTheirPlaceInHistoryWithoutFillingCapture(const std::filesystem::path& root)
+{
+    using namespace chrome_axis;
+    DiagnosticPublisher publisher(root);
+    DiagnosticReader reader(root);
+    const DiagnosticSnapshot snapshot{.mode = DiagnosticMode::usb};
+    publisher.publish(snapshot);
+    if (reader.read().connection != DiagnosticConnection::connected)
+        return false;
+    const auto id = reader.requestPerformanceCapture(true);
+    const auto request = publisher.performanceRequest();
+    if (!id || !request || request->id != id || request->startedAt < 77)
+        return false;
+
+    reader.read(); // Renewing the lease must keep the original recording boundary.
+    const auto renewed = publisher.performanceRequest();
+    if (!renewed || renewed->startedAt != request->startedAt)
+        return false;
+
+    publisher.recordDrivingSample(id, {.sampledAt = request->startedAt - 1, .mode = DiagnosticMode::usb});
+    publisher.recordDrivingSample(id, {.sampledAt = request->startedAt, .mode = DiagnosticMode::usb});
+    const DiagnosticUsbEvent stale{.sampledAt = request->startedAt - 77,
+        .kind = DiagnosticUsbEventKind::deviceSlow, .mode = DiagnosticMode::usb};
+    for (int i = 0; i < 300; ++i)
+        publisher.recordUsbEvent(stale);
+    publisher.recordUsbEvent({.sampledAt = request->startedAt + 10, .durationMicros = 300000,
+        .kind = DiagnosticUsbEventKind::deviceSlow, .mode = DiagnosticMode::gameNotForeground,
+        .lane = DiagnosticUsbLane::feedback});
+    publisher.publish(snapshot, 1);
+
+    const auto live = reader.read();
+    std::array<DiagnosticCaptureRecord, 4> records;
+    const auto batch = reader.drainCapture(records);
+    return live.usbEventCount > 1 && live.usbEvents.front().sampledAt == stale.sampledAt &&
+        batch.available && !batch.finished && !batch.dropped && batch.count == 2 &&
+        !records[0].usbIncident && records[0].driving.sampledAt == request->startedAt &&
+        records[1].usbIncident && records[1].usb.mode == DiagnosticMode::gameNotForeground &&
+        records[1].usb.lane == DiagnosticUsbLane::feedback;
+}
+
 bool testStreamingCaptureAfterGameCloses(const std::filesystem::path& root)
 {
     using namespace chrome_axis;
     DiagnosticReader reader(root);
     const DiagnosticSnapshot snapshot{.mode = DiagnosticMode::simulation};
     std::array<DiagnosticCaptureRecord, 64> records;
-    std::uint64_t firstTick = GetTickCount64();
-    DrivingCaptureSample sample{.sampledAt = firstTick, .mode = DiagnosticMode::simulation};
+    std::uint64_t firstTick{};
+    DrivingCaptureSample sample{.mode = DiagnosticMode::simulation};
     sample.transmission.engagedGear = 4;
     {
         DiagnosticPublisher publisher(root);
         publisher.publish(snapshot);
         reader.read();
         const auto start = reader.requestPerformanceCapture(true);
-        if (!start || !publisher.performanceRequest()->enabled)
+        const auto request = publisher.performanceRequest();
+        if (!start || !request || !request->enabled)
             return false;
+        firstTick = request->startedAt;
+        sample.sampledAt = firstTick;
         for (std::size_t i = 0; i < diagnosticCaptureCapacity + records.size(); ++i) {
             publisher.recordDrivingSample(start, sample);
             sample.sampledAt += 25;
@@ -672,7 +715,7 @@ int run()
         return 1;
     {
         // An older plugin must remain invisible, even if both halves of its channel exist.
-        const auto legacy = installationChannelName(root, L"Local\\ChromeAxis.Diagnostics.v20.");
+        const auto legacy = installationChannelName(root, L"Local\\ChromeAxis.Diagnostics.v23.");
         const std::unique_ptr<void, decltype(&CloseHandle)> legacyMutex(
             CreateMutexW(nullptr, FALSE, (legacy + L".frame").c_str()), &CloseHandle);
         const std::unique_ptr<void, decltype(&CloseHandle)> legacyMapping(
@@ -953,6 +996,8 @@ int run()
         return 32;
     if (!testUsbOperations(otherRoot))
         return 33;
+    if (!staleIncidentsKeepTheirPlaceInHistoryWithoutFillingCapture(otherRoot))
+        return 35;
     return testStreamingCaptureAfterGameCloses(otherRoot) ? 0 : 25;
 }
 

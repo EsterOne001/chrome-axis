@@ -4,9 +4,12 @@
 // rename we call the real ReplaceFileW, preserving Windows sharing and backup semantics.
 BOOL WINAPI testReplaceHudColors(LPCWSTR, LPCWSTR, LPCWSTR, DWORD, LPVOID, LPVOID);
 BOOL WINAPI testWriteHudColors(HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED);
+HANDLE WINAPI testFindHudRecovery(LPCWSTR, LPWIN32_FIND_DATAW);
 #define ReplaceFileW testReplaceHudColors
 #define WriteFile testWriteHudColors
+#define FindFirstFileW testFindHudRecovery
 #include "hud_color_storage.hpp"
+#undef FindFirstFileW
 #undef WriteFile
 #undef ReplaceFileW
 
@@ -30,6 +33,7 @@ struct InterruptedSave {};
 Interruption interruption{};
 bool injected{};
 bool shortWrite{};
+bool listDenied{};
 chrome_axis::detail::HudColorHandle rollbackLock;
 
 bool publishExternal(const std::filesystem::path& path, std::string_view contents) {
@@ -121,6 +125,14 @@ BOOL WINAPI testWriteHudColors(HANDLE file, LPCVOID bytes, DWORD size, LPDWORD a
     return WriteFile(file, bytes, size, actual, overlapped);
 }
 
+HANDLE WINAPI testFindHudRecovery(LPCWSTR path, LPWIN32_FIND_DATAW data) {
+    if (listDenied) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return INVALID_HANDLE_VALUE;
+    }
+    return FindFirstFileW(path, data);
+}
+
 int main() {
     using chrome_axis::commitHudColors;
     using chrome_axis::recoverHudColors;
@@ -146,6 +158,35 @@ int main() {
                     "A first save must create the documented color file.");
     ok &= check(commitHudColors(game, edited, {}, false) == Result::conflict && read(colors) == original,
                 "A file appearing since the initial read must not be overwritten.");
+
+    const auto restrictedGame = game / L"list-permission";
+    const auto restrictedColors = chrome_axis::detail::hudColorFile(restrictedGame);
+    const auto restrictedBackup = chrome_axis::detail::hudColorSidecar(restrictedColors, L".recovery");
+    ok &= check(commitHudColors(restrictedGame, original, {}, false) == Result::success,
+                "Could not prepare the existing readable color document.");
+    std::ofstream(restrictedBackup) << external;
+    listDenied = true;
+    ok &= check(recoverHudColors(restrictedGame, false) == Result::recoveryScanDenied &&
+                    recoverHudColors(restrictedGame) == Result::recoveryScanDenied && read(restrictedColors) == original &&
+                    commitHudColors(restrictedGame, edited, original, true) == Result::recoveryScanDenied &&
+                    read(restrictedBackup) == external && read(restrictedColors) == original,
+                "Denied enumeration must allow a direct read without merging or replacing either document.");
+    {
+        const auto lock = chrome_axis::detail::hudColorHandle(CreateFileW(restrictedColors.c_str(), GENERIC_READ, 0,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        ok &= check(static_cast<bool>(lock) && recoverHudColors(restrictedGame) == Result::retry,
+                    "The fallback must distinguish a sharing violation from denied enumeration.");
+    }
+    listDenied = false;
+    ok &= check(recoverHudColors(restrictedGame) == Result::recoveryRequired &&
+                    commitHudColors(restrictedGame, edited, original, true) == Result::recoveryRequired &&
+                    read(restrictedBackup) == external,
+                "Restoring list permission must still expose the pending recovery file before any write.");
+    ok &= check(DeleteFileW(restrictedBackup.c_str()) && publishExternal(restrictedColors, external) &&
+                    recoverHudColors(restrictedGame, false) == Result::success &&
+                    commitHudColors(restrictedGame, edited, original, true) == Result::conflict &&
+                    commitHudColors(restrictedGame, merged, external, true) == Result::success && read(restrictedColors) == merged,
+                "After permission returns, retry must compare the actual document and preserve the external change.");
 
     {
         const auto lock = chrome_axis::detail::hudColorHandle(CreateFileW(colors.c_str(), GENERIC_READ,

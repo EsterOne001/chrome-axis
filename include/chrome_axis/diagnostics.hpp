@@ -333,6 +333,7 @@ void writeDiagnosticCaptureConnection(std::ostream& output, std::uint64_t starte
 
 struct PerformanceRequest {
     std::uint64_t id{};
+    std::uint64_t startedAt{}; // GetTickCount64() when the reader started this capture request.
     std::uint64_t leaseUntil{}; // GetTickCount64() deadline for an active capture.
     std::uint32_t enabled{};
 };
@@ -373,7 +374,7 @@ public:
 
 private:
     void updateUsbOperations(std::span<const DiagnosticUsbOperation> operations) noexcept;
-    void queueCaptureRecord(const DiagnosticCaptureRecord& row) noexcept;
+    bool queueCaptureRecord(const DiagnosticCaptureRecord& row) noexcept;
     void flushCaptureRecords() noexcept; // Shared frame mutex held.
 
     HANDLE owner_{};

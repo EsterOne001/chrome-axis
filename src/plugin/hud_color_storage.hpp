@@ -11,7 +11,8 @@
 namespace chrome_axis {
 
 enum class HudColorCommitResult : std::int32_t { success = 0, retry = 1, conflict = 2, empty = 3,
-                                                tooLarge = 4, unavailable = 5, recoveryRequired = 6 };
+                                                tooLarge = 4, unavailable = 5, recoveryRequired = 6,
+                                                recoveryScanDenied = 9 };
 
 namespace detail {
 
@@ -122,6 +123,8 @@ inline HudColorCommitResult hudRecoverySuffixStatus(const std::filesystem::path&
     const auto scan = FindFirstFileW(pattern.c_str(), &data);
     if (scan == INVALID_HANDLE_VALUE) {
         const auto error = GetLastError();
+        if (error == ERROR_ACCESS_DENIED)
+            return Result::recoveryScanDenied;
         return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
             ? Result::success : hudColorFileError(error);
     }
@@ -144,6 +147,8 @@ inline HudColorCommitResult hudRecoverySuffixStatus(const std::filesystem::path&
             return Result::recoveryRequired;
     } while (FindNextFileW(scan, &data));
     const auto error = GetLastError();
+    if (error == ERROR_ACCESS_DENIED)
+        return Result::recoveryScanDenied;
     return error == ERROR_NO_MORE_FILES ? Result::success : hudColorFileError(error);
 }
 
@@ -254,6 +259,11 @@ inline HudColorCommitResult recoverHudColors(const std::filesystem::path& gameRo
     const auto target = detail::hudColorFile(gameRoot);
     const auto backup = detail::hudColorSidecar(target, L".recovery");
     const auto suffixStatus = detail::hudRecoverySuffixStatus(target);
+    if (suffixStatus == Result::recoveryScanDenied && probeReadable) {
+        const auto read = detail::readHudColorFile(target, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        if (read.result != Result::success)
+            return read.result;
+    }
     if (suffixStatus != Result::success && suffixStatus != Result::recoveryRequired)
         return suffixStatus;
     if (suffixStatus == Result::success && detail::missingHudColorFile(backup)) {

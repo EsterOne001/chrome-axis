@@ -121,6 +121,27 @@ bool testGainSuggestionMatchesMeasurementSettings()
     return !matchesFeedbackMeasurement(capture, settings, profile, name);
 }
 
+bool testFeedbackDraftDuringRecheck()
+{
+    using Compatibility = FeedbackCompatibility;
+    const FeedbackSettings current{.enabled = true, .strength = 135};
+    const FeedbackEditorRead original{FeedbackEditorStatus::ready, current, {}};
+    auto draft = current;
+    draft.strength = 170;
+    draft.damping = 180;
+    const auto edited = draft;
+    for (const auto state : {Compatibility::checking, Compatibility::unverified,
+                             Compatibility::disconnected, Compatibility::unsupported}) {
+        if (canSaveFeedbackDraft(original, draft, state))
+            return false;
+        auto explicitDisable = draft;
+        explicitDisable.enabled = false;
+        if (!canSaveFeedbackDraft(original, explicitDisable, state))
+            return false;
+    }
+    return canSaveFeedbackDraft(original, draft, Compatibility::supported) && draft == edited;
+}
+
 bool testFeedbackMeasurementInvalidation()
 {
     const FeedbackSettings first{.enabled = true, .strength = 135, .centering = 200};
@@ -794,6 +815,8 @@ int main()
         return 95;
     if (!testFeedbackMeasurementInvalidation())
         return 96;
+    if (!testFeedbackDraftDuringRecheck())
+        return 97;
     using namespace chrome_axis;
     if (const auto result = testWheelForceRecoveryBackoff())
         return result;

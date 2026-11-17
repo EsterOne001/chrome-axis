@@ -12,6 +12,7 @@
 #include "ui_theme.hpp"
 
 #include <commctrl.h>
+#include <dbt.h>
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
@@ -39,7 +40,7 @@ constexpr GainSlider lowSpeed{IDC_FEEDBACK_LOW_SPEED, IDC_FEEDBACK_LOW_SPEED_VAL
 constexpr GainSlider damping{IDC_FEEDBACK_DAMPING, IDC_FEEDBACK_DAMPING_VALUE,
                               0, maxFeedbackTuningPercent};
 
-enum class Compatibility { noCalibration, checking, disconnected, unverified, unsupported, supported };
+using Compatibility = FeedbackCompatibility;
 
 const wchar_t* compatibilityText(Compatibility state)
 {
@@ -157,11 +158,10 @@ struct FeedbackDialog {
     std::uint64_t impactClips{};
 
     FeedbackSettings draft(HWND window) const;
-    bool compatibilityUnknown() const noexcept;
-    bool canSave(const FeedbackSettings& settings) const noexcept;
     bool suggestionCurrent(const FeedbackSettings& settings) const noexcept;
     void showSuggestion(HWND window, bool available) const;
     void updateCompatibility(HWND window) const;
+    void refreshCompatibility(HWND window, bool topologyChanged);
     void pollCompatibility(HWND window);
 
     void initialise(HWND window);
@@ -173,16 +173,8 @@ void FeedbackDialog::initialise(HWND window)
 {
     original = readFeedbackForEdit(file);
     const auto settings = original.settings.value_or(FeedbackSettings{});
-    if (steeringAxis < axisCount && !steeringDevice.empty()) {
+    if (steeringAxis < axisCount && !steeringDevice.empty())
         inventory.emplace(steeringDevice, steeringAxis);
-        inventory->refresh();
-        if (SetTimer(window, feedbackProbeTimer, 100, nullptr)) {
-            state = Compatibility::checking;
-        } else {
-            inventory.reset();
-            state = Compatibility::unverified;
-        }
-    }
     addToggle(window, IDC_FEEDBACK_ENABLE, tr(Text::DlgFeedbackDisabled), tr(Text::DlgFeedbackEnabled), settings.enabled);
     gain = settings.strength;
     centeringGain = settings.centering;
@@ -211,21 +203,28 @@ void FeedbackDialog::initialise(HWND window)
     }
     addToggle(window, IDC_FEEDBACK_IMPACTS, tr(Text::DlgFeedbackImpactsDisabled), tr(Text::DlgFeedbackImpactsEnabled), settings.impacts);
     addToggle(window, IDC_FEEDBACK_DIRECTION, tr(Text::DlgFeedbackNormal), tr(Text::DlgFeedbackInverted), settings.invert);
+    refreshCompatibility(window, false);
+}
+
+void FeedbackDialog::refreshCompatibility(HWND window, bool topologyChanged)
+{
+    if (inventory) {
+        if (topologyChanged) {
+            inventory->refreshAfterDeviceChange();
+            if (state == Compatibility::checking)
+                return;
+        } else {
+            inventory->refresh();
+        }
+        if (SetTimer(window, feedbackProbeTimer, 100, nullptr)) {
+            state = Compatibility::checking;
+        } else {
+            inventory.reset();
+            state = Compatibility::unverified;
+        }
+    }
     updateCompatibility(window);
     updateControls(window);
-}
-
-bool FeedbackDialog::compatibilityUnknown() const noexcept
-{
-    return state == Compatibility::checking || state == Compatibility::disconnected || state == Compatibility::unverified;
-}
-
-bool FeedbackDialog::canSave(const FeedbackSettings& settings) const noexcept
-{
-    if (!original.canSave())
-        return false;
-    return !compatibilityUnknown() || (!settings.enabled &&
-        (original.status == FeedbackEditorStatus::invalid || (original.settings && original.settings->enabled)));
 }
 
 FeedbackSettings FeedbackDialog::draft(HWND window) const
@@ -243,12 +242,6 @@ bool FeedbackDialog::suggestionCurrent(const FeedbackSettings& settings) const n
 void FeedbackDialog::updateCompatibility(HWND window) const
 {
     SetDlgItemTextW(window, IDC_FEEDBACK_STATUS, compatibilityText(state));
-    const bool confirmDisable = original.canSave() && !compatibilityUnknown() && state != Compatibility::supported &&
-        original.settings && original.settings->enabled;
-    if (confirmDisable)
-        SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_SETCURSEL, 0, 0);
-    SetDlgItemTextW(window, IDC_MODAL_INTRO,
-        confirmDisable ? tr(Text::DlgFeedbackDisableProfile) : feedbackReadText(original.status));
 }
 
 void FeedbackDialog::pollCompatibility(HWND window)
@@ -268,7 +261,7 @@ void FeedbackDialog::pollCompatibility(HWND window)
     if (next == state)
         return;
     state = next;
-    if (!compatibilityUnknown())
+    if (!feedbackCompatibilityPending(state))
         KillTimer(window, feedbackProbeTimer);
     updateCompatibility(window);
     updateControls(window);
@@ -291,9 +284,12 @@ void FeedbackDialog::updateControls(HWND window) const
     const bool editable = original.canSave() && state == Compatibility::supported;
     const auto settings = draft(window);
     const bool enabled = editable && settings.enabled;
-    const bool disableUnverified = original.canSave() && compatibilityUnknown() && original.settings && original.settings->enabled;
-    EnableWindow(GetDlgItem(window, IDOK), canSave(settings));
-    EnableWindow(GetDlgItem(window, IDC_FEEDBACK_ENABLE), editable || disableUnverified);
+    const bool mayDisable = original.canSave() && (settings.enabled || (original.settings && original.settings->enabled));
+    const bool confirmDisable = !editable && mayDisable && settings.enabled && state != Compatibility::checking;
+    SetDlgItemTextW(window, IDC_MODAL_INTRO,
+        confirmDisable ? tr(Text::DlgFeedbackDisableProfile) : feedbackReadText(original.status));
+    EnableWindow(GetDlgItem(window, IDOK), canSaveFeedbackDraft(original, settings, state));
+    EnableWindow(GetDlgItem(window, IDC_FEEDBACK_ENABLE), editable || mayDisable);
     for (const int id : {overall.control, centering.control, lowSpeed.control, damping.control, IDC_FEEDBACK_IMPACTS, IDC_FEEDBACK_DIRECTION})
         EnableWindow(GetDlgItem(window, id), enabled);
     const bool currentAdvice = enabled && suggestionCurrent(settings);
@@ -304,14 +300,13 @@ void FeedbackDialog::updateControls(HWND window) const
 
 void FeedbackDialog::save(HWND window) const
 {
-    auto settings = draft(window);
-    if (!canSave(settings))
+    const auto settings = draft(window);
+    if (!canSaveFeedbackDraft(original, settings, state))
         return;
     if (isTemporaryProfileDirectory(file.parent_path())) {
         MessageBoxW(window, tr(Text::DlgFeedbackExtractBeforeSaving), tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONWARNING);
         return;
     }
-    settings.enabled = state == Compatibility::supported && settings.enabled;
     FeedbackEditorStatus problem{};
     const auto result = saveEditedFeedback(root, preset, calibrationRevision, original, settings, problem);
     if (result == PresetSaveResult::changed) {
@@ -356,6 +351,11 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     auto* dialog = reinterpret_cast<FeedbackDialog*>(GetWindowLongPtrW(window, DWLP_USER));
     if (!dialog)
         return FALSE;
+    if (message == WM_DEVICECHANGE && dialog->inventory &&
+        (wParam == DBT_DEVNODES_CHANGED || wParam == DBT_DEVICEARRIVAL || wParam == DBT_DEVICEREMOVECOMPLETE)) {
+        dialog->refreshCompatibility(window, true);
+        return FALSE;
+    }
     if (message == WM_TIMER && wParam == feedbackProbeTimer) {
         dialog->pollCompatibility(window);
         return TRUE;

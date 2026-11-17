@@ -6,6 +6,17 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.85
+
+- La capture des palettes analogiques invalide le repos après la coupure du périphérique sélectionné. Un relevé antérieur au clic sur Mesurer ne peut pas servir de butée.
+- La calibration guidée accepte des réponses plus lentes en contrôlant la durée de lecture et la fraîcheur du résultat. Le délai de mesure reste borné à trois secondes.
+- La fenêtre Retour de force revérifie le volant sélectionné après un branchement ou un débranchement et conserve les réglages en cours.
+- Sur une zone de travail étroite, le diagnostic adapte sa largeur, conserve ses actions accessibles et permet de faire défiler ses colonnes.
+- Les événements USB antérieurs à la demande de capture restent dans l’historique. Ils sont filtrés avant le tampon du CSV, où ils pourraient évincer des lignes de la session.
+- HUD Painter affiche les couleurs du JSON courant lorsqu’il est lisible avec un dossier de récupération inaccessible. Les modifications restent en attente tant que le contrôle des copies de secours échoue.
+
+[ZIP Vortex](out/Chromaxis-0.4.85.zip)
+
 ## Chrome Axis 0.4.84
 
 - La calibration accepte les réponses lentes et régulières sans réutiliser une mesure périmée. Après une expiration, l’assistant rend la main même si l’inventaire USB attend encore un pilote.

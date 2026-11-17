@@ -103,6 +103,8 @@ private:
     void captured(AccessoryBinding binding);
     void runTimer();
     void beginRestCapture(const std::string& deviceId, bool analog);
+    void discardAnalogRest(Text message = Text::DlgShifterCaptureDeviceRest);
+    bool dropDisconnectedRest();
     void interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage);
     bool hasCaptureChanges() const { return !draft_.empty() || pending_.has_value() || absentNativePositions_ != 0; }
     bool confirm(Text message) const;
@@ -158,6 +160,7 @@ private:
     unsigned int absentNativePositions_{};
     Stage stage_{Stage::Setup};
     ULONGLONG deadline_{};
+    DeviceReadClock::time_point travelStartedAt_{};
     bool analog_{};
     bool native_{};
     std::optional<std::uint64_t> inventoryRevision_;
@@ -447,8 +450,12 @@ void ShifterDialog::focusChanged(bool active)
 {
     if (active)
         refreshDevices();
-    else if (!previewRunning_)
-        input_.invalidate();
+    else if (!previewRunning_) {
+        if (rest_ && (stage_ == Stage::AnalogReady || stage_ == Stage::AnalogMeasure || stage_ == Stage::Captured))
+            discardAnalogRest(Text::DlgShifterRecaptureRest);
+        else
+            input_.invalidate();
+    }
     previewFocusChanged(active);
 }
 
@@ -621,16 +628,50 @@ void ShifterDialog::beginRestCapture(const std::string& deviceId, bool analog)
     runTimer();
 }
 
+void ShifterDialog::discardAnalogRest(Text message)
+{
+    KillTimer(window_, captureTimer);
+    input_.invalidate();
+    rest_.reset();
+    measurements_ = {};
+    if (stage_ == Stage::Captured)
+        return; // Keep the finished position, but require a new rest to sample the next one.
+
+    stage_ = Stage::AnalogReady;
+    status(tr(message));
+    updateControls();
+}
+
+bool ShifterDialog::dropDisconnectedRest()
+{
+    const auto current = rest_ ? inventory_.current() : nullptr;
+    if (!current || !current->available ||
+        std::ranges::find(current->devices, deviceId_, &DeviceInfo::id) != current->devices.end())
+        return false;
+
+    discardAnalogRest();
+    return true;
+}
+
 void ShifterDialog::interruptCapture(Text analogMessage, Text positionMessage, Text neutralMessage)
 {
+    if (stage_ == Stage::AnalogMeasure && analogMessage == Text::DlgShifterMeasureExpired) {
+        // Retain a verified rest on timeout and keep monitoring this device while the user retries.
+        measurements_ = {};
+        stage_ = Stage::AnalogReady;
+        status(tr(analogMessage));
+        updateControls();
+        return;
+    }
     KillTimer(window_, captureTimer);
     input_.invalidate();
     if (stage_ == Stage::Neutral && native_ && forward_ == 0 && step_ == 1) {
         stage_ = Stage::NeutralPaused;
         status(tr(Text::DlgShifterCaptureInterrupted));
     } else if (stage_ == Stage::AnalogMeasure) {
+        rest_.reset();
         stage_ = Stage::AnalogReady;
-        status(tr(analogMessage));
+        status(tr(Text::DlgShifterRecaptureRest));
     } else if (stage_ == Stage::Neutral && analog_ && key_.hasPosition()) {
         stage_ = Stage::AnalogReady;
         status(tr(Text::DlgShifterCaptureDeviceRest));
@@ -834,7 +875,9 @@ void ShifterDialog::position()
         updateKeyLabel();
         if (analog_) {
             stage_ = Stage::AnalogReady;
-            status(tr(Text::DlgShifterHoldAndMeasure));
+            status(tr(rest_ ? Text::DlgShifterHoldAndMeasure : Text::DlgShifterRecaptureRest));
+            if (rest_)
+                runTimer();
         } else {
             stage_ = Stage::Position;
             status(tr(native_ && forward_ ? Text::DlgShifterNativePosition : Text::DlgShifterNeutralThenHold));
@@ -849,7 +892,8 @@ void ShifterDialog::captured(AccessoryBinding binding)
     const auto existing = std::ranges::find_if(edited_, [&](const auto& other) {
         return !captureSetup().replaces(other) && sameShifterInput(binding, other);
     });
-    KillTimer(window_, captureTimer);
+    if (!analog_)
+        KillTimer(window_, captureTimer);
     if (native_ && existing != edited_.end()) {
         stage_ = analog_ ? Stage::AnalogReady : Stage::Paused;
         status(tr(Text::DlgShifterNativeInputConflict));
@@ -870,44 +914,42 @@ void ShifterDialog::captured(AccessoryBinding binding)
 
 void ShifterDialog::poll()
 {
-    if (!IsWindowEnabled(window_) || (stage_ != Stage::Neutral && stage_ != Stage::Position && stage_ != Stage::AnalogMeasure))
+    const bool waitingWithRest = rest_ && (stage_ == Stage::AnalogReady || stage_ == Stage::Captured);
+    if (!IsWindowEnabled(window_) ||
+        (!waitingWithRest && stage_ != Stage::Neutral && stage_ != Stage::Position && stage_ != Stage::AnalogMeasure))
         return;
-    if (GetForegroundWindow() != window_) {
-        interruptCapture(Text::DlgShifterMeasureInterrupted, Text::DlgShifterCaptureInterrupted,
-                         Text::DlgShifterInitialCaptureInterrupted);
+    const auto interrupted = [&] {
+        if (!IsWindowEnabled(window_) || GetForegroundWindow() != window_) {
+            if (waitingWithRest)
+                discardAnalogRest(Text::DlgShifterRecaptureRest);
+            else
+                interruptCapture(Text::DlgShifterMeasureInterrupted, Text::DlgShifterCaptureInterrupted,
+                                 Text::DlgShifterInitialCaptureInterrupted);
+            return true;
+        }
+        if (!waitingWithRest && GetTickCount64() >= deadline_) {
+            interruptCapture(Text::DlgShifterMeasureExpired, Text::DlgShifterCapturePaused,
+                             Text::DlgShifterCaptureExpired);
+            return true;
+        }
+        return false;
+    };
+    if (interrupted() || dropDisconnectedRest())
         return;
-    }
-    if (GetTickCount64() >= deadline_) {
-        interruptCapture(Text::DlgShifterMeasureExpired, Text::DlgShifterCapturePaused,
-                         Text::DlgShifterCaptureExpired);
-        return;
-    }
     const auto reading = input_.capture(deviceId_);
-    if (!reading.updated)
+    if (!reading.updated || interrupted())
         return;
     const auto& sample = reading.sample;
-    if (GetTickCount64() >= deadline_) {
-        interruptCapture(Text::DlgShifterMeasureExpired, Text::DlgShifterCapturePaused,
-                         Text::DlgShifterCaptureExpired);
+    if (rest_ && reading.needsRest()) {
+        discardAnalogRest();
         return;
     }
-    if (!IsWindowEnabled(window_) || GetForegroundWindow() != window_) {
-        interruptCapture(Text::DlgShifterMeasureInterrupted, Text::DlgShifterCaptureInterrupted,
-                         Text::DlgShifterInitialCaptureInterrupted);
+    if (waitingWithRest || (stage_ == Stage::AnalogMeasure && sample && sample->sampledAt < travelStartedAt_))
         return;
-    }
     if (!sample || reading.needsRest()) {
         if (digital_)
             digital_->deviceInterrupted();
         measurements_ = {};
-        if (analog_ && stage_ == Stage::AnalogMeasure && reading.needsRest()) {
-            KillTimer(window_, captureTimer);
-            rest_.reset();
-            stage_ = Stage::AnalogReady;
-            status(tr(Text::DlgShifterCaptureDeviceRest));
-            updateControls();
-            return;
-        }
     }
     if (!sample) {
         status(tr(Text::DlgShifterDeviceReadInterrupted));
@@ -964,7 +1006,6 @@ void ShifterDialog::poll()
             return;
         }
     }
-    KillTimer(window_, captureTimer);
     stage_ = Stage::AnalogReady;
     status(tr(Text::DlgShifterSingleAxis));
     updateControls();
@@ -985,7 +1026,12 @@ void ShifterDialog::advance()
         return;
     }
     if (stage_ == Stage::AnalogReady) {
-        input_.invalidate();
+        if (dropDisconnectedRest())
+            return;
+        if (rest_)
+            travelStartedAt_ = DeviceReadClock::now();
+        else
+            input_.invalidate();
         measurements_ = {};
         stage_ = rest_ ? Stage::AnalogMeasure : Stage::Neutral;
         status(tr(rest_ ? Text::DlgShifterHoldAtLimit : Text::DlgShifterHoldNeutral));
@@ -996,6 +1042,7 @@ void ShifterDialog::advance()
     if (stage_ != Stage::Captured || !pending_)
         return;
 
+    dropDisconnectedRest();
     const bool chooseDownshift = selectingDownshiftDevice();
     if (chooseDownshift) {
         if (!inventory_.current()) {

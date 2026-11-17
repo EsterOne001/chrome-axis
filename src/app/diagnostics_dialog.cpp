@@ -21,6 +21,7 @@
 #include <cstring>
 #include <format>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,6 +48,15 @@ constexpr UINT copyFeedbackMs = 2500;
 constexpr UINT fitDiagnosticWindow = WM_APP + 1;
 constexpr wchar_t unavailableValue[] = L"—";
 constexpr auto releaseCom = [](auto* object) { object->Release(); };
+
+std::optional<RECT> diagnosticWorkArea(HWND window)
+{
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (!GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor))
+        return std::nullopt;
+    return monitor.rcWork;
+}
 
 struct DialogState {
     DiagnosticReader& reader;
@@ -1381,8 +1391,19 @@ INT_PTR CALLBACK accessoryDetailsProc(HWND window, UINT message, WPARAM wParam, 
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgDiagnosticsClose));
         DialogTheme::attach(window, tr(Text::DlgDiagnosticsCommandHeading), IDC_DIAGNOSTICS_COMMAND_CONTEXT,
                             IDC_DIAGNOSTICS_COMMAND_LIST, {IDCANCEL});
+        if (const auto work = diagnosticWorkArea(window))
+            fitAccessoryDiagnosticsViewport(window, *work);
         refreshAccessoryDetails(window, *reinterpret_cast<AccessoryDialogState*>(lParam));
         SetTimer(window, refreshTimer, refreshIntervalMs, nullptr);
+        return TRUE;
+    case WM_DPICHANGED:
+    case WM_SETTINGCHANGE:
+        PostMessageW(window, fitDiagnosticWindow, 0, 0);
+        break;
+    case WM_EXITSIZEMOVE:
+    case fitDiagnosticWindow:
+        if (const auto work = diagnosticWorkArea(window))
+            fitAccessoryDiagnosticsViewport(window, *work);
         return TRUE;
     case WM_TIMER:
         if (wParam == refreshTimer && state) {
@@ -1555,10 +1576,8 @@ void refresh(HWND window, DialogState& state)
 
 void fitDiagnosticViewport(HWND window, DiagnosticViewport& viewport)
 {
-    MONITORINFO monitor{};
-    monitor.cbSize = sizeof(monitor);
-    if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor))
-        viewport.fit(window, monitor.rcWork);
+    if (const auto work = diagnosticWorkArea(window))
+        viewport.fit(window, *work);
 }
 
 INT_PTR CALLBACK diagnosticContentProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -1627,9 +1646,25 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return TRUE;
         }
         break;
+    case WM_HSCROLL:
+        if (state && reinterpret_cast<HWND>(lParam) == GetDlgItem(window, IDC_DIAGNOSTICS_HORIZONTAL_SCROLL)) {
+            state->viewport.scroll(window, LOWORD(wParam), true);
+            return TRUE;
+        }
+        break;
     case WM_MOUSEWHEEL:
+        if (state && state->viewport.canScrollHorizontally() && (GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT)) {
+            state->viewport.wheel(window, -GET_WHEEL_DELTA_WPARAM(wParam), true);
+            return TRUE;
+        }
         if (state && state->viewport.canScroll()) {
             state->viewport.wheel(window, GET_WHEEL_DELTA_WPARAM(wParam));
+            return TRUE;
+        }
+        break;
+    case WM_MOUSEHWHEEL:
+        if (state && state->viewport.canScrollHorizontally()) {
+            state->viewport.wheel(window, GET_WHEEL_DELTA_WPARAM(wParam), true);
             return TRUE;
         }
         break;

@@ -16,6 +16,7 @@ namespace {
 using Clock = DeviceReadClock;
 using Buttons = std::bitset<buttonCount>;
 constexpr auto sampleLifetime = std::chrono::milliseconds(120);
+constexpr auto guidedReadLimit = std::chrono::milliseconds(220);
 constexpr auto initializationRetry = std::chrono::milliseconds(250);
 constexpr auto readerIdleTimeout = std::chrono::seconds(5);
 constexpr CaptureDeviceRead pending{.sample = {}, .status = DeviceReadStatus::pending, .updated = false};
@@ -28,6 +29,7 @@ struct AppInput::State {
         Buttons buttons;
         std::uint64_t number;
         Clock::time_point completedAt;
+        bool guidedCalibration;
     };
 
     struct Device {
@@ -64,6 +66,7 @@ struct AppInput::State {
 
                 const auto buttons = std::exchange(requested, {});
                 const auto generation = revision;
+                const bool guidedCalibration = requestedGuidedCalibration;
                 lock.unlock();
 
                 const auto startedAt = Clock::now();
@@ -92,7 +95,9 @@ struct AppInput::State {
                 if (reading.sample) {
                     if (reading.sample->sampledAt == Clock::time_point{})
                         reading.sample->sampledAt = startedAt;
-                    if (Clock::now() - reading.sample->sampledAt > sampleLifetime) {
+                    const auto durationLimit = guidedCalibration ? guidedReadLimit : sampleLifetime;
+                    const auto validatedAt = guidedCalibration ? completedAt : Clock::now();
+                    if (validatedAt - reading.sample->sampledAt > durationLimit) {
                         reading.sample.reset();
                         reading.status = DeviceReadStatus::unavailable;
                     } else {
@@ -102,29 +107,34 @@ struct AppInput::State {
                 interruption |= reading.status == DeviceReadStatus::resumed ||
                     (observedSample && reading.status == DeviceReadStatus::unavailable);
                 observedSample |= reading.sample.has_value();
-                report = Report{std::move(reading), buttons, number, completedAt};
+                report = Report{std::move(reading), buttons, number, completedAt, guidedCalibration};
             }
             return Exit::stopped;
         }
 
-        CaptureDeviceRead request(const Buttons& buttons, bool capture)
+        CaptureDeviceRead request(const Buttons& buttons, Purpose purpose)
         {
             std::scoped_lock lock(mutex);
             if (stopping)
                 return pending;
             lastRequest = Clock::now();
             requested |= buttons;
+            const bool capture = purpose != Purpose::preview;
+            const bool guidedCalibration = purpose == Purpose::guidedCalibration;
+            requestedGuidedCalibration = guidedCalibration;
             if (!std::exchange(queued, true))
                 SetEvent(wake);
 
-            if (!report || (buttons & ~report->buttons).any())
+            if (!report || report->guidedCalibration != guidedCalibration || (buttons & ~report->buttons).any())
                 return pending;
 
             auto reading = report->reading;
-            const bool expired = reading.sample && lastRequest - reading.sample->sampledAt > sampleLifetime;
+            const bool expired = reading.sample &&
+                lastRequest - (guidedCalibration ? report->completedAt : reading.sample->sampledAt) > sampleLifetime;
             // A slow successful read can become too old to use before the next one arrives.
             // Capture waits for a fresh result while the reader is still making progress.
-            if (expired && capture && lastRequest - report->completedAt < sampleLifetime)
+            const auto nextReadLimit = guidedCalibration ? guidedReadLimit : sampleLifetime;
+            if (expired && capture && lastRequest - report->completedAt < nextReadLimit)
                 return pending;
             if (expired) {
                 reading.sample.reset();
@@ -176,6 +186,7 @@ struct AppInput::State {
         Buttons requested;
         Clock::time_point lastRequest{Clock::now()};
         std::uint64_t revision{}, delivered{};
+        bool requestedGuidedCalibration{};
         bool queued{}, deliveredExpiry{}, interruption{}, observedSample{}, stopping{};
     };
 
@@ -219,7 +230,7 @@ AppInput::~AppInput()
 
 std::optional<DeviceSample> AppInput::sample(const std::string& id, const Buttons& buttons, DeviceReadStatus* status)
 {
-    auto reading = request(id, buttons, false);
+    auto reading = request(id, buttons, Purpose::preview);
     if (status)
         *status = reading.status;
     return std::move(reading.sample);
@@ -227,17 +238,22 @@ std::optional<DeviceSample> AppInput::sample(const std::string& id, const Button
 
 CaptureDeviceRead AppInput::capture(const std::string& id)
 {
-    return request(id, {}, true);
+    return request(id, {}, Purpose::capture);
 }
 
-CaptureDeviceRead AppInput::request(const std::string& id, const Buttons& buttons, bool capture)
+CaptureDeviceRead AppInput::captureGuidedPosition(const std::string& id)
+{
+    return request(id, {}, Purpose::guidedCalibration);
+}
+
+CaptureDeviceRead AppInput::request(const std::string& id, const Buttons& buttons, Purpose purpose)
 {
     if (id.empty())
         return {};
     std::scoped_lock lock(state_->mutex);
     auto& reader = state_->devices[id];
     if (reader.device)
-        return reader.device->request(buttons, capture);
+        return reader.device->request(buttons, purpose);
     const auto now = Clock::now();
     if (reader.retryAfter > now)
         return {};
@@ -256,9 +272,9 @@ CaptureDeviceRead AppInput::request(const std::string& id, const Buttons& button
                 state->finished(*device, exit);
             }).detach();
             reader.device = device;
-            const auto initial = device->request(buttons, capture);
+            const auto initial = device->request(buttons, purpose);
             // Previews that outlived an idle reader must rearm on fresh samples.
-            return capture ? initial : CaptureDeviceRead{};
+            return purpose != Purpose::preview ? initial : CaptureDeviceRead{};
         } catch (const std::system_error&) {
             // Leave a retry time even when the thread itself could not start.
         }

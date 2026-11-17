@@ -2933,7 +2933,7 @@ void App::tick()
 void App::updateCapture()
 {
     const auto channel = steps_[step_].channel;
-    const auto reading = input_->capture(deviceId(channel));
+    const auto reading = input_->captureGuidedPosition(deviceId(channel));
     const bool expired = std::chrono::steady_clock::now() >= captureDeadline_;
     if (expired || !chrome_axis::collectGuidedCalibrationReading(*capture_, reading, captureHadSignal_)) {
         capture_.reset();

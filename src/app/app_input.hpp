@@ -22,11 +22,13 @@ public:
     std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>& buttons = {},
                                       DeviceReadStatus* status = nullptr) override;
     CaptureDeviceRead capture(const std::string& id);
+    CaptureDeviceRead captureGuidedPosition(const std::string& id);
     void invalidate();
     void close();
 
 private:
-    CaptureDeviceRead request(const std::string& id, const std::bitset<buttonCount>& buttons, bool capture);
+    enum class Purpose { preview, capture, guidedCalibration };
+    CaptureDeviceRead request(const std::string& id, const std::bitset<buttonCount>& buttons, Purpose purpose);
 
     struct State;
     std::shared_ptr<State> state_;

@@ -9,19 +9,26 @@ public:
     HWND content{};
 
     void fit(HWND window, const RECT& workArea);
-    void scroll(HWND window, int action);
-    void wheel(HWND window, int delta);
+    void scroll(HWND window, int action, bool horizontal = false);
+    void wheel(HWND window, int delta, bool horizontal = false);
     void showControl(HWND window, HWND control);
     bool canScroll() const noexcept { return visibleHeight < contentHeight; }
+    bool canScrollHorizontally() const noexcept { return visibleWidth < contentWidth; }
 
 private:
-    void scrollTo(HWND window, int position);
+    void scrollTo(HWND window, int x, int y);
 
+    int contentWidth{};
+    int visibleWidth{};
+    int horizontalOffset{};
     int contentHeight{};
     int visibleHeight{};
-    int offset{};
+    int verticalOffset{};
     int lineHeight{};
-    int wheelRemainder{};
+    int horizontalWheelRemainder{};
+    int verticalWheelRemainder{};
 };
+
+void fitAccessoryDiagnosticsViewport(HWND window, const RECT& workArea);
 
 } // namespace chrome_axis

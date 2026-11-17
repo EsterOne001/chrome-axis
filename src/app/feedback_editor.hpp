@@ -10,6 +10,7 @@
 namespace chrome_axis {
 
 enum class FeedbackEditorStatus { ready, invalid, locked, unreadable, changed };
+enum class FeedbackCompatibility { noCalibration, checking, disconnected, unverified, unsupported, supported };
 
 struct FeedbackEditorRead {
     FeedbackEditorStatus status{FeedbackEditorStatus::unreadable};
@@ -18,6 +19,21 @@ struct FeedbackEditorRead {
 
     bool canSave() const noexcept { return status == FeedbackEditorStatus::ready || status == FeedbackEditorStatus::invalid; }
 };
+
+inline bool feedbackCompatibilityPending(FeedbackCompatibility compatibility) noexcept
+{
+    return compatibility == FeedbackCompatibility::checking || compatibility == FeedbackCompatibility::disconnected ||
+        compatibility == FeedbackCompatibility::unverified;
+}
+
+inline bool canSaveFeedbackDraft(const FeedbackEditorRead& original, const FeedbackSettings& draft,
+                                 FeedbackCompatibility compatibility) noexcept
+{
+    if (!original.canSave() || (draft.enabled && compatibility != FeedbackCompatibility::supported))
+        return false;
+    return !feedbackCompatibilityPending(compatibility) || original.status == FeedbackEditorStatus::invalid ||
+        (original.settings && original.settings->enabled);
+}
 
 inline FeedbackEditorRead readFeedbackForEdit(const std::filesystem::path& path)
 {

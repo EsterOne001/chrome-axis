@@ -35,7 +35,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 23;
+constexpr LONG64 protocolVersion = 24;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate transmission changes.
@@ -48,7 +48,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v23.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v24.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -627,15 +627,16 @@ void DiagnosticPublisher::recordDrivingSample(std::uint64_t captureId, const Dri
         sample.clutch.blocker == lastCaptureSample_.clutch.blocker &&
         transmissionForSampling(sample.transmission) == transmissionForSampling(lastCaptureSample_.transmission))
         return;
-    queueCaptureRecord({.driving = sample});
-    lastCaptureSample_ = sample;
+    if (queueCaptureRecord({.driving = sample}))
+        lastCaptureSample_ = sample;
 }
 
-void DiagnosticPublisher::queueCaptureRecord(const DiagnosticCaptureRecord& row) noexcept
+bool DiagnosticPublisher::queueCaptureRecord(const DiagnosticCaptureRecord& row) noexcept
 {
     const auto now = GetTickCount64();
-    if (!observedRequest_.enabled || now >= observedRequest_.leaseUntil)
-        return;
+    const auto sampledAt = row.usbIncident ? row.usb.sampledAt : row.driving.sampledAt;
+    if (!observedRequest_.enabled || now >= observedRequest_.leaseUntil || sampledAt < observedRequest_.startedAt)
+        return false;
     if (pendingId_ != observedRequest_.id) {
         pendingId_ = observedRequest_.id;
         pendingHead_ = pendingCount_ = 0;
@@ -648,6 +649,7 @@ void DiagnosticPublisher::queueCaptureRecord(const DiagnosticCaptureRecord& row)
     }
     pending_[(pendingHead_ + pendingCount_) % pending_.size()] = row;
     ++pendingCount_;
+    return true;
 }
 
 void DiagnosticPublisher::flushCaptureRecords() noexcept
@@ -798,7 +800,8 @@ std::uint64_t DiagnosticReader::requestPerformanceCapture(bool enabled) noexcept
             InterlockedExchange64(&frame_->version, 0);
             requestId = ++frame_->requestSerial;
             captureOwner_ = enabled ? requestId : 0;
-            frame_->request = {requestId, enabled ? now + performanceLease : 0, enabled};
+            frame_->request = {.id = requestId, .startedAt = enabled ? now : 0,
+                               .leaseUntil = enabled ? now + performanceLease : 0, .enabled = enabled};
             frame_->captureHoldUntil = now + performanceLease;
             if (enabled) {
                 captureId_ = requestId;
