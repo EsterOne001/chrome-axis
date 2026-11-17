@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.78 · 17 novembre 2026
+
+Comparée à la **0.4.77**.
+
+- **HUD Painter.** Si `colors.json` est verrouillé, les couleurs modifiées restent en attente et la sauvegarde est retentée automatiquement, même si le panneau est fermé dans la même partie. Les intervalles passent à 1, 2, 4 puis 8 secondes et restent plafonnés à 8 secondes. Après déverrouillage, Chrome Axis relit le fichier, fusionne les seules couleurs modifiées avec les couleurs sur disque et arrête les tentatives après l’écriture. Un préréglage malformé est préservé.
+- **Validation.** Release x64, 18 suites CTest, cinq démarrages et relances simulés avec les trois axes et 14 affectations armés, REDscript avec et sans HUD Painter et CRC des dix fichiers. Sur des fichiers temporaires, les verrous Windows de lecture et d’écriture ont préservé le contenu précédent, puis l’écriture a réussi après déverrouillage. Le déclenchement du rappel pendant une pause du jeu et la persistance après relance restent à vérifier en jeu.
+
+SHA-256 `6abd1db24b4a35352c239ee08c1168d5fdbebcc9962a0c27dc9b632aba74d09d`. [ZIP Vortex](out/Chromaxis-0.4.78.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/2a57dc65127d4704bac88b19258d3a346339685a)
+
 ## Chrome Axis 0.4.77 · 17 novembre 2026
 
 Comparée à la **0.4.76**.
