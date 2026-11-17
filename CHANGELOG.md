@@ -6,6 +6,19 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.88 · 17 novembre 2026
+
+Comparée à la **0.4.87**.
+
+- **Calibration guidée.** L’assistant vérifie la continuité DirectInput de chaque périphérique entre les positions. Il redemande les mesures de l’appareil touché lorsqu’une coupure échappe à l’inventaire USB et conserve les mesures des autres appareils. Le banc a reproduit une coupure de 75 ms et confirmé la conservation d’une zone morte de 0 %.
+- **Palettes mixtes.** Sur un même USB, la validation d’une palette « + » analogique avec une « − » numérique attend un relevé reçu après le clic sur Suivant. Une ancienne trame valide en mémoire ne suffit plus à valider la paire après une coupure. La capture sur deux périphériques USB et le séquentiel par touches ont aussi été revérifiés.
+- **Profils et diagnostic.** Les fichiers vérifiés restent protégés jusqu’à la clôture de la réassociation. L’export CSV refuse le fichier source et ses alias comme destination, et signale en français ou en anglais un verrou sur le fichier ou sur une plage d’octets.
+- **HUD Painter.** Chrome Axis attend l’événement qui confirme l’écriture du préréglage avant d’y associer les couleurs. Le traitement déduplique la confirmation entre les contrôleurs et prévoit sa réception après la fermeture du menu.
+- **Contrôle du ZIP.** Le script de publication peut comparer les fichiers de l’archive aux sources de la version ou vérifier l’empreinte SHA-256 du paquet validé. Le contrôle local a accepté le ZIP final et rejeté un paquet d’essai qui mélangeait les binaires 0.4.88 avec le REDscript 0.4.87.
+- **Validation.** Release x64, 20 tests CTest, trois captures guidées à 150 ms par lecture et essais simulés de retour de force après reconnexion et Alt+Tab. Le REDscript du ZIP compile sur une copie du cache Cyberpunk 2077 2.5 avec et sans HUD Painter. La reprise et le retour de force avec le T300RS ainsi que la persistance des couleurs après fermeture immédiate de HUD Painter restent à vérifier en jeu.
+
+SHA-256 `f940cb8b7dedb28c8ba6fe2d27cbd3d09eec839c0a0d1b907fd8b7499f568da6`. [ZIP Vortex](out/Chromaxis-0.4.88.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/4e7ab54997cb5c02c63b51932f70fc8ba273bd3d)
+
 ## Chrome Axis 0.4.87 · 17 novembre 2026
 
 Comparée à la **0.4.86**.
