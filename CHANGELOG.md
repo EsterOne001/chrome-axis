@@ -6,6 +6,24 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.73 · 17 novembre 2026
+
+Comparée à la **0.4.72**.
+
+- **Bascule AUTO / MANUEL.** La lecture de secours reconnaît qu’un état Windows arrivé en retard correspond à un appui déjà reçu par l’écouteur. Le raccourci attend un relâchement confirmé avant de compter un nouvel appui. Sur le banc, un appui maintenu avec 140 ms de retard simulé déclenche une seule bascule, en simulation clavier comme avec une boîte en H native.
+- **Validation.** Release x64 et 18 suites CTest réussies. Le banc combiné a réussi 24 fois avec perte et reconnexion simulées de la boîte en H, raccourci maintenu et accessoire indépendant disponible. REDscript compile avec et sans HUD Painter. L’essai avec le T300RS reste à faire.
+
+SHA-256 `e5c24012a09e16ab9114dc42b6f1d5252d7edec7f48e330b2ba6d6855901525e`. [ZIP Vortex](out/Chromaxis-0.4.73.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/48b0e24befb5a9716b41630dc40c4f87a8758e4b)
+
+## Chrome Axis 0.4.72 · 17 novembre 2026
+
+Comparée à la **0.4.71**.
+
+- **Bascule AUTO / MANUEL.** Si l’écouteur Windows reste déclaré actif mais cesse de transmettre les appuis, le plugin lit aussi l’état de la touche pendant la conduite. Cette lecture de secours fonctionne en simulation clavier et en USB avec la boîte native. Les deux lectures partagent le réarmement et les touches émises par Chrome Axis pour les accessoires sont exclues de la lecture de secours.
+- **Validation.** Release x64, 18 suites CTest réussies et deux suites ciblées répétées 24 fois chacune. REDscript compile avec et sans HUD Painter. L’audit a ensuite reproduit un double comptage lorsque l’état clavier arrive en retard. La 0.4.73 corrige ce cas. La bascule avec le matériel réel reste à vérifier.
+
+SHA-256 `c8f7d49ea5ee81701ad8b7e4d3fa77b242655fc81942174c3fa20974bac8a26e`. [ZIP Vortex](out/Chromaxis-0.4.72.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/a541d6553f0eafccbc7a586c65ea7d6d3f145605)
+
 ## Chrome Axis 0.4.71 · 17 novembre 2026
 
 Comparée à la **0.4.70**.
