@@ -13,7 +13,8 @@ void stopTransmissionHotkey() noexcept;
 void selectTransmissionHotkey(unsigned int key) noexcept;
 unsigned int transmissionHotkeyBinding() noexcept;
 void setTransmissionHotkeyContext(bool eligible) noexcept;
-void sampleTransmissionHotkey(unsigned int key, bool pressed) noexcept;
+std::uint64_t transmissionHotkeySampleRevision() noexcept;
+void sampleTransmissionHotkey(unsigned int key, bool pressed, std::uint64_t observedRevision) noexcept;
 std::optional<std::uint64_t> takeTransmissionHotkeyPress(unsigned int key) noexcept;
 bool transmissionHotkeyAvailable() noexcept;
 

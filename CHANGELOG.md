@@ -6,6 +6,12 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.73
+
+- **Bascule AUTO / MANUEL.** Si l’écouteur a déjà reconnu un appui, sa confirmation tardive par la lecture directe est comptée dans le même appui. Le prochain appui attend un relâchement confirmé. Une lecture est écartée si un événement clavier intervient entre la prise d’état et son traitement.
+
+[ZIP Vortex](out/Chromaxis-0.4.73.zip)
+
 ## Chrome Axis 0.4.72
 
 - **Bascule AUTO / MANUEL.** Une lecture directe prend le relais si l’écouteur Windows manque les appuis du raccourci. Elle fonctionne dans la simulation clavier activée et avec la boîte en H ou les palettes natives. Les deux lectures partagent le réarmement et la file d’appuis.

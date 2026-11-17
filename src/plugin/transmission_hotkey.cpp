@@ -107,8 +107,12 @@ void setTransmissionHotkeyContext(bool eligible) noexcept {
         modeKey.primeReleased(*initial);
 }
 
-void sampleTransmissionHotkey(unsigned int key, bool pressed) noexcept {
-    modeKey.sample(key, pressed, GetTickCount64());
+std::uint64_t transmissionHotkeySampleRevision() noexcept {
+    return modeKey.sampleRevision();
+}
+
+void sampleTransmissionHotkey(unsigned int key, bool pressed, std::uint64_t observedRevision) noexcept {
+    modeKey.sample(key, pressed, GetTickCount64(), observedRevision);
 }
 
 std::optional<std::uint64_t> takeTransmissionHotkeyPress(unsigned int key) noexcept {

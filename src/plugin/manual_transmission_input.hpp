@@ -17,6 +17,7 @@ public:
     explicit PhysicalModeKey(unsigned int key) noexcept : key_(key) {}
 
     unsigned int key() const noexcept { return key_.load(std::memory_order_relaxed); }
+    std::uint64_t sampleRevision() const noexcept { return revision_.load(std::memory_order_relaxed); }
 
     void select(unsigned int key) noexcept {
         if (key > 0xff)
@@ -49,14 +50,14 @@ public:
     std::optional<std::uint64_t> initialState(unsigned int key) const noexcept {
         std::scoped_lock lock(mutex_);
         if (key == this->key() && contextAt_ && phase_ == Phase::initial)
-            return revision_;
+            return sampleRevision();
         return std::nullopt;
     }
 
-    // Windows' merged state can establish that the key is up. Only a physical event records a press.
+    // Use a sampled up to arm the shortcut without queueing a press.
     void primeReleased(std::uint64_t initial) noexcept {
         std::scoped_lock lock(mutex_);
-        if (initial == revision_ && contextAt_ && phase_ == Phase::initial)
+        if (initial == sampleRevision() && contextAt_ && phase_ == Phase::initial)
             phase_ = Phase::released;
     }
 
@@ -68,19 +69,20 @@ public:
         const auto sinceTick = contextAt_ > tick ? contextAt_ - tick : tick - contextAt_;
         if (key != this->key() || !contextAt_ || tick < contextStart_ || sinceTick > contextLifetime)
             return;
+        const auto previous = phase_;
         if (pressed && (phase_ == Phase::initial || phase_ == Phase::released)) {
             sampleSync_ = sampleSync_ == SampleSync::awaitingUp ? SampleSync::awaitingUpThenDown : SampleSync::awaitingDown;
-            sampledUpSince_.reset();
         } else if (!pressed && phase_ != Phase::released) {
             sampleSync_ = SampleSync::awaitingUp;
-            sampledUpSince_.reset();
         }
         acceptLevel(pressed, tick);
+        if (phase_ != previous)
+            ++revision_;
     }
 
-    void sample(unsigned int key, bool pressed, std::uint64_t now) noexcept {
+    void sample(unsigned int key, bool pressed, std::uint64_t now, std::uint64_t observedRevision) noexcept {
         std::scoped_lock lock(mutex_);
-        if (key != this->key() || !contextFresh(now))
+        if (key != this->key() || observedRevision != sampleRevision() || !contextFresh(now))
             return;
         // The Windows hook sees an edge before GetAsyncKeyState reflects it.
         // Ignore the old level until the sample catches up with the hook.
@@ -90,25 +92,19 @@ public:
                 return;
             break;
         case SampleSync::awaitingUpThenDown:
-            if (pressed)
-                return;
-            sampleSync_ = SampleSync::awaitingDown;
-            [[fallthrough]];
+            if (!pressed)
+                sampleSync_ = SampleSync::awaitingDown;
+            return;
         case SampleSync::awaitingDown:
-            if (!pressed) {
-                // The listener may stop mid-press, with no sampled down and
-                // no hook release. Recover after a sustained neutral level.
-                if (!sampledUpSince_)
-                    sampledUpSince_ = now;
-                if (now - *sampledUpSince_ < sampleReleaseDelay)
-                    return;
-            }
+            // A sampled up can still precede the hook's down. Wait for the
+            // matching down, or let a new hook release settle the sequence.
+            if (!pressed)
+                return;
             break;
         case SampleSync::matched:
             break;
         }
         sampleSync_ = SampleSync::matched;
-        sampledUpSince_.reset();
         acceptLevel(pressed, now);
     }
 
@@ -130,7 +126,6 @@ private:
     enum class SampleSync { matched, awaitingDown, awaitingUp, awaitingUpThenDown };
     static constexpr std::uint64_t contextLifetime = 100; // ms
     static constexpr std::uint64_t pressLifetime = 200; // ms
-    static constexpr std::uint64_t sampleReleaseDelay = 80; // ms
 
     bool contextFresh(std::uint64_t now) const noexcept {
         return contextAt_ && now >= contextAt_ && now - contextAt_ <= contextLifetime;
@@ -155,7 +150,6 @@ private:
         ++revision_;
         phase_ = Phase::initial;
         sampleSync_ = SampleSync::matched;
-        sampledUpSince_.reset();
         head_ = count_ = 0;
     }
 
@@ -173,10 +167,9 @@ private:
     mutable std::mutex mutex_;
     std::uint64_t contextStart_{};
     std::uint64_t contextAt_{};
-    std::uint64_t revision_{};
+    std::atomic<std::uint64_t> revision_{};
     Phase phase_{Phase::initial};
     SampleSync sampleSync_{SampleSync::matched};
-    std::optional<std::uint64_t> sampledUpSince_;
     std::array<std::uint64_t, pressCapacity> presses_{};
     std::size_t head_{}, count_{};
 };

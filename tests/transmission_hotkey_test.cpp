@@ -8,7 +8,12 @@ using chrome_axis::ManualTransmissionInput;
 using chrome_axis::PhysicalModeKey;
 using chrome_axis::TransmissionSource;
 
-constexpr unsigned int shortcut = 'L';
+constexpr unsigned int shortcut = 'J';
+
+void sampleLevel(PhysicalModeKey& key, unsigned int virtualKey, bool pressed, std::uint64_t tick)
+{
+    key.sample(virtualKey, pressed, tick, key.sampleRevision());
+}
 
 bool togglesWithPolling(TransmissionSource source)
 {
@@ -19,7 +24,7 @@ bool togglesWithPolling(TransmissionSource source)
     const bool paddles = source == TransmissionSource::paddles;
     const auto frame = [&](bool down, std::uint64_t tick) {
         key.setContext(true, tick);
-        key.sample(shortcut, down, tick);
+        sampleLevel(key, shortcut, down, tick);
         return transmission.update(hardware, 1, simulation, false, false, {}, paddles, true, 0,
                                    key.takePress(shortcut, tick).has_value() ? 1 : 0);
     };
@@ -39,19 +44,19 @@ bool mergesAsynchronousLevelsWithHookEvents()
 {
     PhysicalModeKey key(shortcut);
     key.setContext(true, 100);
-    key.sample(shortcut, false, 100);
+    sampleLevel(key, shortcut, false, 100);
     key.update(shortcut, true, false, 101);
-    key.sample(shortcut, false, 102); // The hook sees key-down before Windows publishes the new level.
+    sampleLevel(key, shortcut, false, 102); // The hook sees key-down before Windows publishes the new level.
     if (key.takePress(shortcut, 102) != 101 || key.takePress(shortcut, 102))
         return false;
-    key.sample(shortcut, true, 103);
+    sampleLevel(key, shortcut, true, 103);
     key.update(shortcut, false, false, 104);
-    key.sample(shortcut, true, 105); // The asynchronous level still reports the previous key-down.
+    sampleLevel(key, shortcut, true, 105); // The asynchronous level still reports the previous key-down.
     if (key.takePress(shortcut, 105))
         return false;
 
-    key.sample(shortcut, false, 106);
-    key.sample(shortcut, true, 107);
+    sampleLevel(key, shortcut, false, 106);
+    sampleLevel(key, shortcut, true, 107);
     key.update(shortcut, true, false, 108); // Even a late callback cannot duplicate the sampled hold.
     if (key.takePress(shortcut, 108) != 107 || key.takePress(shortcut, 108))
         return false;
@@ -61,8 +66,8 @@ bool mergesAsynchronousLevelsWithHookEvents()
     key.update(shortcut, false, false, 111);
     key.update(shortcut, true, false, 112);
     key.update(shortcut, false, false, 113);
-    key.sample(shortcut, true, 114);
-    key.sample(shortcut, false, 115);
+    sampleLevel(key, shortcut, true, 114);
+    sampleLevel(key, shortcut, false, 115);
     return key.takePress(shortcut, 115) == 110 && key.takePress(shortcut, 115) == 112 &&
         !key.takePress(shortcut, 115);
 }
@@ -71,47 +76,101 @@ bool discardsStaleContextAndRearmsOnBindingChange()
 {
     PhysicalModeKey key(shortcut);
     key.setContext(true, 100);
-    key.sample(shortcut, false, 100);
-    key.sample(shortcut, true, 101);
+    sampleLevel(key, shortcut, false, 100);
+    sampleLevel(key, shortcut, true, 101);
     key.setContext(false, 0);
-    key.sample(shortcut, false, 103);
+    sampleLevel(key, shortcut, false, 103);
     key.setContext(true, 104);
-    key.sample(shortcut, true, 104);
+    sampleLevel(key, shortcut, true, 104);
     if (key.takePress(shortcut, 104))
         return false;
 
     key.select('F');
-    key.sample(shortcut, false, 105);
-    key.sample('F', true, 106);
+    sampleLevel(key, shortcut, false, 105);
+    sampleLevel(key, 'F', true, 106);
     if (key.takePress('F', 106))
         return false;
-    key.sample('F', false, 107);
-    key.sample('F', true, 108);
+    sampleLevel(key, 'F', false, 107);
+    sampleLevel(key, 'F', true, 108);
     if (key.takePress('F', 108) != 108)
         return false;
-    key.sample('F', false, 109);
-    key.sample('F', true, 300); // Vehicle updates have stopped, so the context expired.
+    sampleLevel(key, 'F', false, 109);
+    sampleLevel(key, 'F', true, 300); // Vehicle updates have stopped, so the context expired.
     return !key.takePress('F', 300);
+}
+
+bool ignoresLateDownForTheSameHold(bool simulation)
+{
+    PhysicalModeKey key(shortcut);
+    ManualTransmissionInput transmission;
+    const bool hardware = !simulation;
+    const auto frame = [&](bool down, std::uint64_t tick) {
+        key.setContext(true, tick);
+        sampleLevel(key, shortcut, down, tick);
+        return transmission.update(hardware, -1, simulation, false, false, {}, false, false, 0,
+                                   key.takePress(shortcut, tick).has_value() ? 1 : 0);
+    };
+    const auto initial = frame(false, 1000);
+    key.update(shortcut, true, false, 1001);
+    const auto first = frame(false, 1005);
+    if (initial.manual != hardware || !first.toggledByKey || first.manual != simulation)
+        return false;
+
+    for (const auto tick : {1030u, 1050u, 1085u}) {
+        const auto stale = frame(false, tick);
+        if (stale.toggledByKey || stale.manual != first.manual)
+            return false;
+    }
+    const auto late = frame(true, 1090);
+    const auto continuedHold = frame(true, 1105);
+    const auto released = frame(false, 1110);
+    const auto second = frame(true, 1120);
+    return !late.toggledByKey && late.manual == first.manual &&
+        !continuedHold.toggledByKey && continuedHold.manual == first.manual &&
+        !released.toggledByKey && released.manual == first.manual &&
+        second.toggledByKey && second.manual == initial.manual;
+}
+
+bool ignoresSamplesCapturedBeforeHookTransitions()
+{
+    PhysicalModeKey key(shortcut);
+    key.setContext(true, 100);
+    sampleLevel(key, shortcut, false, 100);
+    const auto oldRevision = key.sampleRevision();
+    key.update(shortcut, true, false, 101);
+    key.update(shortcut, false, false, 102);
+    key.sample(shortcut, false, 103, oldRevision); // This up sample predates both hook transitions.
+    sampleLevel(key, shortcut, true, 104); // The async level has yet to catch up to the release.
+    if (key.takePress(shortcut, 104) != 101 || key.takePress(shortcut, 104))
+        return false;
+
+    sampleLevel(key, shortcut, false, 105);
+    sampleLevel(key, shortcut, true, 106);
+    return key.takePress(shortcut, 106) == 106 && !key.takePress(shortcut, 106);
 }
 
 bool rearmsAfterListenerStopsMidPress()
 {
     PhysicalModeKey key(shortcut);
     key.setContext(true, 100);
-    key.sample(shortcut, false, 100);
+    sampleLevel(key, shortcut, false, 100);
     key.update(shortcut, true, false, 101);
     if (key.takePress(shortcut, 101) != 101)
         return false;
 
-    // Windows now reports the release while the listener misses both levels.
+    // With no hook release, a sampled up may still belong to the state before the hook-down.
     for (const auto tick : {110u, 130u, 150u, 170u, 190u}) {
         key.setContext(true, tick);
-        key.sample(shortcut, false, tick);
+        sampleLevel(key, shortcut, false, tick);
         if (key.takePress(shortcut, tick))
             return false;
     }
-    key.sample(shortcut, true, 200);
-    return key.takePress(shortcut, 200) == 200 && !key.takePress(shortcut, 200);
+    sampleLevel(key, shortcut, true, 200);
+    if (key.takePress(shortcut, 200))
+        return false;
+    sampleLevel(key, shortcut, false, 210);
+    sampleLevel(key, shortcut, true, 220);
+    return key.takePress(shortcut, 220) == 220 && !key.takePress(shortcut, 220);
 }
 
 } // namespace
@@ -134,5 +193,13 @@ int main()
     if (!rearmsAfterListenerStopsMidPress()) {
         std::cerr << "The key could not rearm after the Windows listener stopped mid-press\n";
         return 4;
+    }
+    if (!ignoresLateDownForTheSameHold(true) || !ignoresLateDownForTheSameHold(false)) {
+        std::cerr << "One held J toggled twice when the Windows key state changed late\n";
+        return 5;
+    }
+    if (!ignoresSamplesCapturedBeforeHookTransitions()) {
+        std::cerr << "An old sample overrode a more recent hook transition\n";
+        return 6;
     }
 }

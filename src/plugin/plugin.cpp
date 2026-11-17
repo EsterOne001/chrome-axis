@@ -873,9 +873,10 @@ chrome_axis::PedalRoutingDecision updateTransmission(Vehicle* vehicle, chrome_ax
     chrome_axis::setTransmissionHotkeyContext(hasShortcut);
     if (hasShortcut) {
         if (accessoryKeys.allowsTransmissionKeyPolling(hotkey)) {
+            const auto revision = chrome_axis::transmissionHotkeySampleRevision();
             const bool pressed = keyDown(static_cast<int>(hotkey));
             if (accessoryKeys.allowsTransmissionKeyPolling(hotkey))
-                chrome_axis::sampleTransmissionHotkey(hotkey, pressed);
+                chrome_axis::sampleTransmissionHotkey(hotkey, pressed, revision);
         }
         while (physicalPresses < chrome_axis::PhysicalModeKey::pressCapacity) {
             const auto press = chrome_axis::takeTransmissionHotkeyPress(hotkey);
