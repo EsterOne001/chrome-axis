@@ -96,6 +96,26 @@ bool testChronologicalExport(const std::filesystem::path& directory)
             return false;
     }
 
+    const auto sourceBusyExport = directory / L"source-busy-export.csv";
+    std::ofstream(sourceBusyExport, std::ios::binary) << "existing export";
+    {
+        const auto writer = CreateFileW(unordered.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (writer == INVALID_HANDLE_VALUE)
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> writing(writer, CloseHandle);
+        DiagnosticRecorder exporter({}, {});
+        if (!exporter.startExport(unordered, sourceBusyExport))
+            return false;
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (exporter.exportState() == DiagnosticExportState::exporting && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(5ms);
+        if (exporter.exportState() != DiagnosticExportState::sourceLocked || read(sourceBusyExport) != "existing export")
+            return false;
+    }
+    if (!exportDiagnosticRecording(unordered, sourceBusyExport) || read(sourceBusyExport) != ordered.str())
+        return false;
+
     // Closing the recorder must account for an export that still owns the paths.
     const auto retried = directory / L"retried.csv";
     {
@@ -171,6 +191,9 @@ int run()
         }))
         return 2;
     const auto first = recorder.status();
+    const auto whileRecording = first.file.parent_path() / L"during-recording.csv";
+    if (exportDiagnosticRecording(first.file, whileRecording) || std::filesystem::exists(whileRecording))
+        return 10;
     if (!contender.start() || !until(contender, [](const DiagnosticRecordingStatus& status) {
             return status.state == DiagnosticRecordingState::slotOccupied;
         }))
@@ -217,6 +240,16 @@ int run()
         csv.find("505520") == csv.npos || csv.find(",usb,") == csv.npos ||
         csv.find("connection_lost") == csv.npos || csv.find("connection_restored") == csv.npos || result.dropped)
         return 6;
+    input.close();
+    const auto afterReconnect = result.file.parent_path() / L"after-reconnect.csv";
+    if (!exportDiagnosticRecording(result.file, afterReconnect))
+        return 11;
+    {
+        std::ifstream exported(afterReconnect, std::ios::binary);
+        const std::string rows(std::istreambuf_iterator<char>{exported}, std::istreambuf_iterator<char>{});
+        if (rows.find("connection_lost") == rows.npos || rows.find("connection_restored") == rows.npos)
+            return 11;
+    }
     return testChronologicalExport(result.file.parent_path()) ? 0 : 9;
 }
 

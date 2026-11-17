@@ -1096,6 +1096,11 @@ void ShifterDialog::advance()
         return;
     }
     if (stage_ == Stage::Paused && digital_) {
+        if (priorAnalogUpshift()) {
+            // The upshift's analog origin may have changed while this device was not being read.
+            beginRestCapture(deviceId_, false);
+            return;
+        }
         digital_->resetPosition();
         stage_ = Stage::Position;
         status(tr(Text::DlgShifterNeutralBeforeMeasure));

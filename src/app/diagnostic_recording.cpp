@@ -281,20 +281,39 @@ bool writeChronologicalRecording(const std::filesystem::path& source, const std:
     return output.append(buffer) && output.flush();
 }
 
-} // namespace
-
-bool exportDiagnosticRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
+DiagnosticExportState exportRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
 {
     std::filesystem::path staged;
     bool created = false;
     try {
         staged = detail::stagedSettingsPath(destination);
-        if (writeChronologicalRecording(source, staged, created) && detail::replaceSettingsFile(staged, destination))
-            return true;
+        bool written{};
+        {
+            // Both passes and the sorted fast path must observe the same version of the recording.
+            // Release the read lock before publication so an export can also replace its source.
+            const auto file = CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) {
+                const auto error = GetLastError();
+                return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
+                    ? DiagnosticExportState::sourceLocked : DiagnosticExportState::failed;
+            }
+            const std::unique_ptr<void, decltype(&CloseHandle)> guard(file, CloseHandle);
+            written = writeChronologicalRecording(source, staged, created);
+        }
+        if (written && detail::replaceSettingsFile(staged, destination))
+            return DiagnosticExportState::complete;
     } catch (const std::exception&) {}
     if (created)
         DeleteFileW(staged.c_str());
-    return false;
+    return DiagnosticExportState::failed;
+}
+
+} // namespace
+
+bool exportDiagnosticRecording(const std::filesystem::path& source, const std::filesystem::path& destination)
+{
+    return exportRecording(source, destination) == DiagnosticExportState::complete;
 }
 
 struct DiagnosticRecorder::Impl {
@@ -348,9 +367,7 @@ struct DiagnosticRecorder::Impl {
         exportState_.store(DiagnosticExportState::exporting, std::memory_order_relaxed);
         try {
             exportWorker_ = std::jthread([this, source, destination] {
-                const bool saved = exportDiagnosticRecording(source, destination);
-                exportState_.store(saved ? DiagnosticExportState::complete : DiagnosticExportState::failed,
-                                   std::memory_order_release);
+                exportState_.store(exportRecording(source, destination), std::memory_order_release);
             });
         } catch (const std::exception&) {
             exportState_.store(DiagnosticExportState::failed, std::memory_order_release);

@@ -6,6 +6,16 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.87
+
+- La calibration guidée redemande les positions du périphérique dont l’absence a été confirmée. Les mesures des autres périphériques sont conservées.
+- Après une pause de capture, l’assistant vérifie le repos de la palette + analogique avant de reprendre la palette − numérique du même périphérique.
+- En mode embrayage expérimental, l’accélérateur attend une lecture valide au repos après une interruption de l’atténuation.
+- Une réassociation détecte une modification concurrente avant de confirmer l’opération. L’export du diagnostic garde une source CSV stable pendant sa lecture et son tri.
+- HUD Painter rattache la sauvegarde des couleurs à l’écriture du préréglage concerné, y compris après un écrasement refusé.
+
+[ZIP Vortex](out/Chromaxis-0.4.87.zip)
+
 ## Chrome Axis 0.4.86
 
 - Quand un même périphérique revient avec un point de repos incompatible pendant la capture des palettes, l’assistant demande de reprendre la première mesure. Il conserve la première palette lorsque la seconde est sur un autre périphérique.

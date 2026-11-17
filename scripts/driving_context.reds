@@ -54,6 +54,20 @@ class ChromeAxisHudPaletteEdit {
 }
 
 @if(ModuleExists("HudPainter"))
+class ChromeAxisHudPresetWrite {
+  public let key: String;
+  public let palette: ref<ChromeAxisHudPalette>;
+  public let existed: Bool;
+  public let handled: Bool;
+}
+
+@if(ModuleExists("HudPainter"))
+class ChromeAxisHudPresetWriteBoundary extends Event {
+  public let write: ref<ChromeAxisHudPresetWrite>;
+  public let begin: Bool;
+}
+
+@if(ModuleExists("HudPainter"))
 enum ChromeAxisHudSaveStatus {
   Available = 0,
   FileUnavailable = 1,
@@ -124,9 +138,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   private let retryDelay: Float;
   private let retryAttempts: Int32;
   private let reloadPending: Bool;
-  private let pendingPresetKey: String;
-  private let pendingPresetPalette: ref<ChromeAxisHudPalette>;
-  private let pendingPresetAlreadyExisted: Bool;
+  private let activePresetWrite: ref<ChromeAxisHudPresetWrite>;
   private let menuController: wref<inkGameController>;
   private let section: wref<ChromeAxisHudPainterSection>;
   private let picker: wref<CustomColorPickerController>;
@@ -157,11 +169,13 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   private cb func OnUninitialize() {
     GameInstance.GetCallbackSystem().UnregisterCallback(n"Session/Ready", this);
     GameInstance.GetCallbackSystem().UnregisterCallback(n"Session/Resume", this);
+    this.activePresetWrite = null;
     this.CancelScheduledFlush();
   }
 
   private cb func OnSessionAvailable(event: ref<GameSessionEvent>) {
     // A prior session can discard its timer, and a paused session can delay delivery.
+    this.activePresetWrite = null;
     this.RefreshColors(true);
   }
 
@@ -254,22 +268,40 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     this.FlushColors(true);
   }
 
-  public func TrackPresetSave(name: String) -> Void {
-    this.pendingPresetKey = StrLower(name);
-    this.pendingPresetPalette = this.GetPalette();
-    this.pendingPresetAlreadyExisted = this.HasNativePreset(this.pendingPresetKey);
+  public func BeginPresetSave(name: String) -> ref<ChromeAxisHudPresetWrite> {
+    let write = new ChromeAxisHudPresetWrite();
+    write.key = StrLower(name);
+    write.palette = this.GetPalette();
+    write.existed = this.HasNativePreset(write.key);
+    this.QueuePresetWriteBoundary(write, true);
+    return write;
   }
 
-  public func FinishPresetSave() -> Void {
-    if !IsDefined(this.pendingPresetPalette) || this.pendingPresetAlreadyExisted {
-      return;
+  public func FinishPresetSave(write: ref<ChromeAxisHudPresetWrite>) -> Void {
+    this.QueuePresetWriteBoundary(write, false);
+    // A new name can also be recognized before the UI event is delivered.
+    if !write.existed && this.HasNativePreset(write.key) {
+      this.StoreSuccessfulPreset(write);
+      this.FlushColors();
     }
-    // Existence proves success only when the new name did not exist before the save.
-    if this.HasNativePreset(this.pendingPresetKey) {
-      this.PresetSaved();
-    } else {
-      this.pendingPresetPalette = null;
-      this.pendingPresetKey = "";
+  }
+
+  private func QueuePresetWriteBoundary(write: ref<ChromeAxisHudPresetWrite>, begin: Bool) -> Void {
+    let uiSystem = GameInstance.GetUISystem(GetGameInstance());
+    if IsDefined(uiSystem) {
+      // HUD Painter queues its unnamed success event during the synchronous write.
+      let event = new ChromeAxisHudPresetWriteBoundary();
+      event.write = write;
+      event.begin = begin;
+      uiSystem.QueueEvent(event);
+    }
+  }
+
+  public func ObservePresetWriteBoundary(event: ref<ChromeAxisHudPresetWriteBoundary>) -> Void {
+    if event.begin {
+      this.activePresetWrite = event.write.handled ? null : event.write;
+    } else if Equals(this.activePresetWrite, event.write) {
+      this.activePresetWrite = null;
     }
   }
 
@@ -287,12 +319,17 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   }
 
   public func PresetSaved() -> Void {
-    if IsDefined(this.pendingPresetPalette) {
-      this.StorePalette(this.pendingPresetKey, this.pendingPresetPalette, true, true);
-      this.pendingPresetPalette = null;
-      this.pendingPresetKey = "";
-    }
+    let write = this.activePresetWrite;
+    this.activePresetWrite = null;
+    this.StoreSuccessfulPreset(write);
     this.FlushColors();
+  }
+
+  private func StoreSuccessfulPreset(write: ref<ChromeAxisHudPresetWrite>) -> Void {
+    if IsDefined(write) && !write.handled {
+      write.handled = true;
+      this.StorePalette(write.key, write.palette, true, true);
+    }
   }
 
   public func ApplyToHud() -> Void {
@@ -661,6 +698,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   public func OpenMenu(controller: wref<inkGameController>) -> Void {
     if NotEquals(this.menuController, controller) {
       this.section = null;
+      this.activePresetWrite = null;
     }
     this.menuController = controller;
     let root = controller.GetRootCompoundWidget();
@@ -799,6 +837,14 @@ class ChromeAxisHudPainterPresetEvents extends inkComponent {
     return false;
   }
 
+  protected cb func OnChromeAxisHudPresetWriteBoundary(event: ref<ChromeAxisHudPresetWriteBoundary>) -> Bool {
+    let menu = ChromeAxisHudPainterMenu.Get();
+    if IsDefined(menu) {
+      menu.ObservePresetWriteBoundary(event);
+    }
+    return false;
+  }
+
   protected cb func OnHudPainterInkStyleRefreshed(event: ref<HudPainterInkStyleRefreshed>) -> Bool {
     let menu = ChromeAxisHudPainterMenu.Get();
     if IsDefined(menu) {
@@ -812,6 +858,7 @@ class ChromeAxisHudPainterPresetEvents extends inkComponent {
 @wrapMethod(GenericMessageNotification)
 private final func Close(result: GenericMessageNotificationResult) -> Void {
   let saveMenu: ref<ChromeAxisHudPainterMenu>;
+  let presetWrite: ref<ChromeAxisHudPresetWrite>;
   if Equals(result, GenericMessageNotificationResult.Confirm)
     && IsDefined(this.m_data) && this.m_data.isInput && IsDefined(this.m_textInput)
     && Equals(this.m_data.title, GetLocalizedTextByKey(n"Mod-HudPainter-Save-Preset-Title")) {
@@ -819,13 +866,13 @@ private final func Close(result: GenericMessageNotificationResult) -> Void {
     if NotEquals(name, "") && NotEquals(StrLower(name), "default") {
       saveMenu = ChromeAxisHudPainterMenu.Get();
       if IsDefined(saveMenu) {
-        saveMenu.TrackPresetSave(name);
+        presetWrite = saveMenu.BeginPresetSave(name);
       }
     }
   }
   wrappedMethod(result);
-  if IsDefined(saveMenu) {
-    saveMenu.FinishPresetSave();
+  if IsDefined(presetWrite) {
+    saveMenu.FinishPresetSave(presetWrite);
   }
 }
 

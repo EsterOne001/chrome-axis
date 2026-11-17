@@ -130,10 +130,16 @@ bool testInterruptedRestores(const std::filesystem::path& fixture)
     return true;
 }
 
-bool testReassignmentRecovery(const std::filesystem::path& fixture)
+std::string readBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+bool testReassignmentRecovery(const std::filesystem::path& fixture, bool interruptRecovery)
 {
     using namespace chrome_axis;
-    const auto root = fixture / L"Reassignment recovery";
+    const auto root = fixture / (interruptRecovery ? L"Reassignment with failed recovery" : L"Reassignment recovery");
     const auto snapshot = root / profileBackupsFolder / L"Avant-reassociation-test";
     const std::string oldWheel = "{11111111-1111-1111-1111-111111111111}";
     const std::string newWheel = "{22222222-2222-2222-2222-222222222222}";
@@ -163,11 +169,47 @@ bool testReassignmentRecovery(const std::filesystem::path& fixture)
     std::ofstream(snapshot / L"chrome_axis_backup.txt") << "Chrome Axis device reassignment 1 7\n";
     std::ofstream(root / L".chrome_axis_profile_restore.pending") << "Avant-reassociation-test\n";
     std::ofstream(target / L"Unrelated.txt") << "preserve\n";
+    std::filesystem::remove(target / accessoryFilename);
     const auto pending = readInterruptedProfileRestore(root);
     ProfileBackupError result{};
     if (!check(pending.pending && pending.deviceReassignment && pending.backupUsable && pending.backup == snapshot
-               && !saveInstallationSettings(root, [] { return true; }) && restoreProfileBackup(root, snapshot, result),
+               && !saveInstallationSettings(root, [] { return true; }),
                "An interrupted reassignment must resume from its targeted snapshot"))
+        return false;
+    std::filesystem::path incomplete;
+    if (interruptRecovery) {
+        const auto file = CreateFileW((target / feedbackFilename).c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                      FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!check(file != INVALID_HANDLE_VALUE, "Could not lock a live file during reassignment recovery"))
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> guard(file, CloseHandle);
+        if (!check(!restoreProfileBackup(root, snapshot, result) && result == ProfileBackupError::recoveryRequired
+                   && profileRestorePending(root), "A failed targeted recovery must leave the journal in place"))
+            return false;
+        for (const auto& entry : std::filesystem::directory_iterator(root / profileBackupsFolder)) {
+            if (entry.path().filename().native().starts_with(L"Avant-reprise-"))
+                incomplete = entry.path();
+        }
+        const auto kept = loadProfile(incomplete / profileFilename, error);
+        if (!check(!incomplete.empty() && kept && kept->steering.deviceId == newWheel
+                    && readBytes(incomplete / L"chrome_axis_backup.txt") == "Chrome Axis files before reassignment recovery 1 incomplete\n"
+                    && !std::filesystem::exists(incomplete / accessoryFilename)
+                    && !std::filesystem::exists(incomplete / feedbackFilename),
+                   "An interrupted recovery preserves only displaced files and marks the copy incomplete"))
+            return false;
+    }
+    std::filesystem::path previous;
+    if (!check(restoreProfileBackup(root, snapshot, result, {}, &previous) && !previous.empty() && previous != incomplete,
+               "A successful recovery saves the live files before replacing them"))
+        return false;
+    const auto previousAxes = loadProfile(previous / profileFilename, error);
+    const auto previousMarker = interruptRecovery ? "Chrome Axis files before reassignment recovery 1 7\n"
+                                                  : "Chrome Axis files before reassignment recovery 1 5\n";
+    if (!check(readBytes(previous / L"chrome_axis_backup.txt") == previousMarker
+               && previousAxes && previousAxes->steering.deviceId == (interruptRecovery ? oldWheel : newWheel)
+               && std::filesystem::exists(previous / accessoryFilename) == interruptRecovery
+               && loadFeedbackSettings(previous / feedbackFilename, error) == stoppedForce,
+               "The saved-file mask contains only the live files actually preserved"))
         return false;
     const auto restored = loadProfile(target / profileFilename, error);
     return check(!profileRestorePending(root) && restored && restored->steering.deviceId == oldWheel
@@ -241,12 +283,6 @@ bool testSelectProfileWithUsb(const std::filesystem::path& fixture)
     return check(setUsbEnabled(root, false, error) && selectPreset(root, L"Legacy", error)
                  && readUsbActivation(activePreset(root).directory) == UsbActivationStatus::axisConflict,
                  "The conflicting profile must remain selectable for repair with USB off");
-}
-
-std::string readBytes(const std::filesystem::path& path)
-{
-    std::ifstream input(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
 bool testUsbActivation(const std::filesystem::path& fixture)
@@ -1027,7 +1063,8 @@ int main()
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
         && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory)
         && testEditorFileLocks(directory) && testUsbActivation(directory)
-        && testInterruptedRestores(directory) && testReassignmentRecovery(directory)
+        && testInterruptedRestores(directory) && testReassignmentRecovery(directory, false)
+        && testReassignmentRecovery(directory, true)
         && testImportedAxisConflict(directory) && testSelectProfileWithUsb(directory);
     return fixture.cleanup() && passed ? 0 : 1;
 }

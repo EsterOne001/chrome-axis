@@ -2892,13 +2892,11 @@ void updateVehicle(Vehicle* vehicle) {
             attenuation = *probePosition;
         }
     }
-    if (attenuation) {
-        probeThrottleInterlock = *attenuation > 0.0f;
-    } else if (probeThrottleInterlock) {
-        probeThrottleInterlock = controls.values.throttle > 0.0f;
-        if (probeThrottleInterlock)
-            controls.throttleReady = false;
-    }
+    // Missing or stale throttle samples are zero-filled. Only a valid release rearms the pedal.
+    probeThrottleInterlock = chrome_axis::clutchThrottleInterlock(probeThrottleInterlock, attenuation,
+                                                                 pedalsReleased.throttle);
+    if (probeThrottleInterlock && !attenuation)
+        controls.throttleReady = false;
 
     const bool axesRequested = controls.steeringReady || controls.throttleReady || controls.brakeReady;
     const bool readAxes = axesRequested || attenuation || captureTelemetry;

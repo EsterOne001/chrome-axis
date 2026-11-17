@@ -347,6 +347,20 @@ bool missingGearboxLeavesOrRestoresStandardPedals()
         pedals.update(false, PedalGear::unavailable, {}).routing == PedalRouting::standard;
 }
 
+bool clutchInterlockRequiresAReadableRelease()
+{
+    // A zero-filled reading from a pending input and a fresh but held pedal
+    // both lack release evidence when the clutch measurement becomes unavailable.
+    using chrome_axis::clutchThrottleInterlock;
+    const bool attenuating = clutchThrottleInterlock(false, 0.5f, false);
+    const bool inputMissing = clutchThrottleInterlock(attenuating, std::nullopt, false);
+    const bool heldAfterRecovery = clutchThrottleInterlock(inputMissing, std::nullopt, false);
+    return attenuating && inputMissing && heldAfterRecovery &&
+        !clutchThrottleInterlock(heldAfterRecovery, std::nullopt, true) &&
+        !clutchThrottleInterlock(attenuating, 0.0f, false) &&
+        !clutchThrottleInterlock(false, std::nullopt, false);
+}
+
 bool knownGearLetsEachPedalResumeIndependently()
 {
     for (const bool brakeAvailable : {true, false}) {
@@ -455,6 +469,10 @@ int main()
     }
     if (!missingGearboxLeavesOrRestoresStandardPedals()) {
         std::cerr << "A missing gearbox observation stranded the pedals in AUTO\n";
+        return 1;
+    }
+    if (!clutchInterlockRequiresAReadableRelease()) {
+        std::cerr << "A missing throttle reading cleared the experimental clutch interlock\n";
         return 1;
     }
     if (!knownGearLetsEachPedalResumeIndependently()) {

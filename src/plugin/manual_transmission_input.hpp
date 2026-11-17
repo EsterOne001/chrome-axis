@@ -322,6 +322,13 @@ private:
     bool armed_{};
 };
 
+constexpr bool clutchThrottleInterlock(bool latched, std::optional<float> attenuation,
+                                       bool throttleReleased) noexcept {
+    if (attenuation)
+        return *attenuation > 0.0f;
+    return latched && !throttleReleased;
+}
+
 class ClutchShiftAssist {
 public:
     static bool pedalQualified(std::optional<float> pressure) noexcept {

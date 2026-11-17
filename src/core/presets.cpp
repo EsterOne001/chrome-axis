@@ -25,6 +25,7 @@ constexpr wchar_t profileRestoreJournal[] = L".chrome_axis_profile_restore.pendi
 constexpr wchar_t originalFiles[] = L"Fichiers-originaux";
 constexpr std::string_view backupVersion = "Chrome Axis profile backup 1";
 constexpr std::string_view reassignmentVersion = "Chrome Axis device reassignment 1 ";
+constexpr std::string_view beforeRecoveryVersion = "Chrome Axis files before reassignment recovery 1 ";
 constexpr std::wstring_view reassignmentPrefix = L"Avant-reassociation-";
 constexpr std::wstring_view restorePrefix = L"Avant-restauration-";
 constexpr std::size_t maxNameLength = 64;
@@ -1002,6 +1003,7 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         bool tracked{};
         bool changed{};
         bool attempted{};
+        bool published{};
     };
     std::array<Change, settingsFiles.size()> changes{};
     for (std::size_t i = 0; i < changes.size(); ++i) {
@@ -1157,8 +1159,8 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
             }
             const DWORD attributes = GetFileAttributesW(change.live.c_str());
             const bool missingLive = attributes == INVALID_FILE_ATTRIBUTES && missing(GetLastError());
-            // A failed ReplaceFile may already have renamed the original. Do not overwrite a concurrent edit.
-            if (!(missingLive || matchesSettings(change.live, change.replacement))
+            // A failed ReplaceFile may already have renamed the original. Preserve edits or deletions made after publication.
+            if (!((missingLive && !change.published) || matchesSettings(change.live, change.replacement))
                 || !MoveFileExW(change.backup.c_str(), change.live.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
                 recovered = false;
         }
@@ -1184,10 +1186,16 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         if (!sameSelection() || !isUnchanged(change))
             return rollback(Error::invalidSelection);
         change.attempted = true;
-        if (!ReplaceFileW(change.live.c_str(), change.staged.c_str(), change.backup.c_str(), 0, nullptr, nullptr)
-            || !matchesSettings(change.backup, change.original))
+        change.published = ReplaceFileW(change.live.c_str(), change.staged.c_str(), change.backup.c_str(),
+                                        0, nullptr, nullptr) != FALSE;
+        if (!change.published || !matchesSettings(change.backup, change.original))
             return rollback(Error::ioError);
     }
+    const bool matchesPublication = std::ranges::all_of(changes, [](const Change& change) {
+        return !change.tracked || matchesSettings(change.live, change.changed ? change.replacement : change.original);
+    });
+    if (!sameSelection() || !matchesPublication)
+        return rollback(Error::invalidSelection);
     if (!cleanup())
         return false;
     if (feedbackDisabled)
@@ -1342,21 +1350,54 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
             failure.step = ProfileBackupStep::copyBackup;
             return false;
         }
+        TemporaryDirectory previous{createRecoveryDirectory(root / profileBackupsFolder, &failure.windowsError,
+                                                             L"Avant-reprise-")};
+        // Explicitly label an incomplete copy until every replacement completes.
+        if (previous.path.empty() || !writeTextFile(previous.path / backupMarker,
+                std::string(beforeRecoveryVersion) + "incomplete", &failure.windowsError)) {
+            error = ProfileBackupError::recoveryRequired;
+            failure.step = ProfileBackupStep::prepareRecovery;
+            return false;
+        }
+        auto previousFiles = std::exchange(previous.path, {});
+        unsigned int preservedFiles{};
         for (std::size_t i = 0; i < settingsFiles.size(); ++i) {
+            if ((*files & (1u << i)) == 0)
+                continue;
             const auto file = settingsFiles[i];
-            if ((*files & (1u << i)) != 0 &&
-                !MoveFileExW((temporary.path / file).c_str(), (target / file).c_str(),
-                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            const auto live = target / file;
+            const auto staged = temporary.path / file;
+            bool exists{};
+            if (!optionalEntry(live, false, exists)) {
+                failure.step = ProfileBackupStep::applyRestore;
+                error = ProfileBackupError::recoveryRequired;
+                return false;
+            }
+            // The native replacement saves the exact file being overwritten, including concurrent edits.
+            const bool applied = exists ? ReplaceFileW(live.c_str(), staged.c_str(), (previousFiles / file).c_str(),
+                                                        0, nullptr, nullptr) != FALSE
+                                        : MoveFileExW(staged.c_str(), live.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+            if (!applied) {
                 failure = {ProfileBackupStep::applyRestore, GetLastError()};
                 error = ProfileBackupError::recoveryRequired;
                 return false;
             }
+            if (exists && plainFile(GetFileAttributesW((previousFiles / file).c_str())))
+                preservedFiles |= 1u << i;
         }
-        if (!clearRestoreJournal(root, &failure.windowsError)) {
+        if ((preservedFiles && !writeTextFile(previousFiles / backupMarker,
+                std::string(beforeRecoveryVersion) + std::to_string(preservedFiles), &failure.windowsError))
+            || !clearRestoreJournal(root, &failure.windowsError)) {
             error = ProfileBackupError::recoveryRequired;
             failure.step = ProfileBackupStep::applyRestore;
             return false;
         }
+        if (recoveryDirectory) {
+            *recoveryDirectory = preservedFiles ? profileRoot / profileBackupsFolder / previousFiles.filename()
+                                                : std::filesystem::path{};
+        }
+        if (!preservedFiles)
+            previous.path = std::move(previousFiles);
         error = ProfileBackupError::none;
         return true;
     }

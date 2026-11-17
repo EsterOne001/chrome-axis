@@ -950,6 +950,7 @@ private:
     std::wstring deviceName(const chrome_axis::DeviceInfo& selected) const;
     void selectCalibrationScope();
     void beginCalibration(const CalibrationScope& scope);
+    void invalidateDisconnectedCalibration();
     void measureStep();
     void previousStep();
     void retryAxis(std::size_t channel);
@@ -991,6 +992,7 @@ private:
         return std::ranges::any_of(scope, std::identity{});
     }
     bool reviewingCalibration() const { return calibrating_ && step_ == stepCount_; }
+    bool calibrationNeedsRetry() const { return std::ranges::any_of(calibrationRetryRequired_, std::identity{}); }
     bool canConfigureAxis(std::size_t channel) const
     {
         return !simulation_ && !calibrating_ && !profileRestoreBlocked() && (draft_[channel]
@@ -1079,6 +1081,7 @@ private:
     float guideMotion_{1.0f};
     std::chrono::steady_clock::time_point guideMotionStart_{};
     CalibrationScope calibrationScope_{};
+    CalibrationScope calibrationRetryRequired_{};
     std::array<std::wstring, commands.size()> calibrationDeviceNames_{};
     std::array<Step, calibrationSteps.size()> steps_{};
     std::size_t step_{}, stepCount_{};
@@ -1362,6 +1365,7 @@ void App::consumeDeviceInventory()
     inventoryRevision_ = result->revision;
     inventoryAvailable_ = result->available;
     devices_ = result->devices;
+    invalidateDisconnectedCalibration();
     for (std::size_t channel = 0; channel < deviceCombos_.size(); ++channel)
         fillDeviceCombo(channel);
     updateHardwareStatus();
@@ -2109,7 +2113,7 @@ void App::transferProfiles(bool restoring)
         readProfile();
         scanDevices();
         updateLanguageIndicator(chrome_axis::profileLanguageChoice(directory_));
-        if (!recoveringDevice)
+        if (!recovery.empty())
             message += L"\n\n" + std::wstring(tr(Text::mainRestoreRecovery)) + L"\n" + recovery.wstring();
         if (selectedLanguage_ != chrome_axis::interfaceLanguage())
             message += L"\n\n" + std::wstring(tr(Text::mainLanguageSaved));
@@ -2339,17 +2343,19 @@ void App::updateCalibrationView()
     EnableWindow(previous_, step_ > first && !capture_);
     setText(cancel_, tr(retry_ ? Text::guideCancelRetry : Text::mainCancel));
     if (reviewingCalibration()) {
+        const bool needsRetry = calibrationNeedsRetry();
         setText(guideStep_, tr(Text::guideReview));
-        setText(guideAction_, tr(Text::guideReviewTitle));
+        setText(guideAction_, tr(needsRetry ? Text::guideReviewRetryTitle : Text::guideReviewTitle));
         setText(guideDevice_, L"");
         bool disconnected = false;
         for (std::size_t i = 0; i < retryAxes_.size(); ++i) {
             EnableWindow(retryAxes_[i], available[i]);
             disconnected = disconnected || (calibrationScope_[i] && !available[i]);
         }
-        setText(instruction_, tr(disconnected ? Text::guideReviewReconnect : Text::guideReviewInstruction));
+        setText(instruction_, tr(needsRetry ? Text::guideReviewRetryReconnected
+            : disconnected ? Text::guideReviewReconnect : Text::guideReviewInstruction));
         setText(measure_, tr(Text::guideFinish));
-        EnableWindow(measure_, TRUE);
+        EnableWindow(measure_, !needsRetry);
         InvalidateRect(window_, nullptr, FALSE);
         return;
     }
@@ -2622,6 +2628,7 @@ void App::beginCalibration(const CalibrationScope& scope)
     if (simulation_ || calibrating_ || !canCalibrate(scope))
         return;
     calibrationScope_ = scope;
+    calibrationRetryRequired_ = {};
     const auto planned = std::ranges::copy_if(calibrationSteps, steps_.begin(),
         [&scope](const Step& step) { return scope[step.channel]; });
     stepCount_ = static_cast<std::size_t>(planned.out - steps_.begin());
@@ -2645,6 +2652,48 @@ void App::beginCalibration(const CalibrationScope& scope)
     calibrationMessage_.clear();
     updateCalibrationView();
     SetFocus(measure_);
+}
+
+void App::invalidateDisconnectedCalibration()
+{
+    if (!calibrating_ || !inventoryAvailable_)
+        return;
+    const auto planned = std::span(steps_).first(stepCount_);
+    const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
+    bool changed = false;
+    std::optional<std::size_t> restartAt;
+    for (std::size_t channel = 0; channel < calibrationScope_.size(); ++channel) {
+        if (!calibrationScope_[channel] || device(deviceId(channel)))
+            continue;
+        const auto axisSteps = std::ranges::equal_range(planned, channel, {}, &Step::channel);
+        const auto first = static_cast<std::size_t>(axisSteps.begin() - planned.begin());
+        const auto end = static_cast<std::size_t>(axisSteps.end() - planned.begin());
+        const bool currentAxis = first <= step_ && step_ < end;
+        const auto positions = std::span(positions_).subspan(first, end - first);
+        const bool captured = std::ranges::any_of(positions, [](const auto& position) {
+            return std::ranges::any_of(position.axesPresent, std::identity{});
+        });
+        if (axes[channel]->deviceId.empty() && !captured && !(currentAxis && capture_))
+            continue;
+
+        calibrationRetryRequired_[channel] = true;
+        *axes[channel] = {};
+        std::ranges::fill(positions, chrome_axis::AxisCapture{});
+        if (retry_)
+            std::ranges::fill(std::span(retry_->positions).subspan(first, end - first), chrome_axis::AxisCapture{});
+        changed = true;
+        if (currentAxis)
+            restartAt = first;
+    }
+    if (restartAt) {
+        step_ = *restartAt;
+        capture_.reset();
+        candidates_.clear();
+        input_->invalidate();
+        calibrationMessage_ = tr(Text::guideReconnectedMeasureAgain);
+    }
+    if (changed && reviewPreview_)
+        reviewPreview_.emplace(measured_);
 }
 
 void App::measureStep()
@@ -2748,8 +2797,9 @@ void App::updateCalibrationReview(bool foreground)
     for (std::size_t i = 0; i < calibrationScope_.size(); ++i) {
         if (!calibrationScope_[i])
             continue;
-        const auto state = foreground ? calibrationReviewStatus(i, reviewPreview_->axisStatuses()[i])
-                                      : Text::guideReviewWindowPaused;
+        const auto state = calibrationRetryRequired_[i] ? Text::guideReviewRetryAxisReconnected
+            : foreground ? calibrationReviewStatus(i, reviewPreview_->axisStatuses()[i])
+                         : Text::guideReviewWindowPaused;
         if (reviewStates_[i] != state) {
             reviewStates_[i] = state;
             setText(reviewStatuses_[i], tr(state));
@@ -2874,6 +2924,7 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
         }
     }
     *axes[channel] = std::move(axis);
+    calibrationRetryRequired_[channel] = false;
     ++step_;
     if (step_ == (retry_ ? retry_->end : stepCount_)) {
         enterCalibrationReview();
@@ -2885,6 +2936,8 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
 
 void App::finishCalibration()
 {
+    if (calibrationNeedsRetry())
+        return;
     calibrating_ = false;
     reviewPreview_.reset();
     const std::array axes{&measured_.steering, &measured_.throttle, &measured_.brake};
