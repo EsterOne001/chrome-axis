@@ -322,7 +322,8 @@ int testPedalRestEvidence(chrome_axis::Profile profile)
     const auto gated = reader.update(samples, &readings);
     const auto waiting = reader.pedalRestReadings()[0];
     if (gated.throttleReady || waiting.state != PedalRestState::outsideRest || waiting.position != 0.006 ||
-        waiting.threshold != minimumPedalDeadzone || !readings[1] || !approximatelyEqual(*readings[1], 0.001f))
+        waiting.threshold != minimumPedalDeadzone || waiting.symmetric ||
+        !readings[1] || !approximatelyEqual(*readings[1], 0.001f))
         return 71;
 
     pedals.axes[1] = -6;
@@ -337,6 +338,7 @@ int testPedalRestEvidence(chrome_axis::Profile profile)
     ControlReader combined(profile);
     combined.update({nullptr, &pedals, &pedals});
     if (combined.pedalRestReadings()[0].state != PedalRestState::outsideRest ||
+        !combined.pedalRestReadings()[0].symmetric || !combined.pedalRestReadings()[1].symmetric ||
         combined.pedalRestReadings()[0].position != -0.006 || combined.pedalRestReadings()[1].position != 0.006)
         return 74;
     return 0;

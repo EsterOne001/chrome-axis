@@ -208,6 +208,8 @@ CHROME_AXIS_TEXT(mainIncompleteCalibration, L"Calibration incomplète", L"Calibr
 CHROME_AXIS_TEXT(mainCalibrationSaved, L"Calibration enregistrée", L"Calibration saved")
 CHROME_AXIS_TEXT(mainCalibrationSavedZeroDeadzone, L"Calibration enregistrée · direction sans zone morte", L"Calibration saved · no steering deadzone")
 CHROME_AXIS_TEXT(mainAccessoriesSaved, L"Affectations d’accessoires enregistrées", L"Accessory mappings saved")
+CHROME_AXIS_TEXT(mainAccessoriesLocked, L"Affectations d’accessoires momentanément verrouillées", L"Accessory mappings temporarily locked")
+CHROME_AXIS_TEXT(mainAccessoriesUnavailable, L"Impossible de lire les affectations d’accessoires", L"Could not read accessory mappings")
 CHROME_AXIS_TEXT(mainCreateProfileFolderFailed, L"Impossible de créer le dossier Profil de Chrome Axis.", L"Could not create the Chrome Axis Profil folder.")
 CHROME_AXIS_TEXT(mainExtractBeforeSaving, L"Cette copie se trouve dans un dossier temporaire. Extrayez le ZIP dans un dossier durable ou ouvrez Chrome Axis depuis le dossier du jeu avant d’enregistrer.", L"This copy is running from a temporary folder. Extract the ZIP to a permanent folder or open Chrome Axis from the game folder before saving.")
 CHROME_AXIS_TEXT(mainSelectAvailableProfile, L"Sélectionnez d’abord un profil disponible.", L"Select an available profile first.")

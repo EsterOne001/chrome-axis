@@ -38,16 +38,57 @@ inline EditorCalibration readEditorCalibration(const std::filesystem::path& path
     return {std::move(profile), revision};
 }
 
-inline std::optional<AccessoryProfile> loadEditorAccessories(const std::filesystem::path& path, std::string& error)
+inline std::optional<AccessoryProfile> loadEditorAccessories(const std::filesystem::path& path, std::string& error,
+                                                              DWORD* readError = nullptr)
 {
     DWORD code{};
     auto bindings = loadAccessoryProfile(path, error, &code);
+    if (readError)
+        *readError = code;
     if (!bindings && missingEditorFile(code)) {
         error.clear();
         return AccessoryProfile{};
     }
     return bindings;
 }
+
+enum class AccessoryPreviewStatus { available, locked, unreadable };
+
+// The displayed copy survives a temporary lock on the same file. Editors still read from disk.
+class AccessoryProfilePreview {
+public:
+    bool refresh(const std::filesystem::path& path)
+    {
+        const auto previousStatus = status_;
+        const bool profileChanged = path_ != path;
+        if (profileChanged) {
+            path_ = path;
+            bindings_.clear();
+        }
+
+        DWORD code{};
+        std::string error;
+        auto updated = path_.empty() ? std::optional{AccessoryProfile{}} : loadEditorAccessories(path_, error, &code);
+        if (code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION) {
+            status_ = AccessoryPreviewStatus::locked;
+            return profileChanged || previousStatus != status_;
+        }
+
+        status_ = updated ? AccessoryPreviewStatus::available : AccessoryPreviewStatus::unreadable;
+        auto bindings = std::move(updated).value_or(AccessoryProfile{});
+        const bool changed = profileChanged || bindings != bindings_ || previousStatus != status_;
+        bindings_ = std::move(bindings);
+        return changed;
+    }
+
+    AccessoryPreviewStatus status() const noexcept { return status_; }
+    const AccessoryProfile& bindings() const noexcept { return bindings_; }
+
+private:
+    std::filesystem::path path_;
+    AccessoryProfile bindings_;
+    AccessoryPreviewStatus status_{};
+};
 
 enum class ProfileEditorError { none, calibrationUnreadable, accessoriesUnreadable, axisConflict, feedbackUnreadable,
                                 feedbackWriteFailed, createDirectoryFailed };

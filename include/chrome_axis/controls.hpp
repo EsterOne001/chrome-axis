@@ -123,6 +123,7 @@ struct PedalRestReading {
     double position{}; // Signed calibrated position before the deadzone is applied.
     float threshold{};
     PedalRestState state{};
+    bool symmetric{}; // Shared pedals use both sides of the rest position.
 };
 
 class ControlReader {

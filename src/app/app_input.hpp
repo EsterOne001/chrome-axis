@@ -27,7 +27,6 @@ public:
 
 private:
     CaptureDeviceRead request(const std::string& id, const std::bitset<buttonCount>& buttons, bool capture);
-    void reset(bool closeInput);
 
     struct State;
     std::shared_ptr<State> state_;

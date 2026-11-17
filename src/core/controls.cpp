@@ -432,7 +432,7 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
                 : pedalAtRest(position, calibration.deadzone, combinedPedals_);
             if (!steering) {
                 pedalRestReadings_[i - 1] = {position, calibration.deadzone,
-                    neutral ? PedalRestState::atRest : PedalRestState::outsideRest};
+                    neutral ? PedalRestState::atRest : PedalRestState::outsideRest, combinedPedals_};
             }
             if (!neutral) {
                 neutralPolls_[i] = 0;

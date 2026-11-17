@@ -98,6 +98,33 @@ bool testEditorFileLocks(const std::filesystem::path& fixture)
         const std::unique_ptr<void, decltype(&CloseHandle)> file(handle, &CloseHandle);
         return checkLocked();
     };
+    const auto otherAccessories = root / L"other" / accessoryFilename;
+    std::filesystem::create_directories(otherAccessories.parent_path());
+    AccessoryProfilePreview preview;
+    if (!check(saveAccessoryProfile(otherAccessories, unrelatedClutch, error) &&
+                preview.refresh(accessoriesFile) && preview.bindings() == originalButtons,
+               "The accessory preview must display the active profile's bindings")
+        || !withLock(accessoriesFile, 0, [&] {
+            return check(preview.refresh(accessoriesFile) && preview.status() == AccessoryPreviewStatus::locked &&
+                         preview.bindings() == originalButtons && !preview.refresh(accessoriesFile),
+                         "A repeated lock must keep the same bindings visible")
+                && withLock(otherAccessories, 0, [&] {
+                    return check(preview.refresh(otherAccessories) && preview.status() == AccessoryPreviewStatus::locked &&
+                                 preview.bindings().empty(), "A new locked profile must not show the previous bindings");
+                });
+        })
+        || !check(preview.refresh(otherAccessories) && preview.status() == AccessoryPreviewStatus::available &&
+                   preview.bindings() == unrelatedClutch,
+                  "The accessory preview must recover when the new profile is unlocked"))
+        return false;
+    std::ofstream(otherAccessories, std::ios::trunc) << "invalid accessory file\n";
+    if (!check(preview.refresh(otherAccessories) && preview.status() == AccessoryPreviewStatus::unreadable &&
+                preview.bindings().empty(), "A malformed file must be shown as unreadable"))
+        return false;
+    std::filesystem::remove(otherAccessories);
+    if (!check(preview.refresh(otherAccessories) && preview.status() == AccessoryPreviewStatus::available &&
+                preview.bindings().empty(), "A missing file must show an empty profile"))
+        return false;
     if (!withLock(axesFile, 0, [&] {
             const auto locked = readEditorCalibration(axesFile);
             const auto save = saveEditorAccessories(root, preset, accessoryRevision, unrelatedClutch);

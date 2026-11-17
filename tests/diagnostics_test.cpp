@@ -290,14 +290,14 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     first.axes[1] = {.state = DiagnosticAxisState::armed, .value = 0.6f, .appliedAt = tick};
     first.usbReadiness = DiagnosticUsbReadiness::partial;
     first.axes[2] = {.state = DiagnosticAxisState::waitingForNeutral,
-        .pedalRest = {0.006, minimumPedalDeadzone, PedalRestState::outsideRest}};
+        .pedalRest = {-0.006, minimumPedalDeadzone, PedalRestState::outsideRest, true}};
     publisher.publish(first, 1);
     const auto initial = reader.read();
     if (!initial.lastDriveAt || initial.lastDrive.transmission != first.transmission)
         return false;
     if (initial.snapshot.usbReadiness != DiagnosticUsbReadiness::partial ||
         initial.snapshot.axes[2].pedalRest.state != PedalRestState::outsideRest ||
-        initial.snapshot.axes[2].pedalRest.position != 0.006)
+        initial.snapshot.axes[2].pedalRest.position != -0.006 || !initial.snapshot.axes[2].pedalRest.symmetric)
         return false;
 
     DiagnosticSnapshot waiting{.mode = DiagnosticMode::waitingForVehicleInput};
@@ -313,6 +313,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
         interrupted.snapshot.usbReadiness != DiagnosticUsbReadiness::waiting ||
         interrupted.snapshot.axes[2].pedalRest.state != PedalRestState::unavailable ||
         interrupted.lastDrive.axes[2].pedalRest.threshold != minimumPedalDeadzone ||
+        !interrupted.lastDrive.axes[2].pedalRest.symmetric ||
         interrupted.lastDrive.axes[2].pedalRest.state != PedalRestState::outsideRest ||
         interrupted.lastDrive.clutch.blocker != DiagnosticClutchBlocker::waitingForNeutral ||
         interrupted.lastDrive.clutch.rawTravel != -0.034f || interrupted.lastDrive.clutch.inputAvailable)

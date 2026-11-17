@@ -17,6 +17,8 @@ using Clock = DeviceReadClock;
 using Buttons = std::bitset<buttonCount>;
 constexpr auto sampleLifetime = std::chrono::milliseconds(120);
 constexpr auto initializationRetry = std::chrono::milliseconds(250);
+constexpr auto readerIdleTimeout = std::chrono::seconds(5);
+constexpr CaptureDeviceRead pending{.sample = {}, .status = DeviceReadStatus::pending, .updated = false};
 
 } // namespace
 
@@ -28,27 +30,30 @@ struct AppInput::State {
     };
 
     struct Device {
-        explicit Device(std::string deviceId) : id(std::move(deviceId)) {}
+        enum class Exit { stopped, failed };
+
+        explicit Device(std::string deviceId, bool interrupted) : id(std::move(deviceId)), interruption(interrupted) {}
         ~Device() { if (wake) CloseHandle(wake); }
 
-        void run(State& state)
+        Exit run(State& state)
         {
             const InputWindow window;
+            if (!window.get() && !state.read)
+                return Exit::failed;
             std::optional<DirectInput> driver;
             Clock::time_point nextInitialization{};
             std::unique_lock lock(mutex);
             while (!stopping) {
-                if (std::exchange(closeInput, false)) {
-                    lock.unlock();
-                    driver.reset();
-                    nextInitialization = {};
-                    lock.lock();
-                    continue;
-                }
                 if (!std::exchange(queued, false)) {
+                    const auto remaining = lastRequest + readerIdleTimeout - Clock::now();
+                    if (remaining <= Clock::duration::zero()) {
+                        stopping = true;
+                        break;
+                    }
                     lock.unlock();
-                    if (MsgWaitForMultipleObjectsEx(1, &wake, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_FAILED)
-                        return;
+                    const auto wait = static_cast<DWORD>(std::chrono::ceil<std::chrono::milliseconds>(remaining).count());
+                    if (MsgWaitForMultipleObjectsEx(1, &wake, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_FAILED)
+                        return Exit::failed;
                     MSG message{};
                     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
                         DispatchMessageW(&message);
@@ -64,7 +69,7 @@ struct AppInput::State {
                 CaptureDeviceRead reading;
                 if (state.read) {
                     reading = state.read(id, buttons);
-                } else if (window.get()) {
+                } else {
                     if (!driver && startedAt >= nextInitialization) {
                         driver.emplace(window.get());
                         if (!driver->ready()) {
@@ -97,18 +102,19 @@ struct AppInput::State {
                 observedSample |= reading.sample.has_value();
                 report = Report{std::move(reading), buttons, number};
             }
+            return Exit::stopped;
         }
 
         CaptureDeviceRead request(const Buttons& buttons, bool capture)
         {
             std::scoped_lock lock(mutex);
             if (stopping)
-                return {};
+                return pending;
+            lastRequest = Clock::now();
             requested |= buttons;
             if (!std::exchange(queued, true))
                 SetEvent(wake);
 
-            constexpr CaptureDeviceRead pending{.sample = {}, .status = DeviceReadStatus::pending, .updated = false};
             if (!report || (buttons & ~report->buttons).any())
                 return pending;
 
@@ -131,17 +137,16 @@ struct AppInput::State {
             return reading;
         }
 
-        void reset(bool releaseDevice)
+        void invalidate()
         {
             std::scoped_lock lock(mutex);
+            if (stopping)
+                return;
             ++revision;
             report.reset();
             requested.reset();
             delivered = 0;
             queued = deliveredExpiry = interruption = observedSample = false;
-            closeInput |= releaseDevice;
-            if (wake)
-                SetEvent(wake);
         }
 
         void stop()
@@ -152,21 +157,47 @@ struct AppInput::State {
                 SetEvent(wake);
         }
 
+        bool readInterrupted()
+        {
+            std::scoped_lock lock(mutex);
+            return observedSample || interruption;
+        }
+
         const std::string id;
         const HANDLE wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
         std::mutex mutex;
         std::optional<Report> report;
         Buttons requested;
+        Clock::time_point lastRequest{Clock::now()};
         std::uint64_t revision{}, delivered{};
-        bool queued{}, deliveredExpiry{}, interruption{}, observedSample{}, stopping{}, closeInput{};
+        bool queued{}, deliveredExpiry{}, interruption{}, observedSample{}, stopping{};
+    };
+
+    struct Reader {
+        std::shared_ptr<Device> device;
+        Clock::time_point retryAfter{};
+        bool interrupted{};
     };
 
     explicit State(Read read) : read(std::move(read)) {}
 
+    void finished(Device& device, Device::Exit exit)
+    {
+        std::scoped_lock lock(mutex);
+        const auto found = devices.find(device.id);
+        if (found == devices.end() || found->second.device.get() != &device)
+            return;
+        // Publish the slot only after DirectInput and the cooperative window were destroyed.
+        if (exit == Device::Exit::failed)
+            found->second = {nullptr, Clock::now() + initializationRetry, device.readInterrupted()};
+        else
+            devices.erase(found);
+    }
+
     const Read read;
     std::atomic_uint64_t sequence{};
     std::mutex mutex;
-    std::unordered_map<std::string, std::shared_ptr<Device>> devices;
+    std::unordered_map<std::string, Reader> devices;
 };
 
 AppInput::AppInput(Read read) : state_(std::make_shared<State>(std::move(read))) {}
@@ -175,7 +206,8 @@ AppInput::~AppInput()
 {
     std::scoped_lock lock(state_->mutex);
     for (const auto& entry : state_->devices)
-        entry.second->stop();
+        if (entry.second.device)
+            entry.second.device->stop();
     state_->devices.clear();
 }
 
@@ -197,47 +229,52 @@ CaptureDeviceRead AppInput::request(const std::string& id, const Buttons& button
     if (id.empty())
         return {};
     std::scoped_lock lock(state_->mutex);
-    auto found = state_->devices.find(id);
-    if (found == state_->devices.end()) {
-        auto device = std::make_shared<State::Device>(id);
-        found = state_->devices.emplace(id, device).first;
-        if (!device->wake) {
-            device->stop();
-        } else {
-            // DirectInput and its cooperative window are owned by this worker for one device.
-            try {
-                std::thread([state = state_, device] {
-                    try {
-                        device->run(*state);
-                    } catch (...) {
-                        // A failed reader must not stop the other devices.
-                    }
-                    device->stop();
-                }).detach();
-            } catch (const std::system_error&) {
-                device->stop();
-            }
+    auto& reader = state_->devices[id];
+    if (reader.device)
+        return reader.device->request(buttons, capture);
+    const auto now = Clock::now();
+    if (reader.retryAfter > now)
+        return {};
+
+    // The slot stays reserved while a call or its cleanup is in progress.
+    const auto device = std::make_shared<State::Device>(id, reader.interrupted);
+    if (device->wake) {
+        try {
+            std::thread([state = state_, device] {
+                auto exit = State::Device::Exit::failed;
+                try {
+                    exit = device->run(*state);
+                } catch (...) {
+                    // A failed reader must not stop the other devices.
+                }
+                state->finished(*device, exit);
+            }).detach();
+            reader.device = device;
+            const auto initial = device->request(buttons, capture);
+            // Previews that outlived an idle reader must rearm on fresh samples.
+            return capture ? initial : CaptureDeviceRead{};
+        } catch (const std::system_error&) {
+            // Leave a retry time even when the thread itself could not start.
         }
     }
-    return found->second->request(buttons, capture);
-}
-
-void AppInput::reset(bool closeInput)
-{
-    std::scoped_lock lock(state_->mutex);
-    // Keep the owner until an in-flight call returns, including across a pause or refresh.
-    for (const auto& entry : state_->devices)
-        entry.second->reset(closeInput);
+    reader.retryAfter = Clock::now() + initializationRetry;
+    return {};
 }
 
 void AppInput::invalidate()
 {
-    reset(false);
+    std::scoped_lock lock(state_->mutex);
+    for (const auto& entry : state_->devices)
+        if (entry.second.device)
+            entry.second.device->invalidate();
 }
 
 void AppInput::close()
 {
-    reset(true);
+    std::scoped_lock lock(state_->mutex);
+    std::erase_if(state_->devices, [](const auto& entry) { return !entry.second.device; });
+    for (const auto& entry : state_->devices)
+        entry.second.device->stop();
 }
 
 } // namespace chrome_axis

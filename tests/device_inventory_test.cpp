@@ -10,7 +10,9 @@
 #include <atomic>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace {
 
@@ -257,6 +259,80 @@ bool testIndependentDeviceCapture()
         !afterRefresh.updated && pedalsResumed && oneOwner && recovered;
 }
 
+bool testReaderRecoveryAfterFailure()
+{
+    auto gate = std::make_shared<SampleGate>();
+    AppInput input([gate](const std::string& id, const auto&) {
+        DeviceSample sample;
+        sample.axesPresent[0] = true;
+        if (id == "wheel") {
+            const auto read = gate->sampleCount.fetch_add(1) + 1;
+            if (read == 2) {
+                gate->released.wait(false);
+                throw std::runtime_error("simulated reader failure");
+            }
+            sample.axes[0] = read == 1 ? 100 : 300;
+        } else {
+            sample.axes[0] = 700;
+        }
+        return CaptureDeviceRead{sample, DeviceReadStatus::available};
+    });
+
+    const bool firstWheel = waitFor([&] {
+        const auto reading = input.capture("wheel");
+        return reading.sample && reading.sample->axes[0] == 100;
+    });
+    const bool failedReadStarted = waitFor([&] { return gate->sampleCount.load() == 2; });
+    SampleGate::release(gate->released);
+    const bool invalidated = waitFor([&] {
+        const auto reading = input.capture("wheel");
+        return reading.updated && !reading.sample && reading.status == DeviceReadStatus::unavailable;
+    });
+    const bool noEarlyRetry = gate->sampleCount.load() == 2;
+    const bool pedalsReady = waitFor([&] {
+        const auto reading = input.capture("pedals");
+        return reading.sample && reading.sample->axes[0] == 700;
+    });
+    CaptureDeviceRead recovered;
+    const bool sameDeviceResumed = waitFor([&] {
+        recovered = input.capture("wheel");
+        return recovered.sample.has_value();
+    }) && recovered.sample->axes[0] == 300 && recovered.status == DeviceReadStatus::resumed;
+    return firstWheel && failedReadStarted && invalidated && noEarlyRetry && pedalsReady && sameDeviceResumed;
+}
+
+bool testIdleReaderRestartsAtNeutral()
+{
+    auto workers = std::make_shared<std::atomic<unsigned int>>();
+    auto position = std::make_shared<std::atomic<long>>(500);
+    AppInput input([workers, position](const std::string&, const auto&) {
+        thread_local bool sampled{};
+        if (!std::exchange(sampled, true))
+            ++(*workers);
+        DeviceSample sample;
+        sample.axesPresent[0] = true;
+        sample.axes[0] = position->load();
+        return CaptureDeviceRead{sample, DeviceReadStatus::available};
+    });
+    Profile profile{};
+    profile.steering = {"wheel", 0, 500, 0, 1000, 0.01f};
+    ControlReader controls(profile);
+    if (!waitFor([&] { return controls.poll(input).steeringReady; }) || workers->load() != 1)
+        return false;
+
+    // Allow the idle reader to release its resources without destroying AppInput or ControlReader.
+    std::this_thread::sleep_for(5500ms);
+    position->store(900);
+    const bool unavailableBeforeFirstRead = !controls.poll(input).steeringReady &&
+        controls.axisStatuses()[0] == AxisStatus::deviceUnavailable;
+    const bool waitingForNeutral = waitFor([&] {
+        return !controls.poll(input).steeringReady && controls.axisStatuses()[0] == AxisStatus::waitingForNeutral;
+    });
+    position->store(500);
+    return unavailableBeforeFirstRead && waitingForNeutral && workers->load() == 2 &&
+        waitFor([&] { return controls.poll(input).steeringReady; });
+}
+
 bool testCaptureDuringUnrelatedScan()
 {
     auto gate = std::make_shared<ScanGate>();
@@ -428,6 +504,8 @@ int main()
     const bool pendingLayout = testPendingLayout();
     const bool asyncCapture = testAsynchronousCapture();
     const bool independentCapture = testIndependentDeviceCapture();
+    const bool readerRecovery = testReaderRecoveryAfterFailure();
+    const bool idleReader = testIdleReaderRestartsAtNeutral();
     const bool capture = testCaptureDuringUnrelatedScan();
     const bool guidedCalibration = testGuidedCalibrationWaitsForLayout();
     const bool shortcut = testShortcut(root);
@@ -435,12 +513,13 @@ int main()
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
-    if (!inventory || !pendingLayout || !asyncCapture || !independentCapture || !capture || !guidedCalibration ||
-        !shortcut || !usbStatus)
+    if (!inventory || !pendingLayout || !asyncCapture || !independentCapture || !readerRecovery || !idleReader || !capture ||
+        !guidedCalibration || !shortcut || !usbStatus)
         std::cerr << "inventory=" << inventory << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
-                  << " independent_capture=" << independentCapture << " capture=" << capture
+                  << " independent_capture=" << independentCapture << " reader_recovery=" << readerRecovery
+                  << " idle_reader=" << idleReader << " capture=" << capture
                   << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
                   << " usb_state=" << usbStatus << '\n';
-    return inventory && pendingLayout && asyncCapture && independentCapture && capture && guidedCalibration &&
-        shortcut && usbStatus ? 0 : 1;
+    return inventory && pendingLayout && asyncCapture && independentCapture && readerRecovery && idleReader && capture &&
+        guidedCalibration && shortcut && usbStatus ? 0 : 1;
 }

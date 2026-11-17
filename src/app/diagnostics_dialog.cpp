@@ -245,6 +245,7 @@ std::wstring pedalRestText(const PedalRestReading& reading)
     return std::wstring(tr(reading.state == PedalRestState::atRest ? Text::DlgDiagnosticsPedalRest :
         Text::DlgDiagnosticsPedalOutsideRest)) + L" " + localizedPercent(std::format(L"{:+.3f}", reading.position * 100.0)) +
         L" · " + tr(Text::DlgDiagnosticsPedalRestThreshold) + L" " +
+        (reading.symmetric ? L"±" : L"") +
         localizedPercent(std::format(L"{:.3f}", reading.threshold * 100.0));
 }
 

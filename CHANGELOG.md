@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.77
+
+- Le lecteur USB de l’application se relance après un échec de démarrage ou de lecture. Chaque appareil conserve son lecteur propre jusqu’à la fin d’un appel en cours.
+- Le diagnostic indique un seuil de repos `±` pour un pédalier à axe combiné. L’application conserve les affectations du profil actif lors d’un verrou temporaire et les actualise au déverrouillage.
+- HUD Painter sauvegarde les changements valides même si un autre préréglage est illisible. Le sélecteur reste synchronisé avec le HUD après une sauvegarde différée.
+
+[ZIP Vortex](out/Chromaxis-0.4.77.zip)
+
 ## Chrome Axis 0.4.76
 
 - Un profil temporairement inaccessible conserve la dernière calibration valide et les modifications en cours. Les sauvegardes axes et accessoires vérifient leurs affectations réciproques avant écriture.

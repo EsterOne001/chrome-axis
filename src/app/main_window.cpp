@@ -913,6 +913,7 @@ private:
     void selectDevice(std::size_t channel);
     void readProfile();
     void readAccessories();
+    const wchar_t* accessoryProfileStatus() const;
     const wchar_t* transmissionHardwareStatus() const;
     void updateProfileView(const CalibrationScope& changed = allChannels);
     void rebuildPreview();
@@ -994,7 +995,7 @@ private:
         return !simulation_ && !calibrating_ && (draft_[channel]
             ? readDeadzone(zones_[channel], channel == 0).has_value() : channel != 0);
     }
-    bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || !accessoryBindings_.empty())); }
+    bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || !accessoryPreview_.bindings().empty())); }
     bool clearAnalogProfile() const
     {
         return saved_ && deviceId(0).empty() && deviceId(1).empty() && deviceId(2).empty();
@@ -1059,7 +1060,7 @@ private:
     std::array<bool, 3> liveReady_{};
     std::array<int, 3> meterSpans_{};
     bool loadingControls_{}, saved_{}, dirty_{};
-    chrome_axis::AccessoryProfile accessoryBindings_;
+    chrome_axis::AccessoryProfilePreview accessoryPreview_;
     bool temporaryDirectory_{};
     bool usbEnabled_{};
     bool usbActive_{};
@@ -1100,6 +1101,7 @@ private:
     unsigned int transmissionKey_{};
     std::chrono::steady_clock::time_point previewTime_{};
     std::chrono::steady_clock::time_point nextUsbRefresh_{};
+    std::optional<std::chrono::steady_clock::time_point> nextAccessoryRead_;
 };
 
 void App::action(int command, int notification)
@@ -1368,6 +1370,10 @@ void App::updateHardwareStatus()
     } else if (!installed_)
         advice = pluginInstallAdvice(directory_.parent_path(), Text::mainOpenFromGameForUsb);
     if (!temporaryDirectory_) {
+        if (accessoryPreview_.status() != chrome_axis::AccessoryPreviewStatus::available) {
+            hardwareStatus += L" · ";
+            hardwareStatus += accessoryProfileStatus();
+        }
         if (const auto* transmission = transmissionHardwareStatus()) {
             hardwareStatus += L" · ";
             hardwareStatus += transmission;
@@ -1447,25 +1453,48 @@ void App::selectDevice(std::size_t channel)
 
 void App::readAccessories()
 {
-    std::string error;
-    auto bindings = activeDirectory().empty() ? std::nullopt
-        : chrome_axis::loadAccessoryProfile(activeDirectory() / chrome_axis::accessoryFilename, error);
-    accessoryBindings_ = bindings ? std::move(*bindings) : chrome_axis::AccessoryProfile{};
+    const auto path = activeDirectory().empty() ? std::filesystem::path{}
+        : activeDirectory() / chrome_axis::accessoryFilename;
+    const bool changed = accessoryPreview_.refresh(path);
+    if (accessoryPreview_.status() == chrome_axis::AccessoryPreviewStatus::locked)
+        nextAccessoryRead_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    else
+        nextAccessoryRead_.reset();
+    if (changed) {
+        updateHardwareStatus();
+        if (!profileReadProblem_ && profileMessage_.empty() && !dirty_ && !saved_)
+            setText(status_, accessoryProfileStatus());
+    }
+}
+
+const wchar_t* App::accessoryProfileStatus() const
+{
+    using chrome_axis::AccessoryPreviewStatus;
+    switch (accessoryPreview_.status()) {
+    case AccessoryPreviewStatus::locked:
+        return tr(Text::mainAccessoriesLocked);
+    case AccessoryPreviewStatus::unreadable:
+        return tr(Text::mainAccessoriesUnavailable);
+    case AccessoryPreviewStatus::available:
+        return tr(accessoryPreview_.bindings().empty() ? Text::mainNoProfile : Text::mainAccessoriesSaved);
+    }
+    return tr(Text::mainAccessoriesUnavailable);
 }
 
 const wchar_t* App::transmissionHardwareStatus() const
 {
-    const auto native = std::ranges::find_if(accessoryBindings_, chrome_axis::isNativeTransmissionBinding);
-    if (native == accessoryBindings_.end())
+    const auto& bindings = accessoryPreview_.bindings();
+    const auto native = std::ranges::find_if(bindings, chrome_axis::isNativeTransmissionBinding);
+    if (native == bindings.end())
         return nullptr;
-    if (std::ranges::any_of(accessoryBindings_, [this](const auto& binding) {
+    if (std::ranges::any_of(bindings, [this](const auto& binding) {
             return chrome_axis::isNativeTransmissionBinding(binding) && !device(binding.deviceId);
         })) {
         return tr(native->nativeSequential ? Text::mainSequentialMissing : Text::mainShifterMissing);
     }
     if (native->nativeSequential)
         return tr(Text::mainSequentialDetected);
-    return tr(chrome_axis::nativeShifterVerified(accessoryBindings_)
+    return tr(chrome_axis::nativeShifterVerified(bindings)
         ? Text::mainShifterDetected : Text::mainShifterRecapture);
 }
 
@@ -1588,8 +1617,7 @@ void App::rebuildPreview()
         : dirty_ ? (canSave ? tr(Text::mainSaveToApplySettings) : tr(Text::mainIncompleteCalibration))
         : saved_ ? (draft_[0] && draft_[0]->deadzone == 0.0f ? tr(Text::mainCalibrationSavedZeroDeadzone)
             : tr(Text::mainCalibrationSaved))
-        : !accessoryBindings_.empty() ? tr(Text::mainAccessoriesSaved)
-        : tr(Text::mainNoProfile));
+        : accessoryProfileStatus());
 }
 
 bool App::ensureProfileDirectory(const std::filesystem::path& directory)
@@ -2128,8 +2156,9 @@ void App::changeUsbMode()
             MessageBoxW(window_, message, title, MB_OK | MB_ICONWARNING);
             return;
         }
-        if (accessoryBindings_.empty() && !chrome_axis::loadProfile(path_, error)) {
-            MessageBoxW(window_, tr(Text::mainSaveCalibrationOrMapping),
+        const bool accessoriesAvailable = accessoryPreview_.status() == chrome_axis::AccessoryPreviewStatus::available;
+        if ((!accessoriesAvailable || accessoryPreview_.bindings().empty()) && !chrome_axis::loadProfile(path_, error)) {
+            MessageBoxW(window_, accessoriesAvailable ? tr(Text::mainSaveCalibrationOrMapping) : accessoryProfileStatus(),
                 title, MB_OK | MB_ICONWARNING);
             return;
         }
@@ -2771,7 +2800,10 @@ void App::tick()
     const bool foreground = GetForegroundWindow() == window_ && !IsIconic(window_);
     if (!simulation_) {
         consumeDeviceInventory();
-        if (std::chrono::steady_clock::now() >= nextUsbRefresh_)
+        const auto now = std::chrono::steady_clock::now();
+        if (nextAccessoryRead_ && now >= *nextAccessoryRead_)
+            readAccessories();
+        if (now >= nextUsbRefresh_)
             refreshUsbToggle();
     }
     updateCalibrationMotion(foreground);
