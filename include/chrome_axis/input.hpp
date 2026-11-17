@@ -81,7 +81,43 @@ struct DirectInputReadEvent {
 };
 
 using DirectInputReadObserver = void (*)(void*, const DirectInputReadEvent&) noexcept;
-using DirectInputActiveCall = std::atomic<const char*>; // Non-owning name with static storage.
+
+class DirectInputActiveCall {
+public:
+    struct Snapshot {
+        const char* operation{};
+        std::uint64_t startedAt{};
+
+        bool overdue(std::uint64_t now, std::uint64_t milliseconds) const noexcept {
+            return operation && now >= startedAt && now - startedAt >= milliseconds;
+        }
+    };
+
+    // Each tracker has one writer. The name must have static storage.
+    void begin(const char* operation) noexcept {
+        const auto startedAt = GetTickCount64();
+        ++revision_;
+        startedAt_.store(startedAt);
+        operation_.store(operation);
+        ++revision_;
+    }
+
+    void end() noexcept { operation_.store(nullptr); }
+
+    Snapshot snapshot() const noexcept {
+        const auto revision = revision_.load();
+        if (revision % 2 != 0)
+            return {};
+        const auto operation = operation_.load();
+        const auto startedAt = startedAt_.load();
+        // The sequentially consistent revision detects overlapping starts without waiting.
+        return operation && revision_.load() == revision ? Snapshot{operation, startedAt} : Snapshot{};
+    }
+
+private:
+    std::atomic<const char*> operation_{};
+    std::atomic<std::uint64_t> startedAt_{}, revision_{};
+};
 
 enum class WheelForceState { waiting, active, unavailable, neutral };
 
@@ -122,7 +158,7 @@ class DirectInput final : public DeviceSampleSource {
 public:
     explicit DirectInput(HWND window, DirectInputDiagnostic diagnostic = nullptr,
                          DirectInputReadObserver readObserver = nullptr, void* observerContext = nullptr,
-                         DirectInputActiveCall* activeCall = nullptr);
+                         DirectInputActiveCall* activeCall = nullptr, DirectInputActiveCall* layoutCall = nullptr);
     ~DirectInput();
     DirectInput(const DirectInput&) = delete;
     DirectInput& operator=(const DirectInput&) = delete;

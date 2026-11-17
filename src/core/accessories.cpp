@@ -1,6 +1,7 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/controls.hpp"
 
+#include "settings_read.hpp"
 #include "settings_replace.hpp"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <fstream>
 #include <locale>
+#include <sstream>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -400,19 +402,17 @@ bool isAccessoryKey(unsigned int key) noexcept
         || (key >= VK_NUMPAD0 && key <= VK_NUMPAD9) || key == VK_ADD || key == VK_SUBTRACT;
 }
 
-std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path& path, std::string& error)
+std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path& path, std::string& error,
+                                                     DWORD* readError)
 {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) {
-        error = "Accessory profile is missing or unreadable";
+    auto text = detail::readSettingsText(path);
+    if (readError)
+        *readError = text.error;
+    if (text.invalidSize || text.error) {
+        error = text.invalidSize ? "Invalid accessory profile size" : "Accessory profile is missing or unreadable";
         return std::nullopt;
     }
-    const auto size = file.tellg();
-    if (size < 0 || size > 16 * 1024) {
-        error = "Invalid accessory profile size";
-        return std::nullopt;
-    }
-    file.seekg(0);
+    std::istringstream file(std::move(text.contents));
 
     AccessoryProfile profile;
     int version = 0;

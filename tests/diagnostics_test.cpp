@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string_view>
 #include <thread>
@@ -231,14 +232,14 @@ int testPerformanceCapture(const std::filesystem::path& root)
         if (!text.starts_with("elapsed_ms,mode,vehicle,speed_mps,engine_rpm,") ||
             text.find(pendingRow) == std::string::npos || text.find(acceptedRow) == std::string::npos ||
             text.find(",transmission_shortcut_press_count,transmission_shortcut_source,") == std::string::npos ||
-            text.find(",119,1,0,1,hook,manual,0,inactive,,unknown,none\r\n") == std::string::npos ||
-            text.find(",119,1,5,3,hook,manual,2,inactive,,unknown,none\r\n") == std::string::npos ||
-            text.find(",temporarily_unavailable,,unknown,signal_pending\r\n") == std::string::npos ||
-            text.find(",119,1,10,4,poll,manual,7,inactive,,unknown,none\r\n") == std::string::npos ||
+            text.find(",119,1,0,1,hook,manual,0,inactive,,unknown,none,\r\n") == std::string::npos ||
+            text.find(",119,1,5,3,hook,manual,2,inactive,,unknown,none,\r\n") == std::string::npos ||
+            text.find(",temporarily_unavailable,,unknown,signal_pending,\r\n") == std::string::npos ||
+            text.find(",119,1,10,4,poll,manual,7,inactive,,unknown,none,\r\n") == std::string::npos ||
             text.find("\r\n30,usb_disabled,") == std::string::npos ||
             text.find("\r\n50,waiting_for_vehicle_input,") == std::string::npos ||
             text.find("\r\n70,waiting_for_vehicle_input,,,,,,,,,,,,manual,,2,2,2,accepted,,,,,,,,,context,") == std::string::npos ||
-            text.find(",76,0,,0,,manual,,,,,\r\n") == std::string::npos ||
+            text.find(",76,0,,0,,manual,,,,,,\r\n") == std::string::npos ||
             text.find(",context,") == std::string::npos ||
             text.find(",device_slow,\"Poll\",0x80070005,52100,") == std::string::npos ||
             text.find(privateId) != std::string::npos ||
@@ -390,10 +391,10 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     const auto text = csv.str();
     constexpr std::string_view blockersCell =
         ",5,gear_1:button:2:0:waiting_for_neutral|clutch:axis:3:0:temporarily_unavailable|"
-        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,,,,,,,\r\n";
-    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,0,,,,,,,\r\n") == std::string::npos ||
-        text.find(",clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker\r\n") == std::string::npos ||
-        text.find(",waiting_for_neutral,-0.034,out_of_range,waiting_for_neutral\r\n") == std::string::npos ||
+        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,,,,,,,,\r\n";
+    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,0,,,,,,,,\r\n") == std::string::npos ||
+        text.find(",clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker,usb_call_lane\r\n") == std::string::npos ||
+        text.find(",waiting_for_neutral,-0.034,out_of_range,waiting_for_neutral,\r\n") == std::string::npos ||
         text.find(",clutch_required,") == std::string::npos ||
         text.find(",modifier_blocked,0,5,") == std::string::npos ||
         text.find(",selector_ambiguous,,") == std::string::npos ||
@@ -408,10 +409,102 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     std::string row;
     while (std::getline(lines, row)) {
         // These fixtures contain no quoted commas, so all row types share the same column count.
-        if (std::ranges::count(row, ',') != 56)
+        if (std::ranges::count(row, ',') != 57)
             return false;
     }
     return true;
+}
+
+bool testUsbOperations(const std::filesystem::path& root)
+{
+    using namespace chrome_axis;
+    constexpr std::string_view deviceId = "{6A523E13-8D9C-4CA3-A19C-8B317DFBE275}";
+    DiagnosticReader reader(root);
+    {
+        DiagnosticPublisher publisher(root);
+        const auto tick = GetTickCount64();
+        DiagnosticSnapshot driving{.mode = DiagnosticMode::usb};
+        driving.axes[0] = {.state = DiagnosticAxisState::armed, .value = 0.25f, .appliedAt = tick};
+        publisher.publish(driving, 1);
+        const auto driveAt = reader.read().lastDriveAt;
+
+        const auto operation = [&](std::uint64_t began, std::string_view name, DiagnosticUsbLane lane) {
+            DiagnosticUsbOperation call{.startedAt = began, .lane = lane, .deviceAxisMask = 1};
+            std::ranges::copy(deviceId, call.deviceId.begin());
+            std::ranges::copy(name, call.operation.begin());
+            return call;
+        };
+        const auto readerCall = operation(tick - 1000, "GetDeviceState", DiagnosticUsbLane::reader);
+        const auto probeCall = operation(tick - 700, "Probe GetObjectInfo axis", DiagnosticUsbLane::probe);
+        const auto shortCall = operation(tick + 60000, "Poll", DiagnosticUsbLane::reader);
+        std::array calls{readerCall, probeCall, shortCall};
+        publisher.updateUsbOperations(calls);
+        publisher.updateUsbOperations(calls);
+        const DiagnosticSnapshot background{.mode = DiagnosticMode::gameNotForeground};
+        publisher.publish(background);
+        const auto started = reader.read();
+        if (started.usbOperationCount != 2 || started.usbEventCount != 2 ||
+            started.usbOperations[0].startedAt != readerCall.startedAt ||
+            started.usbOperations[1].lane != DiagnosticUsbLane::probe ||
+            started.lastDriveAt != driveAt || started.lastDrive.axes[0].value != 0.25f)
+            return false;
+        for (std::size_t i = 0; i <= started.usbEvents.size(); ++i)
+            publisher.recordUsbEvent({.sampledAt = tick + i + 10, .kind = DiagnosticUsbEventKind::contextChanged});
+        publisher.updateUsbOperations(calls);
+        publisher.publish(background);
+        const auto retained = reader.read();
+        if (retained.usbOperationCount != 2 || retained.usbEventCount != retained.usbEvents.size() ||
+            std::ranges::any_of(retained.usbEvents, [](const auto& event) {
+                return event.kind == DiagnosticUsbEventKind::operationRunning;
+            }))
+            return false;
+
+        const auto request = reader.requestPerformanceCapture(true);
+        const auto acknowledged = publisher.performanceRequest();
+        if (!request || !acknowledged || acknowledged->id != request || !acknowledged->enabled)
+            return false;
+        publisher.performanceRequest();
+        calls[0] = operation(tick - 350, "Acquire", DiagnosticUsbLane::reader);
+        publisher.updateUsbOperations(calls);
+        publisher.updateUsbOperations(calls);
+        publisher.publish(background);
+        const auto progressed = reader.read();
+        if (progressed.usbOperationCount != 2 || progressed.usbOperations[0].operation != calls[0].operation)
+            return false;
+
+        std::array<DiagnosticCaptureRecord, 8> rows;
+        const auto stream = reader.drainCapture(rows);
+        if (stream.count != 3 || rows[0].usb.operation != readerCall.operation ||
+            rows[1].usb.operation != probeCall.operation || rows[2].usb.operation != calls[0].operation ||
+            rows[0].usb.durationMicros < 1000000 || rows[2].usb.durationMicros < 350000)
+            return false;
+        std::ostringstream csv;
+        writeDiagnosticCaptureRows(csv, std::span(rows).first(stream.count), tick);
+        const auto text = csv.str();
+        if (text.find(deviceId) != std::string::npos || text.find("0x00000000") != std::string::npos ||
+            text.find(",operation_running,\"GetDeviceState\",,") == std::string::npos ||
+            text.find(",operation_running,\"Probe GetObjectInfo axis\",,") == std::string::npos ||
+            text.find(",operation_running,\"Acquire\",,") == std::string::npos ||
+            text.find(",reader\r\n") == std::string::npos || text.find(",probe\r\n") == std::string::npos)
+            return false;
+
+        publisher.updateUsbOperations({});
+        publisher.publish(background);
+        if (reader.read().usbOperationCount != 0)
+            return false;
+        publisher.updateUsbOperations(calls);
+        publisher.publish(background);
+        if (reader.read().usbOperationCount != 2)
+            return false;
+    }
+    const auto closed = reader.read();
+    if (closed.connection != DiagnosticConnection::stale || !closed.lastDriveAt)
+        return false;
+    DiagnosticPublisher restarted(root);
+    restarted.publish({.mode = DiagnosticMode::waitingForDriver});
+    const auto next = reader.read();
+    return next.connection == DiagnosticConnection::connected && next.usbOperationCount == 0 &&
+        next.snapshot.mode == DiagnosticMode::waitingForDriver;
 }
 
 bool testPartialDrivingSample(const std::filesystem::path& root)
@@ -671,10 +764,10 @@ int run()
             other.read().connection != DiagnosticConnection::disconnected)
             return 2;
 
-        DiagnosticPublisher duplicate(root);
+        const auto duplicate = std::make_unique<DiagnosticPublisher>(root);
         auto different = snapshot;
         different.mode = DiagnosticMode::simulation;
-        duplicate.publish(different);
+        duplicate->publish(different);
         if (reader.read().snapshot.mode != DiagnosticMode::usb)
             return 3;
 
@@ -773,9 +866,9 @@ int run()
     if (reader.read().connection != DiagnosticConnection::stale)
         return 6;
 
-    DiagnosticPublisher restarted(root);
+    const auto restarted = std::make_unique<DiagnosticPublisher>(root);
     snapshot.mode = DiagnosticMode::waitingForDriver;
-    restarted.publish(snapshot);
+    restarted->publish(snapshot);
     const auto restart = reader.read();
     if (restart.connection != DiagnosticConnection::connected ||
         restart.snapshot.mode != DiagnosticMode::waitingForDriver || restart.lastDriveAt ||
@@ -790,6 +883,8 @@ int run()
         return 29;
     if (!testPartialDrivingSample(otherRoot))
         return 32;
+    if (!testUsbOperations(otherRoot))
+        return 33;
     return testStreamingCaptureAfterGameCloses(otherRoot) ? 0 : 25;
 }
 

@@ -112,7 +112,9 @@ inline constexpr wchar_t profileFilename[] = L"chrome_axis.ini";
 // The pedals can share one centered axis if they move it in opposite directions.
 bool compatibleAxisPair(const AxisCalibration& throttle, const AxisCalibration& brake) noexcept;
 bool validateProfile(const Profile& profile, std::string& error);
-std::optional<Profile> loadProfile(const std::filesystem::path& path, std::string& error);
+// A parse failure leaves readError set to ERROR_SUCCESS.
+std::optional<Profile> loadProfile(const std::filesystem::path& path, std::string& error,
+                                   DWORD* readError = nullptr);
 bool saveProfile(const std::filesystem::path& path, const Profile& profile, std::string& error);
 
 class ControlReader {

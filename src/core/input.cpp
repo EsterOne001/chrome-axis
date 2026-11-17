@@ -30,6 +30,7 @@ constexpr auto slowInputOperation = std::chrono::milliseconds(20);
 constexpr auto slowInputReportInterval = std::chrono::seconds(1);
 constexpr auto layoutReportInterval = std::chrono::seconds(2);
 constexpr auto readHandleProbeInterval = std::chrono::milliseconds(50);
+constexpr auto stalledProbeRetryInterval = std::chrono::milliseconds(500);
 constexpr auto forceDuration = std::chrono::milliseconds(100);
 constexpr auto forceRefresh = std::chrono::milliseconds(60);
 std::atomic<std::uint64_t> hardwareRecoverySerial{};
@@ -47,10 +48,26 @@ constexpr std::array<DWORD, axisCount> axisOffsets{
 static_assert(buttonCount == std::size(DIJOYSTATE2{}.rgbButtons));
 static_assert(povCount == std::size(DIJOYSTATE2{}.rgdwPOV));
 
+template <class Call>
+decltype(auto) trackedCall(DirectInputActiveCall* tracker, const char* operation, Call&& call)
+    noexcept(noexcept(call())) {
+    if (!tracker)
+        return call();
+    struct EndCall {
+        DirectInputActiveCall& tracker;
+        ~EndCall() { tracker.end(); }
+    } end{*tracker};
+    tracker->begin(operation);
+    return call();
+}
+
 struct ReleaseInterface {
+    DirectInputActiveCall* tracker{};
+    const char* operation{};
+
     template <class Interface>
     void operator()(Interface* interfacePtr) const noexcept {
-        interfacePtr->Release();
+        trackedCall(tracker, operation, [&] { interfacePtr->Release(); });
     }
 };
 
@@ -85,12 +102,13 @@ HRESULT parseDeviceId(std::string_view id, GUID& guid) {
     return CLSIDFromString(wideId.c_str(), &guid);
 }
 
-DevicePtr createDevice(IDirectInput8W& input, const GUID& id, HRESULT* status = nullptr) {
+DevicePtr createDevice(IDirectInput8W& input, const GUID& id, HRESULT* status = nullptr,
+                       DirectInputActiveCall* tracker = nullptr) {
     IDirectInputDevice8W* device = nullptr;
     const auto result = input.CreateDevice(id, &device, nullptr);
     if (status)
         *status = result;
-    return SUCCEEDED(result) ? DevicePtr(device) : DevicePtr{};
+    return SUCCEEDED(result) ? DevicePtr(device, {tracker, "Release device"}) : DevicePtr{};
 }
 
 bool hasObject(IDirectInputDevice8W& device, DWORD offset, DWORD type, HRESULT* status = nullptr) {
@@ -192,7 +210,8 @@ BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
     return DIENUM_CONTINUE;
 }
 
-InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = nullptr) {
+InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = nullptr,
+                           DirectInputActiveCall* tracker = nullptr) {
     static const char moduleAnchor = 0;
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -206,30 +225,27 @@ InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = n
         return {};
     }
     void* input = nullptr;
-    const auto result = DirectInput8Create(module, DIRECTINPUT_VERSION, IID_IDirectInput8W, &input, nullptr);
+    const auto result = trackedCall(tracker, "DirectInput8Create", [&] {
+        return DirectInput8Create(module, DIRECTINPUT_VERSION, IID_IDirectInput8W, &input, nullptr);
+    });
     if (status)
         *status = result;
-    InputPtr instance(SUCCEEDED(result) ? static_cast<IDirectInput8W*>(input) : nullptr);
+    InputPtr instance(SUCCEEDED(result) ? static_cast<IDirectInput8W*>(input) : nullptr,
+                      {tracker, "Release DirectInput"});
     if (diagnostic)
         diagnostic({}, "DirectInput8Create", result, instance != nullptr);
     return instance;
 }
 
 struct OpenDevice {
+    explicit OpenDevice(DirectInputActiveCall* tracker) noexcept : activeCall(tracker) {}
     ~OpenDevice() { release(); }
 
-    void release(DirectInputActiveCall* activeCall = nullptr) {
+    void release() {
         if (device) {
-            if (acquired) {
-                if (activeCall)
-                    activeCall->store("Unacquire", std::memory_order_relaxed);
-                device->Unacquire();
-            }
-            if (activeCall)
-                activeCall->store("Release device", std::memory_order_relaxed);
+            if (acquired)
+                trackedCall(activeCall, "Unacquire", [&] { device->Unacquire(); });
             device.reset();
-            if (activeCall)
-                activeCall->store(nullptr, std::memory_order_relaxed);
         }
         acquired = false;
         continuity.reset();
@@ -238,6 +254,8 @@ struct OpenDevice {
         buttons = {};
         nextReadHandleProbe = {};
         nextReadHandleObject = 0;
+        stalledProbeCandidates.reset();
+        nextStalledProbe = {};
         lastLayoutEvents = {};
         ++layoutConnection;
     }
@@ -252,6 +270,7 @@ struct OpenDevice {
         diagnostic(id, stage, result, available);
     }
 
+    DirectInputActiveCall* activeCall;
     DevicePtr device;
     DeviceObjectProbe<axisCount> axes;
     DeviceObjectProbe<povCount> povs;
@@ -278,6 +297,8 @@ struct OpenDevice {
     std::uint64_t layoutConnection{};
     Clock::time_point nextReadHandleProbe{};
     std::size_t nextReadHandleObject{};
+    std::optional<DeviceObjectSelection> stalledProbeCandidates;
+    Clock::time_point nextStalledProbe{};
     std::array<Clock::time_point,
         static_cast<std::size_t>(DirectInputReadEventKind::layoutRecovered) -
         static_cast<std::size_t>(DirectInputReadEventKind::layoutPending) + 1> lastLayoutEvents{};
@@ -294,11 +315,7 @@ public:
         if (!callback_ && !activeCall_)
             return call();
         const auto started = Clock::now();
-        if (activeCall_)
-            activeCall_->store(operation, std::memory_order_relaxed);
-        const auto result = call();
-        if (activeCall_)
-            activeCall_->store(nullptr, std::memory_order_relaxed);
+        const auto result = trackedCall(activeCall_, operation, call);
         if (!callback_)
             return result;
         const auto now = Clock::now();
@@ -392,17 +409,18 @@ void refreshObjects(DeviceObjectProbe<Count>& layout, const std::bitset<Count>& 
 
 class LayoutDiscovery {
 public:
-    LayoutDiscovery(HWND window, DirectInputReadObserver observer, void* context) noexcept
-        : window_(window), observer_(observer), context_(context) {}
+    LayoutDiscovery(HWND window, DirectInputReadObserver observer, void* context,
+                    DirectInputActiveCall* activeCall) noexcept
+        : window_(window), observer_(observer), context_(context), activeCall_(activeCall) {}
 
     DeviceLayoutSnapshot operator()(const DeviceLayoutRequest& request) {
         if (!opened_ || id_ != request.id || connection_ != request.connection) {
-            opened_ = std::make_unique<OpenDevice>();
+            opened_ = std::make_unique<OpenDevice>(activeCall_);
             id_ = request.id;
             connection_ = request.connection;
         }
         auto& opened = *opened_;
-        ReadObserver observer(opened, request.id, observer_, context_);
+        ReadObserver observer(opened, request.id, observer_, context_, activeCall_);
         const auto& wanted = request.wanted;
         if (!opened.device && !open(observer)) {
             auto result = snapshot(wanted);
@@ -453,7 +471,7 @@ private:
         };
         if (!input_ && !setup("Probe DirectInput8Create", [&] {
                 HRESULT result{};
-                input_ = createDirectInput(nullptr, &result);
+                input_ = createDirectInput(nullptr, &result, activeCall_);
                 return input_ || FAILED(result) ? result : E_FAIL;
             }))
             return false;
@@ -463,7 +481,7 @@ private:
         DevicePtr device;
         if (!setup("Probe CreateDevice", [&] {
                 HRESULT result{};
-                device = createDevice(*input_, guid, &result);
+                device = createDevice(*input_, guid, &result, activeCall_);
                 return device || FAILED(result) ? result : E_FAIL;
             }))
             return false;
@@ -496,6 +514,7 @@ private:
     HWND window_;
     DirectInputReadObserver observer_;
     void* context_;
+    DirectInputActiveCall* activeCall_;
     InputPtr input_;
     std::unique_ptr<OpenDevice> opened_;
     std::string id_;
@@ -632,16 +651,13 @@ void DeviceReadContinuity::reset() noexcept {
 
 struct DirectInput::Impl {
     Impl(HWND windowHandle, DirectInputDiagnostic callback, DirectInputReadObserver readObserver, void* observerContext,
-         DirectInputActiveCall* activeCall)
+         DirectInputActiveCall* activeCall, DirectInputActiveCall* externalLayoutCall)
         : window(windowHandle), diagnostic(callback), readObserver(readObserver), observerContext(observerContext),
-          activeCall(activeCall), wheel(readObserver, observerContext) {
+          activeCall(activeCall), layoutCall(externalLayoutCall ? externalLayoutCall : &localLayoutCall),
+          wheel(readObserver, observerContext) {
         HRESULT result{};
         const auto started = Clock::now();
-        if (activeCall)
-            activeCall->store("DirectInput8Create", std::memory_order_relaxed);
-        input = createDirectInput(callback, &result);
-        if (activeCall)
-            activeCall->store(nullptr, std::memory_order_relaxed);
+        input = createDirectInput(callback, &result, activeCall);
         if (!input && readObserver) {
             const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started);
             readObserver(observerContext, {DirectInputReadEventKind::unavailable, {}, "DirectInput8Create",
@@ -658,6 +674,8 @@ struct DirectInput::Impl {
     DirectInputReadObserver readObserver;
     void* observerContext;
     DirectInputActiveCall* activeCall;
+    DirectInputActiveCall localLayoutCall;
+    DirectInputActiveCall* layoutCall;
     std::unordered_map<std::string, OpenDevice> openDevices;
     std::uint64_t pollCycle{};
     WheelOutput wheel;
@@ -685,8 +703,9 @@ bool isDeviceId(std::string_view id) noexcept {
 }
 
 DirectInput::DirectInput(HWND window, DirectInputDiagnostic diagnostic,
-                         DirectInputReadObserver readObserver, void* observerContext, DirectInputActiveCall* activeCall)
-    : impl_(std::make_unique<Impl>(window, diagnostic, readObserver, observerContext, activeCall)) {}
+                         DirectInputReadObserver readObserver, void* observerContext,
+                         DirectInputActiveCall* activeCall, DirectInputActiveCall* layoutCall)
+    : impl_(std::make_unique<Impl>(window, diagnostic, readObserver, observerContext, activeCall, layoutCall)) {}
 
 DirectInput::~DirectInput() = default;
 
@@ -715,13 +734,15 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     }
     opened.retryAfter = {};
     ReadObserver observer(opened, id, readObserver, observerContext, activeCall);
-    const auto retry = [&](std::string_view stage, HRESULT result) {
+    const auto retry = [&](std::string_view stage, HRESULT result, bool release = false) {
         opened.recovery.failed((stage == "GetDeviceStatus" && result == DI_NOTATTACHED) ||
             result == static_cast<HRESULT>(DIERR_UNPLUGGED) || result == DIERR_INPUTLOST);
         opened.continuity.reset();
-        opened.retryAfter = Clock::now() + DeviceReadRecovery::reopenDelay;
         opened.report(diagnostic, id, stage, result, false);
         observer.fault(DirectInputReadEventKind::unavailable, stage, result);
+        if (release)
+            opened.release();
+        opened.retryAfter = Clock::now() + DeviceReadRecovery::reopenDelay;
         return std::nullopt;
     };
     if (!opened.device) {
@@ -735,7 +756,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
         DevicePtr device;
         result = observer.measure("CreateDevice", [&] {
             HRESULT createResult{};
-            device = createDevice(*input, guid, &createResult);
+            device = createDevice(*input, guid, &createResult, activeCall);
             return createResult;
         });
         if (!device)
@@ -752,11 +773,8 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     }
     if (!opened.acquired) {
         const auto result = observer.measure("Acquire", [&] { return opened.device->Acquire(); });
-        if (FAILED(result)) {
-            if (result != DIERR_OTHERAPPHASPRIO)
-                opened.release(activeCall);
-            return retry("Acquire", result);
-        }
+        if (FAILED(result))
+            return retry("Acquire", result, result != DIERR_OTHERAPPHASPRIO);
         opened.acquired = true;
     }
 
@@ -776,8 +794,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
             observer.fault(DirectInputReadEventKind::pending, stage, result);
         if (pending.reopen) {
             // A device that never supplies a fresh report needs a new DirectInput handle.
-            opened.release(activeCall);
-            return retry(stage, result);
+            return retry(stage, result, true);
         }
         opened.readStatus = opened.continuity.pending(now);
         if (opened.readStatus == DeviceReadStatus::unavailable && pending.elapsed >= pendingGrace)
@@ -786,8 +803,7 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     }
     if (FAILED(result)) {
         // Reopen and check the layout again after a connection loss.
-        opened.release(activeCall);
-        return retry(stage, result);
+        return retry(stage, result, true);
     }
     opened.readStatus = opened.continuity.available(sampledAt);
     if (opened.recovery.accepted()) {
@@ -841,7 +857,7 @@ std::optional<DeviceSample> DirectInput::sampleConfigured(const std::string& id,
         return std::nullopt;
     }
 
-    auto& opened = impl_->openDevices[id];
+    auto& opened = impl_->openDevices.try_emplace(id, impl_->activeCall).first->second;
     if (impl_->pollCycle == 0 || opened.sampleCycle != impl_->pollCycle) {
         opened.cachedSample = impl_->read(opened, id, wanted);
         opened.sampleCycle = impl_->pollCycle;
@@ -863,7 +879,7 @@ std::optional<DeviceSample> DirectInput::sampleForDriving(const std::string& id,
         status = DeviceReadStatus::unavailable;
         return std::nullopt;
     }
-    auto& opened = impl_->openDevices[id];
+    auto& opened = impl_->openDevices.try_emplace(id, impl_->activeCall).first->second;
     auto sample = impl_->read(opened, id, {}, true);
     status = opened.readStatus;
     if (!sample)
@@ -871,15 +887,39 @@ std::optional<DeviceSample> DirectInput::sampleForDriving(const std::string& id,
 
     if (!impl_->drivingLayout)
         impl_->drivingLayout = std::make_unique<DeviceLayoutWorker<LayoutDiscovery>>(
-            LayoutDiscovery(impl_->window, impl_->readObserver, impl_->observerContext));
+            LayoutDiscovery(impl_->window, impl_->readObserver, impl_->observerContext, impl_->layoutCall),
+            impl_->layoutCall);
     // Proof from the acquired handle is valid for this connection. Exclude
     // those objects from the separate probe, including confirmed absences.
     const DeviceObjectSelection unresolved{wanted.axes & opened.axes.pending(),
         wanted.buttons & opened.buttons.pending(), wanted.povs & opened.povs.pending()};
     auto layout = impl_->drivingLayout->read(id, unresolved, opened.layoutConnection);
-    if (layout.fallback != DeviceObjectSelection{}) {
+    auto fallback = layout.fallback;
+    if (!layout.probeOverdue) {
+        opened.stalledProbeCandidates.reset();
+    } else if (fallback == DeviceObjectSelection{}) {
+        // A blocked probe must never put already working controls at risk when
+        // a new binding is added. Recover only the pending startup selection.
+        if (!opened.stalledProbeCandidates) {
+            const DeviceObjectSelection verified{
+                layout.present.axes | (wanted.axes & opened.axes.present()),
+                layout.present.buttons | (wanted.buttons & opened.buttons.present()),
+                layout.present.povs | (wanted.povs & opened.povs.present())};
+            opened.stalledProbeCandidates = verified == DeviceObjectSelection{}
+                ? layout.pending : DeviceObjectSelection{};
+        }
+        const auto now = Clock::now();
+        if (now >= opened.nextStalledProbe) {
+            const auto& startup = *opened.stalledProbeCandidates;
+            fallback = {layout.pending.axes & startup.axes, layout.pending.buttons & startup.buttons,
+                        layout.pending.povs & startup.povs};
+            if (fallback != DeviceObjectSelection{})
+                opened.nextStalledProbe = now + stalledProbeRetryInterval;
+        }
+    }
+    if (fallback != DeviceObjectSelection{}) {
         ReadObserver observer(opened, id, impl_->readObserver, impl_->observerContext, impl_->activeCall);
-        probeOnReadHandle(opened, layout.fallback, observer);
+        probeOnReadHandle(opened, fallback, observer);
     }
     // A slow fallback cannot renew the report's timestamp. The input worker
     // still checks its lifetime before publishing any state to the game.

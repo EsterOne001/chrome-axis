@@ -304,6 +304,23 @@ public:
                 visit(*cycle);
     }
 
+    template <class Visit>
+    void visitActiveCalls(Visit&& visit) const {
+        constexpr std::uint64_t slowCallMilliseconds = 250;
+        const auto now = GetTickCount64();
+        const auto report = [&](const auto& worker) {
+            for (const bool layoutProbe : {false, true}) {
+                const auto call = worker.activeCall(layoutProbe);
+                if (call.overdue(now, slowCallMilliseconds))
+                    visit(std::string_view(worker.id()), std::string_view(call.operation), call.startedAt, layoutProbe);
+            }
+        };
+        for (const auto& [id, entry] : active_)
+            report(*entry.worker);
+        for (const auto& worker : retired_)
+            report(*worker);
+    }
+
 private:
     static constexpr std::size_t discreteQueueCapacity = 16;
     // Covers the 100 ms press lifetime plus its preceding 100 ms of paddle
@@ -378,13 +395,14 @@ private:
                   } catch (...) {
                       std::scoped_lock lock(mutex_);
                       latest_ = {};
-                      cycleStarted_ = {};
-                      activeCall_.store(nullptr, std::memory_order_relaxed);
                   }
                   finished_.store(true, std::memory_order_release);
               }) {}
 
         const std::string& id() const noexcept { return id_; }
+        DirectInputActiveCall::Snapshot activeCall(bool layoutProbe) const noexcept {
+            return (layoutProbe ? layoutCall_ : activeCall_).snapshot();
+        }
 
         void configure(Configuration config) {
             std::scoped_lock lock(mutex_);
@@ -421,20 +439,6 @@ private:
         template <class Visit>
         bool collect(Report& report, Clock::time_point now, Visit&& visit) {
             std::scoped_lock lock(mutex_);
-            if (cycleStarted_ != Clock::time_point{} && !cyclePendingReported_ &&
-                now - cycleStarted_ >= std::chrono::milliseconds(250)) {
-                Event event{.kind = DirectInputReadEventKind::slow,
-                    .durationMicros = elapsedMicros(now - cycleStarted_), .sampledAt = GetTickCount64()};
-                if (const auto* call = activeCall_.load(std::memory_order_relaxed)) {
-                    constexpr std::string_view prefix = "Active ";
-                    const auto end = std::ranges::copy(prefix, event.operation.begin()).out;
-                    std::ranges::copy(std::string_view(call).substr(0, event.operation.size() - prefix.size() - 1), end);
-                } else {
-                    std::ranges::copy(std::string_view("USB cycle still running"), event.operation.begin());
-                }
-                events_.push(event);
-                cyclePendingReported_ = true;
-            }
             report = latest_;
             if (std::exchange(discreteOverflow_, false))
                 return true;
@@ -551,24 +555,21 @@ private:
                     config = config_;
                     revision = revision_;
                     discreteRevision = discreteRevision_;
-                    started = cycleStarted_ = Clock::now();
-                    cyclePendingReported_ = false;
+                    started = Clock::now();
                 }
                 const bool missedCadence = previousRevision == revision && previousStart != Clock::time_point{} &&
                     started - previousStart > interval_ + std::chrono::milliseconds(1);
                 previousStart = started;
                 previousRevision = revision;
                 if (window != config.window) {
-                    activeCall_.store("Release input handles", std::memory_order_relaxed);
                     driver.reset();
-                    activeCall_.store(nullptr, std::memory_order_relaxed);
                     window = config.window;
                     retry = {};
                     hadReport = false;
                     lastValid = {};
                 }
                 if (!driver && started >= retry) {
-                    driver.emplace(window, logger_, &observe, this, &activeCall_);
+                    driver.emplace(window, logger_, &observe, this, &activeCall_, &layoutCall_);
                     if (!driver->ready()) {
                         driver.reset();
                         retry = Clock::now() + std::chrono::seconds(1);
@@ -604,7 +605,6 @@ private:
                     : interval_;
                 {
                     std::unique_lock lock(mutex_);
-                    cycleStarted_ = {};
                     if (driver)
                         lastFactoryFailure_.reset();
                     if (revision == revision_) {
@@ -635,12 +635,10 @@ private:
         bool haveDiscreteBaseline_{};
         Recent<Event, 8> events_;
         Recent<Cycle, 32> cycles_;
-        Clock::time_point cycleStarted_{};
         std::optional<HRESULT> lastFactoryFailure_;
-        DirectInputActiveCall activeCall_{};
+        DirectInputActiveCall activeCall_, layoutCall_;
         std::uint64_t revision_{};
         std::uint64_t discreteRevision_{};
-        bool cyclePendingReported_{};
         bool discreteOverflow_{};
         std::atomic<bool> finished_{};
         std::jthread thread_;

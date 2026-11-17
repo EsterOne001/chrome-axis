@@ -14,6 +14,7 @@
 #include "manual_transmission_input.hpp"
 #include "transmission_hotkey.hpp"
 #include "usb_profile_selection.hpp"
+#include "watched_profile.hpp"
 
 #include <RED4ext/RED4ext.hpp>
 #include <RED4ext/Scripting/Natives/vehicleBaseObject.hpp>
@@ -330,40 +331,7 @@ HWND foregroundGameWindow() {
     return process == GetCurrentProcessId() ? GetAncestor(window, GA_ROOT) : nullptr;
 }
 
-struct ProfileStamp {
-    std::uint64_t created{};
-    std::uint64_t written{};
-    std::uint64_t size{};
-    bool operator==(const ProfileStamp&) const = default;
-};
-
-std::optional<ProfileStamp> profileStamp(const std::filesystem::path& path) {
-    WIN32_FILE_ATTRIBUTE_DATA attributes{};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) ||
-        (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-        return std::nullopt;
-    }
-    const auto combine = [](DWORD high, DWORD low) { return (std::uint64_t{high} << 32) | low; };
-    return ProfileStamp{combine(attributes.ftCreationTime.dwHighDateTime, attributes.ftCreationTime.dwLowDateTime),
-                        combine(attributes.ftLastWriteTime.dwHighDateTime, attributes.ftLastWriteTime.dwLowDateTime),
-                        combine(attributes.nFileSizeHigh, attributes.nFileSizeLow)};
-}
-
-struct WatchedProfile {
-    std::optional<ProfileStamp> stamp;
-    Clock::time_point retryAt{Clock::time_point::max()};
-
-    bool changed(const std::filesystem::path& path, Clock::time_point now, bool force) {
-        const auto current = profileStamp(path);
-        const bool needsRead = force || stamp != current || now >= retryAt;
-        stamp = current;
-        return needsRead;
-    }
-
-    void readFinished(bool valid, Clock::time_point now) {
-        retryAt = !valid && stamp ? now + 1s : Clock::time_point::max();
-    }
-};
+using chrome_axis::WatchedProfile;
 
 bool keyDown(int key) noexcept {
     return (GetAsyncKeyState(key) & 0x8000) != 0;
@@ -1220,25 +1188,37 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
     if (requested && hasProfileDirectory()) {
         const auto profilePath = directory_ / chrome_axis::profileFilename;
         if (watchedProfile_.changed(profilePath, now, force)) {
-            auto updated = chrome_axis::loadProfile(profilePath, profileError_);
-            watchedProfile_.readFinished(updated.has_value(), now);
-            changes.calibration = !sameProfile(profile, updated);
-            if (changes.calibration) {
-                profile = std::move(updated);
-                reader.reset();
-                if (profile) {
-                    reader.emplace(*profile);
-                    info("USB wheel profile loaded. Release the controls to arm.");
+            std::string error;
+            DWORD readError{};
+            auto updated = chrome_axis::loadProfile(profilePath, error, &readError);
+            if (!watchedProfile_.deferLockedRead(readError, !changes.preset && profile.has_value(), now)) {
+                profileError_ = std::move(error);
+                watchedProfile_.readFinished(updated.has_value(), now, readError);
+                changes.calibration = !sameProfile(profile, updated);
+                if (changes.calibration) {
+                    profile = std::move(updated);
+                    reader.reset();
+                    if (profile) {
+                        reader.emplace(*profile);
+                        info("USB wheel profile loaded. Release the controls to arm.");
+                    }
                 }
             }
         }
         const auto accessoryPath = directory_ / chrome_axis::accessoryFilename;
-        const bool readAccessories = watchedAccessories_.changed(accessoryPath, now, force);
-        if (readAccessories) {
-            accessoryError_.clear();
-            savedAccessories_ = watchedAccessories_.stamp
-                ? chrome_axis::loadAccessoryProfile(accessoryPath, accessoryError_) : std::nullopt;
-            watchedAccessories_.readFinished(savedAccessories_.has_value(), now);
+        bool readAccessories{};
+        if (watchedAccessories_.changed(accessoryPath, now, force)) {
+            std::string error;
+            DWORD readError{};
+            auto updated = chrome_axis::loadAccessoryProfile(accessoryPath, error, &readError);
+            if (!watchedAccessories_.deferLockedRead(readError, !changes.preset && savedAccessories_.has_value(), now)) {
+                if (readError == ERROR_FILE_NOT_FOUND || readError == ERROR_PATH_NOT_FOUND)
+                    error.clear();
+                accessoryError_ = std::move(error);
+                savedAccessories_ = std::move(updated);
+                watchedAccessories_.readFinished(savedAccessories_.has_value(), now, readError);
+                readAccessories = true;
+            }
         }
         if (readAccessories || changes.calibration) {
             auto updated = savedAccessories_;
@@ -1417,6 +1397,23 @@ struct UsbReadDiagnostics {
     chrome_axis::DiagnosticPublisher& publisher;
     const UsbConfiguration& usb;
 
+    void describeDevice(auto& entry, std::string_view id, std::string_view operation) const noexcept {
+        copyDiagnosticToken(entry.deviceId, id);
+        copyDiagnosticToken(entry.operation, operation);
+        if (usb.profile) {
+            const auto& profile = *usb.profile;
+            const std::array axes{&profile.steering, &profile.throttle, &profile.brake};
+            for (std::size_t i = 0; i < axes.size(); ++i) {
+                if (axes[i]->deviceId == id)
+                    entry.deviceAxisMask |= static_cast<std::uint8_t>(1u << i);
+            }
+        }
+        if (usb.accessoryProfile) {
+            entry.deviceAccessoryCount = static_cast<std::uint8_t>(std::ranges::count_if(*usb.accessoryProfile,
+                [&](const auto& binding) { return binding.deviceId == id; }));
+        }
+    }
+
     static void observe(void* observerState, const chrome_axis::DirectInputReadEvent& read) noexcept {
         static_cast<UsbReadDiagnostics*>(observerState)->record(read, GetTickCount64());
     }
@@ -1439,20 +1436,7 @@ struct UsbReadDiagnostics {
         DiagnosticUsbEvent event{.sampledAt = tick, .durationMicros = read.durationMicros,
                                  .result = static_cast<std::uint32_t>(read.result), .kind = kind,
                                  .mode = DiagnosticMode::usb};
-        copyDiagnosticToken(event.deviceId, read.deviceId);
-        copyDiagnosticToken(event.operation, read.operation);
-        if (usb.profile) {
-            const auto& profile = *usb.profile;
-            const std::array axes{&profile.steering, &profile.throttle, &profile.brake};
-            for (std::size_t i = 0; i < axes.size(); ++i) {
-                if (axes[i]->deviceId == read.deviceId)
-                    event.deviceAxisMask |= static_cast<std::uint8_t>(1u << i);
-            }
-        }
-        if (usb.accessoryProfile) {
-            event.deviceAccessoryCount = static_cast<std::uint8_t>(std::ranges::count_if(*usb.accessoryProfile,
-                [&](const auto& binding) { return binding.deviceId == read.deviceId; }));
-        }
+        describeDevice(event, read.deviceId, read.operation);
         publisher.recordUsbEvent(event);
     }
 };
@@ -1618,6 +1602,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     std::array<AccessoryOutputHistory, 256> accessoryHistory{};
     std::bitset<256> previousHeldKeys;
     AccessoryPresses accessoryPresses;
+    std::array<chrome_axis::DiagnosticUsbOperation, chrome_axis::diagnosticUsbOperationCapacity> usbOperations;
     const auto publishDiagnostics = [&](HWND foreground, const DrivingContext& polled) {
         const auto now = Clock::now();
         nextDiagnostic = now + (performance.state == chrome_axis::PerformanceState::capturing
@@ -1626,6 +1611,19 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             return;
         const bool gameForeground = foregroundGameWindow() != nullptr;
         auto snapshot = diagnostic;
+        std::size_t activeOperationCount = 0;
+        if (workers.input) {
+            workers.input->visitActiveCalls([&](std::string_view id, std::string_view operation,
+                                                std::uint64_t startedAt, bool layoutProbe) {
+                if (activeOperationCount == usbOperations.size())
+                    return;
+                auto& entry = usbOperations[activeOperationCount++];
+                entry = {.startedAt = startedAt, .lane = layoutProbe ? chrome_axis::DiagnosticUsbLane::probe
+                                                                     : chrome_axis::DiagnosticUsbLane::reader};
+                usbReadDiagnostics->describeDevice(entry, id, operation);
+            });
+        }
+        diagnostics->updateUsbOperations(std::span(usbOperations).first(activeOperationCount));
         const auto performanceRequest = diagnostics->performanceRequest();
         std::uint64_t drivingSession{};
         std::optional<chrome_axis::DrivingCaptureSample> captureSample;

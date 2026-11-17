@@ -524,6 +524,15 @@ bool usbLayoutFailureCode(const DiagnosticUsbEvent& event) noexcept
          event.kind == DiagnosticUsbEventKind::layoutMissing);
 }
 
+const wchar_t* usbLaneText(DiagnosticUsbLane lane)
+{
+    switch (lane) {
+    case DiagnosticUsbLane::reader: return tr(Text::DlgDiagnosticsUsbLaneReader);
+    case DiagnosticUsbLane::probe: return tr(Text::DlgDiagnosticsUsbLaneProbe);
+    }
+    return unavailableValue;
+}
+
 const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
 {
     switch (event.kind) {
@@ -544,6 +553,7 @@ const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
     case DiagnosticUsbEventKind::layoutAcquireDenied: return tr(Text::DlgDiagnosticsUsbEventLayoutAcquireDenied);
     case DiagnosticUsbEventKind::layoutMissing: return tr(Text::DlgDiagnosticsUsbEventLayoutMissing);
     case DiagnosticUsbEventKind::layoutRecovered: return tr(Text::DlgDiagnosticsUsbEventLayoutRecovered);
+    case DiagnosticUsbEventKind::operationRunning: return tr(Text::DlgDiagnosticsUsbEventOperationRunning);
     }
     return unavailableValue;
 }
@@ -587,6 +597,13 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
         return std::string_view(text.begin(), std::ranges::find(text, '\0'));
     };
     const auto operation = usbOperation(event);
+    const auto appendOperation = [&] {
+        if (!operation.empty() && std::ranges::all_of(operation, [](char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ';
+        }))
+            append(fromUtf8(operation));
+    };
+    const bool running = event.kind == DiagnosticUsbEventKind::operationRunning;
     switch (event.kind) {
     case DiagnosticUsbEventKind::deviceSlow:
     case DiagnosticUsbEventKind::devicePending:
@@ -596,11 +613,17 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     case DiagnosticUsbEventKind::layoutAcquireDenied:
     case DiagnosticUsbEventKind::layoutMissing:
     case DiagnosticUsbEventKind::layoutRecovered:
+    case DiagnosticUsbEventKind::operationRunning:
     case DiagnosticUsbEventKind::discreteOverflow: {
         const auto id = bounded(event.deviceId);
         const auto device = std::ranges::find(devices, id, &DeviceInfo::id);
         const auto model = device == devices.end() ? std::wstring{} : reportDeviceModel(*device);
         const auto fallback = id.empty() ? Text::DlgDiagnosticsUsbEventInterface : Text::DlgDiagnosticsUsbEventDevice;
+        if (running) {
+            append(usbLaneText(event.lane));
+            appendOperation();
+            append(milliseconds(static_cast<double>(event.durationMicros)));
+        }
         append(model.empty() ? std::wstring_view(tr(fallback)) : std::wstring_view(model));
         for (std::size_t index = 0; index < axisControls.size(); ++index) {
             if (event.deviceAxisMask & (1u << index))
@@ -608,12 +631,8 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
         }
         if (event.deviceAccessoryCount)
             append(std::wstring(tr(Text::DlgDiagnosticsAccessories)) + L" " + std::to_wstring(event.deviceAccessoryCount));
-        if (event.kind != DiagnosticUsbEventKind::discreteOverflow &&
-            !operation.empty() && std::ranges::all_of(operation, [](char character) {
-            return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
-                (character >= '0' && character <= '9') || character == ' ';
-        }))
-            append(fromUtf8(operation));
+        if (!running && event.kind != DiagnosticUsbEventKind::discreteOverflow)
+            appendOperation();
         if (event.kind == DiagnosticUsbEventKind::deviceUnavailable || event.kind == DiagnosticUsbEventKind::devicePending ||
             usbLayoutFailureCode(event))
             append(std::format(L"0x{:08X}", event.result));
@@ -651,7 +670,7 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     default:
         break;
     }
-    if (event.durationMicros || event.kind == DiagnosticUsbEventKind::pollExpired)
+    if (!running && (event.durationMicros || event.kind == DiagnosticUsbEventKind::pollExpired))
         append(milliseconds(static_cast<double>(event.durationMicros)));
     return detail;
 }
@@ -1166,6 +1185,16 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         report += L"\r\n";
         previous = &event;
     }
+    const auto usbOperations = std::span(read.usbOperations).first(read.usbOperationCount);
+    if (!usbOperations.empty()) {
+        const bool live = read.connection == DiagnosticConnection::connected;
+        report += L"\r\n" + std::wstring(tr(live ? Text::DlgDiagnosticsUsbOperations
+                                                  : Text::DlgDiagnosticsLastUsbOperations)) + L"\r\n";
+        for (const auto& operation : usbOperations) {
+            const auto event = usbOperationEvent(operation, live ? now : read.sampledAt);
+            report += L"- " + std::wstring(usbEventTitle(event)) + usbEventDetails(event, state.devices) + L"\r\n";
+        }
+    }
     const auto usbEvents = std::span(read.usbEvents).first(std::min<std::size_t>(read.usbEventCount, read.usbEvents.size()));
     if (!usbEvents.empty()) {
         report += L"\r\n" + std::wstring(tr(Text::DlgDiagnosticsUsbEvents)) + L"\r\n";
@@ -1380,7 +1409,15 @@ void refresh(HWND window, DialogState& state)
     const bool showControls = connected || showLastDrive;
     const auto now = GetTickCount64();
     if (!state.missingFiles && state.versionMismatch.empty()) {
-        if (read.usbEventCount) {
+        if (connected && read.usbOperationCount) {
+            const auto calls = std::span(read.usbOperations).first(read.usbOperationCount);
+            const auto longest = std::ranges::min_element(calls, {}, &DiagnosticUsbOperation::startedAt);
+            const auto event = usbOperationEvent(*longest, now);
+            auto detail = std::wstring(usbEventTitle(event)) + usbEventDetails(event, state.devices);
+            if (calls.size() > 1)
+                detail += L" · +" + std::to_wstring(calls.size() - 1);
+            setChangedText(window, IDC_MODAL_INTRO, detail);
+        } else if (read.usbEventCount) {
             const auto& latest = read.usbEvents[read.usbEventCount - 1];
             auto detail = std::wstring(tr(Text::DlgDiagnosticsLatestUsb)) +
                 L" · " + usbEventTitle(latest);

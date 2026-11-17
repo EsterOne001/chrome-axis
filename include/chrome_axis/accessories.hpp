@@ -136,7 +136,9 @@ using AccessoryKeyTimes = std::array<DeviceReadClock::time_point, 256>;
 
 bool isAccessoryKey(unsigned int key) noexcept;
 bool nativeShifterVerified(const AccessoryProfile& profile) noexcept;
-std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path& path, std::string& error);
+// A parse failure leaves readError set to ERROR_SUCCESS.
+std::optional<AccessoryProfile> loadAccessoryProfile(const std::filesystem::path& path, std::string& error,
+                                                     DWORD* readError = nullptr);
 bool saveAccessoryProfile(const std::filesystem::path& path, const AccessoryProfile& profile, std::string& error);
 bool sameAccessoryInputProfile(const std::optional<AccessoryProfile>& first,
                                const std::optional<AccessoryProfile>& second);

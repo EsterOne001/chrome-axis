@@ -30,14 +30,17 @@ struct MockController {
     std::atomic<bool> buttonPresent{true};
     std::atomic<bool> waitForProbe{};
     std::atomic<bool> probeStarted{};
+    std::atomic<bool> waitForUnacquire{};
     std::atomic<bool> delayedButtonReady{};
     std::atomic<unsigned> deniedAcquires{};
     std::atomic<unsigned> readerAxisChecks{};
+    std::atomic<unsigned> readerButtonChecks{};
     std::atomic<unsigned> delayedButtonChecks{};
     std::atomic<unsigned> capabilityChecks{};
     bool acquisitionRequired{true};
     bool feedback{};
     bool setupBlocked{};
+    DWORD blockedProbeObject{DIJOFS_X};
     DWORD autocenter{DIPROPAUTOCENTER_ON};
     LONG force{};
     bool exclusivelyAcquired{};
@@ -137,6 +140,8 @@ public:
         return DI_OK;
     }
     HRESULT STDMETHODCALLTYPE Unacquire() override {
+        if (controller_.waitForUnacquire)
+            controller_.waitForUnacquire.wait(true);
         acquired_ = false;
         if (exclusive_)
             controller_.exclusivelyAcquired = false;
@@ -172,13 +177,13 @@ public:
             return DIERR_INVALIDPARAM;
         if (!controller_.connected)
             return DIERR_INPUTLOST;
+        if (discovery_ && offset == controller_.blockedProbeObject && controller_.waitForProbe) {
+            controller_.probeStarted = true;
+            controller_.waitForProbe.wait(true);
+        }
         if (offset == DIJOFS_X) {
             if (!discovery_)
                 ++controller_.readerAxisChecks;
-            if (discovery_ && controller_.waitForProbe) {
-                controller_.probeStarted = true;
-                controller_.waitForProbe.wait(true);
-            }
             if (!acquired_ && controller_.acquisitionRequired) {
                 if (controller_.axisProbeFailure == ProbeFailure::accessDenied)
                     return DIERR_OTHERAPPHASPRIO;
@@ -198,6 +203,8 @@ public:
             return DI_OK;
         }
         if (offset == DIJOFS_BUTTON(0) || offset == DIJOFS_BUTTON(1) || offset == DIJOFS_BUTTON(2)) {
+            if (!discovery_)
+                ++controller_.readerButtonChecks;
             if (!acquired_ && controller_.acquisitionRequired)
                 return DIERR_NOTACQUIRED;
             if (offset == DIJOFS_BUTTON(1) || (offset == DIJOFS_BUTTON(0) && !controller_.buttonPresent))
@@ -526,34 +533,134 @@ bool coldOpenAfterGenericProbeError()
     return false;
 }
 
+struct UnblockProbe {
+    MockController& controller;
+    ~UnblockProbe() {
+        controller.waitForProbe = false;
+        controller.waitForProbe.notify_one();
+    }
+};
+
 bool independentDiscovery(MockDriver& mock)
 {
     MockController& wheel = mock.wheel;
+    wheel.buttonPresent = true;
     wheel.waitForProbe = true;
-    DirectInput wheelInput(GetDesktopWindow());
+    DirectInputActiveCall readerCall, probeCall;
+    DirectInput wheelInput(GetDesktopWindow(), nullptr, nullptr, nullptr, &readerCall, &probeCall);
     DirectInput pedalInput(GetDesktopWindow());
-    struct UnblockProbe {
-        MockController& wheel;
-        ~UnblockProbe() {
-            wheel.waitForProbe = false;
-            wheel.waitForProbe.notify_one();
-        }
-    } unblock{wheel};
+    UnblockProbe unblock{wheel};
 
-    DeviceObjectSelection wanted;
-    wanted.axes.set(0);
+    DeviceObjectSelection pedalsWanted;
+    pedalsWanted.axes.set(0);
+    auto wheelWanted = pedalsWanted;
+    wheelWanted.buttons.set(0);
     DeviceReadStatus status{};
-    if (!wheelInput.sampleForDriving(wheelId, wanted, status) ||
+    if (!wheelInput.sampleForDriving(wheelId, wheelWanted, status) ||
         !waitFor([&] { return wheel.probeStarted.load(); }))
         return false;
     if (!waitFor([&] {
-        const auto sample = pedalInput.sampleForDriving(pedalsId, wanted, status);
+        const auto sample = pedalInput.sampleForDriving(pedalsId, pedalsWanted, status);
         return sample && sample->axesPresent[0] && sample->axes[0] == 630;
     })) {
         std::cerr << "A blocked wheel layout interrupted independent pedals\n";
         return false;
     }
-    return true;
+    const auto initial = probeCall.snapshot();
+    if (!initial.operation || std::string_view(initial.operation) != "GetObjectInfo axis")
+        return false;
+    bool wheelPending = false;
+    bool pedalInterrupted = false;
+    const bool recovered = waitFor([&] {
+        const auto pedal = pedalInput.sampleForDriving(pedalsId, pedalsWanted, status);
+        pedalInterrupted |= !pedal || !pedal->axesPresent[0] || status != DeviceReadStatus::available;
+        const auto sample = wheelInput.sampleForDriving(wheelId, wheelWanted, status);
+        if (!sample || status != DeviceReadStatus::available)
+            return false;
+        wheelPending |= sample->axesPending[0];
+        return sample->axesPresent[0] && sample->axes[0] == 630 && sample->buttonsPresent[0] && sample->buttons[0];
+    });
+    const auto active = probeCall.snapshot();
+    return recovered && wheelPending && !pedalInterrupted && active.operation == initial.operation &&
+        active.startedAt == initial.startedAt && !readerCall.snapshot().operation;
+}
+
+bool preserveAxisWhileNewButtonProbeStalls()
+{
+    MockDriver mock;
+    mock.wheel.acquisitionRequired = false;
+    mock.wheel.blockedProbeObject = DIJOFS_BUTTON(0);
+    driver = &mock;
+    DirectInputActiveCall probeCall;
+    DirectInput input(GetDesktopWindow(), nullptr, nullptr, nullptr, nullptr, &probeCall);
+    UnblockProbe unblock{mock.wheel};
+    DeviceObjectSelection wanted;
+    wanted.axes.set(0);
+    DeviceReadStatus status{};
+    if (!waitFor([&] {
+        const auto reading = input.sampleForDriving(wheelId, wanted, status);
+        return reading && reading->axesPresent[0];
+    }))
+        return false;
+
+    mock.wheel.waitForProbe = true;
+    wanted.buttons.set(0);
+    bool axisInterrupted = false;
+    bool buttonPending = false;
+    const auto start = Clock::now();
+    const bool observed = waitFor([&] {
+        const auto reading = input.sampleForDriving(wheelId, wanted, status);
+        axisInterrupted |= !reading || !reading->axesPresent[0] || status != DeviceReadStatus::available;
+        buttonPending |= reading && reading->buttonsPending[0];
+        return probeCall.snapshot().overdue(GetTickCount64(), 1100);
+    });
+    if (!observed || Clock::now() - start < 1s || axisInterrupted || !buttonPending || mock.wheel.readerButtonChecks)
+        return false;
+    mock.wheel.waitForProbe = false;
+    mock.wheel.waitForProbe.notify_one();
+    return waitFor([&] {
+        const auto reading = input.sampleForDriving(wheelId, wanted, status);
+        return reading && reading->axesPresent[0] && reading->buttonsPresent[0];
+    });
+}
+
+bool reportReadFailureBeforeBlockedCleanup()
+{
+    MockDriver mock;
+    driver = &mock;
+    DirectInputActiveCall readerCall;
+    ReadEvents events;
+    std::atomic<bool> initialized{}, startFailure{};
+    std::jthread sampling([&] {
+        mock.samplingThread = GetCurrentThreadId();
+        DirectInput input(GetDesktopWindow(), nullptr, &ReadEvents::observe, &events, &readerCall);
+        DeviceReadStatus status{};
+        initialized = input.sampleConfigured(wheelId, {}, status).has_value();
+        startFailure.wait(false);
+        mock.wheel.connected = false;
+        input.sampleConfigured(wheelId, {}, status);
+    });
+    struct FinishSampling {
+        MockController& controller;
+        std::atomic<bool>& trigger;
+        ~FinishSampling() {
+            controller.waitForUnacquire = false;
+            controller.waitForUnacquire.notify_one();
+            trigger = true;
+            trigger.notify_one();
+        }
+    } finish{mock.wheel, startFailure};
+    if (!waitFor([&] { return initialized.load(); }))
+        return false;
+    mock.wheel.waitForUnacquire = true;
+    startFailure = true;
+    startFailure.notify_one();
+    if (!waitFor([&] {
+        const auto active = readerCall.snapshot();
+        return active.operation && std::string_view(active.operation) == "Unacquire";
+    }))
+        return false;
+    return events.inputLost;
 }
 
 } // namespace
@@ -648,8 +755,18 @@ int main()
         if (!recoverRequiredLayout(mock.wheel, input, events))
             return 1;
     }
-    if (!independentDiscovery(mock))
+    if (!independentDiscovery(mock)) {
+        std::cerr << "Stalled discovery did not recover on the acquired reader while preserving independent pedals\n";
         return 2;
+    }
+    if (!preserveAxisWhileNewButtonProbeStalls()) {
+        std::cerr << "Adding a button during a stalled probe disrupted the already working axis\n";
+        return 10;
+    }
+    if (!reportReadFailureBeforeBlockedCleanup()) {
+        std::cerr << "Cleanup blocked the publication of the original read failure\n";
+        return 11;
+    }
     if (!recoverAfterMetadataError(ProbeFailure::accessDenied)) {
         std::cerr << "A metadata access denial did not recover on the acquired reader\n";
         return 3;

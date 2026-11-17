@@ -181,8 +181,22 @@ struct DiagnosticEvent {
 enum class DiagnosticUsbEventKind : std::uint8_t {
     deviceSlow, devicePending, deviceUnavailable, deviceRecovered, pollExpired, pollGap,
     commandsWaiting, commandsReady, contextChanged, menuPaused, directInputReopened, discreteOverflow,
-    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered
+    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered, operationRunning
 };
+
+enum class DiagnosticUsbLane : std::uint8_t { reader, probe };
+
+struct DiagnosticUsbOperation {
+    std::uint64_t startedAt{}; // GetTickCount64() before entering the call.
+    std::array<char, 39> deviceId{}; // Application lookup only. Omit from exported text.
+    std::array<char, 40> operation{};
+    DiagnosticUsbLane lane{};
+    std::uint8_t deviceAxisMask{};
+    std::uint8_t deviceAccessoryCount{};
+};
+
+// At most one reader and one probe per configured device.
+inline constexpr std::size_t diagnosticUsbOperationCapacity = 2 * (maxAccessoryBindings + 3);
 
 struct DiagnosticUsbBlocker {
     AccessoryKind kind{};
@@ -212,7 +226,10 @@ struct DiagnosticUsbEvent {
     std::uint8_t deviceAccessoryCount{};
     std::array<DiagnosticUsbBlocker, 4> blockers{};
     std::uint32_t blockerCount{}; // Total, including any entries omitted from blockers.
+    DiagnosticUsbLane lane{}; // Used by operationRunning.
 };
+
+DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt) noexcept;
 
 enum class PerformanceState : std::uint32_t { idle, capturing, complete };
 
@@ -319,6 +336,8 @@ struct DiagnosticRead {
     std::uint32_t eventCount{};
     std::array<DiagnosticUsbEvent, 32> usbEvents{}; // Oldest first, retained across driving sessions.
     std::uint32_t usbEventCount{};
+    std::array<DiagnosticUsbOperation, diagnosticUsbOperationCapacity> usbOperations{};
+    std::uint32_t usbOperationCount{}; // Current calls when connected, last observation when stale.
     PerformanceReport performance{};
     std::uint32_t drivingCaptureSamples{}; // Only visible to the owning reader.
 };
@@ -336,6 +355,8 @@ public:
     // Always publish live status. Retain this reading only when the driving commands are usable.
     void publish(const DiagnosticSnapshot& snapshot, std::uint64_t drivingSession = 0,
                  const PerformanceReport& performance = {}, bool validDrivingSample = true) noexcept;
+    // Supply all current calls before performanceRequest() and publish().
+    void updateUsbOperations(std::span<const DiagnosticUsbOperation> operations) noexcept;
     void recordUsbEvent(const DiagnosticUsbEvent& event) noexcept;
     void recordDrivingSample(std::uint64_t captureId, const DrivingCaptureSample& sample) noexcept;
     std::optional<PerformanceRequest> performanceRequest() noexcept;

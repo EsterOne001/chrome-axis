@@ -4,12 +4,14 @@
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/simulation.hpp"
 #include "../src/plugin/usb_profile_selection.hpp"
+#include "../src/plugin/watched_profile.hpp"
 
 #include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -238,6 +240,88 @@ bool testUsbProfileSelection(const fs::path& root)
     return defaultProfile && defaultProfile->directory == root;
 }
 
+template<class ReadProfile>
+bool testProfileFileLock(const fs::path& path, ReadProfile readProfile)
+{
+    const auto now = WatchedProfile::Clock::time_point{};
+    WatchedProfile watch;
+    std::string error;
+    DWORD readError{};
+    if (!watch.changed(path, now, true) || !readProfile(path, error, &readError) || readError)
+        return false;
+    watch.readFinished(true, now);
+    const auto stamp = watch.stamp;
+
+    const HANDLE exclusive = CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (exclusive == INVALID_HANDLE_VALUE)
+        return false;
+    const std::unique_ptr<void, decltype(&CloseHandle)> held(exclusive, &CloseHandle);
+    const bool fileStillPresent = watch.changed(path, now, true) && stamp && stamp == watch.stamp;
+    const bool sharingLocked = !readProfile(path, error, &readError) && readError == ERROR_SHARING_VIOLATION;
+    const bool deferred = watch.deferLockedRead(readError, true, now) &&
+        !watch.changed(path, now + 249ms, false);
+    // A newly selected path has no settings eligible for the lock grace.
+    WatchedProfile newProfile;
+    const bool noPriorSettings = !newProfile.deferLockedRead(readError, false, now);
+    const bool locksExpire = watch.changed(path, now + 250ms, false) &&
+        watch.deferLockedRead(readError, true, now + 250ms) &&
+        watch.changed(path, now + 1s, false) &&
+        !watch.deferLockedRead(readError, true, now + 1s);
+    return fileStillPresent && sharingLocked && deferred && noPriorSettings && locksExpire;
+}
+
+template<class ReadProfile>
+bool testProfileFileReopen(const fs::path& path, ReadProfile readProfile)
+{
+    const auto now = WatchedProfile::Clock::time_point{};
+    WatchedProfile watch;
+    std::string error;
+    DWORD readError{};
+    watch.changed(path, now, true);
+    {
+        const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> held(file, &CloseHandle);
+        OVERLAPPED region{};
+        if (!LockFileEx(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &region))
+            return false;
+        const bool deferred = !readProfile(path, error, &readError) && readError == ERROR_LOCK_VIOLATION &&
+            watch.deferLockedRead(readError, true, now);
+        if (!UnlockFileEx(file, 0, 1, 0, &region) || !deferred)
+            return false;
+    }
+    if (!watch.changed(path, now + 250ms, false) || !readProfile(path, error, &readError) || readError || !error.empty())
+        return false;
+    watch.readFinished(true, now + 250ms);
+    if (watch.changed(path, now + 500ms, false))
+        return false;
+
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << "version=99\r\n";
+    if (readProfile(path, error, &readError) || readError || watch.deferLockedRead(readError, true, now + 500ms))
+        return false;
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << std::string(16 * 1024 + 1, ' ');
+    if (readProfile(path, error, &readError) || readError || watch.deferLockedRead(readError, true, now + 500ms))
+        return false;
+    if (!fs::remove(path) || readProfile(path, error, &readError) || readError != ERROR_FILE_NOT_FOUND)
+        return false;
+    return !watch.deferLockedRead(readError, true, now + 500ms);
+}
+
+bool testUsbProfileFileLocks(const fs::path& root)
+{
+    fs::create_directories(root);
+    const auto analogFile = root / profileFilename;
+    std::ofstream(analogFile, std::ios::binary) << "version=1\r\nsteering.device=" << device
+        << "\r\nsteering.axis=0\r\nsteering.neutral=0\r\nsteering.negative=-1000\r\n"
+           "steering.positive=1000\r\nsteering.deadzone=0.02\r\n";
+    const auto accessoryFile = root / accessoryFilename;
+    std::ofstream(accessoryFile, std::ios::binary) << "version=1\r\nbinding=" << device << ",button,0,0,1,32\r\n";
+    return testProfileFileLock(analogFile, loadProfile) && testProfileFileReopen(analogFile, loadProfile) &&
+        testProfileFileLock(accessoryFile, loadAccessoryProfile) &&
+        testProfileFileReopen(accessoryFile, loadAccessoryProfile);
+}
+
 bool testFeedbackStopWhileSelectionLocked(const fs::path& root)
 {
     const auto directory = root / L"Profils" / preset;
@@ -289,6 +373,8 @@ int runApplicationSide()
         return 17;
     if (!testFeedbackStopWhileSelectionLocked(directory / L"Locked feedback profile"))
         return 18;
+    if (!testUsbProfileFileLocks(directory / L"Locked profile files"))
+        return 24;
     const auto game = directory / L"Game A";
     const auto plugin = pluginDirectory(game);
     fs::create_directories(plugin / L"scripts");
@@ -398,8 +484,19 @@ int runApplicationSide()
         return 12;
 
     fs::remove(directory / L"done");
-    if (!saveTransmissionHotkey(root, 'J', error) || !child.start() || !simulation.enable())
+    fs::remove(directory / L"background");
+    if (!saveTransmissionHotkey(root, 'J', error) || !setUsbEnabled(root, true, error) || !child.start())
         return 19;
+    if (!waitFor([&] {
+        const auto read = application.read();
+        return read.connection == DiagnosticConnection::connected && read.snapshot.mode == DiagnosticMode::usb &&
+            std::string_view(read.snapshot.profile.data()) == presetUtf8 && read.snapshot.axes[0].inputValue == 0.13f &&
+            read.snapshot.transmission.shortcutKey == 'J' && matchesClutch(read.snapshot.clutch) &&
+            read.performance.state == PerformanceState::idle;
+    }))
+        return 22;
+    if (!simulation.enable())
+        return 23;
     if (!waitFor([&] {
         simulation.heartbeat();
         const auto read = application.read();

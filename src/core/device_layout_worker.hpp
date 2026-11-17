@@ -19,6 +19,7 @@ struct DeviceLayoutSnapshot {
     DeviceObjectSelection present;
     DeviceObjectSelection pending;
     DeviceObjectSelection fallback; // Objects that can be checked on the acquired reader.
+    bool probeOverdue{};
 
     bool incomplete() const noexcept {
         return pending.axes.any() || pending.buttons.any() || pending.povs.any();
@@ -42,8 +43,8 @@ struct DeviceLayoutSnapshot {
 template<class Query>
 class DeviceLayoutWorker {
 public:
-    explicit DeviceLayoutWorker(Query query)
-        : thread_([this, query = std::move(query)](std::stop_token stop) mutable {
+    explicit DeviceLayoutWorker(Query query, const DirectInputActiveCall* activeCall = nullptr)
+        : activeCall_(activeCall), thread_([this, query = std::move(query)](std::stop_token stop) mutable {
             try {
                 run(query, stop);
             } catch (...) {
@@ -69,12 +70,18 @@ public:
             changed_.notify_one();
         }
         lastDemand_ = now;
-        return snapshot_;
+        auto snapshot = snapshot_;
+        if (activeCall_ && snapshot.incomplete() && probingDevice_ == id) {
+            const auto call = activeCall_->snapshot();
+            snapshot.probeOverdue = call.overdue(GetTickCount64(), probeTimeoutMilliseconds);
+        }
+        return snapshot;
     }
 
 private:
     using Clock = DeviceReadClock;
     static constexpr auto demandLifetime = std::chrono::milliseconds(250);
+    static constexpr std::uint64_t probeTimeoutMilliseconds = 1000;
 
     void run(Query& query, std::stop_token stop) {
         std::unique_lock lock(mutex_);
@@ -91,6 +98,7 @@ private:
             }
             const auto request = request_;
             auto result = snapshot_;
+            probingDevice_ = request.id;
             lock.unlock();
             try {
                 result = query(request);
@@ -98,6 +106,7 @@ private:
                 // A failed discovery leaves the affected objects pending for retry.
             }
             lock.lock();
+            probingDevice_ = {};
             if (revision_ == revision) {
                 snapshot_ = result;
                 retryAt_ = Clock::now() + std::chrono::milliseconds(500);
@@ -105,9 +114,11 @@ private:
         }
     }
 
+    const DirectInputActiveCall* activeCall_;
     std::mutex mutex_;
     std::condition_variable_any changed_;
     DeviceLayoutRequest request_;
+    std::string_view probingDevice_; // Backed by the query's request while it is running.
     DeviceLayoutSnapshot snapshot_;
     Clock::time_point lastDemand_;
     Clock::time_point retryAt_;

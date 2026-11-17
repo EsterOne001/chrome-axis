@@ -1,5 +1,6 @@
 #include "chrome_axis/controls.hpp"
 
+#include "settings_read.hpp"
 #include "settings_replace.hpp"
 
 #include <algorithm>
@@ -194,19 +195,17 @@ bool validateProfile(const Profile& profile, std::string& error)
     return true;
 }
 
-std::optional<Profile> loadProfile(const std::filesystem::path& path, std::string& error)
+std::optional<Profile> loadProfile(const std::filesystem::path& path, std::string& error, DWORD* readError)
 {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) {
-        error = "Profile is missing or unreadable. Run the Chrome Axis calibration app (ChromeAxis.exe).";
+    auto text = detail::readSettingsText(path);
+    if (readError)
+        *readError = text.error;
+    if (text.invalidSize || text.error) {
+        error = text.invalidSize ? "Invalid profile size"
+            : "Profile is missing or unreadable. Run the Chrome Axis calibration app (ChromeAxis.exe).";
         return std::nullopt;
     }
-    const auto size = file.tellg();
-    if (size < 0 || size > 16 * 1024) {
-        error = "Invalid profile size";
-        return std::nullopt;
-    }
-    file.seekg(0);
+    std::istringstream file(std::move(text.contents));
 
     std::map<std::string, std::string> values;
     std::string line;

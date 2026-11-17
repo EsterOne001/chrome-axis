@@ -23,12 +23,13 @@ struct TestDriver {
         std::atomic<bool> pressed{};
         std::atomic<bool> pedalConnected{true};
         std::atomic<bool> blockWheel{};
+        std::atomic<bool> blockWheelLayout{};
     };
 
     static inline State* state{};
 
     TestDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver observer, void* observerContext,
-               DirectInputActiveCall* activeCall)
+               DirectInputActiveCall* activeCall, DirectInputActiveCall*)
         : observer(observer), observerContext(observerContext), activeCall(activeCall) {
         ++state->opens;
     }
@@ -57,9 +58,14 @@ struct TestDriver {
             sample.buttons.set(0, state->pressed);
         } else {
             if (state->blockWheel) {
-                activeCall->store("GetDeviceState", std::memory_order_relaxed);
+                activeCall->begin("GetDeviceState");
                 state->blockWheel.wait(true);
-                activeCall->store(nullptr, std::memory_order_relaxed);
+                activeCall->end();
+            }
+            if (state->blockWheelLayout) {
+                activeCall->begin("Read handle GetObjectInfo axis");
+                state->blockWheelLayout.wait(true);
+                activeCall->end();
             }
             sample.axesPresent[0] = wanted.axes[0];
             if (wanted.axes[1] && state->slowAttempts < 2) {
@@ -168,15 +174,18 @@ int checkBlockedWorkerTelemetry()
 {
     TestDriver::State fake;
     fake.blockWheel = true;
+    fake.blockWheelLayout = true;
     TestDriver::state = &fake;
     DrivingInputs<TestDriver> input(5ms, 100ms);
     struct UnblockWheel {
-        std::atomic<bool>& blocked;
+        TestDriver::State& state;
         ~UnblockWheel() {
-            blocked = false;
-            blocked.notify_one();
+            state.blockWheel = false;
+            state.blockWheel.notify_one();
+            state.blockWheelLayout = false;
+            state.blockWheelLayout.notify_one();
         }
-    } unblock{fake.blockWheel};
+    } unblock{fake};
 
     std::array devices{DrivingInputDevice{wheel, {}}, DrivingInputDevice{pedals, {}}};
     for (auto& device : devices)
@@ -184,26 +193,43 @@ int checkBlockedWorkerTelemetry()
     if (!input.configure(GetDesktopWindow(), devices))
         return 48;
 
-    unsigned int waitingEvents{};
+    std::string_view activeOperation;
+    std::uint64_t started{};
     const auto poll = [&] {
         input.beginPoll(Clock::now());
-        input.drainEvents([&](const std::string& id, const auto& event) {
-            if (id == wheel && event.kind == DirectInputReadEventKind::slow &&
-                std::string_view(event.operation.data()) == "Active GetDeviceState" &&
-                event.durationMicros >= 250000)
-                ++waitingEvents;
+        activeOperation = {};
+        input.visitActiveCalls([&](std::string_view id, std::string_view operation, std::uint64_t startedAt,
+                                   bool layoutProbe) {
+            if (id == wheel && !layoutProbe) {
+                activeOperation = operation;
+                started = startedAt;
+            }
         });
     };
-    if (!waitUntil([&] { poll(); return waitingEvents != 0; }))
+    if (!waitUntil([&] { poll(); return activeOperation == "GetDeviceState"; }))
         return 49;
-    for (int i = 0; i < 10; ++i)
-        poll();
+    const auto firstStarted = started;
+    const auto opened = fake.opens.load();
+    input.pause();
+    poll();
+    if (activeOperation != "GetDeviceState" || started != firstStarted ||
+        !input.configure(GetDesktopWindow(), devices))
+        return 50;
+    fake.blockWheel = false;
+    fake.blockWheel.notify_one();
+    if (!waitUntil([&] { poll(); return activeOperation == "Read handle GetObjectInfo axis"; }))
+        return 51;
 
     DeviceReadStatus wheelStatus{}, pedalStatus{};
     const auto pedal = input.sample(pedals, {}, &pedalStatus);
     const auto wheelSample = input.sample(wheel, {}, &wheelStatus);
-    return waitingEvents == 1 && pedal && pedalStatus == DeviceReadStatus::available &&
-        !wheelSample && wheelStatus == DeviceReadStatus::unavailable ? 0 : 50;
+    if (started <= firstStarted || fake.opens != opened || !pedal || pedalStatus != DeviceReadStatus::available ||
+        wheelSample || wheelStatus != DeviceReadStatus::unavailable)
+        return 52;
+    fake.blockWheelLayout = false;
+    fake.blockWheelLayout.notify_one();
+    return waitUntil([&] { poll(); return activeOperation.empty() && input.sample(wheel, {}, &wheelStatus); })
+        ? 0 : 53;
 }
 
 int checkCoalescedArming()
@@ -247,7 +273,8 @@ struct TransitionDriver {
 
     static inline State* state{};
 
-    TransitionDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*, DirectInputActiveCall*) {}
+    TransitionDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*, DirectInputActiveCall*,
+                     DirectInputActiveCall*) {}
     bool ready() const noexcept { return true; }
 
     std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,
@@ -495,7 +522,8 @@ struct SplitPaddleDriver {
 
     static inline State* state{};
 
-    SplitPaddleDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*, DirectInputActiveCall*) {}
+    SplitPaddleDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*, DirectInputActiveCall*,
+                      DirectInputActiveCall*) {}
     bool ready() const noexcept { return true; }
 
     std::optional<DeviceSample> sampleConfigured(const std::string& id, const DeviceObjectSelection& wanted,

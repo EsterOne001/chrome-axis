@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.75
+
+- **Diagnostic USB.** Le lecteur principal et la sonde indiquent leur appel en cours et sa durée. L’application conserve cet état en dehors de l’historique et l’inclut dans les nouveaux enregistrements.
+- **Sonde USB.** Si la sonde reste bloquée, le lecteur déjà acquis peut vérifier les commandes encore inconnues selon les limites de sondage. Les relevés anciens restent écartés.
+- **Profils.** Un verrou Windows temporaire sur un fichier de réglages conserve brièvement les commandes déjà validées pendant que le plugin retente la lecture.
+
+[ZIP Vortex](out/Chromaxis-0.4.75.zip)
+
 ## Chrome Axis 0.4.74
 
 - **Détection USB.** Si le sondage d’un axe ou d’un bouton renvoie une erreur sans confirmer son absence, la connexion qui lit déjà le périphérique peut vérifier la commande. Un test rejoue le cas d’un volant encore en attente après la relance alors qu’un autre périphérique répond.

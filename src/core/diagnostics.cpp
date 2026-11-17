@@ -34,10 +34,11 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 17;
+constexpr LONG64 protocolVersion = 18;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate transmission changes.
+constexpr std::uint64_t slowUsbCallThreshold = 250; // ms.
 static_assert(std::is_trivially_copyable_v<DiagnosticFrame>);
 
 void close(HANDLE handle) noexcept
@@ -46,7 +47,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v17.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v18.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -68,11 +69,13 @@ constexpr std::array<std::string_view, 10> axisTokens{
     "unassigned", "device_unavailable", "axis_unavailable", "waiting_for_neutral", "armed", "awaiting_profile",
     "inactive", "simulated", "sample_expired", "temporarily_unavailable"
 };
-constexpr std::array<std::string_view, 16> usbTokens{
+constexpr std::array<std::string_view, 17> usbTokens{
     "device_slow", "device_pending", "device_unavailable", "device_recovered", "poll_expired", "poll_gap",
     "commands_waiting", "commands_ready", "context_changed", "menu_paused", "directinput_reopened",
-    "discrete_overflow", "layout_pending", "layout_acquire_denied", "layout_missing", "layout_recovered"
+    "discrete_overflow", "layout_pending", "layout_acquire_denied", "layout_missing", "layout_recovered",
+    "operation_running"
 };
+constexpr std::array<std::string_view, 2> usbLaneTokens{"reader", "probe"};
 constexpr std::array<std::string_view, 13> accessoryTokens{
     "unconfigured", "waiting", "ready", "profile_error", "inactive", "blocked", "device_unavailable",
     "input_unavailable", "sample_expired", "temporarily_unavailable", "axis_conflict", "modifier_blocked",
@@ -95,7 +98,8 @@ constexpr std::array<std::string_view, 12> shifterRoleTokens{
 static_assert(modeTokens.size() == static_cast<std::size_t>(DiagnosticMode::simulation) + 1);
 static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::selectorAmbiguous) + 1);
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::temporarilyUnavailable) + 1);
-static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::layoutRecovered) + 1);
+static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::operationRunning) + 1);
+static_assert(usbLaneTokens.size() == static_cast<std::size_t>(DiagnosticUsbLane::probe) + 1);
 static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::selectorAmbiguous) + 1);
 static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::sampleExpired) + 1);
 static_assert(shortcutSourceTokens.size() == static_cast<std::size_t>(DiagnosticShortcutSource::poll) + 1);
@@ -107,7 +111,7 @@ static_assert(shifterRoleTokens.size() == static_cast<std::size_t>(ShifterRole::
 constexpr std::size_t drivingCsvColumns = 27;
 constexpr std::size_t clutchCsvColumns = 4;
 constexpr std::size_t transmissionCsvColumns = 7;
-constexpr std::size_t captureCsvColumns = 46 + transmissionCsvColumns + clutchCsvColumns;
+constexpr std::size_t captureCsvColumns = 47 + transmissionCsvColumns + clutchCsvColumns;
 constexpr std::size_t drivingTransmissionColumn = 13; // Index of transmission_mode in a CSV row.
 constexpr std::size_t drivingTransmissionColumns = 6;
 constexpr std::size_t usbCsvColumns = 9;
@@ -330,6 +334,21 @@ void writeCaptureClutch(std::ostream& output, const DiagnosticClutch& clutch)
 
 } // namespace
 
+DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt) noexcept
+{
+    return {
+        .sampledAt = observedAt,
+        .durationMicros = elapsed(observedAt, operation.startedAt) * 1000,
+        .deviceId = operation.deviceId,
+        .operation = operation.operation,
+        .kind = DiagnosticUsbEventKind::operationRunning,
+        .mode = DiagnosticMode::usb,
+        .deviceAxisMask = operation.deviceAxisMask,
+        .deviceAccessoryCount = operation.deviceAccessoryCount,
+        .lane = operation.lane
+    };
+}
+
 void writeDiagnosticCaptureHeader(std::ostream& output)
 {
     writeDrivingHeader(output);
@@ -339,7 +358,7 @@ void writeDiagnosticCaptureHeader(std::ostream& output)
               "transmission_shortcut_key,transmission_shortcut_available,transmission_shortcut_pressed_elapsed_ms,"
               "transmission_shortcut_press_count,transmission_shortcut_source,"
               "transmission_requested_mode,gearbox_sample_age_ms,"
-              "clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker\r\n";
+              "clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker,usb_call_lane\r\n";
 }
 
 void writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
@@ -367,9 +386,13 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
             emptyCsvColumns(output, 3);
             output << csvToken(event.kind, usbTokens) << ',';
             const auto operation = csvText(event.operation);
-            writeCsvText(output, operation);
+            const bool running = event.kind == DiagnosticUsbEventKind::operationRunning;
+            if (!running || std::ranges::all_of(operation, [](char c) {
+                    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ';
+                }))
+                writeCsvText(output, operation);
             output << ',';
-            if (!operation.empty())
+            if (!operation.empty() && !running)
                 output << "0x" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << event.result
                        << std::dec << std::nouppercase << std::setfill(' ');
             output << ',';
@@ -381,6 +404,9 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
                    << ',' << event.accessoryArmed << ',' << event.accessoryCount;
             writeCaptureBlockers(output, event);
             emptyCsvColumns(output, transmissionCsvColumns + clutchCsvColumns);
+            output.put(',');
+            if (running)
+                output << csvToken(event.lane, usbLaneTokens);
             output << "\r\n";
             continue;
         }
@@ -408,7 +434,7 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
         emptyCsvColumns(output, 2); // No USB blockers on a driving or context sample.
         writeCaptureTransmission(output, sample, startedAt);
         writeCaptureClutch(output, sample.clutch);
-        output << "\r\n";
+        output << ",\r\n";
     }
 }
 
@@ -516,6 +542,31 @@ void DiagnosticPublisher::publish(const DiagnosticSnapshot& snapshot, std::uint6
     ReleaseMutex(mutex_);
 }
 
+void DiagnosticPublisher::updateUsbOperations(std::span<const DiagnosticUsbOperation> operations) noexcept
+{
+    if (!frame_ || (operations.empty() && !report_.usbOperationCount))
+        return;
+    const auto now = GetTickCount64();
+    const auto previous = std::span(report_.usbOperations).first(report_.usbOperationCount);
+    operations = operations.first(std::min(operations.size(), report_.usbOperations.size()));
+    const auto longCall = [now](const auto& operation) {
+        return operation.startedAt && operation.operation.front() &&
+            elapsed(now, operation.startedAt) >= slowUsbCallThreshold;
+    };
+    for (const auto& operation : operations) {
+        if (!longCall(operation))
+            continue;
+        const bool known = std::ranges::any_of(previous, [&](const auto& prior) {
+            return prior.deviceId == operation.deviceId && prior.lane == operation.lane &&
+                prior.startedAt == operation.startedAt && prior.operation == operation.operation;
+        });
+        if (!known)
+            recordUsbEvent(usbOperationEvent(operation, now));
+    }
+    const auto end = std::ranges::copy_if(operations, report_.usbOperations.begin(), longCall).out;
+    report_.usbOperationCount = static_cast<std::uint32_t>(end - report_.usbOperations.begin());
+}
+
 void DiagnosticPublisher::recordUsbEvent(const DiagnosticUsbEvent& event) noexcept
 {
     if (!frame_)
@@ -603,9 +654,15 @@ std::optional<PerformanceRequest> DiagnosticPublisher::performanceRequest() noex
     const auto request = frame_->version == protocolVersion && frame_->publisherId == publisherId_
         ? frame_->request : PerformanceRequest{};
     ReleaseMutex(mutex_);
-    if (request.id != observedRequest_.id)
+    const bool newRequest = request.id != observedRequest_.id;
+    if (newRequest)
         lastCaptureSample_ = {};
     observedRequest_ = request;
+    if (newRequest && request.enabled) {
+        const auto now = GetTickCount64();
+        for (const auto& operation : std::span(report_.usbOperations).first(report_.usbOperationCount))
+            queueCaptureRecord({.usb = usbOperationEvent(operation, now), .usbIncident = true});
+    }
     return request;
 }
 
@@ -688,6 +745,8 @@ DiagnosticRead DiagnosticReader::read() noexcept
             last_.performance.feedbackProfile.back() = '\0';
             last_.eventCount = std::min(last_.eventCount, static_cast<std::uint32_t>(last_.events.size()));
             last_.usbEventCount = std::min(last_.usbEventCount, static_cast<std::uint32_t>(last_.usbEvents.size()));
+            last_.usbOperationCount = std::min(last_.usbOperationCount,
+                static_cast<std::uint32_t>(last_.usbOperations.size()));
         } else {
             last_.connection = DiagnosticConnection::stale;
             captureSlotOccupied_ = false;
