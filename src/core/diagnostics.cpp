@@ -34,7 +34,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 18;
+constexpr LONG64 protocolVersion = 19;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate transmission changes.
@@ -47,7 +47,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v18.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v19.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept

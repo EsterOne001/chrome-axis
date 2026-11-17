@@ -37,6 +37,7 @@ public:
             clearPresses();
             phase_ = Phase::initial;
             sampleSync_ = SampleSync::matched;
+            sampledReleaseAt_.reset();
             lastHookAt_ = 0;
         }
     }
@@ -88,8 +89,10 @@ public:
         const auto previousSync = sampleSync_;
         if (pressed && (phase_ == Phase::initial || phase_ == Phase::released)) {
             sampleSync_ = sampleSync_ == SampleSync::awaitingUp ? SampleSync::awaitingUpThenDown : SampleSync::awaitingDown;
+            sampledReleaseAt_.reset();
         } else if (!pressed && phase_ != Phase::released) {
             sampleSync_ = SampleSync::awaitingUp;
+            sampledReleaseAt_.reset();
         }
         // Outside the current driving context, only remember the physical level. A late async
         // down must not turn an ineligible press or an already counted hold into a new edge.
@@ -117,15 +120,21 @@ public:
                 sampleSync_ = SampleSync::awaitingDown;
             return;
         case SampleSync::awaitingDown:
-            // A sampled up can still precede the hook's down. Wait for the
-            // matching down, or let a new hook release settle the sequence.
-            if (!pressed)
-                return;
+            // An up might still precede the hook's down. If the listener missed
+            // the release, only resync after a full press lifetime of sampled ups
+            // in this driving context. A context break starts that proof again.
+            if (!pressed) {
+                if (!sampledReleaseAt_)
+                    sampledReleaseAt_ = now;
+                if (now - *sampledReleaseAt_ < pressLifetime)
+                    return;
+            }
             break;
         case SampleSync::matched:
             break;
         }
         sampleSync_ = SampleSync::matched;
+        sampledReleaseAt_.reset();
         acceptLevel(pressed, {now, false});
     }
 
@@ -156,9 +165,9 @@ private:
     }
 
     bool hookInContext(std::uint64_t tick) const noexcept {
-        // The event may predate the latest refresh while belonging to the same context.
-        const auto sinceTick = contextAt_ > tick ? contextAt_ - tick : tick - contextAt_;
-        return contextAt_ && tick >= contextStart_ && sinceTick <= contextLifetime;
+        // eventTimestamp bounds callback delay. Continuous refreshes only extend
+        // this context's upper boundary, leaving earlier events eligible.
+        return contextAt_ && tick >= contextStart_ && (tick <= contextAt_ || tick - contextAt_ <= contextLifetime);
     }
 
     void acceptLevel(bool pressed, Press press) noexcept {
@@ -185,6 +194,7 @@ private:
         if (!contextAt_)
             return;
         contextStart_ = contextAt_ = 0;
+        sampledReleaseAt_.reset();
         clearPresses();
         if (phase_ == Phase::pressed)
             phase_ = Phase::waitingForRelease;
@@ -210,6 +220,7 @@ private:
     std::atomic<std::uint64_t> revision_{};
     Phase phase_{Phase::initial};
     SampleSync sampleSync_{SampleSync::matched};
+    std::optional<std::uint64_t> sampledReleaseAt_;
     std::array<Press, pressCapacity> presses_{};
     std::size_t head_{}, count_{};
 };

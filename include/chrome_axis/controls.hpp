@@ -117,6 +117,14 @@ std::optional<Profile> loadProfile(const std::filesystem::path& path, std::strin
                                    DWORD* readError = nullptr);
 bool saveProfile(const std::filesystem::path& path, const Profile& profile, std::string& error);
 
+enum class PedalRestState : std::uint8_t { unavailable, atRest, outsideRest };
+
+struct PedalRestReading {
+    double position{}; // Signed calibrated position before the deadzone is applied.
+    float threshold{};
+    PedalRestState state{};
+};
+
 class ControlReader {
 public:
     using Readings = std::array<std::optional<float>, 3>;
@@ -132,6 +140,7 @@ public:
 
     // Status from the latest sample in steering, throttle, and brake order.
     const std::array<AxisStatus, 3>& axisStatuses() const noexcept { return axisStatuses_; }
+    const std::array<PedalRestReading, 2>& pedalRestReadings() const noexcept { return pedalRestReadings_; }
 
     // Each channel refers to one sample. Channels on the same device share a sample.
     // Readings and calibration travel are available before the axis arms.
@@ -148,6 +157,7 @@ private:
     std::array<unsigned int, 3> neutralPolls_{};
     std::array<std::uint64_t, 3> lastSequences_{};
     std::array<AxisStatus, 3> axisStatuses_{};
+    std::array<PedalRestReading, 2> pedalRestReadings_{};
     std::array<PedalStabilizer, 2> pedalStabilizers_{};
 };
 

@@ -178,6 +178,37 @@ bool rearmsAfterListenerStopsMidPress()
     return key.takePress(shortcut, 220) == 220 && !key.takePress(shortcut, 220);
 }
 
+bool rearmsIfListenerMissesRelease(TransmissionSource source)
+{
+    PhysicalModeKey key(shortcut);
+    ManualTransmissionInput transmission;
+    const bool simulation = source == TransmissionSource::keyboard;
+    const bool hardware = source == TransmissionSource::hPattern;
+    const auto frame = [&](bool down, std::uint64_t tick) {
+        key.setContext(true, tick);
+        sampleLevel(key, shortcut, down, tick);
+        return transmission.update(hardware, -1, simulation, false, false, {}, false, false, 0,
+                                   key.takePress(shortcut, tick).has_value() ? 1 : 0);
+    };
+    const auto initial = frame(false, 1000);
+    key.update(shortcut, true, true, 1001);
+    const auto injected = frame(false, 1002);
+    key.update(shortcut, true, false, 1003);
+    const auto first = frame(false, 1005);
+    if (initial.manual != hardware || injected.toggledByKey || !first.toggledByKey || first.manual != simulation)
+        return false;
+
+    // A short press completed before the first sampled down, and the listener stopped.
+    for (const auto tick : {1050u, 1100u, 1150u, 1205u}) {
+        const auto released = frame(false, tick);
+        if (released.toggledByKey || released.manual != first.manual)
+            return false;
+    }
+    const auto next = frame(true, 1210);
+    const auto held = frame(true, 1220);
+    return next.toggledByKey && next.manual == initial.manual && !held.toggledByKey && held.manual == next.manual;
+}
+
 bool rearmsWhenActuallyReleasedOutsideDriving(bool gameInForeground)
 {
     PhysicalModeKey key(shortcut);
@@ -224,6 +255,32 @@ bool usesOriginalWindowsEventTime()
     return key.takePress(shortcut, 2025, &fromHook) == 2021 && fromHook && !key.takePress(shortcut, 2025);
 }
 
+bool deliversLateHookOnlyWithinItsOriginalDrivingContext()
+{
+    using Key = PhysicalModeKey;
+    Key key(shortcut);
+    key.setContext(true, 1000);
+    sampleLevel(key, shortcut, false, 1000);
+    key.setContext(true, 1060);
+    key.setContext(true, 1120);
+    key.update(shortcut, true, false, Key::eventTimestamp(1125, 1010));
+    key.update(shortcut, false, false, Key::eventTimestamp(1126, 1015));
+    bool fromHook{};
+    if (key.takePress(shortcut, 1127, &fromHook) != 1010 || !fromHook || key.takePress(shortcut, 1127))
+        return false;
+
+    key.setContext(false, 0);
+    key.setContext(true, 1140);
+    sampleLevel(key, shortcut, false, 1140);
+    key.update(shortcut, true, false, Key::eventTimestamp(1141, 1128));
+    key.update(shortcut, false, false, Key::eventTimestamp(1142, 1129));
+    if (key.takePress(shortcut, 1142))
+        return false;
+
+    key.update(shortcut, true, false, Key::eventTimestamp(1144, 1143));
+    return key.takePress(shortcut, 1144, &fromHook) == 1143 && fromHook && !key.takePress(shortcut, 1144);
+}
+
 } // namespace
 
 int main()
@@ -262,5 +319,14 @@ int main()
     if (!usesOriginalWindowsEventTime()) {
         std::cerr << "A delayed event crossed the context boundary or its Windows timestamp was misread\n";
         return 8;
+    }
+    if (!deliversLateHookOnlyWithinItsOriginalDrivingContext()) {
+        std::cerr << "A late hook press was dropped during continuous driving or survived a context change\n";
+        return 9;
+    }
+    if (!rearmsIfListenerMissesRelease(TransmissionSource::keyboard) ||
+        !rearmsIfListenerMissesRelease(TransmissionSource::hPattern)) {
+        std::cerr << "The keyboard fallback did not recover after the listener missed a short press's release\n";
+        return 10;
     }
 }

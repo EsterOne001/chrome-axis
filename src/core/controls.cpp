@@ -322,6 +322,7 @@ ControlReader::ControlReader(const Profile& profile)
 
 void ControlReader::reset() noexcept
 {
+    pedalRestReadings_ = {};
     neutralPolls_.fill(0);
     lastSequences_.fill(0);
     for (auto& stabilizer : pedalStabilizers_)
@@ -372,6 +373,7 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
         *readings = {};
     if (review)
         *review = {};
+    pedalRestReadings_ = {};
     const auto axes = channels(profile_);
     ControlState state;
     const std::array outputs{&state.values.steering, &state.values.throttle, &state.values.brake};
@@ -428,6 +430,10 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
             axisStatuses_[i] = AxisStatus::waitingForNeutral;
             const bool neutral = steering ? std::abs(calibrated) <= steeringRearmTolerance
                 : pedalAtRest(position, calibration.deadzone, combinedPedals_);
+            if (!steering) {
+                pedalRestReadings_[i - 1] = {position, calibration.deadzone,
+                    neutral ? PedalRestState::atRest : PedalRestState::outsideRest};
+            }
             if (!neutral) {
                 neutralPolls_[i] = 0;
                 continue;

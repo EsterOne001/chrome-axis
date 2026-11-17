@@ -231,6 +231,23 @@ std::wstring clutchRawTravelText(float value)
     return text + tr(Text::mainPercentSuffix);
 }
 
+std::wstring pedalRestText(const PedalRestReading& reading)
+{
+    if (reading.state == PedalRestState::unavailable)
+        return {};
+    const auto localizedPercent = [](std::wstring value) {
+        const auto separator = value.find(L'.');
+        const auto lastDigit = value.find_last_not_of(L'0');
+        value.resize(std::max(lastDigit, separator + 1) + 1);
+        value[separator] = tr(Text::mainDecimalSeparator)[0];
+        return value + tr(Text::mainPercentSuffix);
+    };
+    return std::wstring(tr(reading.state == PedalRestState::atRest ? Text::DlgDiagnosticsPedalRest :
+        Text::DlgDiagnosticsPedalOutsideRest)) + L" " + localizedPercent(std::format(L"{:+.3f}", reading.position * 100.0)) +
+        L" · " + tr(Text::DlgDiagnosticsPedalRestThreshold) + L" " +
+        localizedPercent(std::format(L"{:.3f}", reading.threshold * 100.0));
+}
+
 std::wstring appliedValue(const DiagnosticAxis& axis, std::uint64_t now)
 {
     if (!axis.appliedAt || !std::isfinite(axis.value))
@@ -533,7 +550,7 @@ const wchar_t* usbLaneText(DiagnosticUsbLane lane)
     return unavailableValue;
 }
 
-const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
+const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event, bool live = false)
 {
     switch (event.kind) {
     case DiagnosticUsbEventKind::deviceSlow:
@@ -553,7 +570,8 @@ const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event)
     case DiagnosticUsbEventKind::layoutAcquireDenied: return tr(Text::DlgDiagnosticsUsbEventLayoutAcquireDenied);
     case DiagnosticUsbEventKind::layoutMissing: return tr(Text::DlgDiagnosticsUsbEventLayoutMissing);
     case DiagnosticUsbEventKind::layoutRecovered: return tr(Text::DlgDiagnosticsUsbEventLayoutRecovered);
-    case DiagnosticUsbEventKind::operationRunning: return tr(Text::DlgDiagnosticsUsbEventOperationRunning);
+    case DiagnosticUsbEventKind::operationRunning:
+        return tr(live ? Text::DlgDiagnosticsUsbEventOperationRunning : Text::DlgDiagnosticsUsbEventOperationObserved);
     }
     return unavailableValue;
 }
@@ -1111,6 +1129,8 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
                 detail += L" · " + std::wstring(tr(Text::DlgDiagnosticsReportApplied));
             if (axis.delivery == DiagnosticDelivery::gameKept)
                 detail += L" · " + std::wstring(tr(Text::DlgDiagnosticsReportGameKept));
+            if (const auto rest = pedalRestText(axis.pedalRest); !rest.empty())
+                detail += L" · " + rest;
             line(axisControls[i].label, detail);
         }
         line(Text::DlgDiagnosticsAccessories, accessoryStatus(snapshot));
@@ -1192,7 +1212,7 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
                                                   : Text::DlgDiagnosticsLastUsbOperations)) + L"\r\n";
         for (const auto& operation : usbOperations) {
             const auto event = usbOperationEvent(operation, live ? now : read.sampledAt);
-            report += L"- " + std::wstring(usbEventTitle(event)) + usbEventDetails(event, state.devices) + L"\r\n";
+            report += L"- " + std::wstring(usbEventTitle(event, live)) + usbEventDetails(event, state.devices) + L"\r\n";
         }
     }
     const auto usbEvents = std::span(read.usbEvents).first(std::min<std::size_t>(read.usbEventCount, read.usbEvents.size()));
@@ -1413,7 +1433,7 @@ void refresh(HWND window, DialogState& state)
             const auto calls = std::span(read.usbOperations).first(read.usbOperationCount);
             const auto longest = std::ranges::min_element(calls, {}, &DiagnosticUsbOperation::startedAt);
             const auto event = usbOperationEvent(*longest, now);
-            auto detail = std::wstring(usbEventTitle(event)) + usbEventDetails(event, state.devices);
+            auto detail = std::wstring(usbEventTitle(event, true)) + usbEventDetails(event, state.devices);
             if (calls.size() > 1)
                 detail += L" · +" + std::to_wstring(calls.size() - 1);
             setChangedText(window, IDC_MODAL_INTRO, detail);
@@ -1451,7 +1471,9 @@ void refresh(HWND window, DialogState& state)
     for (std::size_t i = 0; i < axisControls.size(); ++i) {
         const auto& controls = axisControls[i];
         const auto& axis = snapshot.axes[i];
-        setChangedText(window, controls.stateId, showControls ? axisText(axis.state) : unavailableValue);
+        const auto rest = showControls ? pedalRestText(axis.pedalRest) : std::wstring{};
+        setChangedText(window, controls.stateId,
+            !rest.empty() ? rest : showControls ? axisText(axis.state) : unavailableValue);
         setChangedText(window, controls.valueId, showControls ? appliedValue(axis, now) : unavailableValue);
     }
 

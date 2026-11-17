@@ -8,9 +8,10 @@
 namespace chrome_axis {
 
 // Each request reads the latest published state and schedules a new reading.
-// DirectInput, including creation and release, stays on the worker.
+// DirectInput creation, sampling, and release stay on the worker for that device.
 class AppInput final : public DeviceSampleSource {
 public:
+    // An injected reader can be called concurrently for different device IDs.
     using Read = std::function<CaptureDeviceRead(const std::string&, const std::bitset<buttonCount>&)>;
 
     explicit AppInput(Read read = {});

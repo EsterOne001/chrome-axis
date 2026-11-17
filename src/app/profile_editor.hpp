@@ -1,0 +1,171 @@
+#pragma once
+
+#include "chrome_axis/accessories.hpp"
+#include "chrome_axis/controls.hpp"
+#include "chrome_axis/feedback.hpp"
+#include "chrome_axis/presets.hpp"
+
+#include <windows.h>
+
+#include <array>
+#include <utility>
+
+namespace chrome_axis {
+
+inline bool missingEditorFile(DWORD error)
+{
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
+struct EditorCalibration {
+    std::optional<Profile> profile;
+    std::optional<ProfileFileRevision> revision;
+};
+
+// A revision alone is insufficient when Windows permits reading metadata but denies access to the contents.
+inline EditorCalibration readEditorCalibration(const std::filesystem::path& path)
+{
+    const auto revision = profileFileRevision(path);
+    if (!revision)
+        return {};
+
+    DWORD code{};
+    std::string error;
+    auto profile = loadProfile(path, error, &code);
+    const bool consistent = revision->present ? profile.has_value() : missingEditorFile(code);
+    if (!consistent || profileFileRevision(path) != revision)
+        return {};
+    return {std::move(profile), revision};
+}
+
+inline std::optional<AccessoryProfile> loadEditorAccessories(const std::filesystem::path& path, std::string& error)
+{
+    DWORD code{};
+    auto bindings = loadAccessoryProfile(path, error, &code);
+    if (!bindings && missingEditorFile(code)) {
+        error.clear();
+        return AccessoryProfile{};
+    }
+    return bindings;
+}
+
+enum class ProfileEditorError { none, calibrationUnreadable, accessoriesUnreadable, axisConflict, feedbackUnreadable,
+                                feedbackWriteFailed, createDirectoryFailed };
+
+struct ProfileEditorSave {
+    PresetSaveResult result{PresetSaveResult::ioError};
+    ProfileEditorError reason{ProfileEditorError::none};
+    std::string details;
+    bool feedbackDisabled{};
+    std::optional<ProfileFileRevision> revision;
+};
+
+inline const AxisCalibration* steeringActuator(const std::optional<Profile>& profile)
+{
+    return profile && !profile->steering.deviceId.empty() ? &profile->steering : nullptr;
+}
+
+inline bool sameSteeringActuator(const std::optional<Profile>& previous, const std::optional<Profile>& next)
+{
+    const auto* oldSteering = steeringActuator(previous);
+    const auto* newSteering = steeringActuator(next);
+    if (!oldSteering || !newSteering)
+        return oldSteering == newSteering;
+    return oldSteering->deviceId == newSteering->deviceId && oldSteering->axis == newSteering->axis;
+}
+
+inline bool disableOldFeedback(const std::filesystem::path& path, ProfileEditorSave& save)
+{
+    auto settings = loadFeedbackSettings(path, save.details);
+    if (!settings) {
+        save.reason = ProfileEditorError::feedbackUnreadable;
+        return false;
+    }
+    if (!settings->enabled)
+        return true;
+    settings->enabled = false;
+    save.feedbackDisabled = saveFeedbackSettings(path, *settings, save.details);
+    if (!save.feedbackDisabled)
+        save.reason = ProfileEditorError::feedbackWriteFailed;
+    return save.feedbackDisabled;
+}
+
+inline ProfileEditorSave saveEditorCalibration(const std::filesystem::path& root, const ProfilePreset& preset,
+                                                const std::optional<ProfileFileRevision>& expectedRevision,
+                                                const std::optional<Profile>& updated)
+{
+    ProfileEditorSave save;
+    const auto path = preset.directory / profileFilename;
+    const std::array checks{ProfileFileCheck{profileFilename, expectedRevision}};
+    save.result = savePresetSettings(root, preset, checks, [&] {
+        const auto previous = readEditorCalibration(path);
+        if (!previous.revision || previous.revision != expectedRevision) {
+            save.reason = ProfileEditorError::calibrationUnreadable;
+            return false;
+        }
+        if (updated) {
+            const auto accessories = loadEditorAccessories(preset.directory / accessoryFilename, save.details);
+            if (!accessories) {
+                save.reason = ProfileEditorError::accessoriesUnreadable;
+                return false;
+            }
+            if (introducesAnalogAccessoryAxisConflict(previous.profile ? &*previous.profile : nullptr,
+                                                       *accessories, *updated, *accessories)) {
+                save.reason = ProfileEditorError::axisConflict;
+                return false;
+            }
+        }
+        if (!sameSteeringActuator(previous.profile, updated) &&
+            !disableOldFeedback(preset.directory / feedbackFilename, save))
+            return false;
+        if (updated) {
+            std::error_code error;
+            std::filesystem::create_directories(preset.directory, error);
+            if (error || !saveProfile(path, *updated, save.details))
+                return false;
+        } else if (!DeleteFileW(path.c_str()) && !missingEditorFile(GetLastError())) {
+            return false;
+        }
+        save.revision = profileFileRevision(path);
+        return true;
+    });
+    return save;
+}
+
+inline ProfileEditorSave saveEditorAccessories(const std::filesystem::path& root, const ProfilePreset& preset,
+                                                const std::optional<ProfileFileRevision>& expectedRevision,
+                                                const AccessoryProfile& updated)
+{
+    ProfileEditorSave save;
+    const auto path = preset.directory / accessoryFilename;
+    const std::array checks{ProfileFileCheck{accessoryFilename, expectedRevision}};
+    save.result = savePresetSettings(root, preset, checks, [&] {
+        const auto axes = readEditorCalibration(preset.directory / profileFilename);
+        if (!axes.revision) {
+            save.reason = ProfileEditorError::calibrationUnreadable;
+            return false;
+        }
+        if (axes.profile) {
+            const auto previous = expectedRevision->present ? loadAccessoryProfile(path, save.details)
+                                                            : std::optional{AccessoryProfile{}};
+            if (!previous) {
+                save.reason = ProfileEditorError::accessoriesUnreadable;
+                return false;
+            }
+            if (introducesAnalogAccessoryAxisConflict(&*axes.profile, *previous, *axes.profile, updated)) {
+                save.reason = ProfileEditorError::axisConflict;
+                return false;
+            }
+        }
+        std::error_code error;
+        std::filesystem::create_directories(preset.directory, error);
+        if (error) {
+            save.reason = ProfileEditorError::createDirectoryFailed;
+            return false;
+        }
+        return saveAccessoryProfile(path, updated, save.details);
+    });
+    return save;
+}
+
+} // namespace chrome_axis

@@ -3,6 +3,7 @@
 #include "chrome_axis/controls.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/presets.hpp"
+#include "../src/app/profile_editor.hpp"
 
 #include <objbase.h>
 
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 
 namespace {
 
@@ -53,6 +55,141 @@ std::string readBytes(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+bool testEditorFileLocks(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto root = fixture / L"Editor" / L"Profil";
+    std::filesystem::create_directories(root);
+    const auto preset = activePreset(root);
+    const auto axesFile = root / profileFilename;
+    const auto accessoriesFile = root / accessoryFilename;
+    const auto feedbackFile = root / feedbackFilename;
+    const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
+    const Profile original{{wheel, 0, 500, 0, 1000, 0.02f}};
+    auto moved = original;
+    moved.steering.axis = 1;
+    const AccessoryProfile originalButtons{{wheel, AccessoryKind::Button, 0, 0, 1, VK_SPACE}};
+    const AccessoryProfile unrelatedClutch{{.deviceId = wheel, .kind = AccessoryKind::Axis, .index = 1,
+                                          .rest = 0, .engaged = 1000, .clutchMode = ClutchMode::assist}};
+    auto conflictingClutch = unrelatedClutch;
+    conflictingClutch.front().index = original.steering.axis;
+    const FeedbackSettings feedback{true, 35, true, false};
+    std::string error;
+    const auto missing = readEditorCalibration(axesFile);
+    if (!check(missing.revision && !missing.revision->present && !missing.profile,
+               "An absent calibration must have a valid empty revision")
+        || !check(saveEditorAccessories(root, preset, profileFileRevision(accessoriesFile), originalButtons).result ==
+                    PresetSaveResult::saved,
+                  "Accessory-only profiles must remain editable")
+        || !check(saveEditorCalibration(root, preset, missing.revision, original).result == PresetSaveResult::saved,
+                  "An absent calibration and FFB settings must allow a first calibration")
+        || !check(saveFeedbackSettings(feedbackFile, feedback, error), "Could not set up enabled force feedback"))
+        return false;
+
+    const auto originalCalibration = readEditorCalibration(axesFile);
+    const auto accessoryRevision = profileFileRevision(accessoriesFile);
+    const auto withLock = [&](const std::filesystem::path& path, DWORD sharing, const auto& checkLocked) {
+        const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, sharing, nullptr, OPEN_EXISTING,
+                                           FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!check(handle != INVALID_HANDLE_VALUE, "Could not lock the fixture settings file"))
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> file(handle, &CloseHandle);
+        return checkLocked();
+    };
+    if (!withLock(axesFile, 0, [&] {
+            const auto locked = readEditorCalibration(axesFile);
+            const auto save = saveEditorAccessories(root, preset, accessoryRevision, unrelatedClutch);
+            return check(!locked.profile && !locked.revision,
+                         "A locked calibration must not get the revision of a readable or empty profile")
+                && check(save.result == PresetSaveResult::ioError && save.reason == ProfileEditorError::calibrationUnreadable,
+                         "An accessory edit must wait until the calibration can be read");
+        })
+        || !check(readEditorCalibration(axesFile).revision == originalCalibration.revision &&
+                  loadAccessoryProfile(accessoriesFile, error) == originalButtons,
+                  "The first reload after unlocking must see the original calibration and bindings")
+        || !check(saveEditorAccessories(root, preset, accessoryRevision, conflictingClutch).reason ==
+                      ProfileEditorError::axisConflict &&
+                  loadAccessoryProfile(accessoriesFile, error) == originalButtons,
+                  "An accessory edit must still reject a conflicting calibrated axis after unlocking")
+        || !withLock(accessoriesFile, 0, [&] {
+            const auto save = saveEditorCalibration(root, preset, originalCalibration.revision, moved);
+            return check(save.result == PresetSaveResult::ioError && save.reason == ProfileEditorError::accessoriesUnreadable,
+                         "A calibration edit must wait until the accessory bindings can be read");
+        })
+        || !check(readEditorCalibration(axesFile).revision == originalCalibration.revision &&
+                  loadFeedbackSettings(feedbackFile, error) == feedback,
+                  "A failed conflict check must preserve the calibration and enabled FFB"))
+        return false;
+
+    {
+        std::ofstream(axesFile, std::ios::trunc) << "invalid";
+        const auto save = saveEditorAccessories(root, preset, accessoryRevision, unrelatedClutch);
+        if (!check(save.reason == ProfileEditorError::calibrationUnreadable,
+                   "An invalid calibration must block an accessory edit")
+            || !check(saveProfile(axesFile, original, error), "Could not restore the original calibration"))
+            return false;
+    }
+    {
+        std::ofstream(accessoriesFile, std::ios::trunc) << "invalid";
+        const auto save = saveEditorCalibration(root, preset, profileFileRevision(axesFile), moved);
+        if (!check(save.reason == ProfileEditorError::accessoriesUnreadable,
+                   "Invalid accessory settings must block a calibration edit")
+            || !check(saveAccessoryProfile(accessoriesFile, unrelatedClutch, error), "Could not set up the clutch conflict"))
+            return false;
+    }
+    auto revision = profileFileRevision(axesFile);
+    const auto conflict = saveEditorCalibration(root, preset, revision, moved);
+    if (!check(conflict.reason == ProfileEditorError::axisConflict &&
+               loadFeedbackSettings(feedbackFile, error) == feedback,
+               "An actual axis conflict must block the edit before FFB is disabled")
+        || !check(saveAccessoryProfile(accessoriesFile, originalButtons, error), "Could not remove the conflicting clutch"))
+        return false;
+
+    auto adjusted = original;
+    adjusted.steering.deadzone = 0.0f;
+    if (!withLock(feedbackFile, 0, [&] {
+            const auto change = saveEditorCalibration(root, preset, revision, moved);
+            const auto removal = saveEditorCalibration(root, preset, revision, std::nullopt);
+            return check(change.reason == ProfileEditorError::feedbackUnreadable &&
+                         removal.reason == ProfileEditorError::feedbackUnreadable,
+                         "Changing or removing the FFB actuator must wait for unreadable FFB settings")
+                && check(readEditorCalibration(axesFile).revision == revision,
+                         "An unreadable FFB file must leave the previous calibration in place")
+                && check(saveEditorCalibration(root, preset, revision, adjusted).result == PresetSaveResult::saved,
+                         "Recalibrating the same actuator must work with FFB settings locked");
+        })
+        || !check(loadFeedbackSettings(feedbackFile, error) == feedback,
+                  "Recalibrating the same actuator must leave enabled FFB in place"))
+        return false;
+
+    revision = profileFileRevision(axesFile);
+    if (!withLock(feedbackFile, FILE_SHARE_READ, [&] {
+            const auto change = saveEditorCalibration(root, preset, revision, moved);
+            return check(change.reason == ProfileEditorError::feedbackWriteFailed,
+                         "The calibration must stay in place when disabling the enabled FFB settings fails");
+        })
+        || !check(readEditorCalibration(axesFile).revision == revision && loadFeedbackSettings(feedbackFile, error) == feedback,
+                  "FFB replacement blocked by another reader must leave both files intact")
+        || !withLock(axesFile, FILE_SHARE_READ, [&] {
+            const auto change = saveEditorCalibration(root, preset, revision, moved);
+            return check(change.result == PresetSaveResult::ioError && change.feedbackDisabled,
+                         "A failed calibration replacement must leave FFB disabled");
+        }))
+        return false;
+
+    auto disabled = feedback;
+    disabled.enabled = false;
+    if (!check(readEditorCalibration(axesFile).revision == revision && loadFeedbackSettings(feedbackFile, error) == disabled,
+               "A blocked calibration replacement must keep the original wheel and disabled FFB")
+        || !check(saveFeedbackSettings(feedbackFile, feedback, error), "Could not re-enable FFB for the final check"))
+        return false;
+    const auto changed = saveEditorCalibration(root, preset, revision, moved);
+    const auto saved = readEditorCalibration(axesFile);
+    return check(changed.result == PresetSaveResult::saved && changed.feedbackDisabled && changed.revision == saved.revision &&
+                 saved.profile && saved.profile->steering.axis == 1 && loadFeedbackSettings(feedbackFile, error) == disabled,
+                 "An actuated axis change must commit only after disabling FFB");
 }
 
 bool testStaleWrites(const std::filesystem::path& fixture)
@@ -588,6 +725,7 @@ int main()
     std::ofstream(root / L"active_profile.txt", std::ios::trunc) << "../other\n";
     const bool passed = check(activePreset(root).directory.empty(), "Corrupt selection must not activate a different profile")
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
-        && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory);
+        && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory)
+        && testEditorFileLocks(directory);
     return fixture.cleanup() && passed ? 0 : 1;
 }

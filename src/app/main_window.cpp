@@ -15,6 +15,7 @@
 #include "device_inventory.hpp"
 #include "diagnostic_recording.hpp"
 #include "diagnostics_dialog.hpp"
+#include "profile_editor.hpp"
 #include "transmission_shortcut.hpp"
 #include "ui_theme.hpp"
 #include "usb_game_status.hpp"
@@ -1000,7 +1001,8 @@ private:
     }
     bool canSaveProfile() const
     {
-        return !simulation_ && !calibrating_ && dirty_ && (previewProfile_ || clearAnalogProfile());
+        return !simulation_ && !calibrating_ && !profileReadProblem_ && profileRevision_ && dirty_
+            && (previewProfile_ || clearAnalogProfile());
     }
     const wchar_t* usbActionLabel(bool header = true) const
     {
@@ -1008,7 +1010,8 @@ private:
             return tr(Text::mainEnableUsb);
         if (!installed_)
             return tr(Text::mainClearLocalUsb);
-        return tr(header && !usbActive_ ? Text::mainCancelWaitingUsb : Text::mainDisableUsb);
+        return tr(header && !usbActive_ && usbWaitingStatus_ != Text::mainUsbPartial
+            ? Text::mainCancelWaitingUsb : Text::mainDisableUsb);
     }
     const std::filesystem::path& activeDirectory() const { return preset_.directory; }
 
@@ -1063,6 +1066,7 @@ private:
     std::optional<Text> usbWaitingStatus_;
     bool installed_{};
     std::wstring profileMessage_;
+    std::optional<Text> profileReadProblem_;
 
     bool calibrating_{}, guideVisible_{}, reviewVisible_{};
     bool guideMotionEnabled_{true};
@@ -1208,7 +1212,7 @@ void App::action(int command, int notification)
         }
         break;
     case configureFeedback:
-        if (!simulation_ && !calibrating_ && confirmCurrentPreset()) {
+        if (canEditControl(configureFeedback) && confirmCurrentPreset()) {
             const auto wheel = savedSteering_ ? device(savedSteering_->deviceId) : nullptr;
             const auto axis = savedSteering_ ? savedSteering_->axis : chrome_axis::axisCount;
             chrome_axis::editForceFeedback(window_, directory_, preset_, profileRevision_, wheel, axis);
@@ -1239,7 +1243,7 @@ void App::action(int command, int notification)
         break;
     case reloadProfile:
         if (!simulation_ && !calibrating_ && (!dirty_ || MessageBoxW(window_,
-                tr(Text::mainDiscardOnReload),
+                tr(profileReadProblem_ ? Text::mainRetryProfileRead : Text::mainDiscardOnReload),
                 title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)) {
             readProfile();
             scanDevices();
@@ -1467,11 +1471,34 @@ const wchar_t* App::transmissionHardwareStatus() const
 
 void App::readProfile()
 {
-    preset_ = chrome_axis::activePreset(directory_);
-    path_ = activeDirectory().empty() ? std::filesystem::path{} : activeDirectory() / chrome_axis::profileFilename;
-    profileRevision_ = chrome_axis::profileFileRevision(path_);
-    std::string error;
-    const auto profile = path_.empty() ? std::nullopt : chrome_axis::loadProfile(path_, error);
+    const auto selected = chrome_axis::readActivePreset(directory_);
+    if (!selected) {
+        profileReadProblem_ = Text::mainProfileSelectionUnreadable;
+        rebuildPreview();
+        return;
+    }
+    const auto path = selected->directory.empty() ? std::filesystem::path{}
+                                                  : selected->directory / chrome_axis::profileFilename;
+    const auto snapshot = path.empty() ? chrome_axis::EditorCalibration{} : chrome_axis::readEditorCalibration(path);
+    const bool sameProfile = selected->name == preset_.name && path == path_;
+    // A retry can recover the existing draft only when its on-disk base is unchanged.
+    const bool preserveDraft = sameProfile && profileReadProblem_ && dirty_ && snapshot.revision
+        && snapshot.revision == profileRevision_;
+    profileReadProblem_ = path.empty() ? std::optional{Text::mainActiveProfileMissing}
+        : !snapshot.revision ? std::optional{Text::mainInvalidCalibrationFile} : std::nullopt;
+    if ((sameProfile && !path.empty() && !snapshot.revision) || preserveDraft) {
+        if (preserveDraft) {
+            readAccessories();
+            refreshTransmissionKey();
+        }
+        rebuildPreview();
+        return;
+    }
+
+    preset_ = *selected;
+    path_ = path;
+    profileRevision_ = snapshot.revision;
+    const auto& profile = snapshot.profile;
     savedSteering_ = profile && !profile->steering.deviceId.empty() ? std::optional{profile->steering} : std::nullopt;
     saved_ = profile.has_value();
     dirty_ = false;
@@ -1492,12 +1519,6 @@ void App::readProfile()
         }
     } else {
         deviceSelections_[2] = sameAsPrevious;
-        std::error_code ec;
-        if (path_.empty()) {
-            profileMessage_ = tr(Text::mainActiveProfileMissing);
-        } else if (std::filesystem::exists(path_, ec) || ec) {
-            profileMessage_ = tr(Text::mainInvalidCalibrationFile);
-        }
     }
     setText(profileName_, activeDirectory().empty() ? tr(Text::mainProfileUnavailable)
         : preset_.name.empty() ? tr(Text::mainDefaultProfile) : tr(Text::mainProfilePrefix) + preset_.name);
@@ -1558,7 +1579,8 @@ void App::rebuildPreview()
     EnableWindow(save_, canSave);
     updateControlAvailability();
     EnableMenuItem(profileMenu_, saveProfile, MF_BYCOMMAND | (canSave ? MF_ENABLED : MF_GRAYED));
-    setText(status_, !profileMessage_.empty() ? profileMessage_
+    setText(status_, profileReadProblem_ ? tr(*profileReadProblem_)
+        : !profileMessage_.empty() ? profileMessage_
         : !steeringZoneValid ? tr(Text::mainSteeringDeadzoneRange)
         : !pedalZonesValid ? tr(Text::mainDeadzoneRange)
         : !pedalsCompatible ? tr(Text::mainIncompatibleDeadzones)
@@ -1592,11 +1614,12 @@ bool App::confirmPersistentDirectory() const
 
 bool App::confirmCurrentPreset()
 {
-    const auto current = chrome_axis::activePreset(directory_);
-    if (!current.directory.empty() && current.directory == activeDirectory())
+    const auto current = chrome_axis::readActivePreset(directory_);
+    if (current && !current->directory.empty() && current->directory == activeDirectory())
         return true;
 
-    MessageBoxW(window_, current.directory.empty() ? tr(Text::mainSelectAvailableProfile)
+    MessageBoxW(window_, !current ? tr(Text::mainProfileSelectionUnreadable)
+        : current->directory.empty() ? tr(Text::mainSelectAvailableProfile)
         : tr(Text::mainActiveProfileChanged), title, MB_OK | MB_ICONWARNING);
     return false;
 }
@@ -1672,6 +1695,7 @@ bool App::canEditControl(Command command) const
     case configureSteering: return canConfigureAxis(0);
     case configureThrottle: return canConfigureAxis(1);
     case configureBrake: return canConfigureAxis(2);
+    case configureFeedback: return !profileReadProblem_ && profileRevision_.has_value();
     default: return true;
     }
 }
@@ -1988,68 +2012,27 @@ void App::persist()
     if (!canSaveProfile() || !confirmPersistentDirectory() || !confirmCurrentPreset())
         return;
 
-    const auto nextSteering = previewProfile_ && !previewProfile_->steering.deviceId.empty()
-        ? std::optional{previewProfile_->steering} : std::nullopt;
-    const bool changedActuator = savedSteering_.has_value() != nextSteering.has_value()
-        || (savedSteering_ && nextSteering && (savedSteering_->deviceId != nextSteering->deviceId
-            || savedSteering_->axis != nextSteering->axis));
-    bool resetFeedback = false;
-    bool feedbackSaveFailed = false;
-    bool conflictingAxis = false;
-    const std::array checks{chrome_axis::ProfileFileCheck{chrome_axis::profileFilename, profileRevision_}};
-    const auto result = chrome_axis::savePresetSettings(directory_, preset_, checks, [&] {
-        std::string error;
-        if (previewProfile_) {
-            // Accessory editors use the same lock, so this validates the current on-disk bindings.
-            const auto accessoryPath = activeDirectory() / chrome_axis::accessoryFilename;
-            if (const auto bindings = chrome_axis::loadAccessoryProfile(accessoryPath, error)) {
-                const auto previous = chrome_axis::loadProfile(path_, error);
-                if (chrome_axis::introducesAnalogAccessoryAxisConflict(previous ? &*previous : nullptr, *bindings,
-                                                                      *previewProfile_, *bindings)) {
-                    conflictingAxis = true;
-                    return false;
-                }
-            }
-        }
-        if (changedActuator) {
-            const auto settingsPath = activeDirectory() / chrome_axis::feedbackFilename;
-            auto settings = chrome_axis::loadFeedbackSettings(settingsPath, error);
-            if (settings && settings->enabled) {
-                settings->enabled = false;
-                if (!chrome_axis::saveFeedbackSettings(settingsPath, *settings, error)) {
-                    feedbackSaveFailed = true;
-                    return false;
-                }
-                resetFeedback = true;
-            }
-        }
-        if (previewProfile_) {
-            std::error_code directoryError;
-            std::filesystem::create_directories(activeDirectory(), directoryError);
-            if (directoryError || !chrome_axis::saveProfile(path_, *previewProfile_, error))
-                return false;
-        } else if (!DeleteFileW(path_.c_str())) {
-            const auto code = GetLastError();
-            if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND)
-                return false;
-        }
-        profileRevision_ = chrome_axis::profileFileRevision(path_);
-        return true;
-    });
-    if (result != chrome_axis::PresetSaveResult::saved) {
-        const auto message = result == chrome_axis::PresetSaveResult::changed ? Text::mainSaveProfileChanged
-            : conflictingAxis ? Text::mainSaveDriveAxisConflict
-            : feedbackSaveFailed ? Text::mainDisableOldFeedbackFailed
-            : resetFeedback ? Text::mainSaveFailedFeedbackDisabled : Text::mainSaveFailedCheckFolder;
+    using Error = chrome_axis::ProfileEditorError;
+    const auto save = chrome_axis::saveEditorCalibration(directory_, preset_, profileRevision_, previewProfile_);
+    if (save.result != chrome_axis::PresetSaveResult::saved) {
+        const auto message = save.result == chrome_axis::PresetSaveResult::changed ? Text::mainSaveProfileChanged
+            : save.reason == Error::calibrationUnreadable ? Text::mainInvalidCalibrationFile
+            : save.reason == Error::accessoriesUnreadable ? Text::mainSaveAccessoriesUnreadable
+            : save.reason == Error::axisConflict ? Text::mainSaveDriveAxisConflict
+            : save.reason == Error::feedbackUnreadable ? Text::mainSaveFeedbackUnreadable
+            : save.reason == Error::feedbackWriteFailed ? Text::mainDisableOldFeedbackFailed
+            : save.feedbackDisabled ? Text::mainSaveFailedFeedbackDisabled : Text::mainSaveFailedCheckFolder;
         MessageBoxW(window_, tr(message), title, MB_OK | MB_ICONWARNING);
         return;
     }
     dirty_ = false;
     saved_ = previewProfile_.has_value();
-    savedSteering_ = nextSteering;
+    const auto* nextSteering = chrome_axis::steeringActuator(previewProfile_);
+    savedSteering_ = nextSteering ? std::optional{*nextSteering} : std::nullopt;
+    profileRevision_ = save.revision;
     refreshUsbToggle();
     profileMessage_ = !saved_ ? tr(Text::mainAxesUseGameControls)
-        : resetFeedback ? tr(Text::mainSavedCheckFeedback)
+        : save.feedbackDisabled ? tr(Text::mainSavedCheckFeedback)
         : !installed_ ? tr(Text::mainSavedLocally)
         : usbEnabled_ ? tr(Text::mainSavedUsbRequested)
         : tr(Text::mainSavedEnableUsb);
@@ -2067,7 +2050,9 @@ void App::refreshUsbToggle()
         using namespace chrome_axis;
         const auto state = usbGameStatus(usbEnabled_, installed_, drivingDiagnostics_.read());
         usbActive_ = state == UsbGameStatus::active;
-        if (!usbActive_)
+        if (state == UsbGameStatus::partial)
+            usbWaitingStatus_ = Text::mainUsbPartial;
+        else if (!usbActive_)
             usbWaitingStatus_ = state == UsbGameStatus::waitingForControls ? Text::mainUsbWaitingDriving
                 : Text::mainUsbWaitingGame;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chrome_axis/accessories.hpp"
+#include "chrome_axis/controls.hpp"
 
 #include <windows.h>
 
@@ -73,6 +74,7 @@ struct DiagnosticAccessoryCommand {
 enum class DiagnosticFeedbackState : std::uint32_t { disabled, waiting, active, unavailable, inactive, neutral, waitingForMotion };
 
 enum class DiagnosticDelivery : std::uint32_t { unavailable, applied, gameKept };
+enum class DiagnosticUsbReadiness : std::uint8_t { waiting, partial, ready };
 
 struct DiagnosticAxis {
     DiagnosticAxisState state{DiagnosticAxisState::inactive};
@@ -85,6 +87,7 @@ struct DiagnosticAxis {
     DiagnosticDelivery delivery{DiagnosticDelivery::unavailable};
     float finalValue{}; // Pedal command after USB and native input arbitration in the game hook.
     std::uint32_t finalAvailable{};
+    PedalRestReading pedalRest{};
 };
 
 struct DiagnosticFeedbackTelemetry {
@@ -152,6 +155,7 @@ struct DiagnosticClutch {
 
 struct DiagnosticSnapshot {
     DiagnosticMode mode{DiagnosticMode::waitingForDriver};
+    DiagnosticUsbReadiness usbReadiness{DiagnosticUsbReadiness::waiting};
     std::array<DiagnosticAxis, 3> axes{}; // Steering, throttle, brake.
     std::uint64_t pedalSampledAt{}; // GetTickCount64() of the two contemporaneous final pedal commands.
     std::array<char, 257> profile{}; // UTF-8 profile name. Empty for the default profile.

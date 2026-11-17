@@ -3,6 +3,7 @@
 #include "app_input.hpp"
 #include "device_inventory.hpp"
 #include "dialog_theme.hpp"
+#include "profile_editor.hpp"
 #include "ui_theme.hpp"
 
 #include "chrome_axis/accessories.hpp"
@@ -261,11 +262,8 @@ AccessoryBinding asHandbrake(AccessoryBinding binding, unsigned int ceiling)
 
 std::optional<AccessoryProfile> readAccessorySettings(HWND owner, const std::filesystem::path& path)
 {
-    std::error_code fileError;
-    if (!std::filesystem::exists(path, fileError) && !fileError)
-        return AccessoryProfile{};
     std::string error;
-    auto saved = loadAccessoryProfile(path, error);
+    auto saved = loadEditorAccessories(path, error);
     if (!saved) {
         const auto message = tr(Text::DlgAccessoriesReadError) + localizedError(error);
         MessageBoxW(owner, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
@@ -276,49 +274,27 @@ std::optional<AccessoryProfile> readAccessorySettings(HWND owner, const std::fil
 bool saveAccessorySettings(HWND owner, const std::filesystem::path& root, const ProfilePreset& preset,
                            const std::optional<ProfileFileRevision>& revision, const AccessoryProfile& bindings)
 {
-    const auto path = preset.directory / accessoryFilename;
     if (isTemporaryProfileDirectory(preset.directory)) {
         MessageBoxW(owner, tr(Text::DlgAccessoriesExtractBeforeSaving), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
         return false;
     }
-    std::string error;
-    bool createFailed = false;
-    bool conflictingAxis = false;
-    const std::array checks{ProfileFileCheck{accessoryFilename, revision}};
-    const auto result = savePresetSettings(root, preset, checks, [&] {
-        // Read the current calibration under the same lock used by the calibration editor.
-        std::string readError;
-        if (const auto axes = loadProfile(preset.directory / profileFilename, readError)) {
-            auto previous = revision && revision->present ? loadAccessoryProfile(path, error)
-                                                           : std::optional{AccessoryProfile{}};
-            if (!previous)
-                return false;
-            if (introducesAnalogAccessoryAxisConflict(&*axes, *previous, *axes, bindings)) {
-                conflictingAxis = true;
-                return false;
-            }
-        }
-        std::error_code directoryError;
-        std::filesystem::create_directories(preset.directory, directoryError);
-        createFailed = static_cast<bool>(directoryError);
-        return !createFailed && saveAccessoryProfile(path, bindings, error);
-    });
-    if (result == PresetSaveResult::changed) {
-        MessageBoxW(owner, tr(Text::DlgAccessoriesChanged), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
-        return false;
-    }
-    if (conflictingAxis) {
-        MessageBoxW(owner, tr(Text::DlgAccessoryDriveAxisConflict), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONWARNING);
-        return false;
-    }
-    if (result != PresetSaveResult::saved) {
-        auto message = std::wstring(tr(createFailed ? Text::DlgAccessoriesCreateProfileFailed : Text::DlgAccessoriesSaveError));
-        if (!error.empty())
-            message += localizedError(error);
-        MessageBoxW(owner, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK | MB_ICONERROR);
-        return false;
-    }
-    return true;
+    const auto save = saveEditorAccessories(root, preset, revision, bindings);
+    if (save.result == PresetSaveResult::saved)
+        return true;
+
+    const auto reason = save.result == PresetSaveResult::changed ? Text::DlgAccessoriesChanged
+        : save.reason == ProfileEditorError::calibrationUnreadable ? Text::mainSaveCalibrationUnreadable
+        : save.reason == ProfileEditorError::accessoriesUnreadable ? Text::DlgAccessoriesChanged
+        : save.reason == ProfileEditorError::axisConflict ? Text::DlgAccessoryDriveAxisConflict
+        : save.reason == ProfileEditorError::createDirectoryFailed ? Text::DlgAccessoriesCreateProfileFailed
+        : Text::DlgAccessoriesSaveError;
+    auto message = std::wstring(tr(reason));
+    if (reason == Text::DlgAccessoriesSaveError && !save.details.empty())
+        message += localizedError(save.details);
+    MessageBoxW(owner, message.c_str(), tr(Text::DlgAccessoriesTitle), MB_OK |
+        (reason == Text::DlgAccessoriesSaveError || reason == Text::DlgAccessoriesCreateProfileFailed
+            ? MB_ICONERROR : MB_ICONWARNING));
+    return false;
 }
 
 class AccessoryDialog {

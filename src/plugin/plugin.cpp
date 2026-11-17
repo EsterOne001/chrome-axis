@@ -1670,6 +1670,12 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 now - vehicleDelivery.sampled <= inputLifetime;
             const bool liveUsb = drivingSession && hudFrame.generation == context.generation &&
                 hudFrame.sampled != Clock::time_point{} && now - hudFrame.sampled <= inputLifetime;
+            if (snapshot.mode == DiagnosticMode::usb && liveUsb) {
+                if (hudFrame.status == HudStatus::usbReady)
+                    snapshot.usbReadiness = chrome_axis::DiagnosticUsbReadiness::ready;
+                else if (hudFrame.status == HudStatus::usbPartial)
+                    snapshot.usbReadiness = chrome_axis::DiagnosticUsbReadiness::partial;
+            }
             const bool axesOrHandbrakeDelivered = hasDelivery &&
                 (vehicleDelivery.handbrake.has_value() || std::ranges::any_of(vehicleDelivery.axes,
                     [](const AxisDelivery& axis) { return axis.outcome != DiagnosticDelivery::unavailable; }));
@@ -1772,6 +1778,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     axis.state = DiagnosticAxisState::inactive;
                     axis.inputAvailable = 0;
                 }
+                if (!liveUsb || snapshot.mode != DiagnosticMode::usb)
+                    axis.pedalRest = {};
                 if (hasPedalDelivery && i > 0) {
                     axis.finalValue = vehicleDelivery.finalPedals[i - 1];
                     axis.finalAvailable = 1;
@@ -2065,6 +2073,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
 
         chrome_axis::ControlState controls{};
         chrome_axis::ControlReader::Readings readings;
+        std::array<chrome_axis::PedalRestReading, 2> pedalRestReadings{};
         auto sampledAt = start;
         bool sampleExpired = false;
         std::bitset<256> requestedKeys;
@@ -2148,6 +2157,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 readAccessories = usb.accessories && vehicleInputFresh(current, sampledAt);
                 if (usb.reader) {
                     controls = usb.reader->poll(*input, diagnostics ? &readings : nullptr);
+                    if (diagnostics)
+                        pedalRestReadings = usb.reader->pedalRestReadings();
                 }
                 if (readAccessories) {
                     std::bitset<256> interruptedKeys;
@@ -2585,6 +2596,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     : diagnosticAxisState(usb.reader->axisStatuses()[i], sampleExpired);
                 axis.inputValue = readings[i].value_or(0.0f);
                 axis.inputAvailable = readings[i].has_value() && !sampleExpired;
+                axis.pedalRest = i > 0 && axis.state == DiagnosticAxisState::waitingForNeutral
+                    ? pedalRestReadings[i - 1] : chrome_axis::PedalRestReading{};
             }
             diagnostic.accessoryCount = physical && usb.accessoryProfile
                 ? static_cast<std::uint32_t>(usb.accessoryProfile->size()) : 0;

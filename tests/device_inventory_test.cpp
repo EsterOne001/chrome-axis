@@ -207,6 +207,56 @@ bool testAsynchronousCapture()
         waitFor([&] { return gate->stoppingFinished.load(); });
 }
 
+bool testIndependentDeviceCapture()
+{
+    auto wheelReads = std::make_shared<std::atomic<unsigned int>>();
+    auto releaseWheel = std::make_shared<std::atomic<bool>>();
+    AppInput input([wheelReads, releaseWheel](const std::string& id, const auto&) {
+        DeviceSample sample;
+        sample.axesPresent[0] = true;
+        sample.sampledAt = DeviceReadClock::now();
+        if (id == "wheel") {
+            const auto count = wheelReads->fetch_add(1) + 1;
+            if (count == 2)
+                releaseWheel->wait(false);
+            sample.axes[0] = count == 1 ? 100 : count == 2 ? 900 : 300;
+        } else {
+            sample.axes[0] = 700;
+        }
+        return CaptureDeviceRead{sample, DeviceReadStatus::available};
+    });
+
+    const bool firstWheel = waitFor([&] {
+        const auto reading = input.capture("wheel");
+        return reading.sample && reading.sample->axes[0] == 100;
+    });
+    const bool wheelBlocked = waitFor([&] { return wheelReads->load() == 2; });
+    const bool wheelExpired = waitFor([&] {
+        const auto reading = input.capture("wheel");
+        return reading.updated && !reading.sample && reading.status == DeviceReadStatus::unavailable;
+    });
+    const auto freshPedals = [&] {
+        const auto reading = input.capture("pedals");
+        return reading.updated && reading.sample && reading.sample->axes[0] == 700;
+    };
+    const bool beforePause = waitFor(freshPedals);
+    input.close();
+    const auto afterPause = input.capture("wheel");
+    input.invalidate();
+    const auto afterRefresh = input.capture("wheel");
+    const bool pedalsResumed = waitFor(freshPedals);
+    const bool oneOwner = wheelReads->load() == 2;
+
+    SampleGate::release(*releaseWheel);
+    CaptureDeviceRead wheel;
+    const bool recovered = waitFor([&] {
+        wheel = input.capture("wheel");
+        return wheel.sample.has_value();
+    }) && wheel.sample->axes[0] == 300;
+    return firstWheel && wheelBlocked && wheelExpired && beforePause && !afterPause.updated &&
+        !afterRefresh.updated && pedalsResumed && oneOwner && recovered;
+}
+
 bool testCaptureDuringUnrelatedScan()
 {
     auto gate = std::make_shared<ScanGate>();
@@ -352,6 +402,13 @@ bool testUsbStatus()
     if (usbGameStatus(true, true, report) != UsbGameStatus::waitingForControls)
         return false;
     report.snapshot.axes[0].state = DiagnosticAxisState::armed;
+    report.snapshot.accessoryArmed = 1;
+    if (usbGameStatus(true, true, report) != UsbGameStatus::waitingForControls)
+        return false;
+    report.snapshot.usbReadiness = DiagnosticUsbReadiness::partial;
+    if (usbGameStatus(true, true, report) != UsbGameStatus::partial)
+        return false;
+    report.snapshot.usbReadiness = DiagnosticUsbReadiness::ready;
     if (usbGameStatus(true, true, report) != UsbGameStatus::active)
         return false;
     report.snapshot.mode = DiagnosticMode::gameNotForeground;
@@ -370,6 +427,7 @@ int main()
     const bool inventory = testInventory();
     const bool pendingLayout = testPendingLayout();
     const bool asyncCapture = testAsynchronousCapture();
+    const bool independentCapture = testIndependentDeviceCapture();
     const bool capture = testCaptureDuringUnrelatedScan();
     const bool guidedCalibration = testGuidedCalibrationWaitsForLayout();
     const bool shortcut = testShortcut(root);
@@ -377,9 +435,12 @@ int main()
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
-    if (!inventory || !pendingLayout || !asyncCapture || !capture || !guidedCalibration || !shortcut || !usbStatus)
+    if (!inventory || !pendingLayout || !asyncCapture || !independentCapture || !capture || !guidedCalibration ||
+        !shortcut || !usbStatus)
         std::cerr << "inventory=" << inventory << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
-                  << " capture=" << capture << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
+                  << " independent_capture=" << independentCapture << " capture=" << capture
+                  << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
                   << " usb_state=" << usbStatus << '\n';
-    return inventory && pendingLayout && asyncCapture && capture && guidedCalibration && shortcut && usbStatus ? 0 : 1;
+    return inventory && pendingLayout && asyncCapture && independentCapture && capture && guidedCalibration &&
+        shortcut && usbStatus ? 0 : 1;
 }

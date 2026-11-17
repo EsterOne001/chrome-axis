@@ -2,11 +2,9 @@
 
 #include "chrome_axis/diagnostics.hpp"
 
-#include <algorithm>
-
 namespace chrome_axis {
 
-enum class UsbGameStatus { inactive, waitingForGame, waitingForControls, active };
+enum class UsbGameStatus { inactive, waitingForGame, waitingForControls, partial, active };
 
 constexpr UsbGameStatus usbGameStatus(bool authorized, bool installed, const DiagnosticRead& report) noexcept
 {
@@ -15,9 +13,13 @@ constexpr UsbGameStatus usbGameStatus(bool authorized, bool installed, const Dia
     if (report.connection != DiagnosticConnection::connected)
         return UsbGameStatus::waitingForGame;
     const auto& snapshot = report.snapshot;
-    const bool armed = snapshot.accessoryArmed > 0 || std::ranges::any_of(snapshot.axes,
-        [](const DiagnosticAxis& axis) { return axis.state == DiagnosticAxisState::armed; });
-    return snapshot.mode == DiagnosticMode::usb && armed ? UsbGameStatus::active : UsbGameStatus::waitingForControls;
+    if (snapshot.mode == DiagnosticMode::usb) {
+        if (snapshot.usbReadiness == DiagnosticUsbReadiness::ready)
+            return UsbGameStatus::active;
+        if (snapshot.usbReadiness == DiagnosticUsbReadiness::partial)
+            return UsbGameStatus::partial;
+    }
+    return UsbGameStatus::waitingForControls;
 }
 
 } // namespace chrome_axis

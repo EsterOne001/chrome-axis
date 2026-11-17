@@ -309,6 +309,39 @@ int testAxisResponses(const chrome_axis::Profile& legacy, const std::filesystem:
     return 0;
 }
 
+int testPedalRestEvidence(chrome_axis::Profile profile)
+{
+    using namespace chrome_axis;
+    profile.throttle = {profile.throttle.deviceId, 1, 0, 0, 1000, minimumPedalDeadzone};
+    ControlReader reader(profile);
+    DeviceSample pedals;
+    pedals.axesPresent[1] = true;
+    pedals.axes[1] = 6;
+    const std::array<const DeviceSample*, 3> samples{nullptr, &pedals, nullptr};
+    ControlReader::Readings readings;
+    const auto gated = reader.update(samples, &readings);
+    const auto waiting = reader.pedalRestReadings()[0];
+    if (gated.throttleReady || waiting.state != PedalRestState::outsideRest || waiting.position != 0.006 ||
+        waiting.threshold != minimumPedalDeadzone || !readings[1] || !approximatelyEqual(*readings[1], 0.001f))
+        return 71;
+
+    pedals.axes[1] = -6;
+    reader.update(samples);
+    if (reader.pedalRestReadings()[0].state != PedalRestState::atRest || reader.pedalRestReadings()[0].position != -0.006)
+        return 72;
+    reader.update({});
+    if (reader.pedalRestReadings()[0].state != PedalRestState::unavailable)
+        return 73;
+
+    profile.brake = {profile.throttle.deviceId, 1, 0, 0, -1000, minimumPedalDeadzone};
+    ControlReader combined(profile);
+    combined.update({nullptr, &pedals, &pedals});
+    if (combined.pedalRestReadings()[0].state != PedalRestState::outsideRest ||
+        combined.pedalRestReadings()[0].position != -0.006 || combined.pedalRestReadings()[1].position != 0.006)
+        return 74;
+    return 0;
+}
+
 int run()
 {
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
@@ -619,6 +652,8 @@ int run()
         return responseResult;
     if (const int stabilizationResult = testPedalStabilization(*loaded, path))
         return stabilizationResult;
+    if (const int pedalRestResult = testPedalRestEvidence(*loaded))
+        return pedalRestResult;
     return testTransientRead(*loaded);
 }
 

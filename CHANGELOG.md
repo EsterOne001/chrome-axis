@@ -6,6 +6,17 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.76
+
+- Un profil temporairement inaccessible conserve la dernière calibration valide et les modifications en cours. Les sauvegardes axes et accessoires vérifient leurs affectations réciproques avant écriture.
+- Un changement ou un retrait du volant désactive d’abord l’ancien actionneur de retour de force. La calibration attend si les paramètres de retour de force sont indisponibles.
+- L’application lit les périphériques DirectInput indépendamment, même lorsqu’un pilote bloque une lecture.
+- Le diagnostic affiche la course calibrée et le seuil de repos des pédales pendant le réarmement. L’état USB de l’application suit celui du HUD et distingue les appels DirectInput en cours des observations historiques.
+- Le raccourci AUTO / MANUEL accepte un appui bref après une mise à jour retardée dans le même contexte de conduite et récupère un relâchement manqué.
+- Les couleurs Chrome Axis de HUD Painter restent en mémoire lorsque le fichier est indisponible. Les changements sont fusionnés avec le document relu avant la sauvegarde.
+
+[ZIP Vortex](out/Chromaxis-0.4.76.zip)
+
 ## Chrome Axis 0.4.75
 
 - **Diagnostic USB.** Le lecteur principal et la sonde indiquent leur appel en cours et sa durée. L’application conserve cet état en dehors de l’historique et l’inclut dans les nouveaux enregistrements.

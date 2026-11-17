@@ -46,12 +46,20 @@ private func ChromeAxis_LoadHudPalette() -> ref<ChromeAxisHudPalette> {
 }
 
 @if(ModuleExists("HudPainter"))
+class ChromeAxisHudPaletteEdit {
+  public let key: String;
+  public let border: Bool;
+  public let transmission: Bool;
+  public let palette: ref<ChromeAxisHudPalette>;
+}
+
+@if(ModuleExists("HudPainter"))
 class ChromeAxisHudPainterMenu extends ScriptableService {
   private let storage: ref<FileSystemStorage>;
   private let colors: ref<JsonObject>;
   private let palette: ref<ChromeAxisHudPalette>;
   private let activePresetKey: String;
-  private let dirty: Bool;
+  private let edits: array<ref<ChromeAxisHudPaletteEdit>>;
   private let flushScheduled: Bool;
   private let pendingPresetKey: String;
   private let pendingPresetPalette: ref<ChromeAxisHudPalette>;
@@ -93,10 +101,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
 
     this.FlushColors();
     this.activePresetKey = key;
-    // Pre-0.4.50 palettes were global. Use them as the starting colors for profiles without overrides.
-    let fallback = this.ReadPalette(this.colors, ChromeAxisHudPalette.Default());
-    let presets = this.colors.GetKey("presets") as JsonObject;
-    this.palette = IsDefined(presets) ? this.ReadPalette(presets.GetKey(key) as JsonObject, fallback) : fallback;
+    this.palette = this.PaletteForPreset(key);
     return true;
   }
 
@@ -110,7 +115,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     next.border = isBorder ? color : current.border;
     next.transmission = isBorder ? current.transmission : color;
     this.palette = next;
-    this.StorePalette(this.activePresetKey, next);
+    this.StorePalette(this.activePresetKey, next, isBorder, !isBorder);
     this.ApplyToHud();
 
     // Batch slider changes. Release and menu close also flush while the game is paused.
@@ -164,7 +169,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
 
   public func PresetSaved() -> Void {
     if IsDefined(this.pendingPresetPalette) {
-      this.StorePalette(this.pendingPresetKey, this.pendingPresetPalette);
+      this.StorePalette(this.pendingPresetKey, this.pendingPresetPalette, true, true);
       this.pendingPresetPalette = null;
       this.pendingPresetKey = "";
     }
@@ -181,48 +186,135 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     }
   }
 
-  private func StorePalette(key: String, palette: ref<ChromeAxisHudPalette>) -> Void {
+  private func FindEdit(key: String) -> ref<ChromeAxisHudPaletteEdit> {
+    for edit in this.edits {
+      if Equals(edit.key, key) {
+        return edit;
+      }
+    }
+    return null;
+  }
+
+  private func StorePalette(key: String, palette: ref<ChromeAxisHudPalette>, border: Bool, transmission: Bool) -> Void {
     if Equals(key, "") {
       return;
     }
-    let presets = this.colors.GetKey("presets") as JsonObject;
-    if !IsDefined(presets) {
-      presets = new JsonObject();
+    let edit = this.FindEdit(key);
+    if !IsDefined(edit) {
+      edit = new ChromeAxisHudPaletteEdit();
+      edit.key = key;
+      edit.palette = new ChromeAxisHudPalette();
+      ArrayPush(this.edits, edit);
     }
-    let entry = new JsonObject();
-    entry.SetKey("border", this.EncodeColor(palette.border));
-    entry.SetKey("transmission", this.EncodeColor(palette.transmission));
-    presets.SetKey(key, entry);
-    this.colors.SetKey("presets", presets);
-    this.dirty = true;
+    if border {
+      edit.border = true;
+      edit.palette.border = palette.border;
+    }
+    if transmission {
+      edit.transmission = true;
+      edit.palette.transmission = palette.transmission;
+    }
+  }
+
+  private func PaletteForPreset(key: String) -> ref<ChromeAxisHudPalette> {
+    // Pre-0.4.50 colors were global. Use them as defaults for each preset.
+    let preset: ref<JsonObject>;
+    if IsDefined(this.colors) {
+      let presets = this.colors.GetKey("presets") as JsonObject;
+      if IsDefined(presets) {
+        preset = presets.GetKey(key) as JsonObject;
+      }
+    }
+    let palette = this.ReadPalette(preset, this.ReadPalette(this.colors, ChromeAxisHudPalette.Default()));
+    let edit = this.FindEdit(key);
+    if IsDefined(edit) {
+      if edit.border {
+        palette.border = edit.palette.border;
+      }
+      if edit.transmission {
+        palette.transmission = edit.palette.transmission;
+      }
+    }
+    return palette;
+  }
+
+  public func RefreshColors() -> Bool {
+    if ArraySize(this.edits) > 0 {
+      return this.FlushColors();
+    }
+    let colors = this.ReadColors();
+    if !IsDefined(colors) {
+      return false;
+    }
+    this.colors = colors;
+    this.palette = this.PaletteForPreset(this.activePresetKey);
+    if NotEquals(this.activePresetKey, "") {
+      this.ApplyToHud();
+    }
+    return true;
   }
 
   public func FlushColors() -> Bool {
-    if !this.dirty {
+    if ArraySize(this.edits) == 0 {
       return true;
     }
-    if !IsDefined(this.storage) {
+    // Read again so a temporarily inaccessible file and other presets remain intact.
+    let colors = this.ReadColors();
+    if !IsDefined(colors) {
       return false;
     }
+    let presets = colors.GetKey("presets") as JsonObject;
+    if !IsDefined(presets) {
+      presets = new JsonObject();
+    }
+    for edit in this.edits {
+      let entry = presets.GetKey(edit.key) as JsonObject;
+      if !IsDefined(entry) {
+        if presets.HasKey(edit.key) {
+          return false;
+        }
+        entry = new JsonObject();
+      }
+      if edit.border {
+        entry.SetKey("border", this.EncodeColor(edit.palette.border));
+      }
+      if edit.transmission {
+        entry.SetKey("transmission", this.EncodeColor(edit.palette.transmission));
+      }
+      presets.SetKey(edit.key, entry);
+    }
+    colors.SetKey("presets", presets);
     let file = this.storage.GetFile("colors.json");
-    if !IsDefined(file) || !file.WriteJson(this.colors) {
+    if !IsDefined(file) || !file.WriteJson(colors) {
       return false;
     }
-    this.dirty = false;
+    this.colors = colors;
+    ArrayClear(this.edits);
+    this.palette = this.PaletteForPreset(this.activePresetKey);
+    this.ApplyToHud();
     return true;
   }
 
   private func ReadColors() -> ref<JsonObject> {
-    if IsDefined(this.storage) && Equals(this.storage.IsFile("colors.json"), FileSystemStatus.True) {
-      let file = this.storage.GetFile("colors.json");
-      if IsDefined(file) {
-        let colors = file.ReadAsJson() as JsonObject;
-        if IsDefined(colors) {
-          return colors;
-        }
-      }
+    if !IsDefined(this.storage) {
+      return null;
     }
-    return new JsonObject();
+    let present = this.storage.Exists("colors.json");
+    if Equals(present, FileSystemStatus.False) {
+      return new JsonObject();
+    }
+    if !Equals(present, FileSystemStatus.True) || !Equals(this.storage.IsFile("colors.json"), FileSystemStatus.True) {
+      return null;
+    }
+    let file = this.storage.GetFile("colors.json");
+    if !IsDefined(file) {
+      return null;
+    }
+    let colors = file.ReadAsJson() as JsonObject;
+    if IsDefined(colors) && colors.HasKey("presets") && !IsDefined(colors.GetKey("presets") as JsonObject) {
+      return null;
+    }
+    return colors;
   }
 
   private func ReadPalette(colors: ref<JsonObject>, fallback: ref<ChromeAxisHudPalette>) -> ref<ChromeAxisHudPalette> {
@@ -437,6 +529,8 @@ class ChromeAxisHudPainterSection extends inkComponent {
     let panel = this.GetRootCompoundWidget();
     this.french = ChromeAxis_IsFrenchInterface(GetGameInstance());
     let defaults = ChromeAxisHudPalette.Default();
+    let menu = ChromeAxisHudPainterMenu.Get();
+    let colorsReady = !IsDefined(menu) || menu.RefreshColors();
     let palette = ChromeAxis_LoadHudPalette();
 
     let heading = this.AddLabel(panel, "Chrome Axis", 32);
@@ -446,7 +540,7 @@ class ChromeAxisHudPainterSection extends inkComponent {
     this.border = this.AddColor(panel, this.french ? "Contour du badge" : "Badge outline", defaults.border, palette.border);
     this.transmission = this.AddColor(panel, this.french ? "Texte de la boîte" : "Gearbox text", defaults.transmission, palette.transmission);
 
-    this.message = this.AddLabel(panel, this.french ? "Enregistrement automatique" : "Autosave enabled", 24);
+    this.message = this.AddLabel(panel, colorsReady ? this.AutosaveLabel() : this.UnsavedLabel(), 24);
     this.message.SetMargin(32.0, 2.0, 0.0, 0.0);
   }
 
@@ -487,17 +581,29 @@ class ChromeAxisHudPainterSection extends inkComponent {
       if IsDefined(menu) {
         menu.ChangeColor(isBorder, event.color.customColor);
         if !menu.FlushColors() {
-          this.message.SetText(this.french ? "Enregistrement impossible" : "Could not save colors");
+          this.message.SetText(this.UnsavedLabel());
         } else {
-          this.border.GetData().presetColor = this.border.GetData().customColor;
-          this.transmission.GetData().presetColor = this.transmission.GetData().customColor;
+          let palette = menu.GetPalette();
+          this.border.GetData().customColor = palette.border;
+          this.border.GetData().presetColor = palette.border;
+          this.transmission.GetData().customColor = palette.transmission;
+          this.transmission.GetData().presetColor = palette.transmission;
           this.border.RefreshItemData();
           this.transmission.RefreshItemData();
-          this.message.SetText(this.french ? "Enregistrement automatique" : "Autosave enabled");
+          this.message.SetText(this.AutosaveLabel());
         }
       }
     }
     return false;
+  }
+
+  private func AutosaveLabel() -> String {
+    return this.french ? "Enregistrement automatique" : "Autosave enabled";
+  }
+
+  private func UnsavedLabel() -> String {
+    return this.french ? "Fichier des couleurs inaccessible · Réessayez après réouverture du menu" :
+      "Color file unavailable · Retry by reopening the menu";
   }
 
   private func AddColor(parent: ref<inkCompoundWidget>, label: String, defaultColor: HDRColor, savedColor: HDRColor) -> ref<ComponentColorItem> {
