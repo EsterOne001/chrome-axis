@@ -40,6 +40,9 @@ struct FakeForceDriver {
         std::atomic<std::uint64_t> recoveryToken{};
     };
     static inline State* testState{};
+    static inline std::atomic<DiagnosticMode> operationMode{};
+
+    static DiagnosticMode observeMode() noexcept { return operationMode.load(); }
 
     FakeForceDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver observer, void* context,
                     DirectInputActiveCall* activeCall) noexcept
@@ -103,7 +106,10 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
 {
     FakeForceDriver::State state;
     FakeForceDriver::testState = &state;
-    ForceOutputWorker<TestForceContext, FakeForceDriver> worker;
+    const auto resultMode = cancel ? DiagnosticMode::gameNotForeground : DiagnosticMode::usb;
+    const auto otherMode = cancel ? DiagnosticMode::usb : DiagnosticMode::gameNotForeground;
+    FakeForceDriver::operationMode.store(otherMode);
+    ForceOutputWorker<TestForceContext, FakeForceDriver> worker{nullptr, &FakeForceDriver::observeMode};
     const auto allowDriver = [&] {
         state.resume.store(true);
         state.resume.notify_one();
@@ -159,6 +165,8 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
         !worker.submit(window, wheel, 0, 0.5f, {latestDeadline}, 42, false, recoveryToken))
         return 53;
     const auto previousStops = state.stops.load();
+    FakeForceDriver::operationMode.store(resultMode);
+    const auto releasedAt = GetTickCount64();
     allowDriver();
     std::optional<decltype(worker)::Completion> accepted;
     if (!waitFor([&] {
@@ -171,9 +179,12 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
         state.initialized.load() != (cancel || recover ? 2u : 1u) ||
         state.setupCompleted.load() != 1 || state.recoveryToken.load() != recoveryToken)
         return 54;
+    // A change of focus after the operation finishes must not relabel the event.
+    FakeForceDriver::operationMode.store(otherMode);
     const auto slow = worker.nextOperation();
     if (!slow || slow->name.data() != std::string_view("FFB Acquire") || slow->deviceId.data() != wheel ||
-        slow->durationMicros <= 100000 || worker.activeOperation().call.operation)
+        slow->durationMicros <= 100000 || slow->sampledAt < releasedAt || slow->mode != resultMode ||
+        worker.activeOperation().call.operation)
         return 55;
     if (cancel)
         worker.cancel();

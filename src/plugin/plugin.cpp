@@ -216,6 +216,7 @@ Clock::time_point lastSimulationStep{};
 std::jthread readerThread;
 std::atomic<bool> active{};
 std::atomic<bool> feedbackRequested{};
+std::atomic<DiagnosticMode> feedbackSource{DiagnosticMode::usbDisabled};
 std::atomic<bool> transmissionAvailable{};
 std::atomic<Vehicle*> drivingVehicle{};
 std::atomic<std::uint64_t> drivingGeneration{};
@@ -373,8 +374,27 @@ struct ForceOutputContext {
     }
 };
 
+DiagnosticMode feedbackObservationMode() noexcept {
+    if (!foregroundGameWindow())
+        return DiagnosticMode::gameNotForeground;
+    if (!drivingVehicle.load(std::memory_order_acquire))
+        return DiagnosticMode::waitingForDriver;
+
+    // Driver callbacks sample the focus directly. Use the last source
+    // configuration and never wait for a game callback to finish.
+    const auto source = feedbackSource.load(std::memory_order_acquire);
+    std::unique_lock lock(stateMutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return source;
+    const auto now = Clock::now();
+    if (!context.vehicle || now - context.refreshed > contextLifetime)
+        return DiagnosticMode::waitingForDriver;
+    return chrome_axis::isDrivingCaptureMode(source) && !vehicleInputFresh(context, now)
+        ? DiagnosticMode::waitingForVehicleInput : source;
+}
+
 struct DriverWorkers {
-    chrome_axis::ForceOutputWorker<ForceOutputContext> force{&logDirectInput};
+    chrome_axis::ForceOutputWorker<ForceOutputContext> force{&logDirectInput, &feedbackObservationMode};
     std::unique_ptr<chrome_axis::DrivingInputs<>> input;
 };
 
@@ -1034,11 +1054,13 @@ void commitHudColors(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
 }
 
 void recoverHudColors(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::int32_t* out, std::int64_t) {
+    bool probeReadable{};
+    RED4ext::GetParameter(frame, &probeReadable);
     ++frame->code;
     if (!out)
         return;
     try {
-        *out = static_cast<std::int32_t>(chrome_axis::recoverHudColors(hudStorageGameRoot));
+        *out = static_cast<std::int32_t>(chrome_axis::recoverHudColors(hudStorageGameRoot, probeReadable));
     } catch (const std::exception&) {
         *out = static_cast<std::int32_t>(chrome_axis::HudColorCommitResult::unavailable);
     }
@@ -1111,6 +1133,7 @@ void registerNative() {
     constexpr auto recoverColorsName = "ChromeAxis_RecoverHudColors";
     auto* recoverColors = RED4ext::CGlobalFunction::Create(recoverColorsName, recoverColorsName, &recoverHudColors);
     recoverColors->flags = {.isNative = true, .isStatic = true};
+    recoverColors->AddParam("Bool", "probeReadable");
     recoverColors->SetReturnType("Int32");
     rtti->RegisterFunction(recoverColors);
     info("Driver context native registered.");
@@ -1491,7 +1514,8 @@ struct UsbReadDiagnostics {
         static_cast<UsbReadDiagnostics*>(observerState)->record(read, GetTickCount64());
     }
 
-    void record(const chrome_axis::DirectInputReadEvent& read, std::uint64_t tick) noexcept {
+    void record(const chrome_axis::DirectInputReadEvent& read, std::uint64_t tick, DiagnosticMode mode = DiagnosticMode::usb,
+                chrome_axis::DiagnosticUsbLane lane = chrome_axis::DiagnosticUsbLane::reader) noexcept {
         using ReadKind = chrome_axis::DirectInputReadEventKind;
         auto kind = DiagnosticUsbEventKind::deviceSlow;
         switch (read.kind) {
@@ -1510,7 +1534,7 @@ struct UsbReadDiagnostics {
         }
         DiagnosticUsbEvent event{.sampledAt = tick, .durationMicros = read.durationMicros,
                                  .result = static_cast<std::uint32_t>(read.result), .kind = kind,
-                                 .mode = DiagnosticMode::usb};
+                                 .mode = mode, .lane = lane};
         describeDevice(event, read.deviceId, read.operation);
         publisher.recordUsbEvent(event);
     }
@@ -1959,7 +1983,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (usbReadDiagnostics) {
                 usbReadDiagnostics->record({chrome_axis::DirectInputReadEventKind::slow,
                     operation->deviceId.data(), operation->name.data(), operation->result,
-                    operation->durationMicros}, operation->sampledAt);
+                    operation->durationMicros}, operation->sampledAt, operation->mode, chrome_axis::DiagnosticUsbLane::feedback);
             }
         }
         while (const auto result = feedbackOutput.nextCompletion()) {
@@ -2054,6 +2078,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             nextConfigurationPoll = start + configurationPollInterval;
             changes = usb.refresh(configurationDirectory, start, modeChanged || (foreground && !wasDriving), diagnostic);
         }
+        const bool physical = !simulated && (usb.reader || usb.accessories);
+        const auto diagnosticSource = simulated ? DiagnosticMode::simulation : !usb.enabled ? DiagnosticMode::usbDisabled
+            : !physical ? DiagnosticMode::profileUnavailable : DiagnosticMode::usb;
+        feedbackSource.store(diagnosticSource, std::memory_order_release);
         const auto source = transmissionAvailable
             ? chrome_axis::transmissionSource(simulated, usb.nativeShifterVerified, usb.nativeSequential)
             : chrome_axis::TransmissionSource::none;
@@ -2178,7 +2206,6 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         std::array<chrome_axis::AccessoryObservation, chrome_axis::maxAccessoryBindings> accessoryObservations{};
         bool readAccessories = false;
         const bool measuring = performance.state == chrome_axis::PerformanceState::capturing;
-        const bool physical = !simulated && (usb.reader || usb.accessories);
         const bool wantFeedback = physical && usb.feedbackSettings.enabled && usb.profile &&
             !usb.profile->steering.deviceId.empty();
         feedbackRequested.store(wantFeedback, std::memory_order_relaxed);
@@ -2676,8 +2703,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 nextTimeoutReport = diagnosticAt + diagnosticIssueDuration;
             if (reportPending)
                 nextPendingReport = diagnosticAt + diagnosticIssueDuration;
-            diagnostic.mode = simulated ? DiagnosticMode::simulation : !usb.enabled ? DiagnosticMode::usbDisabled
-                : !physical ? DiagnosticMode::profileUnavailable : DiagnosticMode::usb;
+            diagnostic.mode = diagnosticSource;
             diagnostic.profileLoaded = physical && usb.hasProfileDirectory();
             for (std::size_t i = 0; i < diagnostic.axes.size(); ++i) {
                 auto& axis = diagnostic.axes[i];

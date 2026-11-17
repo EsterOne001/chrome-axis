@@ -88,10 +88,13 @@ private func ChromeAxis_HudFileState(result: Int32) -> ChromeAxisHudFileState {
 }
 
 @if(ModuleExists("HudPainter"))
-private func ChromeAxis_HudReadFailure() -> ChromeAxisHudFileState {
+private func ChromeAxis_HudReadFailure(probeReadable: Bool) -> ChromeAxisHudFileState {
+  if !probeReadable {
+    return ChromeAxisHudFileState.ReadFailed;
+  }
   // RedFileSystem returns no reason for a failed text read. The native probe
   // distinguishes a Windows share lock from a permission or persistent error.
-  let result = ChromeAxis_HudFileState(ChromeAxis_RecoverHudColors());
+  let result = ChromeAxis_HudFileState(ChromeAxis_RecoverHudColors(true));
   return Equals(result, ChromeAxisHudFileState.Available) ? ChromeAxisHudFileState.ReadFailed : result;
 }
 
@@ -157,8 +160,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
 
   private cb func OnSessionAvailable(event: ref<GameSessionEvent>) {
     // A prior session can discard its timer, and a paused session can delay delivery.
-    this.EndFlush();
-    this.FlushColors(true);
+    this.RefreshColors(true);
   }
 
   public func GetPalette() -> ref<ChromeAxisHudPalette> {
@@ -360,10 +362,10 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     }
   }
 
-  public func RefreshColors() -> Void {
+  public func RefreshColors(opt fromTimer: Bool) -> Void {
     this.EndFlush();
     this.reloadPending = true;
-    this.FlushColors();
+    this.FlushColors(fromTimer);
   }
 
   public func FlushColors(opt fromTimer: Bool) -> Void {
@@ -375,6 +377,14 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     let previous: String;
     let existed: Bool;
     let colors = this.ReadColors(state, previous, existed);
+    if Equals(state, ChromeAxisHudFileState.RecoveryRequired) {
+      // The readable file can still drive the HUD. No edit may overwrite either copy.
+      if IsDefined(colors) {
+        this.colors = colors;
+      }
+      this.HandleFlushFailure(state, fromTimer && !IsDefined(colors));
+      return;
+    }
     if !IsDefined(colors) {
       this.HandleFlushFailure(state, fromTimer);
       return;
@@ -521,12 +531,21 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
       return null;
     }
     let present = this.storage.Exists("colors.json");
-    if Equals(present, FileSystemStatus.False) {
-      let recovery = ChromeAxis_HudFileState(ChromeAxis_RecoverHudColors());
-      if NotEquals(recovery, ChromeAxisHudFileState.Available) && NotEquals(recovery, ChromeAxisHudFileState.Conflict) {
-        state = recovery;
-        return null;
-      }
+    if Equals(present, FileSystemStatus.Denied) {
+      return null;
+    }
+    // Check recovery paths without reading the existing document twice.
+    let recovery = ChromeAxis_HudFileState(ChromeAxis_RecoverHudColors(false));
+    if Equals(recovery, ChromeAxisHudFileState.RecoveryRequired) && Equals(present, FileSystemStatus.True) {
+      let readState: ChromeAxisHudFileState;
+      state = recovery;
+      return this.ReadPresentColors(readState, previous, false);
+    }
+    if NotEquals(recovery, ChromeAxisHudFileState.Available) && NotEquals(recovery, ChromeAxisHudFileState.Conflict) {
+      state = recovery;
+      return null;
+    }
+    if Equals(present, FileSystemStatus.False) || Equals(recovery, ChromeAxisHudFileState.Conflict) {
       present = this.storage.Exists("colors.json");
       if Equals(present, FileSystemStatus.False) {
         state = recovery;
@@ -537,10 +556,14 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
       return null;
     }
     if !Equals(present, FileSystemStatus.True) {
-      state = ChromeAxis_HudReadFailure();
+      state = ChromeAxis_HudReadFailure(true);
       return null;
     }
     existed = true;
+    return this.ReadPresentColors(state, previous, true);
+  }
+
+  private func ReadPresentColors(out state: ChromeAxisHudFileState, out previous: String, probeReadable: Bool) -> ref<JsonObject> {
     let isFile = this.storage.IsFile("colors.json");
     if !Equals(isFile, FileSystemStatus.True) {
       if Equals(isFile, FileSystemStatus.Denied) {
@@ -548,19 +571,19 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
       } else if Equals(isFile, FileSystemStatus.False) && Equals(this.storage.Exists("colors.json"), FileSystemStatus.True) {
         state = ChromeAxisHudFileState.Invalid;
       } else {
-        state = ChromeAxis_HudReadFailure();
+        state = ChromeAxis_HudReadFailure(probeReadable);
       }
       return null;
     }
     let file = this.storage.GetFile("colors.json");
     if !IsDefined(file) {
-      state = ChromeAxis_HudReadFailure();
+      state = ChromeAxis_HudReadFailure(probeReadable);
       return null;
     }
     let size = file.GetSize();
     // std::filesystem::file_size uses UINT64_MAX when the size cannot be read.
     if Equals(size, 18446744073709551615ul) || Equals(size, 0ul) {
-      state = ChromeAxis_HudReadFailure();
+      state = ChromeAxis_HudReadFailure(probeReadable);
       return null;
     }
     if size > 4194304ul {
@@ -569,7 +592,7 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     }
     previous = file.ReadAsText();
     if Equals(previous, "") {
-      state = ChromeAxis_HudReadFailure();
+      state = ChromeAxis_HudReadFailure(probeReadable);
       return null;
     }
     let colors = ParseJson(previous) as JsonObject;
@@ -930,8 +953,8 @@ class ChromeAxisHudPainterSection extends inkComponent {
         return this.french ? "Fichier en conflit · Modifications en attente" :
           "Color file conflict · Changes pending";
       case ChromeAxisHudSaveStatus.RecoveryRequired:
-        return this.french ? "Copie de récupération conservée · Vérifiez colors.json.recovery" :
-          "Recovery copy preserved · Check colors.json.recovery";
+        return this.french ? "Récupération requise · Vérifiez colors.json.recovery*" :
+          "Recovery required · Check colors.json.recovery*";
       case ChromeAxisHudSaveStatus.InvalidPreset:
         return this.french ? "Préréglage Chrome Axis illisible · Couleurs non enregistrables" :
           "Chrome Axis preset unreadable · Colors cannot be saved";
@@ -977,7 +1000,7 @@ public static native func ChromeAxis_VehicleImpact(vehicle: ref<VehicleObject>, 
 @if(ModuleExists("HudPainter"))
 public static native func ChromeAxis_CommitHudColors(json: String, previousJson: String, existed: Bool) -> Int32;
 @if(ModuleExists("HudPainter"))
-public static native func ChromeAxis_RecoverHudColors() -> Int32;
+public static native func ChromeAxis_RecoverHudColors(probeReadable: Bool) -> Int32;
 
 public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let player: wref<PlayerPuppet>;

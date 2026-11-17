@@ -23,7 +23,10 @@ constexpr std::string_view merged = R"({"presets":{"Préréglage":{"border":[15,
 constexpr std::string_view later = R"({"presets":{"Dernier":{"transmission":[20,30,40]}}})";
 
 enum class Interruption { none, concurrentReplace, concurrentRestore, concurrentReplaceLater,
-                          replacementDidNotMove, rollbackDidNotMove, lockedDuringRollback };
+                          replacementDidNotMove, rollbackDidNotMove, lockedDuringRollback,
+                          interruptAfterRollback, interruptDuringRollback, interruptAfterSecondWriter,
+                          interruptDuringSecondAttempt, interruptAfterDisplacement };
+struct InterruptedSave {};
 Interruption interruption{};
 bool injected{};
 bool shortWrite{};
@@ -56,6 +59,28 @@ bool check(bool condition, const char* description) {
 
 BOOL WINAPI testReplaceHudColors(LPCWSTR target, LPCWSTR staged, LPCWSTR backup, DWORD flags,
                                  LPVOID exclude, LPVOID reserved) {
+    if (interruption == Interruption::interruptAfterDisplacement) {
+        interruption = Interruption::none;
+        injected = injected && MoveFileExW(target, backup, MOVEFILE_WRITE_THROUGH) != 0;
+        throw InterruptedSave{};
+    }
+    if (interruption == Interruption::interruptAfterSecondWriter || interruption == Interruption::interruptDuringSecondAttempt) {
+        const bool stopAfter = interruption == Interruption::interruptAfterSecondWriter;
+        injected = injected && publishExternal(target, later);
+        injected = ReplaceFileW(target, staged, backup, flags, exclude, reserved) != 0 && injected;
+        interruption = stopAfter ? Interruption::none : Interruption::interruptAfterDisplacement;
+        if (stopAfter)
+            throw InterruptedSave{};
+        return injected ? TRUE : FALSE;
+    }
+    if (interruption == Interruption::interruptAfterRollback || interruption == Interruption::interruptDuringRollback) {
+        interruption = interruption == Interruption::interruptAfterRollback ? Interruption::interruptAfterSecondWriter
+                                                                              : Interruption::interruptDuringSecondAttempt;
+        injected = publishExternal(target, external);
+        const auto replaced = ReplaceFileW(target, staged, backup, flags, exclude, reserved);
+        injected = injected && replaced != 0;
+        return replaced;
+    }
     if (interruption == Interruption::replacementDidNotMove) {
         interruption = Interruption::none;
         injected = MoveFileExW(target, backup, MOVEFILE_WRITE_THROUGH) != 0;
@@ -132,8 +157,9 @@ int main() {
     {
         const auto lock = chrome_axis::detail::hudColorHandle(CreateFileW(colors.c_str(), GENERIC_READ,
             0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-        ok &= check(static_cast<bool>(lock) && recoverHudColors(game) == Result::retry,
-                    "The recovery probe must distinguish a file's lock from empty contents.");
+        ok &= check(static_cast<bool>(lock) && recoverHudColors(game) == Result::retry
+                        && recoverHudColors(game, false) == Result::success,
+                    "A full probe must detect a lock while a checkpoint-only probe avoids reopening the extant file.");
     }
     {
         Result lockResult{};
@@ -202,10 +228,12 @@ int main() {
                 "An update arriving during recovery must also be recovered.");
     bool preservedFirst{};
     for (const auto& file : std::filesystem::directory_iterator(directory)) {
-        if (file.path().filename().wstring().starts_with(L"colors.json.recovery."))
+        if (file.path().filename().wstring().starts_with(L"colors.json.recovery.saved."))
             preservedFirst |= read(file.path()) == external;
     }
-    ok &= check(preservedFirst, "Keep a recovery copy of the older competing update when two replace operations race.");
+    ok &= check(preservedFirst && recoverHudColors(game, false) == Result::success
+                    && commitHudColors(game, later, later, true) == Result::success,
+                "Keep an archived snapshot after successful rollback without blocking the next save.");
 
     interruption = Interruption::lockedDuringRollback;
     injected = false;
@@ -218,5 +246,50 @@ int main() {
     ok &= check(commitHudColors(game, original, edited, true) == Result::recoveryRequired
                     && read(colors) == edited && read(backup) == external,
                 "A later save must not proceed silently while both ambiguous versions exist.");
+
+    const auto legacyGame = game / L"legacy-0481";
+    const auto legacyColors = chrome_axis::detail::hudColorFile(legacyGame);
+    const auto legacyBackup = chrome_axis::detail::hudColorSidecar(legacyColors, L".recovery.tmp.123.456");
+    const auto legacyCanonical = chrome_axis::detail::hudColorSidecar(legacyColors, L".recovery");
+    ok &= check(commitHudColors(legacyGame, original, {}, false) == Result::success
+                    && publishExternal(legacyBackup, later),
+                "Unable to prepare a legacy .81 checkpoint.");
+    ok &= check(recoverHudColors(legacyGame, false) == Result::recoveryRequired
+                    && commitHudColors(legacyGame, edited, original, true) == Result::recoveryRequired
+                    && read(legacyColors) == original && read(legacyBackup) == later,
+                "Report a legacy .81 checkpoint even when its current colors are readable.");
+    ok &= check(MoveFileExW(legacyColors.c_str(), legacyCanonical.c_str(), MOVEFILE_WRITE_THROUGH)
+                    && recoverHudColors(legacyGame) == Result::recoveryRequired
+                    && commitHudColors(legacyGame, edited, {}, false) == Result::recoveryRequired
+                    && !std::filesystem::exists(legacyColors) && read(legacyCanonical) == original
+                    && read(legacyBackup) == later,
+                "Do not guess which .81 checkpoint to restore when the current file is missing.");
+
+    for (const auto& [scenario, targetSurvives] : {std::pair{Interruption::interruptAfterRollback, true},
+                                                   std::pair{Interruption::interruptDuringRollback, false}}) {
+        const auto crashGame = game / (targetSurvives ? L"interrupted-restoration" : L"interrupted-displacement");
+        const auto crashColors = chrome_axis::detail::hudColorFile(crashGame);
+        ok &= check(commitHudColors(crashGame, original, {}, false) == Result::success,
+                    "Unable to prepare an interrupted rollback fixture.");
+        interruption = scenario;
+        injected = false;
+        bool interrupted{};
+        try {
+            (void)commitHudColors(crashGame, edited, original, true);
+        } catch (const InterruptedSave&) {
+            interrupted = true; // Reenter through the same probe and save entry points as the next launch.
+        }
+        bool latestSurvived{};
+        for (const auto& file : std::filesystem::directory_iterator(crashColors.parent_path())) {
+            if (file.path().filename().wstring().starts_with(L"colors.json.recovery.tmp."))
+                latestSurvived |= read(file.path()) == later;
+        }
+        ok &= check(interrupted && injected && latestSurvived && std::filesystem::exists(crashColors) == targetSurvives
+                        && !std::filesystem::exists(chrome_axis::detail::hudColorSidecar(crashColors, L".recovery"))
+                        && recoverHudColors(crashGame, false) == Result::recoveryRequired
+                        && commitHudColors(crashGame, merged, external, targetSurvives) == Result::recoveryRequired
+                        && (targetSurvives ? read(crashColors) == external : !std::filesystem::exists(crashColors)),
+                    "An interrupted second rollback must safeguard every snapshot even after consuming the canonical copy.");
+    }
     return ok ? 0 : 1;
 }

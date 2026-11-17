@@ -500,9 +500,18 @@ bool testUsbOperations(const std::filesystem::path& root)
         publisher.publish(driving, 1, {}, true, calls);
         calls[2] = operation(tick - 300, "FFB SetParameters", DiagnosticUsbLane::feedback);
         publisher.publish(driving, 1, {}, true, calls);
+        const auto complete = [&](const DiagnosticUsbOperation& call, DiagnosticMode mode, std::uint64_t duration) {
+            publisher.recordUsbEvent({.sampledAt = GetTickCount64(), .durationMicros = duration,
+                                      .deviceId = call.deviceId, .operation = call.operation,
+                                      .kind = DiagnosticUsbEventKind::deviceSlow, .mode = mode, .lane = call.lane});
+        };
+        // The stop finished in the background and was reported after focus returned.
+        complete(forceCall, DiagnosticMode::gameNotForeground, 750000);
+        complete(calls[2], DiagnosticMode::usb, 350000);
+        publisher.publish(driving, 1);
         std::array<DiagnosticCaptureRecord, 8> rows;
         const auto stream = reader.drainCapture(rows);
-        if (stream.count != 4 || rows[0].usb.operation != calls[0].operation ||
+        if (stream.count != 6 || rows[0].usb.operation != calls[0].operation ||
             rows[1].usb.operation != probeCall.operation || rows[2].usb.operation != forceCall.operation ||
             rows[3].usb.operation != calls[2].operation || rows[0].usb.durationMicros < 350000 ||
             rows[2].usb.durationMicros < 500000 || rows[2].usb.lane != DiagnosticUsbLane::feedback ||
@@ -514,22 +523,26 @@ bool testUsbOperations(const std::filesystem::path& root)
         std::ostringstream csv;
         writeDiagnosticCaptureRows(csv, std::span(rows).first(stream.count), tick);
         const auto text = csv.str();
-        if (text.find(deviceId) != std::string::npos || text.find("0x00000000") != std::string::npos ||
+        if (text.find(deviceId) != std::string::npos ||
             text.find(",operation_running,\"GetDeviceState\",,") != std::string::npos ||
             text.find(",operation_running,\"Probe GetObjectInfo axis\",,") == std::string::npos ||
             text.find(",operation_running,\"Acquire\",,") == std::string::npos ||
             text.find(",reader,\r\n") == std::string::npos || text.find(",probe,\r\n") == std::string::npos ||
             text.find(",feedback,\r\n") == std::string::npos)
             return false;
-        bool recordedStop{}, recordedEffect{};
+        bool recordedStop{}, recordedEffect{}, completedStop{}, completedEffect{};
         std::istringstream csvRows(text);
         for (std::string row; std::getline(csvRows, row);) {
             if (row.find(",operation_running,\"FFB Stop\",,") != std::string::npos)
                 recordedStop = row.find(",game_not_foreground,") != std::string::npos && row.ends_with(",feedback,\r");
             if (row.find(",operation_running,\"FFB SetParameters\",,") != std::string::npos)
                 recordedEffect = row.find(",usb,") != std::string::npos && row.ends_with(",feedback,\r");
+            if (row.find(",device_slow,\"FFB Stop\",0x00000000,750000,") != std::string::npos)
+                completedStop = row.find(",game_not_foreground,") != std::string::npos && row.ends_with(",feedback,\r");
+            if (row.find(",device_slow,\"FFB SetParameters\",0x00000000,350000,") != std::string::npos)
+                completedEffect = row.find(",usb,") != std::string::npos && row.ends_with(",feedback,\r");
         }
-        if (!recordedStop || !recordedEffect)
+        if (!recordedStop || !recordedEffect || !completedStop || !completedEffect)
             return false;
 
         publisher.publish(background);

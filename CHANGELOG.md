@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.82
+
+- HUD Painter signale les copies de récupération dès l’ouverture. Les sauvegardes ambiguës restent disponibles et le fichier courant peut encore fournir la palette affichée. Les anciennes copies confirmées sont distinguées des reprises en attente.
+- Le CSV indique le contexte et la voie du retour de force à la fin d’un appel lent, y compris quand il se termine après Alt+Tab.
+
+[ZIP Vortex](out/Chromaxis-0.4.82.zip)
+
 ## Chrome Axis 0.4.81
 
 - HUD Painter conserve la dernière palette valide et les modifications en attente quand le fichier de couleurs est vide, illisible ou trop volumineux. Les erreurs persistantes ont un message dédié et des réessais bornés.

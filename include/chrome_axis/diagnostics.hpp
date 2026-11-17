@@ -233,7 +233,7 @@ struct DiagnosticUsbEvent {
     std::uint8_t deviceAccessoryCount{};
     std::array<DiagnosticUsbBlocker, 4> blockers{};
     std::uint32_t blockerCount{}; // Total, including any entries omitted from blockers.
-    DiagnosticUsbLane lane{}; // Used by operationRunning.
+    DiagnosticUsbLane lane{}; // Used by operationRunning and completed slow force feedback calls.
 };
 
 DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt,

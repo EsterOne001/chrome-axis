@@ -412,7 +412,7 @@ void writeDiagnosticCaptureRows(std::ostream& output, std::span<const Diagnostic
             writeCaptureBlockers(output, event);
             emptyCsvColumns(output, transmissionCsvColumns + clutchCsvColumns);
             output.put(',');
-            if (running)
+            if (running || (event.kind == DiagnosticUsbEventKind::deviceSlow && event.lane == DiagnosticUsbLane::feedback))
                 output << csvToken(event.lane, usbLaneTokens);
             output << ",\r\n";
             continue;

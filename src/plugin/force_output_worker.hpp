@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/input.hpp"
 
 #include <algorithm>
@@ -42,6 +43,7 @@ public:
         HRESULT result{};
         std::uint64_t durationMicros{};
         std::uint64_t sampledAt{};
+        DiagnosticMode mode{DiagnosticMode::usb};
     };
 
     struct ActiveOperation {
@@ -49,7 +51,9 @@ public:
         DirectInputActiveCall::Snapshot call;
     };
 
-    explicit ForceOutputWorker(DirectInputDiagnostic logger = nullptr) noexcept : logger_(logger) {}
+    using ObserveMode = DiagnosticMode (*)() noexcept;
+    explicit ForceOutputWorker(DirectInputDiagnostic logger = nullptr, ObserveMode observeMode = nullptr) noexcept
+        : logger_(logger), observeMode_(observeMode) {}
 
     bool submit(HWND window, std::string_view id, std::size_t axis, float force, Context validity,
                 std::uint64_t captureId = 0, bool missedCadence = false, std::uint64_t recoveryToken = 0) {
@@ -187,7 +191,8 @@ private:
             return;
         auto& worker = *static_cast<ForceOutputWorker*>(opaque);
         Operation operation{.result = event.result, .durationMicros = event.durationMicros,
-                            .sampledAt = GetTickCount64()};
+                            .sampledAt = GetTickCount64(),
+                            .mode = worker.observeMode_ ? worker.observeMode_() : DiagnosticMode::usb};
         std::ranges::copy(event.deviceId.substr(0, operation.deviceId.size() - 1), operation.deviceId.begin());
         std::ranges::copy(event.operation.substr(0, operation.name.size() - 1), operation.name.begin());
         std::scoped_lock lock(worker.mutex_);
@@ -296,6 +301,7 @@ private:
     }
 
     DirectInputDiagnostic logger_{};
+    ObserveMode observeMode_{};
     std::atomic<std::uint64_t> generation_{};
     std::mutex mutex_;
     std::condition_variable_any changed_;

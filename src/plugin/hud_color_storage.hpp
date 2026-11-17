@@ -112,6 +112,38 @@ inline bool missingHudColorFile(const std::filesystem::path& path) noexcept {
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
+inline HudColorCommitResult hudRecoverySuffixStatus(const std::filesystem::path& target) {
+    using Result = HudColorCommitResult;
+    const auto pattern = hudColorSidecar(target, L".recovery.*");
+    WIN32_FIND_DATAW data{};
+    const auto scan = FindFirstFileW(pattern.c_str(), &data);
+    if (scan == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+            ? Result::success : hudColorFileError(error);
+    }
+    const auto close = [](HANDLE handle) { FindClose(handle); };
+    const std::unique_ptr<void, decltype(close)> guard{scan, close};
+    const auto suffix = hudColorSidecar(target.filename(), L".recovery.").native();
+    const auto archived = hudColorSidecar(target.filename(), L".recovery.saved.").native();
+    const auto startsWith = [](std::wstring_view name, std::wstring_view prefix) {
+        const auto size = static_cast<int>(prefix.size());
+        return name.size() >= prefix.size()
+            && CompareStringOrdinal(name.data(), size, prefix.data(), size, TRUE) == CSTR_EQUAL;
+    };
+    do {
+        const std::wstring_view name{data.cFileName};
+        if (!startsWith(name, suffix))
+            continue; // A Win32 wildcard can also match the canonical name or an 8.3 alias.
+        // A completed rollback archives the other snapshot explicitly. .81 used the same suffix
+        // for completed and interrupted rollbacks, so any non-archive suffix remains ambiguous.
+        if (name.size() <= archived.size() || !startsWith(name, archived))
+            return Result::recoveryRequired;
+    } while (FindNextFileW(scan, &data));
+    const auto error = GetLastError();
+    return error == ERROR_NO_MORE_FILES ? Result::success : hudColorFileError(error);
+}
+
 // Never restore a backup over a target that another writer has put back.
 inline bool restoreMissingHudColorFile(const std::filesystem::path& target,
                                         const std::filesystem::path& backup) noexcept {
@@ -120,6 +152,8 @@ inline bool restoreMissingHudColorFile(const std::filesystem::path& target,
 
 inline HudColorCommitResult recoverHudColorFile(const std::filesystem::path& target,
                                                 const std::filesystem::path& backup) {
+    if (const auto suffixStatus = hudRecoverySuffixStatus(target); suffixStatus != HudColorCommitResult::success)
+        return suffixStatus;
     if (missingHudColorFile(backup))
         return HudColorCommitResult::success;
     if (missingHudColorFile(target)) {
@@ -139,6 +173,19 @@ inline HudColorCommitResult requireHudColorRecovery(const std::filesystem::path&
     return HudColorCommitResult::recoveryRequired;
 }
 
+inline HudColorCommitResult settleHudColorRecovery(const std::filesystem::path& target,
+                                                   const std::filesystem::path& displaced, bool ours) {
+    if (ours) {
+        if (!DeleteFileW(displaced.c_str()) && !missingHudColorFile(displaced))
+            return requireHudColorRecovery(target, displaced);
+    } else {
+        const auto archived = stagedSettingsPath(hudColorSidecar(target, L".recovery.saved"));
+        if (!MoveFileExW(displaced.c_str(), archived.c_str(), MOVEFILE_WRITE_THROUGH))
+            return requireHudColorRecovery(target, displaced);
+    }
+    return HudColorCommitResult::conflict;
+}
+
 inline HudColorCommitResult restoreDisplacedHudColors(const std::filesystem::path& target,
                                                        std::filesystem::path backup, std::string_view published) {
     auto candidate = std::string(published);
@@ -156,16 +203,13 @@ inline HudColorCommitResult restoreDisplacedHudColors(const std::filesystem::pat
             const bool knownCandidate = moved.result == HudColorCommitResult::success && moved.bytes == candidate;
             if (!restoreMissingHudColorFile(target, knownCandidate ? backup : displaced))
                 return requireHudColorRecovery(target, moved.result == HudColorCommitResult::conflict ? backup : displaced);
-            if (knownCandidate && attempt == 0)
-                DeleteFileW(displaced.c_str());
-            return HudColorCommitResult::conflict;
+            if (knownCandidate)
+                return settleHudColorRecovery(target, displaced, attempt == 0);
+            return requireHudColorRecovery(target, backup);
         }
         const auto replaced = readHudColorFile(displaced);
-        if (replaced.result == HudColorCommitResult::success && replaced.bytes == candidate) {
-            if (attempt == 0) // Only our original candidate is safe to discard automatically.
-                DeleteFileW(displaced.c_str());
-            return HudColorCommitResult::conflict;
-        }
+        if (replaced.result == HudColorCommitResult::success && replaced.bytes == candidate)
+            return settleHudColorRecovery(target, displaced, attempt == 0);
         if (toRestore.result != HudColorCommitResult::success)
             return requireHudColorRecovery(target, displaced);
         // A second writer arrived during restoration. Retry from the version it actually displaced.
@@ -177,15 +221,18 @@ inline HudColorCommitResult restoreDisplacedHudColors(const std::filesystem::pat
 
 } // namespace detail
 
-// Called after an absent or unreadable result from RedFileSystem, not during normal reading.
-inline HudColorCommitResult recoverHudColors(const std::filesystem::path& gameRoot) {
+// Skip the extra read when RedFileSystem has already parsed the document.
+inline HudColorCommitResult recoverHudColors(const std::filesystem::path& gameRoot, bool probeReadable = true) {
     using Result = HudColorCommitResult;
     if (gameRoot.empty())
         return Result::unavailable;
     const auto target = detail::hudColorFile(gameRoot);
     const auto backup = detail::hudColorSidecar(target, L".recovery");
-    if (detail::missingHudColorFile(backup)) {
-        if (detail::missingHudColorFile(target))
+    const auto suffixStatus = detail::hudRecoverySuffixStatus(target);
+    if (suffixStatus != Result::success && suffixStatus != Result::recoveryRequired)
+        return suffixStatus;
+    if (suffixStatus == Result::success && detail::missingHudColorFile(backup)) {
+        if (!probeReadable || detail::missingHudColorFile(target))
             return Result::success;
         return detail::readHudColorFile(target, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).result;
     }
@@ -270,7 +317,8 @@ inline HudColorCommitResult commitHudColors(const std::filesystem::path& gameRoo
     }
     const auto displaced = detail::readHudColorFile(backup);
     if (displaced.result == Result::success && detail::sameHudColorText(displaced.bytes, previousJson)) {
-        DeleteFileW(backup.c_str());
+        if (!DeleteFileW(backup.c_str()) && !detail::missingHudColorFile(backup))
+            return Result::recoveryRequired;
         return Result::success;
     }
     return detail::restoreDisplacedHudColors(target, backup, json);
