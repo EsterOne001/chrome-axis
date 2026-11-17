@@ -6,6 +6,27 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.83 · 17 novembre 2026
+
+Comparée à la **0.4.82**.
+
+- **Profils.** Au redémarrage après une restauration interrompue, l’application retrouve la copie de secours et propose de reprendre via Profil → Restaurer. Un profil importé avec un conflit d’affectation reste modifiable et l’application signale le conflit avant l’activation USB.
+- **Retour de force.** Un verrou temporaire protège les réglages existants contre un enregistrement des valeurs par défaut. Le conseil de gain disparaît si les paramètres ou la calibration diffèrent de ceux de la mesure. Les capacités sont vérifiées à l’ouverture des réglages sur le volant et l’axe concernés.
+- **Calibration et interface.** La mesure guidée réunit 15 relevés frais en trois secondes au maximum. La capture de l’embrayage et du frein à main attend le premier signal. Les dialogues conservent le périphérique sélectionné quand l’inventaire change. La langue est relue après un verrou et le diagnostic défile sur écran bas avec ses quatre boutons accessibles.
+- **Validation.** Release x64, 20 suites CTest, quatre répétitions des suites de restauration, reprise DirectInput, liaison et mise en page, EXE vérifié en français et en anglais et compilation REDscript isolée. L’audit simulé a encore reproduit des cas limites de calibration lente, de capture du frein à main après reconnexion, de réassociation interrompue et de mesure du retour de force après Alt+Tab. La relance sur T300RS reste à confirmer en jeu.
+
+SHA-256 `e8da9927cc7fa95390e08f41928c82196acef07094f368fbe6e49bed143009ae`. [ZIP Vortex](out/Chromaxis-0.4.83.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/1b790a91a356b8a8115460d989ba12d61999208f)
+
+## Chrome Axis 0.4.82 · 17 novembre 2026
+
+Comparée à la **0.4.81**.
+
+- **Récupération HUD Painter.** Les copies de récupération sont signalées dès le démarrage, même si `colors.json` est lisible. Le HUD affiche la palette disponible et l’écriture est suspendue lorsque plusieurs versions subsistent. Une copie `.recovery` unique peut être restaurée si le fichier courant manque. Certaines copies suffixées héritées de la 0.4.81 demandent une vérification manuelle.
+- **CSV et retour de force.** La ligne de fin d’un `FFB Stop` après Alt+Tab conserve le contexte de fin `game_not_foreground` et la voie `feedback`, même si Cyberpunk revient au premier plan avant la prise en compte du relevé.
+- **Validation.** Release x64, 19 suites CTest, cinq suites ciblées exécutées trois fois, 16 scénarios HUD Painter et REDscript sans avertissement avec et sans HUD Painter. Les deux interruptions reproduites en 0.4.81 sont signalées au redémarrage avec les copies préservées. La récupération en jeu et le retour de force après Alt+Tab restent à confirmer sur le matériel réel.
+
+SHA-256 `65a07b73c7b19437205d198c16cbcbacd016b33d1fef501a31194e6e8e7b29b4`. [ZIP Vortex](out/Chromaxis-0.4.82.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/03b95de389b03d57761feab3486bc368871b369c)
+
 ## Chrome Axis 0.4.81 · 17 novembre 2026
 
 Comparée à la **0.4.80**.
