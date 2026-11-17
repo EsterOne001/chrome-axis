@@ -6,6 +6,38 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.86 · 17 novembre 2026
+
+Comparée à la **0.4.85**.
+
+- **Palettes analogiques.** Si le point de repos du même périphérique change entre les mesures « + » et « − », l’assistant demande de refaire la première mesure avant d’enregistrer. La première mesure est conservée si la seconde palette utilise un autre périphérique USB. En simulation, le profil corrigé s’arme au repos et les deux palettes passent les rapports.
+- **Diagnostic en petite fenêtre.** Les détails des accessoires défilent jusqu’à la dernière lecture à 683 × 384. Le bouton Fermer reste accessible. Après redimensionnement, le panneau remet en vue le bouton Détails s’il garde le focus.
+- **Validation.** Release x64, 20 tests CTest, trois essais de calibration à 150 ms par lecture et compilation REDscript isolée avec et sans HUD Painter. Les essais simulés de reconnexion et d’Alt+Tab ont confirmé la réactivation du bouton Enregistrer au retour du volant compatible. Le brouillon est conservé et la fenêtre reste utilisable pendant un appel pilote bloqué. Le retour de force sur matériel réel reste à confirmer en jeu.
+
+SHA-256 `af967faee83f1381ff013a7305682f370ea44c5e7ca2b15c38d642966fc37b66`. [ZIP Vortex](out/Chromaxis-0.4.86.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/1ebba1eac5e74b60ccfbc462d93b74ee9015f933)
+
+## Chrome Axis 0.4.85 · 17 novembre 2026
+
+Comparée à la **0.4.84**.
+
+- **Calibration et palettes USB.** Après reconnexion du périphérique sélectionné, l’assistant demande une nouvelle mesure au repos et écarte les lectures antérieures au clic sur Mesurer pour la capture de butée. Le retrait d’un autre appareil préserve la mesure. Une palette « + » validée reste acquise si la capture « − » utilise un second périphérique. En calibration guidée, les trois essais à 150 ms par lecture obtiennent les 15 relevés frais en 2,31 à 2,32 s.
+- **Retour de force et diagnostic.** L’application revérifie la compatibilité du volant après branchement ou débranchement et conserve le brouillon. Les colonnes du diagnostic défilent horizontalement et les quatre actions peuvent tenir sur deux rangées.
+- **CSV et HUD Painter.** Les incidents signalés tardivement et antérieurs au début de la capture restent dans l’historique. Ils sont écartés du tampon du CSV. HUD Painter conserve l’affichage du fichier courant lisible et suspend la sauvegarde si Windows empêche de vérifier le dossier de récupération.
+- **Validation.** Release x64, 20 tests CTest, neuf suites ciblées exécutées trois fois, vérification de l’EXE en français et en anglais et REDscript avec et sans HUD Painter. L’audit simulé a encore reproduit un défaut de réarmement si le repos du même appareil change entre les deux palettes et une liste d’accessoires masquée dans une fenêtre très basse. Ces deux cas sont corrigés en 0.4.86. Les essais avec le T300RS restent à faire en jeu.
+
+SHA-256 `38cba88eaa431427e6340c5974fc938de6af0da19397ca3b6be033695dd6de63`. [ZIP Vortex](out/Chromaxis-0.4.85.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/56a9d48b44fa3f199114a71455e858b2550b013c)
+
+## Chrome Axis 0.4.84 · 17 novembre 2026
+
+Comparée à la **0.4.83**.
+
+- **Calibration USB.** En simulation, la mesure guidée recueille 15 relevés frais à 95 ms par lecture dans les trois essais. Les boutons Capturer et Précédent redeviennent accessibles après expiration même si l’inventaire attend un autre périphérique. Une coupure du périphérique choisi impose de reprendre la mesure au repos pour le frein à main, l’embrayage ou un accessoire analogique. Le retrait d’un autre appareil préserve la mesure.
+- **Réassociation et retour de force.** Le journal permet de restaurer les affectations, les réglages de retour de force et l’état USB via Profil → Restaurer après une réassociation interrompue. Un changement de volant désarme le retour de force de l’ancien volant et conserve ses réglages. Après Alt+Tab, une modification de configuration invalide le conseil de gain et préserve les statistiques déjà relevées.
+- **HUD Painter et CSV.** L’application vérifie le type de la copie de récupération avant de la déplacer. Le CSV écarte les événements antérieurs à la capture et conserve le contexte des appels qui se terminent pendant que le jeu est en arrière-plan.
+- **Validation.** Release x64, 20 tests CTest, sept suites ciblées exécutées trois fois, EXE vérifié en français et en anglais et REDscript avec et sans HUD Painter. Le banc a restauré deux réassociations interrompues. Il a aussi reproduit des limites de capture des palettes après reconnexion, de calibration à 150 ms et de mise en page en fenêtre très basse. Le T300RS reste à vérifier en jeu.
+
+SHA-256 `38f3fcfb815bd8c0a239097b05df7d80cbb2623224a6a9573a74c93ce3d8235b`. [ZIP Vortex](out/Chromaxis-0.4.84.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/902a3e5edc3383c207069208c2ece6a1c4d3573b)
+
 ## Chrome Axis 0.4.83 · 17 novembre 2026
 
 Comparée à la **0.4.82**.
