@@ -6,6 +6,28 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.81 · 17 novembre 2026
+
+Comparée à la **0.4.80**.
+
+- **Sauvegarde concurrente de HUD Painter.** Si le fichier change pendant l’écriture, Chrome Axis récupère la version externe, la relit et fusionne uniquement les couleurs modifiées. Si la restauration devient incertaine, il conserve les deux versions et suspend la sauvegarde en signalant la copie de récupération.
+- **Diagnostic du fichier de couleurs.** Les messages distinguent un verrou temporaire, un fichier vide, un JSON malformé, un fichier de plus de 4 Mio et un échec d’accès ou d’écriture. Les modifications restent en mémoire. Les verrous temporaires sont retentés même après fermeture du panneau.
+- **CSV après Alt+Tab.** Un appel `FFB Stop` encore en cours observé en arrière-plan indique `game_not_foreground`, la voie `feedback` et la durée. L’audit a montré que la ligne de fin peut encore porter l’état `usb`. Certaines copies de récupération à suffixe restent également à détecter au démarrage.
+- **Validation.** Release x64, 19 suites CTest, quatre suites ciblées répétées, dix scénarios HUD Painter sur banc, REDscript sans avertissement avec et sans HUD Painter et CRC des dix fichiers. La persistance des couleurs et le diagnostic CSV après Alt+Tab restent à vérifier en jeu.
+
+SHA-256 `51a03c0aacd5bddf779a81c78fdfbf471cefde7205cc0e274e17adf5aab3073b`. [ZIP Vortex](out/Chromaxis-0.4.81.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/d712e52b549f0c422ae1df7ece55edecb83aebbe)
+
+## Chrome Axis 0.4.80 · 17 novembre 2026
+
+Comparée au ZIP de la **0.4.79**, candidate aux essais.
+
+- **HUD Painter.** Le REDscript corrige l’avertissement de comparaison de références. La lecture ou la sauvegarde peut reprendre après le déverrouillage, panneau fermé. Le JSON est écrit dans un fichier temporaire et vérifié avant remplacement.
+- **Retour de force.** Une consigne valide peut relancer la sortie après un échec d’initialisation ou une exception du pilote. Après Alt+Tab, le diagnostic sépare l’état actuel du dernier état relevé en conduite et nomme les appels DirectInput encore actifs.
+- **Reprise USB et profils.** Le diagnostic et le CSV distinguent l’échec de création du lecteur USB de sa relance. L’application signale une calibration temporairement verrouillée. Un embrayage désactivé ne peut plus autoriser à lui seul l’USB en jeu.
+- **Validation.** Release x64, 19 suites CTest, sept suites ciblées répétées trois fois, REDscript sans avertissement avec et sans HUD Painter et CRC des dix fichiers. Neuf comparaisons simulées .79/.80 ont retrouvé les mêmes commandes au démarrage et après relance. La reprise du matériel et du retour de force après Alt+Tab reste à confirmer en jeu.
+
+SHA-256 `b78c4c27788ce39dd9f4f06cc774c96f7b3f1238fd6472fa0100e928a8a9f1b7`. [ZIP Vortex](out/Chromaxis-0.4.80.zip) · [Commit de livraison sur sa branche](https://github.com/EsterOne001/chrome-axis/commit/0ea113a87df9183a761703a8f2d12162fb7dbc81)
+
 ## Chrome Axis 0.4.78 · 17 novembre 2026
 
 Comparée à la **0.4.77**.
