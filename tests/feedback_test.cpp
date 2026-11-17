@@ -14,6 +14,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <stdexcept>
 #include <tuple>
 
 namespace {
@@ -40,8 +41,9 @@ struct FakeForceDriver {
     };
     static inline State* testState{};
 
-    FakeForceDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver observer, void* context) noexcept
-        : observer(observer), observerContext(context) {}
+    FakeForceDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver observer, void* context,
+                    DirectInputActiveCall* activeCall) noexcept
+        : observer(observer), observerContext(context), activeCall(activeCall) {}
 
     bool ready() const noexcept { return true; }
     WheelForceState wheelForceState() const noexcept { return mode; }
@@ -51,8 +53,10 @@ struct FakeForceDriver {
         if (!initialized) {
             if (++testState->initialized == 1) {
                 const auto start = TestClock::now();
+                activeCall->begin("FFB Acquire");
                 testState->entered.store(true);
                 testState->resume.wait(false);
+                activeCall->end();
                 const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(TestClock::now() - start);
                 observer(observerContext, {DirectInputReadEventKind::slow, id, "FFB Acquire", S_OK,
                     static_cast<std::uint64_t>(duration.count())});
@@ -78,14 +82,15 @@ struct FakeForceDriver {
 
     DirectInputReadObserver observer{};
     void* observerContext{};
+    DirectInputActiveCall* activeCall{};
     bool initialized{};
     WheelForceState mode{WheelForceState::waiting};
 };
 
 template <class Predicate>
-bool waitFor(Predicate&& predicate)
+bool waitFor(Predicate&& predicate, std::chrono::milliseconds timeout = 2s)
 {
-    const auto deadline = TestClock::now() + 2s;
+    const auto deadline = TestClock::now() + timeout;
     while (!predicate()) {
         if (TestClock::now() >= deadline)
             return false;
@@ -141,11 +146,19 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
 
     if (cancel)
         worker.cancel();
+    if (!waitFor([&] {
+            const auto operation = worker.activeOperation();
+            return operation.deviceId.data() == std::string_view(wheel) &&
+                operation.call.overdue(GetTickCount64(), 250) &&
+                operation.call.operation == std::string_view("FFB Acquire");
+        }))
+        return 85;
     const auto latestDeadline = TestClock::now() + (cancel ? 1s : 350ms);
     const std::uint64_t recoveryToken = recover ? 17 : 0;
     if (!worker.submit(window, wheel, 0, 0.25f, {latestDeadline}, 42, false, recoveryToken) ||
         !worker.submit(window, wheel, 0, 0.5f, {latestDeadline}, 42, false, recoveryToken))
         return 53;
+    const auto previousStops = state.stops.load();
     allowDriver();
     std::optional<decltype(worker)::Completion> accepted;
     if (!waitFor([&] {
@@ -160,12 +173,11 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
         return 54;
     const auto slow = worker.nextOperation();
     if (!slow || slow->name.data() != std::string_view("FFB Acquire") || slow->deviceId.data() != wheel ||
-        slow->durationMicros <= 100000)
+        slow->durationMicros <= 100000 || worker.activeOperation().call.operation)
         return 55;
-    const auto previousStops = state.stops.load();
     if (cancel)
         worker.cancel();
-    if (!waitFor([&] { return state.stops.load() > previousStops; }))
+    if (!waitFor([&] { return state.stops.load() >= previousStops + (cancel ? 2u : 1u); }))
         return 56;
     return 0;
 }
@@ -196,6 +208,112 @@ int testStopWhileForceDriverIsBlocked()
         state.started.load() != 0 || state.setupCompleted.load() != 0)
         return 76;
     return 0;
+}
+
+class FailingForceThread {
+public:
+    static inline unsigned int starts{};
+
+    FailingForceThread() = default;
+    explicit FailingForceThread(auto&& action)
+    {
+        if (++starts == 1)
+            throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+        thread_ = std::jthread(std::forward<decltype(action)>(action));
+    }
+
+    bool joinable() const noexcept { return thread_.joinable(); }
+    void request_stop() noexcept { thread_.request_stop(); }
+
+private:
+    std::jthread thread_;
+};
+
+struct RecoveringForceDriver {
+    struct State {
+        std::atomic<unsigned int> calls{};
+        std::atomic<bool> release{};
+        bool failFirst{};
+    };
+    static inline State* state{};
+
+    RecoveringForceDriver(HWND, DirectInputDiagnostic, DirectInputReadObserver, void*,
+                          DirectInputActiveCall*) noexcept {}
+    bool ready() const noexcept { return true; }
+    WheelForceState wheelForceState() const noexcept { return WheelForceState::active; }
+    void stopWheelForce() noexcept {}
+
+    std::optional<float> setWheelForce(std::string_view, std::size_t, float force, WheelForceGuard guard)
+    {
+        if (++state->calls == 1 && state->failFirst) {
+            state->release.wait(false);
+            throw std::runtime_error("Simulated failure of a force feedback worker");
+        }
+        return guard.current(guard.context) ? std::optional{force} : std::nullopt;
+    }
+};
+
+int testForceWorkerRecoversAfterException()
+{
+    RecoveringForceDriver::State state{.failFirst = true};
+    RecoveringForceDriver::state = &state;
+    ForceOutputWorker<TestForceContext, RecoveringForceDriver> worker;
+    struct ReleaseOnExit {
+        std::atomic<bool>& release;
+        ~ReleaseOnExit() { release.store(true); release.notify_one(); }
+    } releaseOnExit{state.release};
+    const auto window = GetDesktopWindow();
+    constexpr std::string_view wheel = "{11111111-1111-1111-1111-111111111111}";
+    const auto generation = worker.generation();
+    const auto deadline = TestClock::now() + 5s;
+    if (!worker.submit(window, wheel, 0, 0.75f, {deadline}) ||
+        !waitFor([&] { return state.calls.load() == 1; }) ||
+        !worker.submit(window, wheel, 0, 0.25f, {deadline}))
+        return 86;
+    state.release.store(true);
+    state.release.notify_one();
+    if (!waitFor([&] { return worker.generation() != generation; }) ||
+        worker.submit(window, wheel, 0, 0.25f, {deadline}))
+        return 87;
+
+    worker.cancel();
+    // The previous queued command still has a valid deadline, so dropping it
+    // requires invalidation, not just the passage of time.
+    const auto submitFresh = [&] {
+        return worker.submit(window, wheel, 0, 0.5f, {TestClock::now() + 1s});
+    };
+    if (!waitFor(submitFresh, 3s))
+        return 88;
+    std::optional<decltype(worker)::Completion> accepted;
+    if (!waitFor([&] {
+            accepted = worker.nextCompletion();
+            return accepted.has_value();
+        }) || accepted->accepted != 0.5f || accepted->generation != worker.generation() ||
+        state.calls.load() != 2)
+        return 89;
+    worker.requestStop();
+    return submitFresh() ? 90 : 0;
+}
+
+int testForceWorkerRetriesFailedStart()
+{
+    RecoveringForceDriver::State state;
+    RecoveringForceDriver::state = &state;
+    FailingForceThread::starts = 0;
+    ForceOutputWorker<TestForceContext, RecoveringForceDriver, FailingForceThread> worker;
+    constexpr std::string_view wheel = "{11111111-1111-1111-1111-111111111111}";
+    const auto submit = [&] {
+        return worker.submit(GetDesktopWindow(), wheel, 0, 0.5f, {TestClock::now() + 1s});
+    };
+    if (submit() || submit() || FailingForceThread::starts != 1 || state.calls.load() != 0)
+        return 91;
+    if (!waitFor(submit, 3s) || FailingForceThread::starts != 2)
+        return 92;
+    std::optional<decltype(worker)::Completion> accepted;
+    return waitFor([&] {
+        accepted = worker.nextCompletion();
+        return accepted.has_value();
+    }) && accepted->accepted == 0.5f && state.calls.load() == 1 ? 0 : 93;
 }
 
 int testProbeAfterAcquisitionIsRefused()
@@ -533,6 +651,10 @@ int main()
     if (const auto result = testProbeAfterAcquisitionIsRefused())
         return result;
     if (const auto result = testStopWhileForceDriverIsBlocked())
+        return result;
+    if (const auto result = testForceWorkerRecoversAfterException())
+        return result;
+    if (const auto result = testForceWorkerRetriesFailedStart())
         return result;
     if (const auto result = testSlowForceDuringIndependentInput(false))
         return result;

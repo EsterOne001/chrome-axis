@@ -88,6 +88,11 @@ enum class DiscreteAccessoryLevel { unavailable, pending, neutral, idle, engaged
 DiscreteAccessoryLevel discreteAccessoryLevel(const AccessoryBinding& binding, const DeviceSample& sample,
                                                bool engaged) noexcept;
 
+constexpr bool isEnabledDrivingAccessory(const AccessoryBinding& binding) noexcept
+{
+    return binding.clutchMode != ClutchMode::off;
+}
+
 void removeDisabledDrivingAccessories(AccessoryProfile& profile);
 
 struct Profile;

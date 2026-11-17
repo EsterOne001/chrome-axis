@@ -11,6 +11,7 @@
 #include <optional>
 #include <ranges>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -18,7 +19,7 @@ namespace chrome_axis {
 
 // Only this worker owns output-side DirectInput objects. The polling thread
 // publishes at most one pending value and never waits for a driver call.
-template <class Context, class Driver = DirectInput>
+template <class Context, class Driver = DirectInput, class WorkerThread = std::jthread>
 class ForceOutputWorker {
     using Clock = std::chrono::steady_clock;
     using DeviceId = std::array<char, 39>;
@@ -43,35 +44,33 @@ public:
         std::uint64_t sampledAt{};
     };
 
+    struct ActiveOperation {
+        DeviceId deviceId{};
+        DirectInputActiveCall::Snapshot call;
+    };
+
     explicit ForceOutputWorker(DirectInputDiagnostic logger = nullptr) noexcept : logger_(logger) {}
 
     bool submit(HWND window, std::string_view id, std::size_t axis, float force, Context validity,
                 std::uint64_t captureId = 0, bool missedCadence = false, std::uint64_t recoveryToken = 0) {
-        if (id.size() != DeviceId{}.size() - 1)
+        if (id.size() != DeviceId{}.size() - 1 || !validity.current())
+            return false;
+        std::unique_lock lock(mutex_);
+        if (stopping_ || Clock::now() < nextRequestAt_)
             return false;
         if (!worker_.joinable()) {
             try {
-                worker_ = std::jthread([this](std::stop_token stop) {
-                    try {
-                        run(stop);
-                    } catch (...) {
-                        failed_.store(true, std::memory_order_release);
-                    }
-                });
+                worker_ = WorkerThread([this](std::stop_token stop) { runRecovering(stop); });
             } catch (const std::system_error&) {
-                failed_.store(true, std::memory_order_release);
+                nextRequestAt_ = Clock::now() + retryDelay;
+                return false;
             }
         }
-        if (failed_.load(std::memory_order_acquire))
-            return false;
-        Request request{window, {}, axis, force, std::move(validity), 0, captureId, recoveryToken, missedCadence};
+        Request request{window, {}, axis, force, std::move(validity), generation(), captureId, recoveryToken, missedCadence};
         std::ranges::copy(id, request.id.begin());
-        {
-            std::scoped_lock lock(mutex_);
-            request.generation = generation();
-            pending_ = std::move(request);
-            enabled_ = true;
-        }
+        pending_ = std::move(request);
+        enabled_ = true;
+        lock.unlock();
         changed_.notify_one();
         return true;
     }
@@ -81,15 +80,18 @@ public:
             std::scoped_lock lock(mutex_);
             if (!enabled_)
                 return;
-            enabled_ = false;
-            pending_.reset();
-            generation_.fetch_add(1, std::memory_order_release);
+            invalidateRequests();
         }
         changed_.notify_one();
     }
 
     void requestStop() {
-        cancel();
+        {
+            std::scoped_lock lock(mutex_);
+            stopping_ = true;
+            if (enabled_)
+                invalidateRequests();
+        }
         worker_.request_stop();
     }
 
@@ -103,6 +105,11 @@ public:
     std::optional<Operation> nextOperation() {
         std::scoped_lock lock(mutex_);
         return operations_.pop();
+    }
+
+    ActiveOperation activeOperation() {
+        std::scoped_lock lock(mutex_);
+        return {activeDevice_, activeCall_.snapshot()};
     }
 
 private:
@@ -187,9 +194,30 @@ private:
         worker.operations_.push(operation);
     }
 
+    void invalidateRequests() noexcept {
+        enabled_ = false;
+        pending_.reset();
+        generation_.fetch_add(1, std::memory_order_release);
+    }
+
+    void runRecovering(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            try {
+                run(stop);
+            } catch (...) {
+                // The failed driver is gone. Discard every queued command from
+                // its generation and wait for a fresh command after the delay.
+                std::scoped_lock lock(mutex_);
+                invalidateRequests();
+                nextRequestAt_ = Clock::now() + retryDelay;
+            }
+        }
+    }
+
     void run(std::stop_token stop) {
         std::optional<Driver> driver;
         HWND window{};
+        DeviceId deviceId{};
         std::uint64_t observedGeneration = generation();
         auto deadline = Clock::time_point::max();
         Clock::time_point retryAt{};
@@ -234,8 +262,13 @@ private:
                 recoveryToken = request->recoveryToken;
                 retryAt = {};
             }
+            if (request->id != deviceId) {
+                deviceId = request->id;
+                std::scoped_lock lock(mutex_);
+                activeDevice_ = deviceId;
+            }
             if (!driver && started >= retryAt) {
-                driver.emplace(window, logger_, &observe, this);
+                driver.emplace(window, logger_, &observe, this, &activeCall_);
                 if (!driver->ready()) {
                     driver.reset();
                     retryAt = Clock::now() + retryDelay;
@@ -264,14 +297,17 @@ private:
 
     DirectInputDiagnostic logger_{};
     std::atomic<std::uint64_t> generation_{};
-    std::atomic<bool> failed_{};
     std::mutex mutex_;
     std::condition_variable_any changed_;
     std::optional<Request> pending_;
     Recent<Completion, 8> completions_;
     Recent<Operation, 16> operations_;
+    DirectInputActiveCall activeCall_;
+    DeviceId activeDevice_{};
+    Clock::time_point nextRequestAt_{};
     bool enabled_{};
-    std::jthread worker_;
+    bool stopping_{};
+    WorkerThread worker_;
 };
 
 } // namespace chrome_axis

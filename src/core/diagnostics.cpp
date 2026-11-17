@@ -34,7 +34,7 @@ struct DiagnosticFrame {
 
 namespace {
 
-constexpr LONG64 protocolVersion = 21;
+constexpr LONG64 protocolVersion = 22;
 constexpr std::uint64_t heartbeatLifetime = 1500;
 constexpr std::uint64_t performanceLease = 5000;
 constexpr std::uint64_t drivingCaptureInterval = 25; // ms, with immediate transmission changes.
@@ -47,7 +47,7 @@ void close(HANDLE handle) noexcept
         CloseHandle(handle);
 }
 
-constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v21.";
+constexpr wchar_t diagnosticChannelPrefix[] = L"Local\\ChromeAxis.Diagnostics.v22.";
 
 template <class T, std::size_t Size>
 std::string_view csvToken(T value, const std::array<std::string_view, Size>& tokens) noexcept
@@ -73,13 +73,13 @@ constexpr std::array<std::string_view, 10> axisTokens{
     "unassigned", "device_unavailable", "axis_unavailable", "waiting_for_neutral", "armed", "awaiting_profile",
     "inactive", "simulated", "sample_expired", "temporarily_unavailable"
 };
-constexpr std::array<std::string_view, 17> usbTokens{
+constexpr std::array<std::string_view, 19> usbTokens{
     "device_slow", "device_pending", "device_unavailable", "device_recovered", "poll_expired", "poll_gap",
     "commands_waiting", "commands_ready", "context_changed", "menu_paused", "directinput_reopened",
     "discrete_overflow", "layout_pending", "layout_acquire_denied", "layout_missing", "layout_recovered",
-    "operation_running"
+    "operation_running", "worker_start_failed", "worker_started"
 };
-constexpr std::array<std::string_view, 2> usbLaneTokens{"reader", "probe"};
+constexpr std::array<std::string_view, 3> usbLaneTokens{"reader", "probe", "feedback"};
 constexpr std::array<std::string_view, 13> accessoryTokens{
     "unconfigured", "waiting", "ready", "profile_error", "inactive", "blocked", "device_unavailable",
     "input_unavailable", "sample_expired", "temporarily_unavailable", "axis_conflict", "modifier_blocked",
@@ -103,8 +103,8 @@ static_assert(modeTokens.size() == static_cast<std::size_t>(DiagnosticMode::simu
 static_assert(feedbackTokens.size() == static_cast<std::size_t>(DiagnosticFeedbackState::settingsInvalid) + 1);
 static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftState::selectorAmbiguous) + 1);
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::temporarilyUnavailable) + 1);
-static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::operationRunning) + 1);
-static_assert(usbLaneTokens.size() == static_cast<std::size_t>(DiagnosticUsbLane::probe) + 1);
+static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::workerStarted) + 1);
+static_assert(usbLaneTokens.size() == static_cast<std::size_t>(DiagnosticUsbLane::feedback) + 1);
 static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::selectorAmbiguous) + 1);
 static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::sampleExpired) + 1);
 static_assert(shortcutSourceTokens.size() == static_cast<std::size_t>(DiagnosticShortcutSource::poll) + 1);

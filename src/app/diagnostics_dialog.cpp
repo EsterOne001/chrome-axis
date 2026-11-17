@@ -395,15 +395,8 @@ AccessoryView accessoryView(const DiagnosticRead& read)
 
 const wchar_t* currentFeedbackChange(const DiagnosticRead& read, const AccessoryView& view)
 {
-    const auto settingsIssue = [](DiagnosticFeedbackState state) {
-        return state == DiagnosticFeedbackState::settingsLocked || state == DiagnosticFeedbackState::settingsUnavailable ||
-            state == DiagnosticFeedbackState::settingsInvalid;
-    };
-    const auto current = read.snapshot.feedback;
-    const auto displayed = view.snapshot.feedback;
-    if (view.historical && read.connection == DiagnosticConnection::connected && current != displayed &&
-        (settingsIssue(current) || settingsIssue(displayed)))
-        return feedbackText(current);
+    if (view.historical && read.connection == DiagnosticConnection::connected && read.snapshot.feedback != view.snapshot.feedback)
+        return feedbackText(read.snapshot.feedback);
     return nullptr;
 }
 
@@ -565,6 +558,7 @@ const wchar_t* usbLaneText(DiagnosticUsbLane lane)
     switch (lane) {
     case DiagnosticUsbLane::reader: return tr(Text::DlgDiagnosticsUsbLaneReader);
     case DiagnosticUsbLane::probe: return tr(Text::DlgDiagnosticsUsbLaneProbe);
+    case DiagnosticUsbLane::feedback: return tr(Text::DlgDiagnosticsUsbLaneFeedback);
     }
     return unavailableValue;
 }
@@ -589,6 +583,8 @@ const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event, bool live = false)
     case DiagnosticUsbEventKind::layoutAcquireDenied: return tr(Text::DlgDiagnosticsUsbEventLayoutAcquireDenied);
     case DiagnosticUsbEventKind::layoutMissing: return tr(Text::DlgDiagnosticsUsbEventLayoutMissing);
     case DiagnosticUsbEventKind::layoutRecovered: return tr(Text::DlgDiagnosticsUsbEventLayoutRecovered);
+    case DiagnosticUsbEventKind::workerStartFailed: return tr(Text::DlgDiagnosticsUsbWorkerStartFailed);
+    case DiagnosticUsbEventKind::workerStarted: return tr(Text::DlgDiagnosticsUsbWorkerStarted);
     case DiagnosticUsbEventKind::operationRunning:
         return tr(live ? Text::DlgDiagnosticsUsbEventOperationRunning : Text::DlgDiagnosticsUsbEventOperationObserved);
     }
@@ -650,6 +646,8 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     case DiagnosticUsbEventKind::layoutAcquireDenied:
     case DiagnosticUsbEventKind::layoutMissing:
     case DiagnosticUsbEventKind::layoutRecovered:
+    case DiagnosticUsbEventKind::workerStartFailed:
+    case DiagnosticUsbEventKind::workerStarted:
     case DiagnosticUsbEventKind::operationRunning:
     case DiagnosticUsbEventKind::discreteOverflow: {
         const auto id = bounded(event.deviceId);
@@ -671,7 +669,7 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
         if (!running && event.kind != DiagnosticUsbEventKind::discreteOverflow)
             appendOperation();
         if (event.kind == DiagnosticUsbEventKind::deviceUnavailable || event.kind == DiagnosticUsbEventKind::devicePending ||
-            usbLayoutFailureCode(event))
+            event.kind == DiagnosticUsbEventKind::workerStartFailed || usbLayoutFailureCode(event))
             append(std::format(L"0x{:08X}", event.result));
         break;
     }
@@ -1452,8 +1450,10 @@ void refresh(HWND window, DialogState& state)
     if (!state.missingFiles && state.versionMismatch.empty()) {
         if (connected && read.usbOperationCount) {
             const auto calls = std::span(read.usbOperations).first(read.usbOperationCount);
-            const auto longest = std::ranges::min_element(calls, {}, &DiagnosticUsbOperation::startedAt);
-            const auto event = usbOperationEvent(*longest, now);
+            const auto feedback = std::ranges::find(calls, DiagnosticUsbLane::feedback, &DiagnosticUsbOperation::lane);
+            const auto highlighted = feedback != calls.end() ? feedback
+                : std::ranges::min_element(calls, {}, &DiagnosticUsbOperation::startedAt);
+            const auto event = usbOperationEvent(*highlighted, now);
             auto detail = std::wstring(usbEventTitle(event, true)) + usbEventDetails(event, state.devices);
             if (calls.size() > 1)
                 detail += L" · +" + std::to_wstring(calls.size() - 1);
@@ -1466,7 +1466,7 @@ void refresh(HWND window, DialogState& state)
                 detail += usbEventDetails(latest, state.devices);
             } else {
                 detail += L" · " + eventAge(latest.sampledAt, now);
-                if (usbLayoutFailureCode(latest))
+                if (usbLayoutFailureCode(latest) || latest.kind == DiagnosticUsbEventKind::workerStartFailed)
                     detail += std::format(L" · 0x{:08X}", latest.result);
             }
             if (latest.kind == DiagnosticUsbEventKind::commandsWaiting &&
@@ -1526,10 +1526,11 @@ void refresh(HWND window, DialogState& state)
     setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_TRAVEL, showClutch && snapshot.mode == DiagnosticMode::usb
         ? std::wstring(tr(Text::DlgDiagnosticsClutchRawTravel)) + L" " + clutchTravelSummary(snapshot.clutch)
         : L"");
-    std::wstring feedback = showControls ? feedbackStatus(snapshot) : unavailableValue;
-    if (const auto* currentFeedback = currentFeedbackChange(read, view))
-        feedback += L" · " + std::wstring(tr(Text::DlgDiagnosticsCommandCurrent)) + L" — " + currentFeedback;
-    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, feedback);
+    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
+    const auto* currentFeedback = currentFeedbackChange(read, view);
+    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK_CURRENT, currentFeedback
+        ? std::wstring(tr(Text::DlgDiagnosticsFeedbackCurrent)) + L" — " + currentFeedback
+        : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
     setChangedText(window, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");
     refreshPerformance(window, state, read);

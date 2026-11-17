@@ -129,17 +129,17 @@ public:
                     continue;
                 }
                 const auto retry = startRetries_.find(device.id);
-                if (retry != startRetries_.end() && Clock::now() < retry->second) {
+                const bool recovering = retry != startRetries_.end();
+                if (recovering && Clock::now() < retry->second) {
                     configured = false;
                     continue;
                 }
-                auto worker = tryStartWorker(device.id);
+                auto worker = tryStartWorker(device.id, recovering);
                 if (!worker) {
                     startRetries_.insert_or_assign(device.id, Clock::now() + workerRetryDelay);
                     configured = false;
                     continue;
                 }
-                const bool recovering = retry != startRetries_.end();
                 if (recovering)
                     startRetries_.erase(retry);
                 found = active_.try_emplace(device.id, Entry{.worker = std::move(worker), .needsRearm = recovering}).first;
@@ -183,10 +183,13 @@ public:
             auto& report = entry.report;
             if (entry.worker->finished() && entry.config.active && now >= entry.restartAfter) {
                 entry.restartAfter = now + workerRetryDelay;
-                if (auto replacement = tryStartWorker(id)) {
+                if (auto replacement = tryStartWorker(id, entry.startFailed)) {
                     replacement->configure(entry.config);
                     entry.worker = std::move(replacement);
                     entry.needsRearm = true;
+                    entry.startFailed = false;
+                } else {
+                    entry.startFailed = true;
                 }
             }
             const auto start = replays_.size();
@@ -303,6 +306,9 @@ public:
 
     template <class Visit>
     void drainEvents(Visit&& visit) {
+        for (const auto& [id, event] : workerStartEvents_)
+            visit(id, event);
+        workerStartEvents_.clear();
         for (auto& [id, entry] : active_)
             while (const auto event = entry.worker->nextEvent())
                 visit(id, *event);
@@ -659,13 +665,33 @@ private:
         WorkerThread thread_;
     };
 
-    std::unique_ptr<Worker> tryStartWorker(const std::string& id) {
+    std::unique_ptr<Worker> tryStartWorker(const std::string& id, bool retrying) {
+        std::unique_ptr<Worker> worker;
         try {
-            return std::make_unique<Worker>(id, interval_, lifetime_, logger_);
-        } catch (const std::system_error&) {
+            worker = std::make_unique<Worker>(id, interval_, lifetime_, logger_);
+        } catch (const std::system_error& error) {
             // A thread startup failure on one device leaves the other readers available.
+            if (!retrying) {
+                const auto code = error.code();
+                const HRESULT result = code.category() == std::system_category() ? HRESULT_FROM_WIN32(code.value())
+                    : code == std::errc::resource_unavailable_try_again ? HRESULT_FROM_WIN32(ERROR_NO_SYSTEM_RESOURCES)
+                    : E_FAIL;
+                recordWorkerStart(id, false, result);
+            }
             return {};
         }
+        if (retrying)
+            recordWorkerStart(id, true, S_OK);
+        return worker;
+    }
+
+    void recordWorkerStart(const std::string& id, bool started, HRESULT result) {
+        const auto kind = started ? DirectInputReadEventKind::workerStarted : DirectInputReadEventKind::workerStartFailed;
+        Event event{.kind = kind, .result = result, .sampledAt = GetTickCount64()};
+        std::ranges::copy(usbReaderStartOperation, event.operation.begin());
+        workerStartEvents_.emplace_back(id, event);
+        if (logger_)
+            logger_(id, usbReaderStartOperation, result, started);
     }
 
     struct Entry {
@@ -677,6 +703,7 @@ private:
         Clock::time_point restartAfter{};
         std::uint64_t seenLoss{};
         bool needsRearm{};
+        bool startFailed{};
         bool resetAccessories{};
         bool disruptedAccessories{};
     };
@@ -694,6 +721,7 @@ private:
     DirectInputDiagnostic logger_{};
     std::unordered_map<std::string, Entry> active_;
     std::unordered_map<std::string, Clock::time_point> startRetries_;
+    std::vector<std::pair<std::string, Event>> workerStartEvents_;
     std::array<Entry*, 2> splitPaddles_{}; // Node addresses survive rehash; configure rebuilds the pair.
     std::vector<std::unique_ptr<Worker>> retired_;
     std::vector<Replay> replays_;

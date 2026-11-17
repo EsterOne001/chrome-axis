@@ -671,7 +671,7 @@ bool AccessoryReader::ready() const noexcept
 
 void removeDisabledDrivingAccessories(AccessoryProfile& profile)
 {
-    std::erase_if(profile, [](const AccessoryBinding& binding) { return binding.clutchMode == ClutchMode::off; });
+    std::erase_if(profile, [](const AccessoryBinding& binding) { return !isEnabledDrivingAccessory(binding); });
 }
 
 AccessoryReadiness AccessoryReader::readiness(bool nativeSelectorUsable) const noexcept

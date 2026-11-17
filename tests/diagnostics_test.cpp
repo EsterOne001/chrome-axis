@@ -456,16 +456,18 @@ bool testUsbOperations(const std::filesystem::path& root)
         };
         const auto readerCall = operation(tick - 1000, "GetDeviceState", DiagnosticUsbLane::reader);
         const auto probeCall = operation(tick - 700, "Probe GetObjectInfo axis", DiagnosticUsbLane::probe);
+        const auto forceCall = operation(tick - 500, "FFB SetParameters", DiagnosticUsbLane::feedback);
         const auto shortCall = operation(tick + 60000, "Poll", DiagnosticUsbLane::reader);
-        std::array calls{readerCall, probeCall, shortCall};
+        std::array calls{readerCall, probeCall, forceCall, shortCall};
         publisher.updateUsbOperations(calls);
         publisher.updateUsbOperations(calls);
         const DiagnosticSnapshot background{.mode = DiagnosticMode::gameNotForeground};
         publisher.publish(background);
         const auto started = reader.read();
-        if (started.usbOperationCount != 2 || started.usbEventCount != 2 ||
+        if (started.usbOperationCount != 3 || started.usbEventCount != 3 ||
             started.usbOperations[0].startedAt != readerCall.startedAt ||
             started.usbOperations[1].lane != DiagnosticUsbLane::probe ||
+            started.usbOperations[2].lane != DiagnosticUsbLane::feedback ||
             started.lastDriveAt != driveAt || started.lastDrive.axes[0].value != 0.25f)
             return false;
         for (std::size_t i = 0; i <= started.usbEvents.size(); ++i)
@@ -473,7 +475,7 @@ bool testUsbOperations(const std::filesystem::path& root)
         publisher.updateUsbOperations(calls);
         publisher.publish(background);
         const auto retained = reader.read();
-        if (retained.usbOperationCount != 2 || retained.usbEventCount != retained.usbEvents.size() ||
+        if (retained.usbOperationCount != 3 || retained.usbEventCount != retained.usbEvents.size() ||
             std::ranges::any_of(retained.usbEvents, [](const auto& event) {
                 return event.kind == DiagnosticUsbEventKind::operationRunning;
             }))
@@ -489,14 +491,15 @@ bool testUsbOperations(const std::filesystem::path& root)
         publisher.updateUsbOperations(calls);
         publisher.publish(background);
         const auto progressed = reader.read();
-        if (progressed.usbOperationCount != 2 || progressed.usbOperations[0].operation != calls[0].operation)
+        if (progressed.usbOperationCount != 3 || progressed.usbOperations[0].operation != calls[0].operation)
             return false;
 
         std::array<DiagnosticCaptureRecord, 8> rows;
         const auto stream = reader.drainCapture(rows);
-        if (stream.count != 3 || rows[0].usb.operation != readerCall.operation ||
-            rows[1].usb.operation != probeCall.operation || rows[2].usb.operation != calls[0].operation ||
-            rows[0].usb.durationMicros < 1000000 || rows[2].usb.durationMicros < 350000)
+        if (stream.count != 4 || rows[0].usb.operation != readerCall.operation ||
+            rows[1].usb.operation != probeCall.operation || rows[2].usb.operation != forceCall.operation ||
+            rows[3].usb.operation != calls[0].operation || rows[0].usb.durationMicros < 1000000 ||
+            rows[3].usb.durationMicros < 350000)
             return false;
         std::ostringstream csv;
         writeDiagnosticCaptureRows(csv, std::span(rows).first(stream.count), tick);
@@ -505,7 +508,9 @@ bool testUsbOperations(const std::filesystem::path& root)
             text.find(",operation_running,\"GetDeviceState\",,") == std::string::npos ||
             text.find(",operation_running,\"Probe GetObjectInfo axis\",,") == std::string::npos ||
             text.find(",operation_running,\"Acquire\",,") == std::string::npos ||
-            text.find(",reader,\r\n") == std::string::npos || text.find(",probe,\r\n") == std::string::npos)
+            text.find(",operation_running,\"FFB SetParameters\",,") == std::string::npos ||
+            text.find(",reader,\r\n") == std::string::npos || text.find(",probe,\r\n") == std::string::npos ||
+            text.find(",feedback,\r\n") == std::string::npos)
             return false;
 
         publisher.updateUsbOperations({});
@@ -514,7 +519,7 @@ bool testUsbOperations(const std::filesystem::path& root)
             return false;
         publisher.updateUsbOperations(calls);
         publisher.publish(background);
-        if (reader.read().usbOperationCount != 2)
+        if (reader.read().usbOperationCount != 3)
             return false;
     }
     const auto closed = reader.read();

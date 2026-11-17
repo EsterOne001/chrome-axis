@@ -10,6 +10,7 @@
 #include "deferred_driver_cleanup.hpp"
 #include "driving_inputs.hpp"
 #include "force_output_worker.hpp"
+#include "hud_color_storage.hpp"
 #include "manual_transmission_backend.hpp"
 #include "manual_transmission_input.hpp"
 #include "transmission_hotkey.hpp"
@@ -222,6 +223,7 @@ std::atomic<bool> appliedInput{};
 std::atomic<bool> appliedSimulation{};
 RED4ext::v1::PluginHandle plugin{};
 const RED4ext::v1::Sdk* sdk{};
+std::filesystem::path hudStorageGameRoot;
 void* hookTarget{};
 void* originalUpdate{};
 std::mutex driverLogMutex;
@@ -269,7 +271,10 @@ void logDirectInput(std::string_view deviceId, std::string_view stage, HRESULT r
     }
     const auto length = static_cast<int>(deviceId.size());
     if (available) {
-        sdk->logger->InfoF(plugin, "USB device %.*s: reading input.", length, deviceId.data());
+        const auto* message = stage == chrome_axis::usbReaderStartOperation
+            ? "USB device %.*s: reader thread restarted; waiting for input."
+            : "USB device %.*s: reading input.";
+        sdk->logger->InfoF(plugin, message, length, deviceId.data());
     } else {
         sdk->logger->WarnF(plugin, "USB device %.*s: %.*s did not provide input (0x%08lX).",
                            length, deviceId.data(), static_cast<int>(stage.size()), stage.data(),
@@ -1011,6 +1016,23 @@ void transmissionForHud(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std:
     }
 }
 
+void commitHudColors(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* out, std::int64_t) {
+    RED4ext::CString json, previousJson;
+    bool existed{};
+    RED4ext::GetParameter(frame, &json);
+    RED4ext::GetParameter(frame, &previousJson);
+    RED4ext::GetParameter(frame, &existed);
+    ++frame->code;
+    if (!out)
+        return;
+    try {
+        *out = chrome_axis::commitHudColors(hudStorageGameRoot, {json.c_str(), json.Length()},
+                                          {previousJson.c_str(), previousJson.Length()}, existed);
+    } catch (const std::exception&) {
+        *out = false;
+    }
+}
+
 void registerNative() {
     auto* rtti = RED4ext::CRTTISystem::Get();
     constexpr auto name = "ChromeAxis_DriverHeartbeat";
@@ -1065,6 +1087,15 @@ void registerNative() {
     impact->AddParam("Float", "velocityChange");
     impact->AddParam("Float", "lateral");
     rtti->RegisterFunction(impact);
+
+    constexpr auto colorsName = "ChromeAxis_CommitHudColors";
+    auto* colors = RED4ext::CGlobalFunction::Create(colorsName, colorsName, &commitHudColors);
+    colors->flags = {.isNative = true, .isStatic = true};
+    colors->AddParam("String", "json");
+    colors->AddParam("String", "previousJson");
+    colors->AddParam("Bool", "existed");
+    colors->SetReturnType("Bool");
+    rtti->RegisterFunction(colors);
     info("Driver context native registered.");
 }
 
@@ -1457,6 +1488,8 @@ struct UsbReadDiagnostics {
         case ReadKind::layoutAcquireDenied: kind = DiagnosticUsbEventKind::layoutAcquireDenied; break;
         case ReadKind::layoutMissing: kind = DiagnosticUsbEventKind::layoutMissing; break;
         case ReadKind::layoutRecovered: kind = DiagnosticUsbEventKind::layoutRecovered; break;
+        case ReadKind::workerStartFailed: kind = DiagnosticUsbEventKind::workerStartFailed; break;
+        case ReadKind::workerStarted: kind = DiagnosticUsbEventKind::workerStarted; break;
         }
         DiagnosticUsbEvent event{.sampledAt = tick, .durationMicros = read.durationMicros,
                                  .result = static_cast<std::uint32_t>(read.result), .kind = kind,
@@ -1637,6 +1670,13 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool gameForeground = foregroundGameWindow() != nullptr;
         auto snapshot = diagnostic;
         std::size_t activeOperationCount = 0;
+        // Reserve the force feedback lane even if readers fill the remaining slots.
+        const auto feedbackOperation = workers.force.activeOperation();
+        if (feedbackOperation.call.overdue(GetTickCount64(), 250)) {
+            auto& entry = usbOperations[activeOperationCount++];
+            entry = {.startedAt = feedbackOperation.call.startedAt, .lane = chrome_axis::DiagnosticUsbLane::feedback};
+            usbReadDiagnostics->describeDevice(entry, feedbackOperation.deviceId.data(), feedbackOperation.call.operation);
+        }
         if (workers.input) {
             workers.input->visitActiveCalls([&](std::string_view id, std::string_view operation,
                                                 std::uint64_t startedAt, bool layoutProbe) {
@@ -2998,6 +3038,7 @@ bool startPlugin() {
             invalidateFrames();
         }
     });
+    hudStorageGameRoot = chrome_axis::installedGameRoot(directory);
     if (!sdk->scripts->Add(plugin, script.c_str())) {
         warn("RED4ext could not register the driving context script. Analog input disabled.");
         return false;

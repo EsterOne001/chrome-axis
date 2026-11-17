@@ -69,8 +69,10 @@ using DirectInputDiagnostic = void (*)(std::string_view deviceId, std::string_vi
 
 enum class DirectInputReadEventKind : std::uint8_t {
     slow, pending, unavailable, recovered, sampleExpired, discreteOverflow,
-    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered
+    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered, workerStartFailed, workerStarted
 };
+
+inline constexpr std::string_view usbReaderStartOperation = "Start USB reader thread";
 
 struct DirectInputReadEvent {
     DirectInputReadEventKind kind{};

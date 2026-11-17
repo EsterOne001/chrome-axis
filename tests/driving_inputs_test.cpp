@@ -91,9 +91,9 @@ struct TestDriver {
 };
 
 template <class Action>
-bool waitUntil(Action&& action)
+bool waitUntil(Action&& action, Clock::duration timeout = 2s)
 {
-    const auto until = Clock::now() + 2s;
+    const auto until = Clock::now() + timeout;
     do {
         if (action())
             return true;
@@ -102,18 +102,19 @@ bool waitUntil(Action&& action)
     return false;
 }
 
-class FailFirstThread {
+class FailReaderTwice {
 public:
     static inline unsigned int starts{};
 
-    explicit FailFirstThread(auto&& task) : thread_(launch(std::forward<decltype(task)>(task))) {}
+    explicit FailReaderTwice(auto&& task) : thread_(launch(std::forward<decltype(task)>(task))) {}
 
     void request_stop() noexcept { thread_.request_stop(); }
 
 private:
     static std::jthread launch(auto&& task)
     {
-        if (++starts == 1)
+        // Let the brake start between the two failed attempts to open the wheel reader.
+        if (++starts == 1 || starts == 3)
             throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
         return std::jthread(std::forward<decltype(task)>(task));
     }
@@ -126,14 +127,14 @@ int checkInitialThreadFailure()
     TestDriver::State fake;
     fake.wheelPosition = 750;
     TestDriver::state = &fake;
-    FailFirstThread::starts = 0;
-    DrivingInputs<TestDriver, FailFirstThread> input(5ms, 100ms);
+    FailReaderTwice::starts = 0;
+    DrivingInputs<TestDriver, FailReaderTwice> input(5ms, 100ms);
     std::array devices{DrivingInputDevice{wheel, {}}, DrivingInputDevice{pedals, {}}};
     for (auto& device : devices)
         device.objects.axes.set(0);
     const auto window = GetDesktopWindow();
     const auto configure = [&] { return input.configure(window, devices); };
-    if (configure() || FailFirstThread::starts != 2 || configure() || FailFirstThread::starts != 2)
+    if (configure() || FailReaderTwice::starts != 2 || configure() || FailReaderTwice::starts != 2)
         return 61;
 
     Profile profile;
@@ -155,8 +156,21 @@ int checkInitialThreadFailure()
             const bool configured = configure();
             brakeInterrupted |= poll().values.brake != 1.0f;
             return configured && controls.axisStatuses()[0] == AxisStatus::waitingForNeutral;
-        }) || brakeInterrupted || FailFirstThread::starts != 3)
+        }, 4s) || brakeInterrupted || FailReaderTwice::starts != 4)
         return 64;
+
+    std::vector<DirectInputReadEventKind> startupEvents;
+    bool validStartupEvents = true;
+    input.drainEvents([&](const auto& id, const auto& event) {
+        startupEvents.push_back(event.kind);
+        const HRESULT expected = event.kind == DirectInputReadEventKind::workerStartFailed
+            ? HRESULT_FROM_WIN32(ERROR_NO_SYSTEM_RESOURCES) : S_OK;
+        validStartupEvents &= id == wheel && event.operation.data() == usbReaderStartOperation &&
+            event.sampledAt != 0 && event.result == expected;
+    });
+    if (!validStartupEvents || startupEvents != std::vector{DirectInputReadEventKind::workerStartFailed,
+                                                           DirectInputReadEventKind::workerStarted})
+        return 66;
 
     fake.wheelPosition = 0;
     return waitUntil([&] {

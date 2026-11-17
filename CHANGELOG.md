@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.80
+
+- HUD Painter reprend la lecture des couleurs après déverrouillage, y compris menu fermé. Les écritures reprennent lors d’un changement de session et utilisent un fichier temporaire vérifié avant de remplacer le JSON. Les rappels comparent deux références de même type.
+- Le retour de force peut reprendre après l’arrêt de son thread. La fenêtre Diagnostic signale les appels de force encore en cours et affiche l’état actuel sur une ligne dédiée lorsqu’un relevé de conduite est affiché.
+- Le diagnostic et le CSV distinguent un échec de démarrage du lecteur USB et sa relance. L’application exige une commande exploitable avant d’autoriser l’USB et signale un verrou temporaire de calibration.
+
+[ZIP Vortex](out/Chromaxis-0.4.80.zip)
+
 ## Chrome Axis 0.4.79
 
 - Le diagnostic du retour de force distingue une désactivation, des réglages verrouillés, illisibles ou invalides, et l’attente de données du véhicule ou du pilote. La cause figure aussi dans le rapport et l’export CSV.

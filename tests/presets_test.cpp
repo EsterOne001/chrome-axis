@@ -57,6 +57,53 @@ std::string readBytes(const std::filesystem::path& path)
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+bool testUsbActivation(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto root = fixture / L"USB activation" / L"Profil";
+    std::filesystem::create_directories(root);
+    const auto preset = activePreset(root);
+    const auto axesFile = root / profileFilename;
+    const auto accessoriesFile = root / accessoryFilename;
+    const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
+    const Profile calibration{{wheel, 0, 500, 0, 1000, 0.0f}};
+    AccessoryProfile bindings{{.deviceId = wheel, .kind = AccessoryKind::Axis, .index = 1,
+                               .rest = 0, .engaged = 1000, .clutchMode = ClutchMode::off}};
+    std::string error;
+    const auto activate = [&] {
+        return savePresetSettings(root, preset, {}, [&] {
+            return readUsbActivation(root) == UsbActivationStatus::ready && setUsbEnabled(root, true, error);
+        });
+    };
+    if (!check(saveAccessoryProfile(accessoriesFile, bindings, error) &&
+               activate() == PresetSaveResult::ioError && !usbEnabled(root),
+               "A saved but disabled clutch must not enable USB on its own")
+        || !check(loadEditorAccessories(accessoriesFile, error) == bindings,
+                  "Rejecting USB activation must preserve the disabled clutch settings")
+        || !check(saveProfile(axesFile, calibration, error), "Could not write the activation fixture calibration"))
+        return false;
+
+    {
+        const auto handle = CreateFileW(axesFile.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!check(handle != INVALID_HANDLE_VALUE, "Could not lock the fixture calibration"))
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> lock(handle, &CloseHandle);
+        if (!check(readEditorCalibration(axesFile).locked && readUsbActivation(root) == UsbActivationStatus::calibrationLocked
+                   && activate() == PresetSaveResult::ioError && !usbEnabled(root),
+                   "A locked calibration without an active accessory must be reported as locked"))
+            return false;
+        bindings.front().clutchMode = ClutchMode::assist;
+        if (!check(saveAccessoryProfile(accessoriesFile, bindings, error) && activate() == PresetSaveResult::saved &&
+                   usbEnabled(root) && setUsbEnabled(root, false, error),
+                   "An active accessory can enable USB while the calibration is locked"))
+            return false;
+    }
+    bindings.front().clutchMode = ClutchMode::off;
+    return check(saveAccessoryProfile(accessoriesFile, bindings, error) && activate() == PresetSaveResult::saved &&
+                 usbEnabled(root), "The unchanged calibration must enable USB after it is unlocked");
+}
+
 bool testEditorFileLocks(const std::filesystem::path& fixture)
 {
     using namespace chrome_axis;
@@ -760,6 +807,6 @@ int main()
     const bool passed = check(activePreset(root).directory.empty(), "Corrupt selection must not activate a different profile")
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
         && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory)
-        && testEditorFileLocks(directory);
+        && testEditorFileLocks(directory) && testUsbActivation(directory);
     return fixture.cleanup() && passed ? 0 : 1;
 }

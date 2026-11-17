@@ -995,7 +995,10 @@ private:
         return !simulation_ && !calibrating_ && (draft_[channel]
             ? readDeadzone(zones_[channel], channel == 0).has_value() : channel != 0);
     }
-    bool canToggleUsb() const { return usbEnabled_ || (!calibrating_ && (saved_ || !accessoryPreview_.bindings().empty())); }
+    bool canToggleUsb() const {
+        return usbEnabled_ || (!calibrating_ && (saved_ ||
+            std::ranges::any_of(accessoryPreview_.bindings(), chrome_axis::isEnabledDrivingAccessory)));
+    }
     bool clearAnalogProfile() const
     {
         return saved_ && deviceId(0).empty() && deviceId(1).empty() && deviceId(2).empty();
@@ -1514,7 +1517,8 @@ void App::readProfile()
     const bool preserveDraft = sameProfile && profileReadProblem_ && dirty_ && snapshot.revision
         && snapshot.revision == profileRevision_;
     profileReadProblem_ = path.empty() ? std::optional{Text::mainActiveProfileMissing}
-        : !snapshot.revision ? std::optional{Text::mainInvalidCalibrationFile} : std::nullopt;
+        : !snapshot.revision ? std::optional{snapshot.locked ? Text::mainCalibrationLocked : Text::mainInvalidCalibrationFile}
+        : std::nullopt;
     if ((sameProfile && !path.empty() && !snapshot.revision) || preserveDraft) {
         if (preserveDraft) {
             readAccessories();
@@ -2164,15 +2168,14 @@ void App::changeUsbMode()
     if (enable) {
         using namespace chrome_axis;
         const auto result = savePresetSettings(directory_, preset_, {}, [&] {
-            if (loadProfile(path_, error))
+            switch (readUsbActivation(activeDirectory())) {
+            case UsbActivationStatus::ready:
                 return writeUsb();
-            DWORD readError{};
-            const auto bindings = loadEditorAccessories(activeDirectory() / accessoryFilename, error, &readError);
-            if (bindings && !bindings->empty())
-                return writeUsb();
-            validationError = bindings ? Text::mainSaveCalibrationOrMapping
-                : readError == ERROR_LOCK_VIOLATION || readError == ERROR_SHARING_VIOLATION ? Text::mainAccessoriesLocked
-                : Text::mainAccessoriesUnavailable;
+            case UsbActivationStatus::commandsMissing: validationError = Text::mainSaveCalibrationOrMapping; break;
+            case UsbActivationStatus::calibrationLocked: validationError = Text::mainCalibrationLocked; break;
+            case UsbActivationStatus::accessoriesLocked: validationError = Text::mainAccessoriesLocked; break;
+            case UsbActivationStatus::accessoriesUnreadable: validationError = Text::mainAccessoriesUnavailable; break;
+            }
             return false;
         });
         if (result == PresetSaveResult::changed)

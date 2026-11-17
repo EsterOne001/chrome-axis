@@ -564,17 +564,17 @@ void probeOnReadHandle(OpenDevice& opened, const DeviceObjectSelection& wanted, 
 }
 
 struct WheelOutput {
-    WheelOutput(DirectInputReadObserver observer, void* context) noexcept
-        : observer(observer), observerContext(context) {}
+    WheelOutput(DirectInputReadObserver observer, void* context, DirectInputActiveCall* activeCall) noexcept
+        : observer(observer), observerContext(context), activeCall(activeCall) {}
 
     ~WheelOutput() { close(); }
 
     template <class Call>
-    HRESULT measure(std::string_view operation, Call&& call) const noexcept {
+    HRESULT measure(const char* operation, Call&& call) const noexcept {
         if (!observer)
-            return call();
+            return trackedCall(activeCall, operation, call);
         const auto start = Clock::now();
-        const auto result = call();
+        const auto result = trackedCall(activeCall, operation, call);
         const auto elapsed = Clock::now() - start;
         if (elapsed >= slowInputOperation) {
             const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
@@ -587,7 +587,10 @@ struct WheelOutput {
     void close() noexcept {
         if (effect) {
             measure("FFB Stop", [&] { return effect->Stop(); });
-            effect.reset();
+            measure("FFB ReleaseEffect", [&] {
+                effect.reset();
+                return S_OK;
+            });
         }
         playing = false;
         neutral = false;
@@ -598,7 +601,10 @@ struct WheelOutput {
                 DIPROPDWORD property{{sizeof(DIPROPDWORD), sizeof(DIPROPHEADER), 0, DIPH_DEVICE}, *autocenter};
                 measure("FFB RestoreAutoCenter", [&] { return device->SetProperty(DIPROP_AUTOCENTER, &property.diph); });
             }
-            device.reset();
+            measure("FFB ReleaseDevice", [&] {
+                device.reset();
+                return S_OK;
+            });
         }
         acquired = false;
         autocenter.reset();
@@ -627,6 +633,7 @@ struct WheelOutput {
     bool neutral{};
     DirectInputReadObserver observer{};
     void* observerContext{};
+    DirectInputActiveCall* activeCall{};
 };
 
 } // namespace
@@ -654,7 +661,7 @@ struct DirectInput::Impl {
          DirectInputActiveCall* activeCall, DirectInputActiveCall* externalLayoutCall)
         : window(windowHandle), diagnostic(callback), readObserver(readObserver), observerContext(observerContext),
           activeCall(activeCall), layoutCall(externalLayoutCall ? externalLayoutCall : &localLayoutCall),
-          wheel(readObserver, observerContext) {
+          wheel(readObserver, observerContext, activeCall) {
         HRESULT result{};
         const auto started = Clock::now();
         input = createDirectInput(callback, &result, activeCall);
@@ -1002,7 +1009,7 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
     if (!wheel.effect) {
         if (wheel.retry.waiting(Clock::now()))
             return std::nullopt;
-        const auto initialize = [&](std::string_view operation, auto&& call) -> HRESULT {
+        const auto initialize = [&](const char* operation, auto&& call) -> HRESULT {
             if (cancelled || !allowed(mayInitialize)) {
                 cancelled = true;
                 return E_ABORT;
@@ -1116,7 +1123,11 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
         });
         EffectPtr initialized(effect);
         if (FAILED(result) || !initialized) {
-            initialized.reset();
+            if (initialized)
+                wheel.measure("FFB ReleaseEffect", [&] {
+                    initialized.reset();
+                    return S_OK;
+                });
             fail("force feedback CreateEffect", FAILED(result) ? result : E_FAIL);
             return std::nullopt;
         }

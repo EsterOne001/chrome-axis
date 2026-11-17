@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -17,9 +18,15 @@ inline bool missingEditorFile(DWORD error)
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
+inline bool lockedEditorFile(DWORD error)
+{
+    return error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
+}
+
 struct EditorCalibration {
     std::optional<Profile> profile;
     std::optional<ProfileFileRevision> revision;
+    bool locked{};
 };
 
 // A revision alone is insufficient when Windows permits reading metadata but denies access to the contents.
@@ -34,7 +41,7 @@ inline EditorCalibration readEditorCalibration(const std::filesystem::path& path
     auto profile = loadProfile(path, error, &code);
     const bool consistent = revision->present ? profile.has_value() : missingEditorFile(code);
     if (!consistent || profileFileRevision(path) != revision)
-        return {};
+        return {.locked = lockedEditorFile(code)};
     return {std::move(profile), revision};
 }
 
@@ -50,6 +57,25 @@ inline std::optional<AccessoryProfile> loadEditorAccessories(const std::filesyst
         return AccessoryProfile{};
     }
     return bindings;
+}
+
+enum class UsbActivationStatus { ready, commandsMissing, calibrationLocked, accessoriesLocked, accessoriesUnreadable };
+
+// Called with the selected profile locked against concurrent edits and profile changes.
+inline UsbActivationStatus readUsbActivation(const std::filesystem::path& directory)
+{
+    std::string error;
+    DWORD calibrationError{}, accessoryError{};
+    if (loadProfile(directory / profileFilename, error, &calibrationError))
+        return UsbActivationStatus::ready;
+    const auto bindings = loadEditorAccessories(directory / accessoryFilename, error, &accessoryError);
+    if (bindings && std::ranges::any_of(*bindings, isEnabledDrivingAccessory))
+        return UsbActivationStatus::ready;
+    if (lockedEditorFile(calibrationError))
+        return UsbActivationStatus::calibrationLocked;
+    if (bindings)
+        return UsbActivationStatus::commandsMissing;
+    return lockedEditorFile(accessoryError) ? UsbActivationStatus::accessoriesLocked : UsbActivationStatus::accessoriesUnreadable;
 }
 
 enum class AccessoryPreviewStatus { available, locked, unreadable };
@@ -69,7 +95,7 @@ public:
         DWORD code{};
         std::string error;
         auto updated = path_.empty() ? std::optional{AccessoryProfile{}} : loadEditorAccessories(path_, error, &code);
-        if (code == ERROR_SHARING_VIOLATION || code == ERROR_LOCK_VIOLATION) {
+        if (lockedEditorFile(code)) {
             status_ = AccessoryPreviewStatus::locked;
             return profileChanged || previousStatus != status_;
         }
