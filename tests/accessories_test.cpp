@@ -1,5 +1,6 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/controls.hpp"
+#include "../src/plugin/accessory_key_polling.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -903,8 +904,33 @@ int testAnalogAccessoryAxisConflicts(const std::string& wheelId, const std::stri
     return 0;
 }
 
+bool testAccessoryPollingGuard()
+{
+    chrome_axis::AccessoryKeyPollingGuard guard;
+    const auto layout = GetKeyboardLayout(0);
+    const auto functionScan = MapVirtualKeyExW(VK_F7, MAPVK_VK_TO_VSC_EX, layout);
+    if (!functionScan || !guard.allowsPolling(VK_F8) || !guard.allowsPolling(VK_F7)
+        || guard.allowsPolling(VK_PRIOR) || guard.allowsPolling(256))
+        return false;
+    // Exclude the requested key and the key Windows maps from the actual scan.
+    guard.beforeSend(VK_F8, functionScan, layout);
+    if (guard.allowsPolling(VK_F8) || guard.allowsPolling(VK_F7) || !guard.allowsPolling(VK_F9))
+        return false;
+    guard.beforeSend(VK_NUMPAD4, 0x4b, layout);
+    if (guard.allowsPolling(VK_NUMPAD4) || guard.allowsPolling(VK_LEFT)
+        || guard.allowsPolling(VK_F8) || !guard.allowsPolling(VK_RIGHT))
+        return false;
+
+    // The dedicated right arrow must not exclude its distinct numpad neighbour.
+    guard.beforeSend(VK_RIGHT, 0xe04d, layout);
+    return !guard.allowsPolling(VK_RIGHT) && guard.allowsPolling(VK_NUMPAD6)
+        && chrome_axis::AccessoryKeyPollingGuard{}.allowsPolling(VK_F8);
+}
+
 int run()
 {
+    if (!testAccessoryPollingGuard())
+        return 100;
     const std::string wheelId = "{11111111-1111-1111-1111-111111111111}";
     const std::string handbrakeId = "{22222222-2222-2222-2222-222222222222}";
     using chrome_axis::AccessoryKind;

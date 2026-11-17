@@ -6,6 +6,13 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.72
+
+- **Bascule AUTO / MANUEL.** Une lecture directe prend le relais si l’écouteur Windows manque les appuis du raccourci. Elle fonctionne dans la simulation clavier activée et avec la boîte en H ou les palettes natives. Les deux lectures partagent le réarmement et la file d’appuis.
+- **Accessoires.** La lecture de secours exclut les touches que Chrome Axis a pu envoyer, y compris les variantes du pavé numérique. Les affectations d’accessoires et les appuis physiques détectés par l’écouteur restent utilisables.
+
+[ZIP Vortex](out/Chromaxis-0.4.72.zip)
+
 ## Chrome Axis 0.4.71
 
 - **Fermeture du jeu.** Le plugin rend la main à Cyberpunk après une attente bornée si un appel DirectInput bloque encore. Le nettoyage des périphériques se termine dès que le pilote répond.

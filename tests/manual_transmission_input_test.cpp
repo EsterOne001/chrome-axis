@@ -28,61 +28,61 @@ constexpr PedalRelease bothReleased{true, true};
 bool hardwareModeNeedsAValidLever()
 {
     ManualTransmissionInput input;
-    if (input.update(true, {}, false, false, false, false, {}).manual)
+    if (input.update(true, {}, false, false, false, {}).manual)
         return false;
-    const auto neutral = input.update(true, -1, false, false, false, false, {});
-    const auto third = input.update(true, 3, false, false, false, false, {});
+    const auto neutral = input.update(true, -1, false, false, false, {});
+    const auto third = input.update(true, 3, false, false, false, {});
     if (!neutral.manual || neutral.gear != -1 || !third.manual || third.gear != 3)
         return false;
-    if (input.update(true, 3, false, true, false, false, {}).manual ||
-        input.update(true, 3, false, true, false, false, {}).manual)
+    const auto automatic = input.update(true, 3, false, false, false, {}, false, false, 0, 1);
+    if (automatic.manual || !automatic.toggledByKey || input.update(true, 3, false, false, false, {}).manual)
         return false;
     input.suspend();
-    if (input.update(true, {}, false, true, false, false, {}).manual ||
-        input.update(true, -1, false, false, false, false, {}).manual)
+    if (input.update(true, {}, false, false, false, {}).manual ||
+        input.update(true, -1, false, false, false, {}).manual)
         return false;
-    const auto manual = input.update(true, -1, false, true, false, false, {});
-    return manual.manual && manual.gear == -1 &&
-        !input.update(true, {}, false, false, false, false, {}).manual &&
-        input.update(true, -1, false, false, false, false, {}).manual;
+    const auto manual = input.update(true, -1, false, false, false, {}, false, false, 0, 1);
+    return manual.manual && manual.toggledByKey && manual.gear == -1 &&
+        !input.update(true, {}, false, false, false, {}).manual &&
+        input.update(true, -1, false, false, false, {}).manual;
 }
 
 bool simulationRequiresAnExplicitToggle()
 {
     ManualTransmissionInput input;
-    if (input.update(false, {}, true, true, true, false, {}).manual)
+    if (input.update(false, {}, true, true, false, {}).manual)
         return false;
-    input.update(false, {}, true, false, false, false, {});
-    const auto manual = input.update(false, {}, true, true, false, false, {});
-    const auto next = input.update(false, {}, true, false, true, false, {});
-    const auto held = input.update(false, {}, true, false, true, false, {});
-    const auto direct = input.update(false, {}, true, false, false, true, {.gear = 3});
-    const auto neutral = input.update(false, {}, true, false, false, false, {.gear = -1});
-    const auto neutralAfterRelease = input.update(false, {}, true, false, false, false, {});
-    if (!manual.manual || next.delta != 1 || held.delta != 0 || direct.gear != 3 ||
+    input.update(false, {}, true, false, false, {});
+    const auto manual = input.update(false, {}, true, false, false, {}, false, false, 0, 1);
+    const auto next = input.update(false, {}, true, true, false, {});
+    const auto held = input.update(false, {}, true, true, false, {});
+    const auto direct = input.update(false, {}, true, false, true, {.gear = 3});
+    const auto neutral = input.update(false, {}, true, false, false, {.gear = -1});
+    const auto neutralAfterRelease = input.update(false, {}, true, false, false, {});
+    if (!manual.manual || !manual.toggledByKey || next.delta != 1 || held.delta != 0 || direct.gear != 3 ||
         direct.delta != 0 || neutral.gear != -1 || neutralAfterRelease.gear != -1)
         return false;
     input.suspend();
-    const auto resumed = input.update(false, {}, true, true, true, false, {.gear = 3});
-    const auto released = input.update(false, {}, true, false, false, false, {});
-    const auto previous = input.update(false, {}, true, false, false, true, {});
+    const auto resumed = input.update(false, {}, true, true, false, {.gear = 3});
+    const auto released = input.update(false, {}, true, false, false, {});
+    const auto previous = input.update(false, {}, true, false, true, {});
+    const auto automatic = input.update(false, {}, true, false, false, {}, false, false, 0, 1);
     return resumed.manual && !resumed.delta && !resumed.gear &&
         released.manual && previous.delta == -1 &&
-        !input.update(false, {}, false, false, false, false, {}).manual;
+        !automatic.manual && automatic.toggledByKey;
 }
 
 bool ambiguousKeysNeedFullRelease()
 {
     ManualTransmissionInput input;
-    input.update(false, {}, true, false, false, false, {});
-    input.update(false, {}, true, true, false, false, {});
+    input.update(false, {}, true, false, false, {}, false, false, 0, 1);
     input.suspend();
-    const auto conflict = input.update(false, {}, true, false, false, false, {.ambiguous = true});
-    const auto partlyReleased = input.update(false, {}, true, false, false, false, {.gear = 1});
-    const auto released = input.update(false, {}, true, false, false, false, {});
-    const auto selected = input.update(false, {}, true, false, false, false, {.gear = 1});
-    const auto overlap = input.update(false, {}, true, false, false, false, {.ambiguous = true});
-    const auto heldThird = input.update(false, {}, true, false, false, false, {.gear = 3});
+    const auto conflict = input.update(false, {}, true, false, false, {.ambiguous = true});
+    const auto partlyReleased = input.update(false, {}, true, false, false, {.gear = 1});
+    const auto released = input.update(false, {}, true, false, false, {});
+    const auto selected = input.update(false, {}, true, false, false, {.gear = 1});
+    const auto overlap = input.update(false, {}, true, false, false, {.ambiguous = true});
+    const auto heldThird = input.update(false, {}, true, false, false, {.gear = 3});
     return conflict.manual && !conflict.gear && !partlyReleased.gear && !released.gear
         && selected.gear == 1 && overlap.gear == 1 && heldThird.gear == 1;
 }
@@ -97,7 +97,7 @@ bool injectedKeyDoesNotToggleTransmission()
         return false;
     keyboard.primeReleased(*initial);
     const auto update = [&](std::uint64_t tick) {
-        return input.update(true, -1, false, std::nullopt, false, false, {}, VK_F8,
+        return input.update(true, -1, false, false, false, {},
             false, false, 0, keyboard.takePress(VK_F8, tick).has_value());
     };
     if (!update(100).manual)
@@ -136,7 +136,7 @@ bool changingShortcutRearmsWithoutChangingModes()
     keyboard.setContext(true, 100);
     const auto update = [&](std::uint64_t tick) {
         const auto key = keyboard.key();
-        return input.update(true, -1, false, std::nullopt, false, false, {}, key,
+        return input.update(true, -1, false, false, false, {},
             false, false, 0, keyboard.takePress(key, tick).has_value()).manual;
     };
     keyboard.update(VK_F8, false, false, 101);
@@ -218,20 +218,6 @@ bool physicalPressSurvivesConcurrentContextRefresh()
     return keyboard.takePress(VK_F8, 125) == 124ull;
 }
 
-bool physicalPressOverridesLevelArmingInSimulation()
-{
-    ManualTransmissionInput input;
-    const auto update = [&](std::optional<bool> level, bool edge) {
-        return input.update(false, {}, true, level, false, false, {}, VK_F8, false, false, 0, edge);
-    };
-    const auto enable = update(std::nullopt, true);
-    const bool selected = input.manualSelected();
-    const auto hold = update(true, false);
-    const auto disable = update(std::nullopt, true);
-    return enable.toggledByKey && enable.manual && selected && !hold.toggledByKey && hold.manual &&
-        disable.toggledByKey && !disable.manual && !input.manualSelected();
-}
-
 bool consumesBothTapsAndClearsDisabledSource()
 {
     using chrome_axis::TransmissionSource;
@@ -248,49 +234,34 @@ bool consumesBothTapsAndClearsDisabledSource()
 
     ManualTransmissionInput input;
     input.selectSource(TransmissionSource::keyboard);
-    const auto twoTaps = input.update(false, {}, true, {}, false, false, {}, VK_F8, false, false, 0, 2);
-    const auto oneTap = input.update(false, {}, true, {}, false, false, {}, VK_F8, false, false, 0, 1);
+    const auto twoTaps = input.update(false, {}, true, false, false, {}, false, false, 0, 2);
+    const auto oneTap = input.update(false, {}, true, false, false, {}, false, false, 0, 1);
     if (twoTaps.manual || !twoTaps.toggledByKey || !oneTap.manual)
         return false;
     input.suspend();
     input.selectSource(TransmissionSource::keyboard);
     if (!input.hasSource() || !input.manualSelected())
         return false;
-    input.selectSource(TransmissionSource::none);
-    return !input.hasSource() && !input.manualSelected();
-}
-
-bool simulationPollsAfterAccessoryKeysAreReleased()
-{
-    ManualTransmissionInput input;
-    const auto update = [&](bool keyDown, bool accessoryKeysPending, unsigned int key = VK_F8) {
-        return input.update(false, {}, true, chrome_axis::simulatedTransmissionKey(keyDown, accessoryKeysPending),
-                            false, false, {}, key);
-    };
-    // A key held when USB mode releases its last accessory must not arm the shortcut.
-    if (update(true, true).manual || update(true, false).manual || update(false, false).manual)
-        return false;
-    const auto manual = update(true, false);
-    const auto held = update(true, false);
-    const auto released = update(false, false);
-    const auto reboundWhileDown = update(true, false, VK_F9);
-    const auto newKeyReleased = update(false, false, VK_F9);
-    const auto automatic = update(true, false, VK_F9);
-    return manual.manual && manual.toggledByKey && held.manual && !held.toggledByKey &&
-        released.manual && !released.toggledByKey && reboundWhileDown.manual && !reboundWhileDown.toggledByKey &&
-        newKeyReleased.manual && !newKeyReleased.toggledByKey && !automatic.manual && automatic.toggledByKey;
+    const auto disabled = input.update(false, {}, false, false, false, {}, false, false, 0, 1);
+    return !disabled.manual && !disabled.toggledByKey && !input.hasSource() && !input.manualSelected();
 }
 
 bool nativePaddlesAndClutchRespectArming()
 {
     ManualTransmissionInput transmission;
-    const auto sequential = [&](bool ready, int edge) {
-        return transmission.update(false, {}, false, false, false, false, {}, VK_F8, true, ready, edge);
+    const auto sequential = [&](bool ready, int edge, unsigned int presses = 0) {
+        return transmission.update(false, {}, false, false, false, {}, true, ready, edge, presses);
     };
     if (sequential(false, 1).manual || sequential(true, 1).delta != 1 || sequential(true, 0).delta != 0 ||
         !sequential(true, -1).manual)
         return false;
-    auto intent = transmission.update(true, -1, false, false, false, false, {}, VK_F8);
+    const auto automatic = sequential(true, 1, 1);
+    const auto stayedAutomatic = sequential(true, 1);
+    const auto manual = sequential(true, 1, 1);
+    if (automatic.manual || automatic.delta || !automatic.toggledByKey || stayedAutomatic.manual ||
+        stayedAutomatic.delta || !manual.manual || manual.delta != 1 || !manual.toggledByKey)
+        return false;
+    auto intent = transmission.update(true, -1, false, false, false, {});
     if (!intent.manual || intent.gear != -1)
         return false;
 
@@ -298,12 +269,12 @@ bool nativePaddlesAndClutchRespectArming()
     int delta = 0;
     if (assist.apply({}, intent.gear, delta) || intent.gear != -1)
         return false;
-    intent = transmission.update(true, 3, false, false, false, false, {}, VK_F8);
+    intent = transmission.update(true, 3, false, false, false, {});
     if (!assist.apply(0.649f, intent.gear, delta) || intent.gear != -1)
         return false;
     // The lever remains at the same position. The next report supplies that
     // level again and now reaches the clutch threshold without a new gesture.
-    intent = transmission.update(true, 3, false, false, false, false, {}, VK_F8);
+    intent = transmission.update(true, 3, false, false, false, {});
     if (assist.apply(0.65f, intent.gear, delta) || intent.gear != 3)
         return false;
     intent.gear = -1;
@@ -474,13 +445,8 @@ int main()
         return 1;
     }
     if (!physicalPressRequiresFreshDrivingContext() || !physicalPressSurvivesConcurrentContextRefresh() ||
-        !physicalPressOverridesLevelArmingInSimulation() ||
         !consumesBothTapsAndClearsDisabledSource()) {
         std::cerr << "A physical shortcut lost an accepted press or accepted a stale driving context\n";
-        return 1;
-    }
-    if (!simulationPollsAfterAccessoryKeysAreReleased()) {
-        std::cerr << "Simulation did not rearm the shortcut after accessory keys were released\n";
         return 1;
     }
     if (!nativePaddlesAndClutchRespectArming()) {

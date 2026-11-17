@@ -46,7 +46,7 @@ void observeKeyboard(HMODULE module, HANDLE stop, std::promise<bool> started) no
 
     available.store(true, std::memory_order_release);
     started.set_value(true);
-    while (MsgWaitForMultipleObjects(1, &stop, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0 + 1) {
+    while (MsgWaitForMultipleObjectsEx(1, &stop, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_OBJECT_0 + 1) {
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -98,9 +98,8 @@ unsigned int transmissionHotkeyBinding() noexcept {
 }
 
 void setTransmissionHotkeyContext(bool eligible) noexcept {
-    const bool active = eligible && transmissionHotkeyAvailable();
-    modeKey.setContext(active, active ? GetTickCount64() : 0);
-    if (!active)
+    modeKey.setContext(eligible, eligible ? GetTickCount64() : 0);
+    if (!eligible)
         return;
     const auto key = modeKey.key();
     if (const auto initial = modeKey.initialState(key);
@@ -108,9 +107,11 @@ void setTransmissionHotkeyContext(bool eligible) noexcept {
         modeKey.primeReleased(*initial);
 }
 
+void sampleTransmissionHotkey(unsigned int key, bool pressed) noexcept {
+    modeKey.sample(key, pressed, GetTickCount64());
+}
+
 std::optional<std::uint64_t> takeTransmissionHotkeyPress(unsigned int key) noexcept {
-    if (!transmissionHotkeyAvailable())
-        return std::nullopt;
     const auto press = modeKey.takePress(key, GetTickCount64());
     if (press && !gameForeground()) {
         modeKey.setContext(false, 0);

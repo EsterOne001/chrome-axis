@@ -4,7 +4,7 @@
 
 Chrome Axis adds analog steering, throttle and brake to **Cyberpunk 2077 on Windows**. Calibrate axes on DirectInput devices, save multiple profiles, and map paddles, shifters and accessories to game keys. The mod offers force feedback for compatible wheels and a keyboard simulation mode for testing without hardware.
 
-Version **0.4.71** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+Version **0.4.72** targets **Cyberpunk 2077 2.5**, executable version **3.0.88.46235**. Use **RED4ext 1.31.1**, which fixes a script compilation issue in 1.31.0. The reference version of redscript is **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#install-with-vortex) · [Language](#language) · [Keyboard simulation](#keyboard-simulation) · [Calibration](#calibration-and-profiles) · [Diagnostics](#in-game-diagnostics) · [Project folders](#project-folders) · [Build](#build) · [Report an issue](#report-an-issue)
 
@@ -124,6 +124,8 @@ Native mode uses the gears available on the vehicle. The supported Cyberpunk bui
 Choose **H via keys** to keep using an external transmission mod. Assign one key per position and mirror the assignments in that mod. Turn on **Num Lock** if you use the numpad. Existing key-based profiles still work.
 
 To test without hardware, open **Help → Test tools → Keyboard simulation**, then click **Enable in game**. In a vehicle, press the AUTO / MANUAL key, then use the number row **1–7** to select a gear, **N** for neutral, and **R** when stopped. **Page Up** and **Page Down** still shift sequentially. Release each key between commands. Keyboard simulation reserves the chosen key for the mode toggle. With F8, use **Numpad 8** to accelerate. The copied **Diagnostics** report includes the selected, requested, and engaged gears.
+
+Choose an AUTO / MANUAL key that your accessories do not send. If Chrome Axis has sent that key during the game session, the shortcut only accepts physical presses detected by the Windows listener.
 
 **Manual Transmission V10 4.3** offers rebindable sequential shift commands. Chrome Axis suggests **Numpad + / Numpad −** to avoid the **↑ / ↓** keys used by Cyberpunk for throttle and brake. Set the same keys in V10. To use a clutch pedal, capture it as an accessory axis, assign a key without modifiers, and set the same key in V10. Testing the two mods together is still pending. [V10 controls](https://www.nexusmods.com/cyberpunk2077/mods/28342) · [V10 discussion about sequential and H-pattern shifting](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts)
 

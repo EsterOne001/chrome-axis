@@ -68,19 +68,48 @@ public:
         const auto sinceTick = contextAt_ > tick ? contextAt_ - tick : tick - contextAt_;
         if (key != this->key() || !contextAt_ || tick < contextStart_ || sinceTick > contextLifetime)
             return;
-
-        if (!pressed) {
-            phase_ = Phase::released;
-        } else if (phase_ == Phase::initial) {
-            phase_ = Phase::waitingForRelease;
-        } else if (phase_ == Phase::released) {
-            phase_ = Phase::pressed;
-            discardExpired(tick);
-            if (count_ < presses_.size()) {
-                presses_[(head_ + count_) % presses_.size()] = tick;
-                ++count_;
-            }
+        if (pressed && (phase_ == Phase::initial || phase_ == Phase::released)) {
+            sampleSync_ = sampleSync_ == SampleSync::awaitingUp ? SampleSync::awaitingUpThenDown : SampleSync::awaitingDown;
+            sampledUpSince_.reset();
+        } else if (!pressed && phase_ != Phase::released) {
+            sampleSync_ = SampleSync::awaitingUp;
+            sampledUpSince_.reset();
         }
+        acceptLevel(pressed, tick);
+    }
+
+    void sample(unsigned int key, bool pressed, std::uint64_t now) noexcept {
+        std::scoped_lock lock(mutex_);
+        if (key != this->key() || !contextFresh(now))
+            return;
+        // The Windows hook sees an edge before GetAsyncKeyState reflects it.
+        // Ignore the old level until the sample catches up with the hook.
+        switch (sampleSync_) {
+        case SampleSync::awaitingUp:
+            if (pressed)
+                return;
+            break;
+        case SampleSync::awaitingUpThenDown:
+            if (pressed)
+                return;
+            sampleSync_ = SampleSync::awaitingDown;
+            [[fallthrough]];
+        case SampleSync::awaitingDown:
+            if (!pressed) {
+                // The listener may stop mid-press, with no sampled down and
+                // no hook release. Recover after a sustained neutral level.
+                if (!sampledUpSince_)
+                    sampledUpSince_ = now;
+                if (now - *sampledUpSince_ < sampleReleaseDelay)
+                    return;
+            }
+            break;
+        case SampleSync::matched:
+            break;
+        }
+        sampleSync_ = SampleSync::matched;
+        sampledUpSince_.reset();
+        acceptLevel(pressed, now);
     }
 
     std::optional<std::uint64_t> takePress(unsigned int key, std::uint64_t now) noexcept {
@@ -98,16 +127,35 @@ public:
 
 private:
     enum class Phase { initial, waitingForRelease, released, pressed };
+    enum class SampleSync { matched, awaitingDown, awaitingUp, awaitingUpThenDown };
     static constexpr std::uint64_t contextLifetime = 100; // ms
     static constexpr std::uint64_t pressLifetime = 200; // ms
+    static constexpr std::uint64_t sampleReleaseDelay = 80; // ms
 
     bool contextFresh(std::uint64_t now) const noexcept {
         return contextAt_ && now >= contextAt_ && now - contextAt_ <= contextLifetime;
     }
 
+    void acceptLevel(bool pressed, std::uint64_t tick) noexcept {
+        if (!pressed) {
+            phase_ = Phase::released;
+        } else if (phase_ == Phase::initial) {
+            phase_ = Phase::waitingForRelease;
+        } else if (phase_ == Phase::released) {
+            phase_ = Phase::pressed;
+            discardExpired(tick);
+            if (count_ < presses_.size()) {
+                presses_[(head_ + count_) % presses_.size()] = tick;
+                ++count_;
+            }
+        }
+    }
+
     void rearm() noexcept {
         ++revision_;
         phase_ = Phase::initial;
+        sampleSync_ = SampleSync::matched;
+        sampledUpSince_.reset();
         head_ = count_ = 0;
     }
 
@@ -127,6 +175,8 @@ private:
     std::uint64_t contextAt_{};
     std::uint64_t revision_{};
     Phase phase_{Phase::initial};
+    SampleSync sampleSync_{SampleSync::matched};
+    std::optional<std::uint64_t> sampledUpSince_;
     std::array<std::uint64_t, pressCapacity> presses_{};
     std::size_t head_{}, count_{};
 };
@@ -343,12 +393,6 @@ private:
     bool reversePossible_{};
 };
 
-// Simulation does not emit accessory keys. A pending release from the USB
-// source pauses polling so an injected key cannot toggle the transmission.
-constexpr std::optional<bool> simulatedTransmissionKey(bool down, bool accessoryKeysPending) noexcept {
-    return accessoryKeysPending ? std::nullopt : std::optional{down};
-}
-
 struct TransmissionIntent {
     bool manual{};
     int delta{};
@@ -378,26 +422,13 @@ public:
     }
 
     TransmissionIntent update(bool hardware, std::optional<int> hardwareGear, bool simulation,
-                              std::optional<bool> toggle, bool up, bool down, DirectGearKeys keyboard,
-                              unsigned int toggleKey = 0, bool sequential = false,
+                              bool up, bool down, DirectGearKeys keyboard, bool sequential = false,
                               bool sequentialArmed = false, int nativeDelta = 0,
-                              unsigned int physicalPresses = 0) noexcept {
+                              unsigned int presses = 0) noexcept {
         selectSource(transmissionSource(simulation, hardware, sequential));
 
-        if (toggleKey != toggleKey_) {
-            toggleKey_ = toggleKey;
-            toggleArmed_ = false;
-        }
-        bool toggledByKey = physicalPresses && hasSource();
-        if (toggledByKey || !toggle) {
-            toggleArmed_ = false;
-        } else if (!*toggle) {
-            toggleArmed_ = true;
-        } else if (toggleArmed_) {
-            toggleArmed_ = false;
-            toggledByKey = true;
-        }
-        if (toggledByKey && (!physicalPresses || physicalPresses % 2 != 0))
+        const bool toggledByKey = presses != 0 && hasSource();
+        if (toggledByKey && presses % 2 != 0)
             manualSelected_ = !manualSelected_;
 
         const int delta = sequentialShift(up, down);
@@ -428,7 +459,6 @@ public:
     bool hasSource() const noexcept { return source_ != TransmissionSource::none; }
 
     void suspend() noexcept {
-        toggleArmed_ = false;
         shiftArmed_ = false;
         directArmed_ = false;
         keyboardSelection_.reset();
@@ -451,8 +481,6 @@ private:
 
     TransmissionSource source_{};
     bool manualSelected_{};
-    unsigned int toggleKey_{};
-    bool toggleArmed_{};
     bool shiftArmed_{};
     bool directArmed_{};
     std::optional<int> keyboardSelection_;

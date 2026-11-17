@@ -6,6 +6,7 @@
 #include "chrome_axis/input.hpp"
 #include "chrome_axis/presets.hpp"
 #include "chrome_axis/simulation.hpp"
+#include "accessory_key_polling.hpp"
 #include "deferred_driver_cleanup.hpp"
 #include "driving_inputs.hpp"
 #include "force_output_worker.hpp"
@@ -463,6 +464,9 @@ private:
 class AccessoryKeys {
 public:
     bool hasInjectedKeys() const noexcept { return pending_.load(std::memory_order_acquire); }
+    bool allowsTransmissionKeyPolling(unsigned int key) const noexcept {
+        return injectionGuard_.allowsPolling(key);
+    }
 
     AccessoryDelivery apply(const std::bitset<256>& requested, AccessoryPresses* queued = nullptr,
                             HWND window = nullptr, OutputContext output = {},
@@ -561,6 +565,7 @@ public:
                 delivery.blocked.set(key);
                 continue;
             }
+            injectionGuard_.beforeSend(key, scan, layout);
             if (send(static_cast<WORD>(scan), 0)) {
                 delivery.key = static_cast<unsigned int>(key);
                 delivery.pressed.set(key);
@@ -660,6 +665,7 @@ private:
     Clock::time_point lastSample_{};
     std::mutex mutex_;
     std::atomic<bool> pending_{};
+    chrome_axis::AccessoryKeyPollingGuard injectionGuard_;
     bool loggedPress_{};
     bool loggedFailure_{};
 };
@@ -866,6 +872,11 @@ chrome_axis::PedalRoutingDecision updateTransmission(Vehicle* vehicle, chrome_ax
     const bool hasShortcut = hardware || sequential || simulated;
     chrome_axis::setTransmissionHotkeyContext(hasShortcut);
     if (hasShortcut) {
+        if (accessoryKeys.allowsTransmissionKeyPolling(hotkey)) {
+            const bool pressed = keyDown(static_cast<int>(hotkey));
+            if (accessoryKeys.allowsTransmissionKeyPolling(hotkey))
+                chrome_axis::sampleTransmissionHotkey(hotkey, pressed);
+        }
         while (physicalPresses < chrome_axis::PhysicalModeKey::pressCapacity) {
             const auto press = chrome_axis::takeTransmissionHotkeyPress(hotkey);
             if (!press)
@@ -875,17 +886,10 @@ chrome_axis::PedalRoutingDecision updateTransmission(Vehicle* vehicle, chrome_ax
             transmissionShortcutPressedAt = *press;
         }
     }
-    const auto toggle = simulated && !chrome_axis::transmissionHotkeyAvailable()
-        ? chrome_axis::simulatedTransmissionKey(keyDown(static_cast<int>(hotkey)), accessoryKeys.hasInjectedKeys())
-        : std::nullopt;
-    auto intent = transmissionInput.update(hardware, gear, simulated, toggle,
+    auto intent = transmissionInput.update(hardware, gear, simulated,
         simulated && keyDown(VK_PRIOR), simulated && keyDown(VK_NEXT),
-        simulated ? keyboardGear() : chrome_axis::DirectGearKeys{}, hotkey, sequential, sequentialArmed,
+        simulated ? keyboardGear() : chrome_axis::DirectGearKeys{}, sequential, sequentialArmed,
         sendPaddle ? paddleRequests.pop() : 0, physicalPresses);
-    if (toggle.value_or(false) && intent.toggledByKey) {
-        lastTransmissionShortcut = hotkey;
-        transmissionShortcutPressedAt = GetTickCount64();
-    }
     if (!intent.manual || !sequentialArmed)
         paddleRequests.clear();
 
@@ -1488,7 +1492,7 @@ chrome_axis::DiagnosticTransmission diagnosticTransmission(const manual_backend:
         .hasRequestedMode = transmissionInput.hasSource(),
         .requestedManual = transmissionInput.manualSelected(),
         .shortcutAvailable = transmissionAvailable && driving && shortcutSource &&
-            (chrome_axis::transmissionHotkeyAvailable() || inputFrame.simulated),
+            (chrome_axis::transmissionHotkeyAvailable() || accessoryKeys.allowsTransmissionKeyPolling(hotkey)),
         .gearboxSampledAt = state.sampledAt};
     if (!result.configured)
         return result;
@@ -2945,7 +2949,7 @@ bool startPlugin() {
     if (!transmissionAvailable)
         warn("Native transmission unavailable. Standard controls remain available.");
     else if (!chrome_axis::startTransmissionHotkey(plugin))
-        warn("The physical AUTO/MANUAL shortcut is unavailable.");
+        warn("The AUTO/MANUAL keyboard listener failed to start. Using key polling where available.");
     active.store(true, std::memory_order_release);
     info("Vehicle input hook attached for Cyberpunk 2077 2.5. Waiting for the local driver context.");
     return true;

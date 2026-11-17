@@ -4,7 +4,7 @@ Chrome Axis ajoute la direction, l’accélérateur et le frein analogiques à *
 
 [English documentation](README.en.md)
 
-La version **0.4.71** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
+La version **0.4.72** cible **Cyberpunk 2077 2.5**, exécutable **3.0.88.46235**. Utilisez **RED4ext 1.31.1**, qui corrige un problème de compilation des scripts de la version 1.31.0. La version de référence de redscript est **0.5.32**. [RED4ext 1.31.1](https://github.com/wopss/RED4ext/releases/tag/v1.31.1) · [redscript 0.5.32](https://github.com/jac3km4/redscript/releases/tag/v0.5.32)
 
 [Installation](#installation-via-vortex) · [Langue](#langue) · [Simulation clavier](#simulation-sans-volant-ni-pédalier) · [Calibration](#calibration-et-profil) · [Diagnostic](#diagnostic-en-jeu) · [Dossiers du projet](#dossiers-du-projet) · [Compilation](#compilation) · [Signaler un problème](#signaler-un-problème)
 
@@ -132,6 +132,8 @@ Le mode natif utilise les rapports disponibles sur le véhicule. Sur la version 
 Choisissez **H par touches** pour continuer à utiliser un mod de transmission externe. Attribuez une touche à chaque position et configurez les mêmes touches dans l’autre mod. Si vous utilisez le pavé numérique, activez **Verr. Num.**. Les profils par touches existants restent utilisables.
 
 Pour tester sans matériel, ouvrez **Aide → Outils de test → Simulation clavier**, puis cliquez sur **Activer dans le jeu**. Dans un véhicule, utilisez le raccourci AUTO / MANUEL, puis **1 à 7** dans la rangée du haut pour sélectionner un rapport, **N** pour le point mort et **R** à l’arrêt. **Page précédente** et **Page suivante** gardent leur rôle séquentiel. Relâchez les touches entre les commandes. En simulation, la touche choisie est réservée à la bascule. Avec F8, utilisez **Pavé 8** pour accélérer. Le rapport copié depuis **Diagnostic** inclut la sélection, la demande et le rapport engagé.
+
+Choisissez pour AUTO / MANUEL une touche distincte de celles envoyées par vos accessoires. Si Chrome Axis a émis la même touche pendant la session de jeu, seule une frappe physique détectée par l’écouteur Windows peut encore basculer avec ce raccourci.
 
 **Manual Transmission V10 4.3** propose des commandes séquentielles de montée et de descente, réaffectables dans son menu. L’assistant propose **Pavé + / Pavé −** pour éviter les flèches **↑ / ↓**, déjà utilisées par Cyberpunk pour l’accélération et le freinage. Réglez les mêmes touches dans V10. Pour l’embrayage, capturez la pédale comme un axe d’accessoire et choisissez une touche sans modificateur, puis reportez-la dans V10. L’essai des deux mods ensemble reste à faire. [Commandes de V10](https://www.nexusmods.com/cyberpunk2077/mods/28342), [FAQ sur le séquentiel et la grille en H](https://www.nexusmods.com/cyberpunk2077/mods/28342?tab=posts).
 

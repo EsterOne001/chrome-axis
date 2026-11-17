@@ -27,6 +27,11 @@ target_include_directories(chrome_axis_manual_transmission_input_test PRIVATE ${
 target_compile_options(chrome_axis_manual_transmission_input_test PRIVATE /W4 /utf-8)
 add_test(NAME chrome_axis_manual_transmission_input COMMAND chrome_axis_manual_transmission_input_test)
 
+add_executable(chrome_axis_transmission_hotkey_test transmission_hotkey_test.cpp)
+target_include_directories(chrome_axis_transmission_hotkey_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
+target_compile_options(chrome_axis_transmission_hotkey_test PRIVATE /W4 /utf-8)
+add_test(NAME chrome_axis_transmission_hotkey COMMAND chrome_axis_transmission_hotkey_test)
+
 if(CHROME_AXIS_BUILD_PLUGIN)
   add_executable(chrome_axis_manual_transmission_backend_test manual_transmission_backend_test.cpp)
   target_include_directories(chrome_axis_manual_transmission_backend_test PRIVATE ${PROJECT_SOURCE_DIR}/src/plugin)
