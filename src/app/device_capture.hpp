@@ -3,8 +3,11 @@
 #include "chrome_axis/calibration.hpp"
 
 #include <algorithm>
+#include <chrono>
 
 namespace chrome_axis {
+
+inline constexpr auto guidedCalibrationTimeout = std::chrono::seconds(3);
 
 struct CaptureDeviceRead {
     std::optional<DeviceSample> sample;
@@ -15,6 +18,11 @@ struct CaptureDeviceRead {
         return status == DeviceReadStatus::unavailable || status == DeviceReadStatus::resumed;
     }
 };
+
+inline bool restartAnalogCapture(const CaptureDeviceRead& reading, bool measuringRest, bool hadSignal) noexcept
+{
+    return reading.needsRest() && (!measuringRest || hadSignal);
+}
 
 inline bool collectGuidedCalibrationReading(CalibrationCapture& capture, const CaptureDeviceRead& reading,
                                             bool& hadSignal)

@@ -73,17 +73,41 @@ Language storedLanguage() noexcept
     return Language::automatic;
 }
 
+std::optional<Language> installationLanguage(const std::filesystem::path& root, bool* locked = nullptr)
+{
+    const auto code = readProfileLanguage(root, locked);
+    if (code == "fr")
+        return Language::french;
+    if (code == "en")
+        return Language::english;
+    if (code == "auto")
+        return Language::automatic;
+    return std::nullopt;
+}
+
 } // namespace
 
 void initializeLanguage(std::wstring_view commandLine, const std::filesystem::path& profileRoot)
 {
-    choice = profileLanguageChoice(profileRoot);
     if (commandLine == L"--language=fr")
         choice = Language::french;
     else if (commandLine == L"--language=en")
         choice = Language::english;
     else if (commandLine == L"--language=auto")
         choice = Language::automatic;
+    else {
+        const auto interrupted = readInterruptedProfileRestore(profileRoot);
+        const auto& languageRoot = interrupted.pending ? interrupted.backup : profileRoot;
+        bool locked{};
+        auto language = installationLanguage(languageRoot, &locked);
+        for (const DWORD delay : {10u, 20u, 30u, 50u}) {
+            if (!locked)
+                break;
+            Sleep(delay);
+            language = installationLanguage(languageRoot, &locked);
+        }
+        choice = language ? *language : storedLanguage();
+    }
 
     resolved = resolveLanguage(choice);
     SetThreadUILanguage(resolved == Language::french ? MAKELANGID(LANG_FRENCH, SUBLANG_FRENCH)
@@ -95,15 +119,8 @@ Language interfaceLanguage() noexcept { return resolved; }
 
 Language profileLanguageChoice(const std::filesystem::path& profileRoot)
 {
-    if (!profileRoot.empty()) {
-        const auto code = readProfileLanguage(profileRoot);
-        if (code == "fr")
-            return Language::french;
-        if (code == "en")
-            return Language::english;
-        if (code == "auto")
-            return Language::automatic;
-    }
+    if (const auto language = installationLanguage(profileRoot))
+        return *language;
     return storedLanguage();
 }
 

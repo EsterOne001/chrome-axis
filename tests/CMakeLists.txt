@@ -14,6 +14,14 @@ target_compile_options(chrome_axis_diagnostic_recording_test PRIVATE /W4 /utf-8)
 target_link_libraries(chrome_axis_diagnostic_recording_test PRIVATE chrome_axis_input)
 add_test(NAME chrome_axis_diagnostic_recording COMMAND chrome_axis_diagnostic_recording_test)
 
+add_executable(chrome_axis_diagnostic_viewport_test diagnostic_viewport_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/app/diagnostic_viewport.cpp
+  ${PROJECT_SOURCE_DIR}/assets/windows/diagnostics_dialog.rc)
+target_include_directories(chrome_axis_diagnostic_viewport_test PRIVATE ${PROJECT_SOURCE_DIR}/src/app)
+target_compile_options(chrome_axis_diagnostic_viewport_test PRIVATE /W4 /utf-8)
+target_link_libraries(chrome_axis_diagnostic_viewport_test PRIVATE chrome_axis_input)
+add_test(NAME chrome_axis_diagnostic_viewport COMMAND chrome_axis_diagnostic_viewport_test)
+
 add_executable(chrome_axis_device_inventory_test device_inventory_test.cpp
   ${PROJECT_SOURCE_DIR}/src/app/app_input.cpp
   ${PROJECT_SOURCE_DIR}/src/app/device_inventory.cpp)

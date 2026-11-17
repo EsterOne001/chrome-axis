@@ -42,6 +42,17 @@ void retainConfirmedLayout(DeviceInventoryResult& answer, const DeviceInventoryR
 
 } // namespace
 
+std::optional<std::size_t> inventoryDeviceSelection(std::span<const DeviceInfo> devices, std::string_view preferred,
+                                                    bool selectFirstIfUnassigned)
+{
+    if (preferred.empty())
+        return selectFirstIfUnassigned && !devices.empty() ? std::optional<std::size_t>{0} : std::nullopt;
+    const auto found = std::ranges::find(devices, preferred, &DeviceInfo::id);
+    if (found == devices.end())
+        return std::nullopt;
+    return static_cast<std::size_t>(found - devices.begin());
+}
+
 struct DeviceInventory::State {
     using Clock = std::chrono::steady_clock;
 
@@ -119,6 +130,29 @@ DeviceInventory::DeviceInventory(Scan scan)
         state_->result = std::make_shared<DeviceInventoryResult>();
     }
 }
+
+DeviceInventory::DeviceInventory(std::string forceFeedbackDevice, std::size_t steeringAxis)
+    : DeviceInventory([id = std::move(forceFeedbackDevice), steeringAxis] {
+        // A blocked driver call can outlive a closed dialog. A second dialog
+        // must not start another probe while that call still owns the reader.
+        static std::mutex forceProbeMutex;
+        const std::unique_lock probe(forceProbeMutex, std::try_to_lock);
+        DeviceInfo device{.id = id};
+        std::optional<std::array<bool, axisCount>> axes;
+        if (probe) {
+            const InputWindow window;
+            const DirectInput input(window.get());
+            axes = input.forceFeedbackAxesFor(id, steeringAxis);
+        }
+        if (axes)
+            device.forceFeedbackAxes = *axes;
+        else if (steeringAxis == axisCount)
+            device.layoutPending.axes.set();
+        else if (steeringAxis < axisCount)
+            device.layoutPending.axes.set(steeringAxis);
+        return DeviceInventoryResult{.devices = {std::move(device)}, .available = axes.has_value()};
+    })
+{}
 
 DeviceInventory::~DeviceInventory()
 {

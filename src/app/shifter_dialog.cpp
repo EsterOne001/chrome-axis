@@ -150,6 +150,7 @@ private:
     std::optional<AxisCapture> rest_;
     CalibrationCapture measurements_;
     std::string deviceId_;
+    std::string preferredDeviceId_;
     std::wstring status_;
     std::size_t step_{};
     std::size_t forward_{};
@@ -212,7 +213,8 @@ void ShifterDialog::fillDevices(std::string_view preferredDevice)
             devices_.push_back(std::move(offline));
         }
     }
-    WPARAM selection = 0;
+    const auto preferred = inventoryDeviceSelection(devices_, preferredDevice, true);
+    WPARAM selection = static_cast<WPARAM>(CB_ERR);
     for (std::size_t i = 0; i < devices_.size(); ++i) {
         const auto& device = devices_[i];
         const auto& name = device.name.empty() ? device.id : device.name;
@@ -232,7 +234,7 @@ void ShifterDialog::fillDevices(std::string_view preferredDevice)
             send(IDC_SHIFTER_DEVICE, CB_DELETESTRING, static_cast<WPARAM>(row));
             continue;
         }
-        if (device.id == preferredDevice)
+        if (preferred == i)
             selection = static_cast<WPARAM>(row);
     }
     send(IDC_SHIFTER_DEVICE, CB_SETCURSEL, selection);
@@ -241,6 +243,10 @@ void ShifterDialog::fillDevices(std::string_view preferredDevice)
 void ShifterDialog::deviceTopologyChanged()
 {
     inventory_.refreshAfterDeviceChange();
+    if (selectingDownshiftDevice()) {
+        status(tr(Text::mainScanningDevices));
+        updateControls();
+    }
 }
 
 bool ShifterDialog::refreshDevices()
@@ -250,14 +256,12 @@ bool ShifterDialog::refreshDevices()
     const auto result = inventory_.current();
     if (!result || inventoryRevision_ == result->revision)
         return false;
-    const auto* selected = selectedDevice();
-    const auto preferred = selected ? selected->id : std::string{};
     const auto row = send(IDC_SHIFTER_LIST, LB_GETCURSEL);
     inventoryRevision_ = result->revision;
     devices_ = result->devices;
-    fillDevices(preferred);
+    fillDevices(preferredDeviceId_);
     const auto* current = selectedDevice();
-    selectDevice(current && current->id == preferred ? row : LB_ERR);
+    selectDevice(current && current->id == preferredDeviceId_ ? row : LB_ERR);
     return true;
 }
 
@@ -276,7 +280,7 @@ void ShifterDialog::updateControls()
     const bool sequential = selectedMode().forward == 0;
     const bool chooseDownshift = selectingDownshiftDevice();
     const bool canCapture = selectedDevice(true) != nullptr;
-    const bool canAdvance = (stage_ == Stage::Captured && (!chooseDownshift || canCapture)) ||
+    const bool canAdvance = (stage_ == Stage::Captured && (!chooseDownshift || (canCapture && inventory_.current()))) ||
         stage_ == Stage::AnalogReady || stage_ == Stage::Paused || stage_ == Stage::NeutralPaused;
     EnableWindow(GetDlgItem(window_, IDC_SHIFTER_DEVICE), (setup || chooseDownshift) && !devices_.empty());
     SetDlgItemTextW(window_, IDC_MODAL_DEVICE_LABEL, tr(chooseDownshift ? Text::DlgShifterDownshiftDevice
@@ -526,7 +530,10 @@ void ShifterDialog::pollPreview()
 
 void ShifterDialog::selectDevice(LRESULT savedSelection)
 {
+    if (const auto* selected = selectedDevice())
+        preferredDeviceId_ = selected->id;
     if (selectingDownshiftDevice()) {
+        status(tr(selectedDevice(true) ? Text::DlgShifterSelectDownshiftDevice : Text::DlgSelectedDeviceDisconnected));
         updateControls();
         return;
     }
@@ -562,7 +569,7 @@ Text ShifterDialog::setupStatus() const
     if (devices_.empty())
         return Text::DlgShifterNoDevices;
     if (!selectedDevice(true))
-        return Text::DlgShifterEditOffline;
+        return selectedDevice() ? Text::DlgShifterEditOffline : Text::DlgSelectedDeviceDisconnected;
     const auto& mode = selectedMode();
     const bool nativeOnDevice = std::ranges::any_of(savedRows_, [this](std::size_t row) {
         return edited_[row].nativeShifter;
@@ -990,6 +997,13 @@ void ShifterDialog::advance()
         return;
 
     const bool chooseDownshift = selectingDownshiftDevice();
+    if (chooseDownshift) {
+        if (!inventory_.current()) {
+            status(tr(Text::mainScanningDevices));
+            return;
+        }
+        refreshDevices();
+    }
     const auto* downshift = chooseDownshift ? selectedDevice(true) : nullptr;
     const bool downshiftAnalog = chooseDownshift && send(IDC_SHIFTER_SIGNAL, CB_GETCURSEL) == 1;
     if (chooseDownshift) {

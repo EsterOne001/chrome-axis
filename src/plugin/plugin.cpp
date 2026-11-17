@@ -1209,6 +1209,7 @@ private:
     bool forceRefreshPending_{};
     bool reportedUsbState_{};
     bool reportedAccessoriesOnly_{};
+    bool reportedRestorePending_{};
 };
 
 void reportChangedWarning(std::string& previous, std::string_view warning) {
@@ -1236,7 +1237,11 @@ const char* feedbackSettingsWarning(DiagnosticFeedbackState issue) noexcept {
 UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& root, Clock::time_point now, bool force,
                                                   chrome_axis::DiagnosticSnapshot& diagnostic) {
     UsbConfigurationChanges changes;
-    const bool requested = chrome_axis::usbEnabled(root);
+    const bool restorePending = chrome_axis::profileRestorePending(root);
+    if (restorePending && !reportedRestorePending_)
+        warn("USB paused while the interrupted profile restore needs recovery. Open Chrome Axis to resume it.");
+    reportedRestorePending_ = restorePending;
+    const bool requested = !restorePending && chrome_axis::usbEnabled(root);
     auto [selected, disabledFeedback, feedbackReadError] = selection_.refresh(root, requested, directory_,
                                                                                feedbackSettings.enabled, now);
     if (!selected) {
@@ -2209,8 +2214,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool wantFeedback = physical && usb.feedbackSettings.enabled && usb.profile &&
             !usb.profile->steering.deviceId.empty();
         feedbackRequested.store(wantFeedback, std::memory_order_relaxed);
-        if (measuring && (changes.feedback || changes.calibration || changes.preset))
+        if (measuring && (changes.feedback || changes.calibration || changes.preset)) {
             performance.referenceFeedbackGain = 0;
+            performance.feedbackSetupSignature = 0;
+        }
         if (!physical) {
             lastUsbPollFinished = {};
             if (input && inputActive) {
@@ -2653,6 +2660,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 performance.motionAge.add(forceDiagnostic.motionAgeMicros);
                 if (!performance.forceSamples) {
                     performance.referenceFeedbackGain = usb.feedbackSettings.strength;
+                    performance.feedbackSetupSignature = chrome_axis::feedbackMeasurementSignature(usb.feedbackSettings, *usb.profile);
                     performance.feedbackProfile = diagnostic.profile;
                 }
                 ++performance.forceSamples;

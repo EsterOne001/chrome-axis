@@ -3,6 +3,7 @@
 #include "chrome_axis/feedback.hpp"
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/controls.hpp"
+#include "../src/app/feedback_editor.hpp"
 #include "../src/core/device_object_probe.hpp"
 #include "../src/core/device_layout_worker.hpp"
 #include "../src/core/device_read_recovery.hpp"
@@ -22,6 +23,102 @@ namespace {
 using namespace std::chrono_literals;
 using TestClock = std::chrono::steady_clock;
 using namespace chrome_axis;
+
+bool testFeedbackEditorGuardsUnreadableSettings()
+{
+    const auto root = std::filesystem::current_path() / (L"feedback-editor-" + std::to_wstring(GetCurrentProcessId()));
+    const auto file = root / feedbackFilename;
+    struct RemoveFixture {
+        const std::filesystem::path& root;
+        const std::filesystem::path& file;
+        ~RemoveFixture() {
+            std::error_code error;
+            std::filesystem::remove(file, error);
+            std::filesystem::remove(root, error);
+        }
+    } cleanup{root, file};
+    const auto preset = activePreset(root);
+    const auto calibration = profileFileRevision(root / profileFilename);
+    std::string error;
+    FeedbackSettings previous;
+    previous.enabled = true;
+    previous.strength = 135;
+    previous.damping = 180;
+    if (!saveFeedbackSettings(file, previous, error))
+        return false;
+
+    const HANDLE lockedAtOpen = CreateFileW(file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (lockedAtOpen == INVALID_HANDLE_VALUE)
+        return false;
+    const auto initialLocked = readFeedbackForEdit(file);
+    CloseHandle(lockedAtOpen);
+    FeedbackEditorStatus problem{};
+    if (initialLocked.status != FeedbackEditorStatus::locked || initialLocked.canSave() ||
+        saveEditedFeedback(root, preset, calibration, initialLocked, FeedbackSettings{}, problem) !=
+            PresetSaveResult::ioError ||
+        problem != FeedbackEditorStatus::locked || loadFeedbackSettings(file, error) != previous)
+        return false;
+
+    const auto initial = readFeedbackForEdit(file);
+    if (!initial.canSave() || initial.settings != previous)
+        return false;
+    const HANDLE lockedAtSave = CreateFileW(file.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (lockedAtSave == INVALID_HANDLE_VALUE)
+        return false;
+    auto changed = previous;
+    changed.damping = 120;
+    const auto result = saveEditedFeedback(root, preset, calibration, initial, changed, problem);
+    CloseHandle(lockedAtSave);
+    if (result != PresetSaveResult::ioError || problem != FeedbackEditorStatus::locked ||
+        loadFeedbackSettings(file, error) != previous ||
+        saveEditedFeedback(root, preset, calibration, initial, changed, problem) != PresetSaveResult::saved ||
+        loadFeedbackSettings(file, error) != changed)
+        return false;
+
+    // A malformed file can still be deliberately replaced after the warning.
+    std::ofstream(file, std::ios::trunc) << "wrong format";
+    const auto invalid = readFeedbackForEdit(file);
+    return invalid.status == FeedbackEditorStatus::invalid && invalid.canSave() &&
+        saveEditedFeedback(root, preset, calibration, invalid, previous, problem) == PresetSaveResult::saved &&
+        loadFeedbackSettings(file, error) == previous;
+}
+
+bool testGainSuggestionMatchesMeasurementSettings()
+{
+    FeedbackSettings settings{.enabled = true, .strength = 135, .centering = 50};
+    Profile profile;
+    profile.steering = {"{11111111-1111-1111-1111-111111111111}", 0, 0, -1000, 1000, 0.02f};
+    PerformanceReport capture;
+    capture.state = PerformanceState::complete;
+    capture.submittedEffects = 50;
+    capture.peakContinuousForce = 0.444569f;
+    capture.referenceFeedbackGain = settings.strength;
+    capture.feedbackSetupSignature = feedbackMeasurementSignature(settings, profile);
+    constexpr std::string_view name = "Measured";
+    std::ranges::copy(name, capture.feedbackProfile.begin());
+    if (!matchesFeedbackMeasurement(capture, settings, profile, name))
+        return false;
+
+    auto changedSettings = settings;
+    changedSettings.centering = 200;
+    if (matchesFeedbackMeasurement(capture, changedSettings, profile, name))
+        return false;
+    changedSettings = settings;
+    changedSettings.damping = 180;
+    if (matchesFeedbackMeasurement(capture, changedSettings, profile, name))
+        return false;
+    auto changedProfile = profile;
+    changedProfile.steering.axis = 1;
+    if (matchesFeedbackMeasurement(capture, settings, changedProfile, name))
+        return false;
+    changedProfile = profile;
+    changedProfile.brakeResponse.progressivity = 30;
+    if (matchesFeedbackMeasurement(capture, settings, changedProfile, name) ||
+        matchesFeedbackMeasurement(capture, settings, profile, "Other"))
+        return false;
+    capture.feedbackSetupSignature = 0;
+    return !matchesFeedbackMeasurement(capture, settings, profile, name);
+}
 
 struct TestForceContext {
     TestClock::time_point expires;
@@ -646,6 +743,10 @@ int testProvisionalInputLayout()
 
 int main()
 {
+    if (!testFeedbackEditorGuardsUnreadableSettings())
+        return 94;
+    if (!testGainSuggestionMatchesMeasurementSettings())
+        return 95;
     using namespace chrome_axis;
     if (const auto result = testWheelForceRecoveryBackoff())
         return result;

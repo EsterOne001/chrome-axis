@@ -87,6 +87,7 @@ int testPerformanceCapture(const std::filesystem::path& root)
         performance.feedbackIntervalOverruns = 5;
         performance.peakContinuousForce = 1.125f;
         performance.referenceFeedbackGain = 130;
+        performance.feedbackSetupSignature = 0xB27D4A4520D8C789ull;
         publisher.publish(snapshot, 1, performance);
         DrivingCaptureSample sample;
         sample.sampledAt = performance.startedAt;
@@ -165,6 +166,7 @@ int testPerformanceCapture(const std::filesystem::path& root)
             live.performance.usbSlowReads != 4 || live.performance.usbLateStarts != 9 ||
             live.performance.feedbackIntervalOverruns != 5 ||
             live.performance.peakContinuousForce != 1.125f || live.performance.referenceFeedbackGain != 130 ||
+            live.performance.feedbackSetupSignature != 0xB27D4A4520D8C789ull ||
             live.drivingCaptureSamples || owner.read().drivingCaptureSamples != 5)
             return 15;
 

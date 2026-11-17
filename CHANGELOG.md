@@ -6,6 +6,16 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.83
+
+- Une restauration de profils interrompue est signalée à la relance avec sa copie de secours. Les affectations incompatibles d’un profil importé sont signalées avant l’activation USB.
+- Le retour de force protège les réglages en cas de fichier momentanément indisponible. Les conseils de gain tiennent compte de l’ensemble des réglages mesurés.
+- La calibration guidée accepte une cadence USB plus lente. Le frein à main et l’embrayage attendent leur première lecture et les captures conservent le périphérique choisi quand la liste est actualisée.
+- L’inventaire USB général laisse la vérification des capacités de retour de force à son écran de réglages. L’application retente la lecture de la langue si le fichier est brièvement verrouillé.
+- Le diagnostic fait défiler ses relevés sur les petits écrans. Les boutons de copie, d’enregistrement, d’export et de fermeture restent accessibles.
+
+[ZIP Vortex](out/Chromaxis-0.4.83.zip)
+
 ## Chrome Axis 0.4.82
 
 - HUD Painter signale les copies de récupération dès l’ouverture. Les sauvegardes ambiguës restent disponibles et le fichier courant peut encore fournir la palette affichée. Les anciennes copies confirmées sont distinguées des reprises en attente.

@@ -1,10 +1,12 @@
 #include "chrome_axis/feedback.hpp"
+#include "chrome_axis/controls.hpp"
 
 #include "settings_read.hpp"
 #include "settings_replace.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <fstream>
@@ -45,6 +47,36 @@ float centeredPulse(float phase) noexcept
 }
 
 } // namespace
+
+std::uint64_t feedbackMeasurementSignature(const FeedbackSettings& settings, const Profile& profile) noexcept
+{
+    std::uint64_t signature = 14695981039346656037ull;
+    const auto add = [&](std::uint64_t value) { signature = (signature ^ value) * 1099511628211ull; };
+    add(settings.enabled);
+    add(settings.strength);
+    add(settings.impacts);
+    add(settings.invert);
+    add(settings.centering);
+    add(settings.impactStrength);
+    add(settings.lowSpeedEffort);
+    add(settings.damping);
+    for (const auto* axis : {&profile.steering, &profile.throttle, &profile.brake}) {
+        add(axis->deviceId.size());
+        for (const auto byte : axis->deviceId)
+            add(static_cast<unsigned char>(byte));
+        add(axis->axis);
+        add(axis->neutral);
+        add(axis->negative);
+        add(axis->positive);
+        add(std::bit_cast<std::uint32_t>(axis->deadzone));
+    }
+    for (const auto* response : {&profile.steeringResponse, &profile.throttleResponse, &profile.brakeResponse}) {
+        add(response->progressivity);
+        add(response->saturation);
+        add(response->stabilization);
+    }
+    return signature ? signature : 1;
+}
 
 std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path& path, std::string& error,
                                                     DWORD* readError)

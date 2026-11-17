@@ -54,9 +54,9 @@ std::wstring itemText(HWND control, WPARAM index, UINT sizeMessage, UINT textMes
 class ThemeState {
 public:
     ThemeState(HWND dialog, const wchar_t* subtitle, int statusId, int listId,
-               std::initializer_list<int> primaryButtons)
+               std::initializer_list<int> primaryButtons, DialogDecoration decoration)
         : dialog_(dialog), subtitle_(subtitle), statusId_(statusId), listId_(listId),
-          primaryButtons_(primaryButtons), backgroundBrush_(CreateSolidBrush(ui::background)),
+          primaryButtons_(primaryButtons), decoration_(decoration), backgroundBrush_(CreateSolidBrush(ui::background)),
           panelBrush_(CreateSolidBrush(ui::panel)), fieldBrush_(CreateSolidBrush(ui::field)),
           edgeBrush_(CreateSolidBrush(ui::edge))
     {
@@ -93,6 +93,7 @@ private:
     int statusId_{};
     int listId_{};
     std::vector<int> primaryButtons_;
+    DialogDecoration decoration_;
     UINT dpi_{USER_DEFAULT_SCREEN_DPI};
     std::array<HFONT, 3> fonts_{};
     ui::Icon logo_;
@@ -135,6 +136,9 @@ void ThemeState::initialise()
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
+        const auto& theme = *reinterpret_cast<const ThemeState*>(data);
+        if (theme.decoration_ != DialogDecoration::standard && GetParent(control) != theme.dialog_)
+            return TRUE;
         if (classIs(control, L"Button") || classIs(control, L"ComboBox"))
             SetWindowSubclass(control, controlProc, controlSubclassId, static_cast<DWORD_PTR>(data));
         return TRUE;
@@ -162,9 +166,12 @@ void ThemeState::updateDpi()
         dpi_ = dpi;
     const auto oldFonts = fonts_;
     fonts_ = ui::makeFonts(dialog_, dpi_);
-    logo_ = ui::loadLogo(GetModuleHandleW(nullptr), px(ui::headerLogoSize));
+    if (decoration_ != DialogDecoration::content)
+        logo_ = ui::loadLogo(GetModuleHandleW(nullptr), px(ui::headerLogoSize));
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
         const auto& theme = *reinterpret_cast<const ThemeState*>(data);
+        if (theme.decoration_ != DialogDecoration::standard && GetParent(control) != theme.dialog_)
+            return TRUE;
         const auto id = GetDlgCtrlID(control);
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(theme.fonts_[isHeading(id) ? 1 : 0]), FALSE);
         if (classIs(control, L"ComboBox"))
@@ -183,8 +190,9 @@ void ThemeState::paintScene(HDC dc) const
     GetClientRect(dialog_, &client);
     const bool highContrast = ui::isHighContrast();
     ui::fill(dc, client, highContrast ? GetSysColor(COLOR_WINDOW) : ui::background);
-    ui::paintHeader(dc, dpi_, client.right, 24, client.right * 3 / 4, logo_.get(), fonts_[0], fonts_[2],
-                    subtitle_.c_str());
+    if (decoration_ != DialogDecoration::content)
+        ui::paintHeader(dc, dpi_, client.right, 24, client.right * 3 / 4, logo_.get(), fonts_[0], fonts_[2],
+                        subtitle_.c_str());
     const auto border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : ui::edge;
     for (const int id : {IDC_MODAL_FORM, IDC_MODAL_RESULTS}) {
         const auto card = controlBounds(dialog_, id);
@@ -482,9 +490,9 @@ LRESULT ThemeState::handleControl(HWND window, UINT message, WPARAM wp, LPARAM l
 } // namespace
 
 void DialogTheme::attach(HWND dialog, const wchar_t* subtitle, int statusId, int listId,
-                         std::initializer_list<int> primaryButtons)
+                         std::initializer_list<int> primaryButtons, DialogDecoration decoration)
 {
-    auto theme = std::make_unique<ThemeState>(dialog, subtitle, statusId, listId, primaryButtons);
+    auto theme = std::make_unique<ThemeState>(dialog, subtitle, statusId, listId, primaryButtons, decoration);
     if (SetWindowSubclass(dialog, themeProc, dialogSubclassId, reinterpret_cast<DWORD_PTR>(theme.get())))
         theme.release()->initialise();
 }

@@ -374,6 +374,13 @@ bool analogAccessoryAxisConflict(const Profile& axes, const AccessoryBinding& bi
     return analogAccessoryConflicts(axes, binding) != 0;
 }
 
+bool hasAnalogAccessoryAxisConflict(const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept
+{
+    return std::ranges::any_of(bindings, [&](const auto& binding) {
+        return isEnabledDrivingAccessory(binding) && analogAccessoryAxisConflict(axes, binding);
+    });
+}
+
 bool introducesAnalogAccessoryAxisConflict(const Profile* previousAxes, std::span<const AccessoryBinding> previousBindings,
                                            const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept
 {

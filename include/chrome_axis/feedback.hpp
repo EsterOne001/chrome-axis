@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -27,6 +28,11 @@ struct FeedbackSettings {
 
     bool operator==(const FeedbackSettings&) const = default;
 };
+
+struct Profile;
+
+// Settings and calibration that must match before reusing a gain recommendation.
+std::uint64_t feedbackMeasurementSignature(const FeedbackSettings& settings, const Profile& profile) noexcept;
 
 std::optional<FeedbackSettings> loadFeedbackSettings(const std::filesystem::path& file, std::string& error,
                                                     DWORD* readError = nullptr);

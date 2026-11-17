@@ -6,10 +6,13 @@
 
 namespace chrome_axis {
 
+enum class DialogDecoration { standard, header, content };
+
 class DialogTheme {
 public:
     static void attach(HWND dialog, const wchar_t* subtitle, int statusId, int listId,
-                       std::initializer_list<int> primaryButtons);
+                       std::initializer_list<int> primaryButtons,
+                       DialogDecoration decoration = DialogDecoration::standard);
     static void setPrimary(HWND dialog, int controlId, bool primary);
 };
 

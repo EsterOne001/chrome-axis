@@ -59,16 +59,23 @@ inline std::optional<AccessoryProfile> loadEditorAccessories(const std::filesyst
     return bindings;
 }
 
-enum class UsbActivationStatus { ready, commandsMissing, calibrationLocked, accessoriesLocked, accessoriesUnreadable };
+enum class UsbActivationStatus { ready, commandsMissing, calibrationLocked, accessoriesLocked, accessoriesUnreadable,
+                                 axisConflict };
 
 // Called with the selected profile locked against concurrent edits and profile changes.
 inline UsbActivationStatus readUsbActivation(const std::filesystem::path& directory)
 {
     std::string error;
     DWORD calibrationError{}, accessoryError{};
-    if (loadProfile(directory / profileFilename, error, &calibrationError))
-        return UsbActivationStatus::ready;
+    const auto axes = loadProfile(directory / profileFilename, error, &calibrationError);
     const auto bindings = loadEditorAccessories(directory / accessoryFilename, error, &accessoryError);
+    // Only this new activation checks both files. The plugin's existing request can recover from a brief lock.
+    if (axes) {
+        if (lockedEditorFile(accessoryError))
+            return UsbActivationStatus::accessoriesLocked;
+        return bindings && hasAnalogAccessoryAxisConflict(*axes, *bindings) ? UsbActivationStatus::axisConflict
+                                                                           : UsbActivationStatus::ready;
+    }
     if (bindings && std::ranges::any_of(*bindings, isEnabledDrivingAccessory))
         return UsbActivationStatus::ready;
     if (lockedEditorFile(calibrationError))

@@ -435,6 +435,46 @@ bool testGuidedCalibrationWaitsForLayout()
     return completed && completed->median[0] == sample.axes[0] && !completed->axesPresent[1];
 }
 
+bool testSlowGuidedCalibration()
+{
+    CalibrationCapture capture;
+    bool hadSignal{};
+    DeviceSample sample;
+    sample.axesPresent[0] = true;
+    sample.axes[0] = 31000;
+    const auto start = DeviceReadClock::now();
+    const auto deadline = start + guidedCalibrationTimeout;
+    for (std::size_t i = 0; i < CalibrationCapture::sampleCount; ++i) {
+        sample.sampledAt = start + std::chrono::milliseconds(95) * static_cast<int>(i + 1);
+        if (sample.sampledAt >= deadline ||
+            !collectGuidedCalibrationReading(capture, {sample, DeviceReadStatus::available}, hadSignal))
+            return false;
+    }
+    return capture.complete() && capture.result()->median[0] == sample.axes[0];
+}
+
+bool testAnalogCaptureWarmup()
+{
+    const CaptureDeviceRead unavailable{.status = DeviceReadStatus::unavailable};
+    const CaptureDeviceRead resumed{DeviceSample{}, DeviceReadStatus::resumed};
+    const CaptureDeviceRead pending{.status = DeviceReadStatus::pending};
+    return !restartAnalogCapture(unavailable, true, false) && !restartAnalogCapture(resumed, true, false) &&
+        restartAnalogCapture(unavailable, true, true) && restartAnalogCapture(resumed, true, true) &&
+        restartAnalogCapture(unavailable, false, false) && restartAnalogCapture(resumed, false, false) &&
+        !restartAnalogCapture(pending, true, true);
+}
+
+bool testExplicitDeviceSelection()
+{
+    const std::array devices{DeviceInfo{.id = "up"}, DeviceInfo{.id = "down"}};
+    const auto onlyUp = std::span(devices).first(1);
+    const std::array reordered{devices[1], devices[0]};
+    return inventoryDeviceSelection(devices, "", true) == 0 && !inventoryDeviceSelection(devices, "", false) &&
+        inventoryDeviceSelection(devices, "down", true) == 1 &&
+        !inventoryDeviceSelection(onlyUp, "down", true) &&
+        inventoryDeviceSelection(reordered, "down", true) == 0;
+}
+
 bool testShortcut(const std::filesystem::path& root)
 {
     constexpr unsigned int customKey = 'L';
@@ -510,16 +550,20 @@ int main()
     const bool guidedCalibration = testGuidedCalibrationWaitsForLayout();
     const bool shortcut = testShortcut(root);
     const bool usbStatus = testUsbStatus();
+    const bool slowCalibration = testSlowGuidedCalibration();
+    const bool analogWarmup = testAnalogCaptureWarmup();
+    const bool explicitSelection = testExplicitDeviceSelection();
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
     if (!inventory || !pendingLayout || !asyncCapture || !independentCapture || !readerRecovery || !idleReader || !capture ||
-        !guidedCalibration || !shortcut || !usbStatus)
+        !guidedCalibration || !shortcut || !usbStatus || !slowCalibration || !analogWarmup || !explicitSelection)
         std::cerr << "inventory=" << inventory << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
                   << " independent_capture=" << independentCapture << " reader_recovery=" << readerRecovery
                   << " idle_reader=" << idleReader << " capture=" << capture
                   << " guided_calibration=" << guidedCalibration << " shortcut=" << shortcut
-                  << " usb_state=" << usbStatus << '\n';
+                  << " usb_state=" << usbStatus << " slow_calibration=" << slowCalibration
+                  << " analog_warmup=" << analogWarmup << " explicit_selection=" << explicitSelection << '\n';
     return inventory && pendingLayout && asyncCapture && independentCapture && readerRecovery && idleReader && capture &&
-        guidedCalibration && shortcut && usbStatus ? 0 : 1;
+        guidedCalibration && shortcut && usbStatus && slowCalibration && analogWarmup && explicitSelection ? 0 : 1;
 }

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ChromeAxis VERSION 0.4.82 LANGUAGES CXX)
+project(ChromeAxis VERSION 0.4.83 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Chrome Axis requires a Windows x64 MSVC build.")
@@ -45,6 +45,7 @@ add_executable(chrome_axis_app WIN32
   src/app/app_input.cpp
   src/app/device_inventory.cpp
   src/app/diagnostic_recording.cpp
+  src/app/diagnostic_viewport.cpp
   src/app/diagnostics_dialog.cpp
   src/app/dialog_theme.cpp
   src/app/feedback_dialog.cpp

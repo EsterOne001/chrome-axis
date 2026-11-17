@@ -8,6 +8,7 @@
 #include "chrome_axis/input.hpp"
 #include "chrome_axis/presets.hpp"
 #include "diagnostic_recording.hpp"
+#include "diagnostic_viewport.hpp"
 #include "dialog_theme.hpp"
 
 #include <winver.h>
@@ -40,8 +41,10 @@ namespace {
 
 constexpr UINT_PTR refreshTimer = 1;
 constexpr UINT refreshIntervalMs = 150;
+constexpr std::uint64_t profileStatusIntervalMs = 1000;
 constexpr UINT_PTR copyTimer = 2;
 constexpr UINT copyFeedbackMs = 2500;
+constexpr UINT fitDiagnosticWindow = WM_APP + 1;
 constexpr wchar_t unavailableValue[] = L"—";
 constexpr auto releaseCom = [](auto* object) { object->Release(); };
 
@@ -55,6 +58,9 @@ struct DialogState {
     const wchar_t* missingFiles{};
     std::wstring pluginVersion{};
     std::wstring versionMismatch{};
+    DiagnosticViewport viewport{};
+    std::uint64_t nextProfileStatusRead{};
+    bool profileRecoveryPending{};
 };
 
 struct AccessoryDialogState {
@@ -1110,10 +1116,14 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         report += state.versionMismatch + L"\r\n";
     report += connectionText(read.connection);
     report += L"\r\n";
-    const auto localProfile = activePreset(state.profileRoot);
-    if (!localProfile.directory.empty())
-        line(Text::DlgDiagnosticsReportLocalProfile,
-             localProfile.name.empty() ? tr(Text::mainDefaultProfile) : reportLabel(localProfile.name));
+    if (profileRestorePending(state.profileRoot)) {
+        report += std::wstring(tr(Text::mainProfileRestorePending)) + L"\r\n";
+    } else {
+        const auto localProfile = activePreset(state.profileRoot);
+        if (!localProfile.directory.empty())
+            line(Text::DlgDiagnosticsReportLocalProfile,
+                 localProfile.name.empty() ? tr(Text::mainDefaultProfile) : reportLabel(localProfile.name));
+    }
     line(Text::DlgDiagnosticsReportModels, state.models);
 
     const auto view = accessoryView(read);
@@ -1398,7 +1408,7 @@ INT_PTR CALLBACK accessoryDetailsProc(HWND window, UINT message, WPARAM wParam, 
     return FALSE;
 }
 
-void refreshPerformance(HWND window, const DialogState& state, const DiagnosticRead& read)
+void refreshPerformance(HWND window, HWND content, const DialogState& state, const DiagnosticRead& read)
 {
     const auto recording = state.recorder.status();
     const bool canStop = canStopRecording(recording.state);
@@ -1412,15 +1422,15 @@ void refreshPerformance(HWND window, const DialogState& state, const DiagnosticR
     setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE,
                    tr(canStop || stopping ? Text::DlgDiagnosticsPerformanceStop : Text::DlgDiagnosticsPerformanceStart));
     EnableWindow(GetDlgItem(window, IDC_DIAGNOSTICS_PERFORMANCE), !stopping && (canStop || available));
-    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_STATE, recordingSummary(recording, available));
-    setChangedText(window, IDC_DIAGNOSTICS_CSV_STATUS, exportStatusText(exportState));
+    setChangedText(content, IDC_DIAGNOSTICS_PERFORMANCE_STATE, recordingSummary(recording, available));
+    setChangedText(content, IDC_DIAGNOSTICS_CSV_STATUS, exportStatusText(exportState));
     for (const auto& control : performanceControls)
-        setChangedText(window, control.valueId, performanceTiming(performance.*control.timing));
-    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_WARNINGS, showResults
+        setChangedText(content, control.valueId, performanceTiming(performance.*control.timing));
+    setChangedText(content, IDC_DIAGNOSTICS_PERFORMANCE_WARNINGS, showResults
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceExpired)) + L" · " + std::to_wstring(performance.expiredReads) +
             L"    " + tr(Text::DlgDiagnosticsPerformanceTransient) + L" · " + std::to_wstring(performance.transientReads)
         : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_OVERRUNS, showResults
+    setChangedText(content, IDC_DIAGNOSTICS_PERFORMANCE_OVERRUNS, showResults
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceUsbSlowReads)) + L" · " +
             std::to_wstring(performance.usbSlowReads) + L"    " +
             tr(Text::DlgDiagnosticsPerformanceUsbLateStarts) + L" · " +
@@ -1428,17 +1438,18 @@ void refreshPerformance(HWND window, const DialogState& state, const DiagnosticR
             tr(Text::DlgDiagnosticsPerformanceFeedbackOverruns) + L" · " +
             std::to_wstring(performance.feedbackIntervalOverruns)
         : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_FORCE_COUNTS, showResults
+    setChangedText(content, IDC_DIAGNOSTICS_PERFORMANCE_FORCE_COUNTS, showResults
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceAccepted)) + L" · " +
             std::to_wstring(performance.submittedEffects)
         : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_PERFORMANCE_CLIPPING, showResults ? clippingSummary(performance) : L"");
+    setChangedText(content, IDC_DIAGNOSTICS_PERFORMANCE_CLIPPING, showResults ? clippingSummary(performance) : L"");
 }
 
 void refresh(HWND window, DialogState& state)
 {
+    const auto content = state.viewport.content;
     const auto read = state.reader.read();
-    setChangedText(window, IDC_DIAGNOSTICS_CONNECTION, state.missingFiles ? state.missingFiles :
+    setChangedText(content, IDC_DIAGNOSTICS_CONNECTION, state.missingFiles ? state.missingFiles :
         !state.versionMismatch.empty() ? state.versionMismatch.c_str() : connectionText(read.connection));
     const bool connected = read.connection == DiagnosticConnection::connected;
     const auto mode = read.snapshot.mode;
@@ -1447,8 +1458,14 @@ void refresh(HWND window, DialogState& state)
     const auto& snapshot = view.snapshot;
     const bool showControls = connected || showLastDrive;
     const auto now = GetTickCount64();
+    if (now >= state.nextProfileStatusRead) {
+        state.profileRecoveryPending = profileRestorePending(state.profileRoot);
+        state.nextProfileStatusRead = now + profileStatusIntervalMs;
+    }
     if (!state.missingFiles && state.versionMismatch.empty()) {
-        if (connected && read.usbOperationCount) {
+        if (state.profileRecoveryPending) {
+            setChangedText(content, IDC_MODAL_INTRO, tr(Text::mainProfileRestorePending));
+        } else if (connected && read.usbOperationCount) {
             const auto calls = std::span(read.usbOperations).first(read.usbOperationCount);
             const auto feedback = std::ranges::find(calls, DiagnosticUsbLane::feedback, &DiagnosticUsbOperation::lane);
             const auto highlighted = feedback != calls.end() ? feedback
@@ -1457,7 +1474,7 @@ void refresh(HWND window, DialogState& state)
             auto detail = std::wstring(usbEventTitle(event, true)) + usbEventDetails(event, state.devices);
             if (calls.size() > 1)
                 detail += L" · +" + std::to_wstring(calls.size() - 1);
-            setChangedText(window, IDC_MODAL_INTRO, detail);
+            setChangedText(content, IDC_MODAL_INTRO, detail);
         } else if (read.usbEventCount) {
             const auto& latest = read.usbEvents[read.usbEventCount - 1];
             auto detail = std::wstring(tr(Text::DlgDiagnosticsLatestUsb)) +
@@ -1478,28 +1495,28 @@ void refresh(HWND window, DialogState& state)
                 if (latest.blockerCount > 1)
                     detail += L" +" + std::to_wstring(latest.blockerCount - 1);
             }
-            setChangedText(window, IDC_MODAL_INTRO, detail);
+            setChangedText(content, IDC_MODAL_INTRO, detail);
         } else {
-            setChangedText(window, IDC_MODAL_INTRO, tr(Text::DlgDiagnosticsIntro));
+            setChangedText(content, IDC_MODAL_INTRO, tr(Text::DlgDiagnosticsIntro));
         }
     }
-    setChangedText(window, IDC_DIAGNOSTICS_MODE, connected ? modeText(mode) : unavailableValue);
-    setChangedText(window, IDC_DIAGNOSTICS_PROFILE_LABEL,
+    setChangedText(content, IDC_DIAGNOSTICS_MODE, connected ? modeText(mode) : unavailableValue);
+    setChangedText(content, IDC_DIAGNOSTICS_PROFILE_LABEL,
                    tr(showLastDrive ? Text::DlgDiagnosticsLastDriveProfile : Text::DlgDiagnosticsProfile));
-    setChangedText(window, IDC_DIAGNOSTICS_PROFILE, showControls ? profileText(snapshot) : unavailableValue);
-    setChangedText(window, IDC_MODAL_LIST_HEADING,
+    setChangedText(content, IDC_DIAGNOSTICS_PROFILE, showControls ? profileText(snapshot) : unavailableValue);
+    setChangedText(content, IDC_MODAL_LIST_HEADING,
                    tr(showLastDrive ? Text::DlgDiagnosticsLastDriveHeading : Text::DlgDiagnosticsAxes));
     for (std::size_t i = 0; i < axisControls.size(); ++i) {
         const auto& controls = axisControls[i];
         const auto& axis = snapshot.axes[i];
         const auto rest = showControls ? pedalRestText(axis.pedalRest) : std::wstring{};
-        setChangedText(window, controls.stateId,
+        setChangedText(content, controls.stateId,
             !rest.empty() ? rest : showControls ? axisText(axis.state) : unavailableValue);
-        setChangedText(window, controls.valueId, showControls ? appliedValue(axis, now) : unavailableValue);
+        setChangedText(content, controls.valueId, showControls ? appliedValue(axis, now) : unavailableValue);
     }
 
-    setChangedText(window, IDC_DIAGNOSTICS_ACCESSORIES, showControls ? accessoryStatus(snapshot) : unavailableValue);
-    setChangedText(window, IDC_DIAGNOSTICS_ACCESSORY, showControls ? lastAccessoryKey(snapshot, now) : unavailableValue);
+    setChangedText(content, IDC_DIAGNOSTICS_ACCESSORIES, showControls ? accessoryStatus(snapshot) : unavailableValue);
+    setChangedText(content, IDC_DIAGNOSTICS_ACCESSORY, showControls ? lastAccessoryKey(snapshot, now) : unavailableValue);
     const bool showTransmission = showControls && snapshot.transmission.configured;
     const auto& shortcutSource = connected && isTransmissionHotkey(read.snapshot.transmission.shortcutKey)
         ? read.snapshot.transmission : snapshot.transmission;
@@ -1514,26 +1531,43 @@ void refresh(HWND window, DialogState& state)
         transmissionContext = transmissionConfiguration(snapshot.transmission, snapshot.mode);
         appendDiagnosticPart(transmissionContext, shortcut);
     }
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_LABEL,
+    setChangedText(content, IDC_DIAGNOSTICS_TRANSMISSION_LABEL,
                    showTransmission || !shortcut.empty() ? tr(Text::DlgDiagnosticsTransmission) : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION, summary);
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_CONTEXT, transmissionContext);
-    setChangedText(window, IDC_DIAGNOSTICS_TRANSMISSION_STATUS,
+    setChangedText(content, IDC_DIAGNOSTICS_TRANSMISSION, summary);
+    setChangedText(content, IDC_DIAGNOSTICS_TRANSMISSION_CONTEXT, transmissionContext);
+    setChangedText(content, IDC_DIAGNOSTICS_TRANSMISSION_STATUS,
                    showTransmission ? transmissionStatus(snapshot) : L"");
     const bool showClutch = showControls && snapshot.clutch.configured;
-    setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_LABEL, showClutch ? tr(Text::DlgDiagnosticsClutch) : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_CLUTCH, showClutch ? clutchSummary(snapshot.clutch) : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_CLUTCH_TRAVEL, showClutch && snapshot.mode == DiagnosticMode::usb
+    setChangedText(content, IDC_DIAGNOSTICS_CLUTCH_LABEL, showClutch ? tr(Text::DlgDiagnosticsClutch) : L"");
+    setChangedText(content, IDC_DIAGNOSTICS_CLUTCH, showClutch ? clutchSummary(snapshot.clutch) : L"");
+    setChangedText(content, IDC_DIAGNOSTICS_CLUTCH_TRAVEL, showClutch && snapshot.mode == DiagnosticMode::usb
         ? std::wstring(tr(Text::DlgDiagnosticsClutchRawTravel)) + L" " + clutchTravelSummary(snapshot.clutch)
         : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
+    setChangedText(content, IDC_DIAGNOSTICS_FEEDBACK, showControls ? feedbackStatus(snapshot) : unavailableValue);
     const auto* currentFeedback = currentFeedbackChange(read, view);
-    setChangedText(window, IDC_DIAGNOSTICS_FEEDBACK_CURRENT, currentFeedback
+    setChangedText(content, IDC_DIAGNOSTICS_FEEDBACK_CURRENT, currentFeedback
         ? std::wstring(tr(Text::DlgDiagnosticsFeedbackCurrent)) + L" — " + currentFeedback
         : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
-    setChangedText(window, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");
-    refreshPerformance(window, state, read);
+    setChangedText(content, IDC_DIAGNOSTICS_FORCE_TELEMETRY, showControls ? feedbackTelemetry(snapshot.feedbackData) : L"");
+    setChangedText(content, IDC_DIAGNOSTICS_FORCE_DETAILS, showControls ? feedbackDetails(snapshot.feedbackData) : L"");
+    refreshPerformance(window, content, state, read);
+}
+
+void fitDiagnosticViewport(HWND window, DiagnosticViewport& viewport)
+{
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor))
+        viewport.fit(window, monitor.rcWork);
+}
+
+INT_PTR CALLBACK diagnosticContentProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_INITDIALOG)
+        return TRUE;
+    if (message == WM_COMMAND && LOWORD(wParam) == IDC_DIAGNOSTICS_ACCESSORY_DETAILS)
+        return SendMessageW(GetAncestor(window, GA_ROOT), message, wParam, lParam);
+    return FALSE;
 }
 
 INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -1543,32 +1577,62 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_INITDIALOG: {
         SetWindowLongPtrW(window, DWLP_USER, lParam);
         auto& initial = *reinterpret_cast<DialogState*>(lParam);
+        const auto content = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIAGNOSTICS_CONTENT),
+            GetDlgItem(window, IDC_DIAGNOSTICS_VIEWPORT), diagnosticContentProc, 0);
+        if (!content) {
+            EndDialog(window, -1);
+            return FALSE;
+        }
+        initial.viewport.content = content;
         SetWindowTextW(window, tr(Text::DlgDiagnosticsTitle));
-        SetDlgItemTextW(window, IDC_MODAL_INTRO,
+        SetDlgItemTextW(content, IDC_MODAL_INTRO,
                        tr(initial.missingFiles || !initial.versionMismatch.empty()
                            ? Text::DlgDiagnosticsRedeploy : Text::DlgDiagnosticsIntro));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_MODE_LABEL, tr(Text::DlgDiagnosticsMode));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_PROFILE_LABEL, tr(Text::DlgDiagnosticsProfile));
-        SetDlgItemTextW(window, IDC_MODAL_LIST_HEADING, tr(Text::DlgDiagnosticsAxes));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_STATE_LABEL, tr(Text::DlgDiagnosticsAxisState));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_LAST_VALUE_LABEL, tr(Text::DlgDiagnosticsLastValue));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_MODE_LABEL, tr(Text::DlgDiagnosticsMode));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_PROFILE_LABEL, tr(Text::DlgDiagnosticsProfile));
+        SetDlgItemTextW(content, IDC_MODAL_LIST_HEADING, tr(Text::DlgDiagnosticsAxes));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_STATE_LABEL, tr(Text::DlgDiagnosticsAxisState));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_LAST_VALUE_LABEL, tr(Text::DlgDiagnosticsLastValue));
         for (const auto& axis : axisControls)
-            SetDlgItemTextW(window, axis.labelId, tr(axis.label));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORIES_LABEL, tr(Text::DlgDiagnosticsAccessories));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORY_LABEL, tr(Text::DlgDiagnosticsLastKey));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_ACCESSORY_DETAILS, tr(Text::DlgDiagnosticsAccessoryDetails));
-        SetDlgItemTextW(window, IDC_DIAGNOSTICS_FEEDBACK_LABEL, tr(Text::DlgDiagnosticsFeedback));
+            SetDlgItemTextW(content, axis.labelId, tr(axis.label));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_ACCESSORIES_LABEL, tr(Text::DlgDiagnosticsAccessories));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_ACCESSORY_LABEL, tr(Text::DlgDiagnosticsLastKey));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_ACCESSORY_DETAILS, tr(Text::DlgDiagnosticsAccessoryDetails));
+        SetDlgItemTextW(content, IDC_DIAGNOSTICS_FEEDBACK_LABEL, tr(Text::DlgDiagnosticsFeedback));
         for (const auto& control : performanceControls)
-            SetDlgItemTextW(window, control.labelId, tr(control.label));
+            SetDlgItemTextW(content, control.labelId, tr(control.label));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_COPY, tr(Text::DlgDiagnosticsCopy));
         SetDlgItemTextW(window, IDC_DIAGNOSTICS_SAVE_CSV, tr(Text::DlgDiagnosticsCsvSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgDiagnosticsClose));
-        DialogTheme::attach(window, tr(Text::DlgDiagnosticsHeading), IDC_DIAGNOSTICS_CONNECTION, 0, {IDCANCEL});
+        DialogTheme::attach(window, tr(Text::DlgDiagnosticsHeading), 0, 0, {IDCANCEL}, DialogDecoration::header);
+        DialogTheme::attach(content, L"", IDC_DIAGNOSTICS_CONNECTION, 0, {}, DialogDecoration::content);
+        fitDiagnosticViewport(window, initial.viewport);
         refresh(window, initial);
         SetTimer(window, refreshTimer, refreshIntervalMs, nullptr);
         SetFocus(GetDlgItem(window, IDCANCEL));
         return FALSE;
     }
+    case WM_DPICHANGED:
+    case WM_SETTINGCHANGE:
+        PostMessageW(window, fitDiagnosticWindow, 0, 0);
+        break;
+    case WM_EXITSIZEMOVE:
+    case fitDiagnosticWindow:
+        if (state && state->viewport.content)
+            fitDiagnosticViewport(window, state->viewport);
+        return TRUE;
+    case WM_VSCROLL:
+        if (state && reinterpret_cast<HWND>(lParam) == GetDlgItem(window, IDC_DIAGNOSTICS_SCROLL)) {
+            state->viewport.scroll(window, LOWORD(wParam));
+            return TRUE;
+        }
+        break;
+    case WM_MOUSEWHEEL:
+        if (state && state->viewport.canScroll()) {
+            state->viewport.wheel(window, GET_WHEEL_DELTA_WPARAM(wParam));
+            return TRUE;
+        }
+        break;
     case WM_TIMER:
         if (wParam == refreshTimer && state) {
             refresh(window, *state);
@@ -1582,6 +1646,12 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         break;
     case WM_COMMAND:
         if (LOWORD(wParam) == IDC_DIAGNOSTICS_ACCESSORY_DETAILS && state) {
+            if (HIWORD(wParam) == BN_SETFOCUS) {
+                state->viewport.showControl(window, reinterpret_cast<HWND>(lParam));
+                return TRUE;
+            }
+            if (HIWORD(wParam) != BN_CLICKED)
+                break;
             AccessoryDialogState details{state->reader, {}};
             const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_DIAGNOSTICS_ACCESSORIES),
                                                window, accessoryDetailsProc, reinterpret_cast<LPARAM>(&details));

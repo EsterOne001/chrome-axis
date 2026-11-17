@@ -144,27 +144,34 @@ void probeInventoryLayout(IDirectInputDevice8W& device, DeviceInfo& info) {
     }
 }
 
-bool forceActuator(IDirectInputDevice8W& device, std::size_t axis) {
-    DIDEVICEOBJECTINSTANCEW object{};
-    object.dwSize = sizeof(object);
-    return axis < axisCount && SUCCEEDED(device.GetObjectInfo(&object, axisOffsets[axis], DIPH_BYOFFSET))
-        && (object.dwFlags & DIDOI_FFACTUATOR) != 0 && (object.dwType & DIDFT_ABSAXIS) != 0;
-}
-
-bool supportsConstantForce(IDirectInputDevice8W& device) {
+std::optional<std::array<bool, axisCount>> availableForceAxes(IDirectInputDevice8W& device, std::size_t axis,
+                                                             bool acquired) {
+    std::array<bool, axisCount> axes{};
     DIDEVCAPS caps{};
     caps.dwSize = sizeof(caps);
+    if (FAILED(device.GetCapabilities(&caps)))
+        return std::nullopt;
+    if (!(caps.dwFlags & DIDC_FORCEFEEDBACK))
+        return axes;
     DIEFFECTINFOW info{};
     info.dwSize = sizeof(info);
-    return SUCCEEDED(device.GetCapabilities(&caps)) && (caps.dwFlags & DIDC_FORCEFEEDBACK) != 0 &&
-        SUCCEEDED(device.GetEffectInfo(&info, GUID_ConstantForce));
-}
+    const auto effect = device.GetEffectInfo(&info, GUID_ConstantForce);
+    if (effect == DIERR_UNSUPPORTED || effect == DIERR_NOTFOUND)
+        return axes;
+    if (FAILED(effect))
+        return std::nullopt;
 
-std::array<bool, axisCount> availableForceAxes(IDirectInputDevice8W& device) {
-    std::array<bool, axisCount> axes{};
-    if (supportsConstantForce(device)) {
-        for (std::size_t axis = 0; axis < axes.size(); ++axis)
-            axes[axis] = forceActuator(device, axis);
+    const auto first = axis == axisCount ? 0 : axis;
+    const auto end = axis == axisCount ? axisCount : axis + 1;
+    for (auto i = first; i < end; ++i) {
+        DIDEVICEOBJECTINSTANCEW object{};
+        object.dwSize = sizeof(object);
+        const auto result = device.GetObjectInfo(&object, axisOffsets[i], DIPH_BYOFFSET);
+        // A calibrated axis can be missing from metadata until the driver acquires the device.
+        if (FAILED(result) && (result != DIERR_OBJECTNOTFOUND || (axis != axisCount && !acquired)))
+            return std::nullopt;
+        axes[i] = SUCCEEDED(result) && (object.dwFlags & DIDOI_FFACTUATOR) != 0 &&
+            (object.dwType & DIDFT_ABSAXIS) != 0;
     }
     return axes;
 }
@@ -202,7 +209,6 @@ BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
             // A refused acquisition can coincide with successful metadata on the next call.
             probeInventoryLayout(*device, info);
         }
-        info.forceFeedbackAxes = availableForceAxes(*device);
         if (acquired)
             device->Unacquire();
     }
@@ -727,6 +733,24 @@ std::vector<DeviceInfo> DirectInput::devices() const {
     Enumeration enumeration{*impl_->input, impl_->window, {}};
     impl_->input->EnumDevices(DI8DEVCLASS_GAMECTRL, addDevice, &enumeration, DIEDFL_ATTACHEDONLY);
     return std::move(enumeration.devices);
+}
+
+std::optional<std::array<bool, axisCount>> DirectInput::forceFeedbackAxesFor(std::string_view id, std::size_t axis) const {
+    GUID guid{};
+    if (!ready() || axis > axisCount || FAILED(parseDeviceId(id, guid)))
+        return std::nullopt;
+    const auto device = createDevice(*impl_->input, guid);
+    if (!device || FAILED(device->SetDataFormat(&c_dfDIJoystick2)))
+        return std::nullopt;
+
+    auto axes = availableForceAxes(*device, axis, false);
+    if (!axes && impl_->window && SUCCEEDED(device->SetCooperativeLevel(impl_->window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND))) {
+        const bool acquired = SUCCEEDED(device->Acquire());
+        axes = availableForceAxes(*device, axis, acquired);
+        if (acquired)
+            device->Unacquire();
+    }
+    return axes;
 }
 
 void DirectInput::beginPoll() noexcept {

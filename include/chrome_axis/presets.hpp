@@ -64,8 +64,17 @@ bool replacePresetDevice(const std::filesystem::path& root, const ProfilePreset&
 inline constexpr wchar_t profileLanguageFilename[] = L"language.txt";
 inline constexpr wchar_t profileBackupsFolder[] = L"Sauvegardes";
 
-std::optional<std::string> readProfileLanguage(const std::filesystem::path& root);
+std::optional<std::string> readProfileLanguage(const std::filesystem::path& root, bool* locked = nullptr);
 bool writeProfileLanguage(const std::filesystem::path& root, std::string_view language);
+
+struct ProfileRestoreRecovery {
+    bool pending{};
+    std::filesystem::path backup;
+    bool backupUsable{};
+};
+
+bool profileRestorePending(const std::filesystem::path& root);
+ProfileRestoreRecovery readInterruptedProfileRestore(const std::filesystem::path& root);
 
 enum class ProfileBackupError { none, invalidLocation, invalidBackup, destinationExists, ioError, recoveryRequired };
 
@@ -76,6 +85,7 @@ enum class ProfileBackupStep {
 struct ProfileBackupFailure {
     ProfileBackupStep step{};
     std::uint32_t windowsError{};
+    bool axisConflict{};
 };
 
 // The destination must be a new directory. A legacy language preference can be included in the export.

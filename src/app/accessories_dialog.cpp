@@ -404,6 +404,7 @@ private:
     bool previewPolling_{};
     bool previewAxis_{};
     bool captureReadInterrupted_{};
+    bool captureHadSignal_{};
     std::optional<std::uint64_t> inventoryRevision_;
 };
 
@@ -512,13 +513,8 @@ std::wstring AccessoryDialog::deviceLabel(std::string_view id) const
 
 void AccessoryDialog::selectDevice(std::string_view id)
 {
-    const auto device = std::ranges::find(devices_, id, &DeviceInfo::id);
-    if (device != devices_.end()) {
-        send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, static_cast<WPARAM>(device - devices_.begin()));
-        return;
-    }
-    const bool chooseFirst = !devices_.empty() && (!analogPage() || (id.empty() && devices_.size() == 1));
-    send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, chooseFirst ? 0 : static_cast<WPARAM>(CB_ERR));
+    const auto selection = inventoryDeviceSelection(devices_, id, !analogPage() || devices_.size() == 1);
+    send(IDC_ACCESSORY_DEVICE, CB_SETCURSEL, selection ? static_cast<WPARAM>(*selection) : static_cast<WPARAM>(CB_ERR));
 }
 
 void AccessoryDialog::rememberSelectedDevice()
@@ -618,6 +614,7 @@ void AccessoryDialog::clearCapture()
     previous_.reset();
     povCapture_.reset();
     captureReadInterrupted_ = false;
+    captureHadSignal_ = false;
     rest_.reset();
     send(IDC_ACCESSORY_INPUT, CB_RESETCONTENT);
     SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(sectionText(Text::DlgAccessoriesCapture, Text::DlgHandbrakeCapture, Text::DlgClutchCapture)));
@@ -632,7 +629,8 @@ void AccessoryDialog::clearCapture()
             setStatus(status.c_str());
         }
     } else {
-        setStatus(tr(devices_.empty() ? Text::DlgAccessoriesConnectDevice
+        setStatus(tr(!deviceId_.empty() ? Text::DlgSelectedDeviceDisconnected
+            : devices_.empty() ? Text::DlgAccessoriesConnectDevice
             : sectionText(Text::DlgAccessoriesConnectDevice, Text::DlgHandbrakeSelectDevice, Text::DlgClutchSelectDevice)));
     }
     refreshActions();
@@ -940,6 +938,7 @@ void AccessoryDialog::startSampling(CaptureStage stage, const wchar_t* text)
     measurements_ = {};
     stage_ = stage;
     captureReadInterrupted_ = false;
+    captureHadSignal_ = false;
     deadline_ = GetTickCount64() + captureTimeoutMs;
     SetDlgItemTextW(window_, IDC_ACCESSORY_CAPTURE, tr(Text::DlgAccessoriesCancelCapture));
     setStatus(text);
@@ -1017,7 +1016,8 @@ void AccessoryDialog::sample()
         return;
     }
     if (reading.needsRest()) {
-        if (stage_ != CaptureStage::Digital) {
+        if (stage_ != CaptureStage::Digital &&
+            restartAnalogCapture(reading, stage_ == CaptureStage::AxisRest, captureHadSignal_)) {
             clearCapture();
             setStatus(tr(Text::DlgAccessoriesCaptureDeviceRest));
             return;
@@ -1029,7 +1029,8 @@ void AccessoryDialog::sample()
         measurements_ = {};
         povCapture_.reset();
         if (!captureReadInterrupted_)
-            setStatus(tr(Text::DlgShifterDeviceReadInterrupted));
+            setStatus(tr(stage_ == CaptureStage::AxisRest && !captureHadSignal_
+                ? Text::DlgAccessoryPreviewPending : Text::DlgShifterDeviceReadInterrupted));
         captureReadInterrupted_ = true;
         return;
     }
@@ -1066,6 +1067,7 @@ void AccessoryDialog::sample()
         measurements_ = {};
         return;
     }
+    captureHadSignal_ = true;
     const auto measured = measurements_.result();
     if (!measured)
         return;

@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <system_error>
+#include <utility>
 
 namespace chrome_axis {
 namespace {
@@ -20,6 +21,7 @@ constexpr wchar_t presetsFolder[] = L"Profils";
 constexpr wchar_t selectionFile[] = L"active_profile.txt";
 constexpr wchar_t backupMarker[] = L"chrome_axis_backup.txt";
 constexpr wchar_t profileLockFilename[] = L".chrome_axis_profile_backup.lock";
+constexpr wchar_t profileRestoreJournal[] = L".chrome_axis_profile_restore.pending";
 constexpr wchar_t originalFiles[] = L"Fichiers-originaux";
 constexpr std::string_view backupVersion = "Chrome Axis profile backup 1";
 constexpr std::size_t maxNameLength = 64;
@@ -341,6 +343,20 @@ bool optionalEntry(const std::filesystem::path& path, bool directory, bool& exis
     return exists ? (directory ? plainDirectory(attributes) : plainFile(attributes)) : missing(GetLastError());
 }
 
+bool hasRestoreJournal(const std::filesystem::path& root)
+{
+    const auto attributes = GetFileAttributesW((root / profileRestoreJournal).c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES || !missing(GetLastError());
+}
+
+bool clearRestoreJournal(const std::filesystem::path& root, std::uint32_t* windowsError)
+{
+    if (DeleteFileW((root / profileRestoreJournal).c_str()))
+        return true;
+    const auto error = GetLastError();
+    return missing(error) || reportWindowsFailure(windowsError, error);
+}
+
 bool ensureDirectory(const std::filesystem::path& path, std::uint32_t* windowsError)
 {
     if (CreateDirectoryW(path.c_str(), nullptr))
@@ -477,6 +493,17 @@ bool validSnapshot(const std::filesystem::path& path)
     return std::ranges::all_of(listPresets(path), [&](const auto& name) {
         return validSavedSettings(path / presetsFolder / name);
     });
+}
+
+bool activeSnapshotAxisConflict(const std::filesystem::path& path)
+{
+    const auto selected = activePreset(path);
+    if (selected.directory.empty())
+        return false;
+    std::string error;
+    const auto axes = loadProfile(selected.directory / profileFilename, error);
+    const auto accessories = loadAccessoryProfile(selected.directory / accessoryFilename, error);
+    return axes && accessories && hasAnalogAccessoryAxisConflict(*axes, *accessories);
 }
 
 std::filesystem::path createRecoveryDirectory(const std::filesystem::path& parent, std::uint32_t* windowsError)
@@ -671,6 +698,25 @@ bool conflictingInputs(const std::optional<Profile>& axes, const std::optional<A
 
 } // namespace
 
+bool profileRestorePending(const std::filesystem::path& root)
+{
+    const auto path = extendedPath(root);
+    return !path.empty() && hasRestoreJournal(path);
+}
+
+ProfileRestoreRecovery readInterruptedProfileRestore(const std::filesystem::path& root)
+{
+    const auto path = extendedPath(root);
+    if (path.empty() || !hasRestoreJournal(path))
+        return {};
+    const auto name = readSelection(path / profileRestoreJournal);
+    const auto backups = path / profileBackupsFolder;
+    if (!name || !name->starts_with(L"Avant-restauration-") || !plainDirectory(GetFileAttributesW(backups.c_str()))
+        || !plainDirectory(GetFileAttributesW((backups / *name).c_str())))
+        return {.pending = true};
+    return {true, root / profileBackupsFolder / *name, validSnapshot(backups / *name)};
+}
+
 ProfilePreset activePreset(const std::filesystem::path& root)
 {
     return readActivePreset(root).value_or(ProfilePreset{});
@@ -702,7 +748,7 @@ PresetSaveResult savePresetSettings(const std::filesystem::path& root, const Pro
     if (extendedRoot.empty() || expected.directory.empty())
         return PresetSaveResult::changed;
     const ProfileLock lock(extendedRoot.parent_path());
-    if (!lock)
+    if (!lock || hasRestoreJournal(extendedRoot))
         return PresetSaveResult::ioError;
     const auto current = activePreset(root);
     if (current.directory.empty() || current.name != expected.name || !samePathPart(current.directory, expected.directory))
@@ -723,7 +769,7 @@ bool saveInstallationSettings(const std::filesystem::path& root, const std::func
     if (extendedRoot.empty())
         return false;
     const ProfileLock lock(extendedRoot.parent_path());
-    return lock && save();
+    return lock && !hasRestoreJournal(extendedRoot) && save();
 }
 
 std::vector<std::wstring> listPresets(const std::filesystem::path& root)
@@ -775,7 +821,7 @@ bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std
     std::filesystem::create_directories(root, ioError);
     const auto extendedRoot = extendedPath(root);
     const ProfileLock lock(extendedRoot.parent_path());
-    if (ioError || !lock) {
+    if (ioError || !lock || hasRestoreJournal(extendedRoot)) {
         error = "Impossible d’enregistrer la sélection dans le dossier Profil.";
         return false;
     }
@@ -798,7 +844,7 @@ bool createPreset(const std::filesystem::path& root, std::wstring_view name, std
         return false;
     }
     const ProfileLock lock(extendedRoot.parent_path());
-    if (!lock) {
+    if (!lock || hasRestoreJournal(extendedRoot)) {
         error = "Impossible de copier les réglages vers le nouveau profil.";
         return false;
     }
@@ -855,6 +901,12 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
         return false;
     }
     const ProfileLock lock(root.parent_path());
+    if (lock && hasRestoreJournal(root)) {
+        error = Error::recoveryRequired;
+        if (recoveryDirectory)
+            *recoveryDirectory = readInterruptedProfileRestore(profileRoot).backup;
+        return false;
+    }
     TemporaryDirectory staging{lock ? createTemporaryDirectory(directory) : std::filesystem::path{}};
     if (staging.path.empty()) {
         error = Error::ioError;
@@ -981,11 +1033,13 @@ bool replacePresetDevice(const std::filesystem::path& profileRoot, const Profile
     return true;
 }
 
-std::optional<std::string> readProfileLanguage(const std::filesystem::path& root)
+std::optional<std::string> readProfileLanguage(const std::filesystem::path& root, bool* locked)
 {
+    if (locked)
+        *locked = false;
     if (!root.is_absolute())
         return std::nullopt;
-    auto value = readSmallTextFile(root / profileLanguageFilename);
+    auto value = readSmallTextFile(root / profileLanguageFilename, locked);
     return value && validLanguage(*value) ? std::move(value) : std::nullopt;
 }
 
@@ -1018,6 +1072,10 @@ bool createProfileBackup(const std::filesystem::path& profileRoot, const std::fi
     if (!lock) {
         failure.windowsError = lock.failure;
         return fail(ProfileBackupStep::lock);
+    }
+    if (hasRestoreJournal(root)) {
+        error = ProfileBackupError::recoveryRequired;
+        return false;
     }
     if (GetFileAttributesW(destination.c_str()) != INVALID_FILE_ATTRIBUTES) {
         error = ProfileBackupError::destinationExists;
@@ -1090,6 +1148,18 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
         return fail(ProfileBackupStep::lock);
     }
 
+    const auto interrupted = readInterruptedProfileRestore(profileRoot);
+    if (interrupted.pending) {
+        if (recoveryDirectory)
+            *recoveryDirectory = interrupted.backup;
+        std::error_code compareError;
+        if (interrupted.backupUsable
+            && !std::filesystem::equivalent(source, extendedPath(interrupted.backup), compareError)) {
+            error = ProfileBackupError::recoveryRequired;
+            return false;
+        }
+    }
+
     const TemporaryDirectory temporary{createTemporaryDirectory(root.parent_path(), &failure.windowsError)};
     if (temporary.path.empty())
         return fail(ProfileBackupStep::prepareRestore);
@@ -1101,6 +1171,12 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
     if (!validSnapshot(temporary.path)) {
         error = ProfileBackupError::invalidBackup;
         return false;
+    }
+    failure.axisConflict = activeSnapshotAxisConflict(temporary.path);
+    // Keep imported settings available for repair. Do not re-enable USB with a conflicting active profile.
+    if (failure.axisConflict && !DeleteFileW((temporary.path / usbMarkerFilename).c_str()) && !missing(GetLastError())) {
+        failure.windowsError = GetLastError();
+        return fail(ProfileBackupStep::prepareRestore);
     }
 
     const auto backups = root / profileBackupsFolder;
@@ -1146,6 +1222,15 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
         return fail(ProfileBackupStep::prepareRecovery);
 
     const auto recoveryLocation = profileRoot / profileBackupsFolder / recovery.path.filename();
+    const auto pendingLocation = interrupted.pending ? interrupted.backup : recoveryLocation;
+    if (!interrupted.pending) {
+        const auto name = encodeName(recovery.path.filename().native());
+        // Commit the recovery location before touching any live setting, including the USB marker.
+        if (!name || !writeTextFile(root / profileRestoreJournal, *name, &failure.windowsError))
+            return fail(ProfileBackupStep::prepareRecovery);
+    }
+    // All failures from here, including unexpected exceptions, must keep the recovery files.
+    const auto publishedRecovery = std::exchange(recovery.path, {});
     const auto rollback = [&] {
         failure.step = ProfileBackupStep::applyRestore;
         bool recovered = true;
@@ -1157,11 +1242,15 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
             if (entries[i].saved && (recovered || restoreEntries[i] != usbMarkerFilename))
                 recovered &= moveEntry(originals, root, restoreEntries[i]);
         }
-        error = recovered ? ProfileBackupError::ioError : ProfileBackupError::recoveryRequired;
-        if (!recovered) {
+        if (recovered && !interrupted.pending)
+            recovered = clearRestoreJournal(root, &failure.windowsError);
+        const bool stillPending = !recovered || interrupted.pending;
+        error = stillPending ? ProfileBackupError::recoveryRequired : ProfileBackupError::ioError;
+        if (stillPending) {
             if (recoveryDirectory)
-                *recoveryDirectory = recoveryLocation;
-            recovery.path.clear();
+                *recoveryDirectory = pendingLocation;
+        } else {
+            removeTemporaryDirectory(publishedRecovery);
         }
         return false;
     };
@@ -1179,9 +1268,15 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
             return rollback();
         entries[i].applied = true;
     }
+    if (!clearRestoreJournal(root, &failure.windowsError)) {
+        failure.step = ProfileBackupStep::applyRestore;
+        error = ProfileBackupError::recoveryRequired;
+        if (recoveryDirectory)
+            *recoveryDirectory = pendingLocation;
+        return false;
+    }
     if (recoveryDirectory)
         *recoveryDirectory = recoveryLocation;
-    recovery.path.clear();
     return true;
 }
 

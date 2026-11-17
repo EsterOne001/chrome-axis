@@ -34,7 +34,7 @@ namespace chrome_axis {
 
 bool editForceFeedback(HWND owner, const std::filesystem::path& root, const ProfilePreset& preset,
                        const std::optional<ProfileFileRevision>& calibrationRevision,
-                       const DeviceInfo* steeringDevice, std::size_t steeringAxis);
+                       std::string_view steeringDevice, std::size_t steeringAxis);
 
 } // namespace chrome_axis
 #endif

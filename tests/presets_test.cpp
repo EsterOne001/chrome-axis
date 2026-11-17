@@ -51,6 +51,109 @@ bool check(bool condition, const char* description)
     return condition;
 }
 
+bool testInterruptedRestores(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    constexpr wchar_t journalName[] = L".chrome_axis_profile_restore.pending";
+    const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
+    const Profile axes{{wheel, 0, 500, 0, 1000, 0.02f}};
+    for (const auto phase : {0, 1, 2}) {
+        const auto parent = fixture / (L"Restore-phase-" + std::to_wstring(phase));
+        const auto root = parent / L"Profil";
+        const auto backup = root / profileBackupsFolder / L"Avant-restauration-test";
+        const auto other = parent / L"Alternative";
+        std::filesystem::create_directories(root);
+        std::string error;
+        ProfileBackupError result{};
+        if (!saveProfile(root / profileFilename, axes, error) || !createPreset(root, L"Route", error)
+            || !setUsbEnabled(root, true, error) || !writeProfileLanguage(root, "fr")
+            || !createProfileBackup(root, backup, result) || !createProfileBackup(root, other, result))
+            return check(false, "Could not prepare the interrupted restore fixture");
+        {
+            std::ofstream marker(root / journalName);
+            marker << "Avant-restauration-test\n";
+            if (!marker)
+                return check(false, "Could not write the interrupted restore journal");
+        }
+        // Simulate an interruption before any changes, after removal of old entries, and after a partial apply.
+        if (phase > 0) {
+            std::filesystem::remove(root / usbMarkerFilename);
+            std::filesystem::remove(root / L"active_profile.txt");
+            std::filesystem::remove_all(root / L"Profils");
+            std::filesystem::remove(root / profileFilename);
+        }
+        if (phase == 2 && !writeProfileLanguage(root, "en"))
+            return check(false, "Could not stage a partially applied preference");
+        const auto interrupted = readInterruptedProfileRestore(root);
+        bool callbackCalled{};
+        if (!check(profileRestorePending(root) && interrupted.pending && interrupted.backup == backup
+                        && interrupted.backupUsable,
+                   "Restart must find the live journal and the pre-restore backup")
+            || !check(!saveInstallationSettings(root, [&] { callbackCalled = true; return true; }) && !callbackCalled
+                          && !selectPreset(root, L"", error) && !createPreset(root, L"Nouvelle", error),
+                      "Ordinary writes must be refused until the recovery is confirmed"))
+            return false;
+
+        std::filesystem::path recovery;
+        if (!check(!restoreProfileBackup(root, other, result, {}, &recovery)
+                        && result == ProfileBackupError::recoveryRequired && recovery == backup,
+                   "Do not replace an available recovery snapshot with another backup"))
+            return false;
+        if (phase == 2) {
+            std::ofstream(backup / profileFilename, std::ios::trunc) << "unreadable old settings\n";
+            if (!check(!readInterruptedProfileRestore(root).backupUsable,
+                       "An invalid previous snapshot must be identified before selecting an alternative"))
+                return false;
+        }
+        const auto& source = phase == 2 ? other : backup;
+        if (!check(restoreProfileBackup(root, source, result) && !profileRestorePending(root)
+                        && activePreset(root).name == L"Route" && usbEnabled(root) && readProfileLanguage(root) == "fr",
+                   "An explicit restore must recover every valid setting and clear the journal only after completion")
+            || !check(std::filesystem::is_regular_file(backup / profileFilename),
+                      "Restoring must preserve the previous recovery snapshot"))
+            return false;
+    }
+    return true;
+}
+
+bool testImportedAxisConflict(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto root = fixture / L"Imported-conflict";
+    const auto backup = fixture / L"Related-backup";
+    std::filesystem::create_directories(root);
+    std::string error;
+    const std::string wheel = "{11111111-1111-1111-1111-444444444444}";
+    const Profile axes{{wheel, 0, 500, 0, 1000, 0.02f}};
+    auto clutch = AccessoryBinding{.deviceId = wheel, .kind = AccessoryKind::Axis, .index = 0,
+                                  .rest = 0, .engaged = 1000, .clutchMode = ClutchMode::assist};
+    ProfileBackupError result{};
+    ProfileBackupFailure details;
+    if (!saveProfile(root / profileFilename, axes, error)
+        || !saveAccessoryProfile(root / accessoryFilename, {clutch}, error) || !setUsbEnabled(root, true, error)
+        || !createProfileBackup(root, backup, result) || !saveAccessoryProfile(root / accessoryFilename, {}, error))
+        return check(false, "Could not prepare a legacy axis-conflict backup");
+    if (!check(restoreProfileBackup(root, backup, result, {}, nullptr, &details) && details.axisConflict
+                    && !usbEnabled(root) && loadAccessoryProfile(root / accessoryFilename, error) == AccessoryProfile{clutch}
+                    && readUsbActivation(root) == UsbActivationStatus::axisConflict,
+               "An imported conflicting assignment must remain repairable, with USB disabled and a precise diagnosis"))
+        return false;
+    {
+        const auto handle = CreateFileW((root / accessoryFilename).c_str(), GENERIC_READ, 0, nullptr,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!check(handle != INVALID_HANDLE_VALUE, "Could not lock the imported assignments"))
+            return false;
+        const std::unique_ptr<void, decltype(&CloseHandle)> lock(handle, &CloseHandle);
+        if (!check(readUsbActivation(root) == UsbActivationStatus::accessoriesLocked,
+                   "New USB activation must wait if the assignments cannot be checked for conflicts"))
+            return false;
+    }
+    clutch.clutchMode = ClutchMode::off;
+    return check(saveAccessoryProfile(root / accessoryFilename, {clutch}, error)
+                     && readUsbActivation(root) == UsbActivationStatus::ready,
+                 "An explicitly disabled conflicting clutch must not block independent steering");
+}
+
 std::string readBytes(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -807,6 +910,7 @@ int main()
     const bool passed = check(activePreset(root).directory.empty(), "Corrupt selection must not activate a different profile")
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
         && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory)
-        && testEditorFileLocks(directory) && testUsbActivation(directory);
+        && testEditorFileLocks(directory) && testUsbActivation(directory)
+        && testInterruptedRestores(directory) && testImportedAxisConflict(directory);
     return fixture.cleanup() && passed ? 0 : 1;
 }

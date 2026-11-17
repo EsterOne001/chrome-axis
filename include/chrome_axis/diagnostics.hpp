@@ -279,6 +279,7 @@ struct PerformanceReport {
     std::uint64_t feedbackIntervalOverruns{};
     float peakContinuousForce{};
     int referenceFeedbackGain{};
+    std::uint64_t feedbackSetupSignature{};
     std::array<char, 257> feedbackProfile{};
 };
 

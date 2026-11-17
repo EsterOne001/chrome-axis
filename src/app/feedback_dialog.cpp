@@ -6,18 +6,20 @@
 #include "chrome_axis/diagnostics.hpp"
 #include "chrome_axis/feedback.hpp"
 #include "app_text.hpp"
+#include "device_inventory.hpp"
 #include "dialog_theme.hpp"
+#include "feedback_editor.hpp"
 #include "ui_theme.hpp"
 
 #include <commctrl.h>
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cwchar>
 namespace chrome_axis {
 namespace {
 
 constexpr int gainStep = 5;
+constexpr UINT_PTR feedbackProbeTimer = 1;
 
 struct GainSlider {
     int control;
@@ -37,28 +39,35 @@ constexpr GainSlider lowSpeed{IDC_FEEDBACK_LOW_SPEED, IDC_FEEDBACK_LOW_SPEED_VAL
 constexpr GainSlider damping{IDC_FEEDBACK_DAMPING, IDC_FEEDBACK_DAMPING_VALUE,
                               0, maxFeedbackTuningPercent};
 
-enum class Compatibility { noCalibration, disconnected, unsupported, supported };
-
-Compatibility compatibility(const DeviceInfo* device, std::size_t axis)
-{
-    if (axis >= axisCount)
-        return Compatibility::noCalibration;
-    if (!device)
-        return Compatibility::disconnected;
-    return device->forceFeedbackAxes[axis] ? Compatibility::supported : Compatibility::unsupported;
-}
+enum class Compatibility { noCalibration, checking, disconnected, unverified, unsupported, supported };
 
 const wchar_t* compatibilityText(Compatibility state)
 {
     switch (state) {
     case Compatibility::noCalibration:
         return tr(Text::DlgFeedbackNoCalibration);
+    case Compatibility::checking:
+        return tr(Text::DlgFeedbackChecking);
     case Compatibility::disconnected:
         return tr(Text::DlgFeedbackDisconnected);
+    case Compatibility::unverified:
+        return tr(Text::DlgFeedbackUnverified);
     case Compatibility::unsupported:
         return tr(Text::DlgFeedbackUnsupported);
     case Compatibility::supported:
         return tr(Text::DlgFeedbackSupported);
+    }
+    return L"";
+}
+
+const wchar_t* feedbackReadText(FeedbackEditorStatus state)
+{
+    switch (state) {
+    case FeedbackEditorStatus::ready: return tr(Text::DlgFeedbackIntro);
+    case FeedbackEditorStatus::invalid: return tr(Text::DlgFeedbackInvalid);
+    case FeedbackEditorStatus::locked: return tr(Text::DlgFeedbackLocked);
+    case FeedbackEditorStatus::unreadable: return tr(Text::DlgFeedbackUnreadable);
+    case FeedbackEditorStatus::changed: return tr(Text::DlgFeedbackChanged);
     }
     return L"";
 }
@@ -133,8 +142,11 @@ struct FeedbackDialog {
     const ProfilePreset& preset;
     const std::optional<ProfileFileRevision>& calibrationRevision;
     std::filesystem::path file;
-    std::optional<ProfileFileRevision> revision;
-    Compatibility state;
+    std::string steeringDevice;
+    std::size_t steeringAxis;
+    FeedbackEditorRead original;
+    std::optional<DeviceInventory> inventory;
+    Compatibility state{Compatibility::noCalibration};
     int gain{};
     int centeringGain{};
     int impactGain{};
@@ -144,7 +156,13 @@ struct FeedbackDialog {
     std::uint64_t continuousClips{};
     std::uint64_t impactClips{};
 
-    void showSuggestion(HWND window) const;
+    FeedbackSettings draft(HWND window) const;
+    bool compatibilityUnknown() const noexcept;
+    bool canSave(const FeedbackSettings& settings) const noexcept;
+    bool suggestionCurrent(const FeedbackSettings& settings) const noexcept;
+    void showSuggestion(HWND window, bool available) const;
+    void updateCompatibility(HWND window) const;
+    void pollCompatibility(HWND window);
 
     void initialise(HWND window);
     void updateControls(HWND window) const;
@@ -153,27 +171,19 @@ struct FeedbackDialog {
 
 void FeedbackDialog::initialise(HWND window)
 {
-    std::string error;
-    const auto saved = loadFeedbackSettings(file, error);
-    const auto settings = saved.value_or(FeedbackSettings{});
-    const bool supported = state == Compatibility::supported;
-
-    SetDlgItemTextW(window, IDC_FEEDBACK_STATUS, compatibilityText(state));
-    if (!saved) {
-        SetDlgItemTextW(window, IDC_MODAL_INTRO,
-            tr(Text::DlgFeedbackUnreadable));
-    } else if (settings.enabled && !supported) {
-        SetDlgItemTextW(window, IDC_MODAL_INTRO,
-            tr(Text::DlgFeedbackDisableProfile));
+    original = readFeedbackForEdit(file);
+    const auto settings = original.settings.value_or(FeedbackSettings{});
+    if (steeringAxis < axisCount && !steeringDevice.empty()) {
+        inventory.emplace(steeringDevice, steeringAxis);
+        inventory->refresh();
+        if (SetTimer(window, feedbackProbeTimer, 100, nullptr)) {
+            state = Compatibility::checking;
+        } else {
+            inventory.reset();
+            state = Compatibility::unverified;
+        }
     }
-
-    if (supported) {
-        addToggle(window, IDC_FEEDBACK_ENABLE, tr(Text::DlgFeedbackDisabled), tr(Text::DlgFeedbackEnabled), settings.enabled);
-    } else {
-        addChoice(window, IDC_FEEDBACK_ENABLE, tr(Text::DlgFeedbackDisabled));
-        SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_SETCURSEL, 0, 0);
-        EnableWindow(GetDlgItem(window, IDC_FEEDBACK_ENABLE), FALSE);
-    }
+    addToggle(window, IDC_FEEDBACK_ENABLE, tr(Text::DlgFeedbackDisabled), tr(Text::DlgFeedbackEnabled), settings.enabled);
     gain = settings.strength;
     centeringGain = settings.centering;
     impactGain = settings.impactStrength;
@@ -185,13 +195,13 @@ void FeedbackDialog::initialise(HWND window)
     initialiseGain(window, lowSpeed, lowSpeedGain);
     initialiseGain(window, damping, dampingGain);
     const auto gameRoot = installedGameRoot(root.parent_path());
-    if (supported && saved && !gameRoot.empty()) {
+    if (settings.enabled && !gameRoot.empty()) {
+        std::string error;
+        const auto profile = loadProfile(preset.directory / profileFilename, error);
         const auto capture = DiagnosticReader(gameRoot).read().performance;
         const auto name = std::filesystem::path(preset.name).u8string();
-        const std::string_view profile(reinterpret_cast<const char*>(name.data()), name.size());
-        if (capture.state == PerformanceState::complete && capture.submittedEffects >= 50 &&
-            capture.referenceFeedbackGain == settings.strength && capture.feedbackProfile.data() == profile &&
-            capture.peakContinuousForce >= 0.002f * settings.strength && std::isfinite(capture.peakContinuousForce)) {
+        const std::string_view profileName(reinterpret_cast<const char*>(name.data()), name.size());
+        if (profile && matchesFeedbackMeasurement(capture, settings, *profile, profileName)) {
             // Reserve headroom for impacts and limit one recommendation to a modest increase.
             const float scale = std::min(1.25f, 0.88f / capture.peakContinuousForce);
             suggestedGain = snapGain(overall, static_cast<int>(std::lround(settings.strength * scale)));
@@ -199,15 +209,66 @@ void FeedbackDialog::initialise(HWND window)
             impactClips = capture.impactClippedSamples;
         }
     }
-    showSuggestion(window);
     addToggle(window, IDC_FEEDBACK_IMPACTS, tr(Text::DlgFeedbackImpactsDisabled), tr(Text::DlgFeedbackImpactsEnabled), settings.impacts);
     addToggle(window, IDC_FEEDBACK_DIRECTION, tr(Text::DlgFeedbackNormal), tr(Text::DlgFeedbackInverted), settings.invert);
+    updateCompatibility(window);
     updateControls(window);
 }
 
-void FeedbackDialog::showSuggestion(HWND window) const
+bool FeedbackDialog::compatibilityUnknown() const noexcept
 {
-    if (!suggestedGain) {
+    return state == Compatibility::checking || state == Compatibility::unverified;
+}
+
+bool FeedbackDialog::canSave(const FeedbackSettings& settings) const noexcept
+{
+    if (!original.canSave())
+        return false;
+    return !compatibilityUnknown() || (!settings.enabled &&
+        (original.status == FeedbackEditorStatus::invalid || (original.settings && original.settings->enabled)));
+}
+
+FeedbackSettings FeedbackDialog::draft(HWND window) const
+{
+    const auto selected = [window](int id) { return SendDlgItemMessageW(window, id, CB_GETCURSEL, 0, 0) == 1; };
+    return {selected(IDC_FEEDBACK_ENABLE), gain, selected(IDC_FEEDBACK_IMPACTS), selected(IDC_FEEDBACK_DIRECTION),
+        centeringGain, impactGain, lowSpeedGain, dampingGain};
+}
+
+bool FeedbackDialog::suggestionCurrent(const FeedbackSettings& settings) const noexcept
+{
+    return state == Compatibility::supported && suggestedGain && original.settings == settings;
+}
+
+void FeedbackDialog::updateCompatibility(HWND window) const
+{
+    SetDlgItemTextW(window, IDC_FEEDBACK_STATUS, compatibilityText(state));
+    const bool confirmDisable = original.canSave() && !compatibilityUnknown() && state != Compatibility::supported &&
+        original.settings && original.settings->enabled;
+    if (confirmDisable)
+        SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_SETCURSEL, 0, 0);
+    SetDlgItemTextW(window, IDC_MODAL_INTRO,
+        confirmDisable ? tr(Text::DlgFeedbackDisableProfile) : feedbackReadText(original.status));
+}
+
+void FeedbackDialog::pollCompatibility(HWND window)
+{
+    const auto result = inventory ? inventory->current() : nullptr;
+    if (!result || (!result->available && state == Compatibility::unverified))
+        return;
+    if (result->available)
+        KillTimer(window, feedbackProbeTimer);
+    const auto device = std::ranges::find(result->devices, steeringDevice, &DeviceInfo::id);
+    state = !result->available ? Compatibility::unverified
+        : device == result->devices.end() ? Compatibility::disconnected
+        : device->forceFeedbackAxes[steeringAxis] ? Compatibility::supported : Compatibility::unsupported;
+    updateCompatibility(window);
+    updateControls(window);
+}
+
+void FeedbackDialog::showSuggestion(HWND window, bool available) const
+{
+    if (!available) {
         SetDlgItemTextW(window, IDC_FEEDBACK_SUGGESTION, tr(Text::DlgFeedbackNoSuggestion));
         return;
     }
@@ -219,43 +280,39 @@ void FeedbackDialog::showSuggestion(HWND window) const
 
 void FeedbackDialog::updateControls(HWND window) const
 {
-    const bool enabled = state == Compatibility::supported
-        && SendDlgItemMessageW(window, IDC_FEEDBACK_ENABLE, CB_GETCURSEL, 0, 0) == 1;
+    const bool editable = original.canSave() && state == Compatibility::supported;
+    const auto settings = draft(window);
+    const bool enabled = editable && settings.enabled;
+    const bool disableUnverified = original.canSave() && compatibilityUnknown() && original.settings && original.settings->enabled;
+    EnableWindow(GetDlgItem(window, IDOK), canSave(settings));
+    EnableWindow(GetDlgItem(window, IDC_FEEDBACK_ENABLE), editable || disableUnverified);
     for (const int id : {overall.control, centering.control, lowSpeed.control, damping.control, IDC_FEEDBACK_IMPACTS, IDC_FEEDBACK_DIRECTION})
         EnableWindow(GetDlgItem(window, id), enabled);
-    EnableWindow(GetDlgItem(window, IDC_FEEDBACK_USE_SUGGESTION), enabled && suggestedGain && gain != *suggestedGain);
-    const bool impactsEnabled = enabled && SendDlgItemMessageW(window, IDC_FEEDBACK_IMPACTS, CB_GETCURSEL, 0, 0) == 1;
-    EnableWindow(GetDlgItem(window, impactStrength.control), impactsEnabled);
+    const bool currentAdvice = enabled && suggestionCurrent(settings);
+    showSuggestion(window, currentAdvice);
+    EnableWindow(GetDlgItem(window, IDC_FEEDBACK_USE_SUGGESTION), currentAdvice && gain != *suggestedGain);
+    EnableWindow(GetDlgItem(window, impactStrength.control), enabled && settings.impacts);
 }
 
 void FeedbackDialog::save(HWND window) const
 {
+    auto settings = draft(window);
+    if (!canSave(settings))
+        return;
     if (isTemporaryProfileDirectory(file.parent_path())) {
         MessageBoxW(window, tr(Text::DlgFeedbackExtractBeforeSaving), tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONWARNING);
         return;
     }
-    const auto selected = [&](int id) { return SendDlgItemMessageW(window, id, CB_GETCURSEL, 0, 0); };
-
-    const FeedbackSettings settings{
-        state == Compatibility::supported && selected(IDC_FEEDBACK_ENABLE) == 1,
-        gain,
-        selected(IDC_FEEDBACK_IMPACTS) == 1,
-        selected(IDC_FEEDBACK_DIRECTION) == 1,
-        centeringGain,
-        impactGain,
-        lowSpeedGain,
-        dampingGain,
-    };
-    std::string error;
-    const std::array checks{ProfileFileCheck{profileFilename, calibrationRevision},
-                            ProfileFileCheck{feedbackFilename, revision}};
-    const auto result = savePresetSettings(root, preset, checks, [&] { return saveFeedbackSettings(file, settings, error); });
+    settings.enabled = state == Compatibility::supported && settings.enabled;
+    FeedbackEditorStatus problem{};
+    const auto result = saveEditedFeedback(root, preset, calibrationRevision, original, settings, problem);
     if (result == PresetSaveResult::changed) {
         MessageBoxW(window, tr(Text::DlgFeedbackChanged), tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONWARNING);
         return;
     }
     if (result != PresetSaveResult::saved) {
-        MessageBoxW(window, tr(Text::DlgFeedbackSaveError),
+        const bool readFailed = problem == FeedbackEditorStatus::locked || problem == FeedbackEditorStatus::unreadable;
+        MessageBoxW(window, readFailed ? feedbackReadText(problem) : tr(Text::DlgFeedbackSaveError),
                     tr(Text::DlgFeedbackTitle), MB_OK | MB_ICONERROR);
         return;
     }
@@ -291,6 +348,10 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     auto* dialog = reinterpret_cast<FeedbackDialog*>(GetWindowLongPtrW(window, DWLP_USER));
     if (!dialog)
         return FALSE;
+    if (message == WM_TIMER && wParam == feedbackProbeTimer) {
+        dialog->pollCompatibility(window);
+        return TRUE;
+    }
     if (message == WM_NOTIFY && lParam && !ui::isHighContrast()) {
         const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
         if ((notification.idFrom == overall.control || notification.idFrom == centering.control ||
@@ -307,34 +368,28 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     }
     if (message == WM_HSCROLL && lParam && LOWORD(wParam) != TB_ENDTRACK) {
         const int control = GetDlgCtrlID(reinterpret_cast<HWND>(lParam));
-        if (control == overall.control) {
-            dialog->gain = selectGain(window, overall);
-            dialog->showSuggestion(window);
+        const auto change = [&](const GainSlider& slider, int& gain) {
+            gain = selectGain(window, slider);
             dialog->updateControls(window);
             return TRUE;
-        }
-        if (control == centering.control) {
-            dialog->centeringGain = selectGain(window, centering);
-            return TRUE;
-        }
-        if (control == impactStrength.control) {
-            dialog->impactGain = selectGain(window, impactStrength);
-            return TRUE;
-        }
-        if (control == lowSpeed.control) {
-            dialog->lowSpeedGain = selectGain(window, lowSpeed);
-            return TRUE;
-        }
-        if (control == damping.control) {
-            dialog->dampingGain = selectGain(window, damping);
-            return TRUE;
-        }
+        };
+        if (control == overall.control)
+            return change(overall, dialog->gain);
+        if (control == centering.control)
+            return change(centering, dialog->centeringGain);
+        if (control == impactStrength.control)
+            return change(impactStrength, dialog->impactGain);
+        if (control == lowSpeed.control)
+            return change(lowSpeed, dialog->lowSpeedGain);
+        if (control == damping.control)
+            return change(damping, dialog->dampingGain);
     }
     if (message != WM_COMMAND)
         return FALSE;
     switch (LOWORD(wParam)) {
     case IDC_FEEDBACK_ENABLE:
     case IDC_FEEDBACK_IMPACTS:
+    case IDC_FEEDBACK_DIRECTION:
         if (HIWORD(wParam) == CBN_SELCHANGE)
             dialog->updateControls(window);
         return TRUE;
@@ -342,7 +397,6 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         if (dialog->suggestedGain && IsWindowEnabled(GetDlgItem(window, IDC_FEEDBACK_USE_SUGGESTION))) {
             dialog->gain = *dialog->suggestedGain;
             initialiseGain(window, overall, dialog->gain);
-            dialog->showSuggestion(window);
             dialog->updateControls(window);
         }
         return TRUE;
@@ -361,15 +415,14 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 
 bool editForceFeedback(HWND owner, const std::filesystem::path& root, const ProfilePreset& preset,
                        const std::optional<ProfileFileRevision>& calibrationRevision,
-                       const DeviceInfo* steeringDevice, std::size_t steeringAxis)
+                       std::string_view steeringDevice, std::size_t steeringAxis)
 {
     if (!preset.directory.is_absolute())
         return false;
     const auto file = preset.directory / feedbackFilename;
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES};
     InitCommonControlsEx(&controls);
-    FeedbackDialog dialog{root, preset, calibrationRevision, file, profileFileRevision(file),
-                          compatibility(steeringDevice, steeringAxis)};
+    FeedbackDialog dialog{root, preset, calibrationRevision, file, std::string(steeringDevice), steeringAxis};
     const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_FORCE_FEEDBACK), owner,
                                         dialogProc, reinterpret_cast<LPARAM>(&dialog));
     if (result == -1)

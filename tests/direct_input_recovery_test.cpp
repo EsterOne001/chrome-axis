@@ -21,7 +21,7 @@ constexpr char pedalsId[] = "{22222222-2222-2222-2222-222222222222}";
 constexpr GUID wheelGuid{0x11111111, 0x1111, 0x1111, {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11}};
 constexpr GUID pedalsGuid{0x22222222, 0x2222, 0x2222, {0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}};
 
-enum class ProbeFailure { pending, accessDenied, errorAfterAcquireDenial, genericOnDiscovery };
+enum class ProbeFailure { pending, accessDenied, errorAfterAcquireDenial, genericOnDiscovery, axisMissingBeforeAcquire };
 
 struct MockController {
     ProbeFailure axisProbeFailure{ProbeFailure::pending};
@@ -187,6 +187,8 @@ public:
             if (!acquired_ && controller_.acquisitionRequired) {
                 if (controller_.axisProbeFailure == ProbeFailure::accessDenied)
                     return DIERR_OTHERAPPHASPRIO;
+                if (controller_.axisProbeFailure == ProbeFailure::axisMissingBeforeAcquire)
+                    return DIERR_OBJECTNOTFOUND;
                 if (controller_.axisProbeFailure == ProbeFailure::genericOnDiscovery ||
                     (controller_.axisProbeFailure == ProbeFailure::errorAfterAcquireDenial && controller_.deniedAcquires))
                     return E_FAIL;
@@ -784,11 +786,35 @@ int main()
     mock.wheel.axisProbeFailure = ProbeFailure::accessDenied;
     mock.wheel.buttonPresent = true;
     DirectInput input(GetDesktopWindow());
+    const auto previousCapabilityChecks = mock.wheel.capabilityChecks.load();
     const auto inventory = input.devices();
     if (inventory.size() != 1 || !inventory[0].axes[0] || !inventory[0].buttons[0] ||
         !inventory[0].povs[0] || inventory[0].layoutPending.buttons[0]) {
         std::cerr << "Inventory did not retry temporary access failures on an acquired handle\n";
         return 5;
+    }
+    if (mock.wheel.capabilityChecks != previousCapabilityChecks) {
+        std::cerr << "The general inventory queried force capabilities\n";
+        return 12;
+    }
+
+    mock.wheel.feedback = true;
+    const auto forceAxes = input.forceFeedbackAxesFor(inventory[0].id, 0);
+    if (!forceAxes || !(*forceAxes)[0] || mock.wheel.capabilityChecks <= previousCapabilityChecks || mock.pedals.capabilityChecks) {
+        std::cerr << "Targeted force feedback probing did not verify the selected wheel and actuator\n";
+        return 13;
+    }
+    mock.wheel.axisProbeFailure = ProbeFailure::axisMissingBeforeAcquire;
+    const auto deferredForceAxes = input.forceFeedbackAxesFor(inventory[0].id, 0);
+    if (!deferredForceAxes || !(*deferredForceAxes)[0]) {
+        std::cerr << "An actuator temporarily absent from layout must be retried on an acquired device\n";
+        return 16;
+    }
+    mock.wheel.feedback = false;
+    const auto unsupported = input.forceFeedbackAxesFor(inventory[0].id, 0);
+    if (!unsupported || (*unsupported)[0]) {
+        std::cerr << "A readable device without a force capability must be confirmed unsupported\n";
+        return 14;
     }
 
     mock.wheel.setupBlocked = true;
@@ -796,5 +822,9 @@ int main()
     if (provisional.size() != 1 || !provisional[0].layoutPending.axes[0] || provisional[0].axes[0]) {
         std::cerr << "Inventory lost a controller whose handle was temporarily refused\n";
         return 7;
+    }
+    if (input.forceFeedbackAxesFor(inventory[0].id, 0)) {
+        std::cerr << "A temporarily blocked wheel must remain unverified for force feedback\n";
+        return 15;
     }
 }
