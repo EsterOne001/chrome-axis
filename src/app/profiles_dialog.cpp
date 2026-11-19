@@ -163,7 +163,8 @@ INT_PTR CALLBACK reassignDeviceProc(HWND dialog, UINT message, WPARAM wp, LPARAM
         SetDlgItemTextW(dialog, IDC_REASSIGN_TARGET_LABEL, tr(Text::mainReassignTarget));
         SetDlgItemTextW(dialog, IDOK, tr(Text::mainReassignApply));
         SetDlgItemTextW(dialog, IDCANCEL, tr(Text::DlgCancel));
-        DialogTheme::attach(dialog, tr(Text::mainReassignHeading), IDC_REASSIGN_STATUS, 0, {IDOK});
+        DialogTheme::attach(dialog, tr(Text::mainReassignHeading), IDC_REASSIGN_STATUS, 0, {IDOK},
+                            DialogDecoration::scrollable);
         for (std::size_t i = 0; i < picker.saved.size(); ++i) {
             const auto& entry = picker.saved[i];
             addDeviceRow(dialog, IDC_REASSIGN_SOURCE, deviceLabel(entry.id, picker.connected) + L" · " + entry.roles, i);
@@ -215,7 +216,8 @@ INT_PTR CALLBACK profileDialogProc(HWND window, UINT message, WPARAM wp, LPARAM 
         SetDlgItemTextW(window, IDC_PROFILE_COPY, tr(Text::DlgProfilesCopy));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgProfilesLoad));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
-        DialogTheme::attach(window, tr(Text::DlgProfilesHeading), 0, 0, {IDOK});
+        DialogTheme::attach(window, tr(Text::DlgProfilesHeading), 0, 0, {IDOK},
+                            DialogDecoration::scrollable);
 
         const auto combo = GetDlgItem(window, IDC_PROFILE_LIST);
         SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(tr(Text::DlgProfilesDefault)));

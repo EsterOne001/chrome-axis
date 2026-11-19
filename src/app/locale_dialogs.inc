@@ -52,7 +52,6 @@ CHROME_AXIS_TEXT(DlgAccessoriesCancelCapture, L"Annuler la &capture", L"Cancel &
 CHROME_AXIS_TEXT(DlgAccessoriesHoldAtLimit, L"Maintenez l’axe en butée pendant la mesure.", L"Hold the axis at full travel while it is being measured.")
 CHROME_AXIS_TEXT(DlgAccessoriesNoAbsoluteAxes, L"Ce périphérique ne signale aucun axe analogique absolu.", L"This device reports no absolute analog axes.")
 CHROME_AXIS_TEXT(DlgAccessoriesHoldAtRest, L"Laissez l’axe au repos pendant la mesure.", L"Leave the axis at rest while it is being measured.")
-CHROME_AXIS_TEXT(DlgAccessoriesInputUnavailable, L"Entrées indisponibles. Vérifiez le branchement, puis réessayez.", L"Device input unavailable. Check the connection and try again.")
 CHROME_AXIS_TEXT(DlgAccessoriesCaptureDeviceRest, L"Rebranchez le périphérique, relâchez la commande puis relancez la capture du repos.", L"Reconnect the device, release the input, then restart the rest measurement.")
 CHROME_AXIS_TEXT(DlgAccessoriesPressInput, L"Appuyez sur un bouton ou actionnez la croix du périphérique.", L"Press a button or move the device’s D-pad.")
 CHROME_AXIS_TEXT(DlgAccessoriesCaptureInterrupted, L"Capture interrompue. Revenez dans cette fenêtre et relancez la mesure.", L"Capture interrupted. Return to this window and restart the measurement.")

@@ -849,6 +849,14 @@ int main()
         return 12;
     }
 
+    mock.wheel.axisProbeFailure = ProbeFailure::genericOnDiscovery;
+    const auto afterGenericError = input.devices();
+    if (afterGenericError != inventory) {
+        std::cerr << "An inconclusive GetObjectInfo error must be retried, not confirm an absent axis\n";
+        return 23;
+    }
+    mock.wheel.axisProbeFailure = ProbeFailure::accessDenied;
+
     HRESULT topologyStatus{};
     mock.enumerationResult = E_FAIL;
     if (!input.devices(&topologyStatus).empty() || topologyStatus != E_FAIL) {
@@ -933,5 +941,18 @@ int main()
     if (input.probeWheelForce(inventory[0].id, 0) != ForceFeedbackProbe::supported) {
         std::cerr << "The targeted force feedback probe must recover after reconnecting\n";
         return 18;
+    }
+
+    DeviceReadStatus selectionStatus{};
+    DeviceObjectSelection selection;
+    selection.axes.set(0);
+    const auto axisOnly = input.sampleForDriving(inventory.front().id, selection, selectionStatus);
+    selection.buttons.set(0);
+    selection.povs.set(0);
+    const auto withAccessory = input.sampleForDriving(inventory.front().id, selection, selectionStatus);
+    if (!axisOnly || axisOnly->axes[0] != 630 || axisOnly->buttons.any() || !withAccessory ||
+        withAccessory->axes[0] != 630 || !withAccessory->buttons.test(0)) {
+        std::cerr << "Skipping button decoding without a binding must preserve axes and a newly requested button\n";
+        return 24;
     }
 }

@@ -143,11 +143,6 @@ AxisPreview previewAxisResponse(ResponseAxis axis, const AxisCalibration& calibr
     return {travel, applyResponse(travel, calibration.deadzone, response, steering)};
 }
 
-bool validateBrakeResponse(const BrakeResponse& response) noexcept
-{
-    return validateAxisResponse(response);
-}
-
 BrakePreview previewBrake(const AxisCalibration& calibration, long raw, const BrakeResponse& response) noexcept
 {
     return previewAxisResponse(ResponseAxis::brake, calibration, raw, response);

@@ -44,6 +44,16 @@ constexpr bool rejectsSupersededGearboxStep() {
 
 static_assert(rejectsSupersededGearboxStep());
 
+constexpr bool recognizesReusedVehicleAddress() {
+    int vehicle{}, firstLifetime{}, nextLifetime{};
+    const VehicleIdentity original{&vehicle, &firstLifetime};
+    const VehicleIdentity sameMountAfterMenu{&vehicle, &firstLifetime};
+    const VehicleIdentity replacement{&vehicle, &nextLifetime};
+    return original == sameMountAfterMenu && original != replacement && original != VehicleIdentity{};
+}
+
+static_assert(recognizesReusedVehicleAddress());
+
 static_assert(observeEngagement(3, neutralGear, false, 100, 200) == Engagement::pending);
 static_assert(observeEngagement(3, 3, false, 180, 200) == Engagement::pending);
 static_assert(observeEngagement(3, 3, true, 181, 200) == Engagement::confirmed);

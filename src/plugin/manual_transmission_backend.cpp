@@ -578,10 +578,12 @@ bool available() noexcept {
     return installed.load(std::memory_order_acquire);
 }
 
-void setDriverVehicle(const VehicleHandle& vehicle, std::optional<std::array<float, 3>> forward) noexcept {
+bool setDriverVehicle(const VehicleHandle& vehicle, std::optional<std::array<float, 3>> forward) noexcept {
     StateGuard guard;
     const auto* owner = vehicle.GetPtr();
-    if (state.mounted.instance != owner || state.mounted.refCount != vehicle.refCount) {
+    const bool changed = VehicleIdentity{state.mounted.instance, state.mounted.refCount}
+        != VehicleIdentity{owner, vehicle.refCount};
+    if (changed) {
         state.mounted = vehicle;
         state.lease = {.generation = state.lease.generation + 1};
         state.enabled = false;
@@ -592,6 +594,7 @@ void setDriverVehicle(const VehicleHandle& vehicle, std::optional<std::array<flo
     }
     state.directionHistory.setVehicle(owner);
     state.heading = owner && forward ? VehicleHeading{owner, *forward, GetTickCount64()} : VehicleHeading{};
+    return changed;
 }
 
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute, bool captureTelemetry) noexcept {

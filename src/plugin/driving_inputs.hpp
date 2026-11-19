@@ -104,10 +104,9 @@ public:
     };
 
     struct Cycle {
-        Clock::time_point finishedAt{};
-        std::uint64_t durationMicros{};
-        bool missedCadence{};
-        bool retryAfterUnavailable{};
+        std::uint64_t durationMicros;
+        bool missedCadence;
+        bool retryAfterUnavailable;
     };
 
     DrivingInputs(Clock::duration interval, Clock::duration lifetime, DirectInputDiagnostic logger = nullptr,
@@ -356,8 +355,7 @@ public:
     template <class Visit>
     void drainCycles(Visit&& visit) {
         for (auto& [id, entry] : active_)
-            while (const auto cycle = entry.worker->nextCycle())
-                visit(*cycle);
+            entry.worker->drainCycles(visit);
     }
 
     template <class Visit>
@@ -380,6 +378,7 @@ public:
 private:
     static constexpr auto workerRetryDelay = std::chrono::seconds(1);
     static constexpr std::size_t discreteQueueCapacity = 16;
+    static constexpr std::size_t cycleQueueCapacity = 32;
     // Covers the 100 ms press lifetime plus its preceding 100 ms of paddle
     // evidence at the production 5 ms cadence, without spending FIFO slots.
     static constexpr std::size_t paddleEvidenceCapacity = 64;
@@ -531,9 +530,19 @@ private:
             return events_.pop();
         }
 
-        std::optional<Cycle> nextCycle() {
-            std::scoped_lock lock(mutex_);
-            return cycles_.pop();
+        template <class Visit>
+        void drainCycles(Visit&& visit) {
+            // Take a bounded snapshot with one lock, then publish outside the
+            // DirectInput worker's mutex.
+            std::array<Cycle, cycleQueueCapacity> pending;
+            std::size_t count = 0;
+            {
+                std::scoped_lock lock(mutex_);
+                while (const auto cycle = cycles_.pop())
+                    pending[count++] = *cycle;
+            }
+            for (const auto& cycle : std::span(pending).first(count))
+                visit(cycle);
         }
 
     private:
@@ -672,7 +681,7 @@ private:
                         if (config.discrete && discreteRevision == discreteRevision_)
                             publishDiscrete(report, *config.discrete, config.trackPaddle, finishedAt);
                         latest_ = std::move(report);
-                        cycles_.push({finishedAt, elapsedMicros(finishedAt - started), missedCadence, retryAfterUnavailable});
+                        cycles_.push({elapsedMicros(finishedAt - started), missedCadence, retryAfterUnavailable});
                     }
                     changed_.wait_until(lock, stop, schedule.deadline, [&] { return revision != revision_; });
                 }
@@ -695,7 +704,7 @@ private:
         std::array<DiscreteAccessoryLevel, maxAccessoryBindings> discreteLevels_{};
         bool haveDiscreteBaseline_{};
         Recent<Event, 8> events_;
-        Recent<Cycle, 32> cycles_;
+        Recent<Cycle, cycleQueueCapacity> cycles_;
         std::optional<HRESULT> lastFactoryFailure_;
         DirectInputActiveCall activeCall_, layoutCall_;
         std::uint64_t revision_{};

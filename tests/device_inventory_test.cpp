@@ -66,17 +66,12 @@ struct CaptureInput {
     DeviceReadStatus readStatus{DeviceReadStatus::available};
     unsigned int cycles{};
 
-    void beginPoll() { ++cycles; }
-
-    std::optional<DeviceSample> sample(const std::string& id, const std::bitset<buttonCount>&,
-                                      DeviceReadStatus* status)
+    CaptureDeviceRead read(const std::string& id)
     {
-        if (id != "1") {
-            *status = DeviceReadStatus::unavailable;
-            return std::nullopt;
-        }
-        *status = readStatus;
-        return readStatus == DeviceReadStatus::unavailable ? std::nullopt : std::optional{report};
+        ++cycles;
+        if (id != "1")
+            return {};
+        return {readStatus == DeviceReadStatus::unavailable ? std::nullopt : std::optional{report}, readStatus};
     }
 };
 
@@ -525,7 +520,7 @@ bool testCaptureDuringUnrelatedScan()
     CaptureInput input;
     ShifterCapture capture(device);
     for (int i = 0; i < 3; ++i) {
-        const auto reading = readCaptureDevice(input, device);
+        const auto reading = input.read(device);
         if (!reading.sample || reading.needsRest())
             return false;
         capture.captureNeutral(*reading.sample);
@@ -538,7 +533,7 @@ bool testCaptureDuringUnrelatedScan()
     CalibrationCapture calibration;
     if (scanning) {
         for (int i = 0; i < 3; ++i) {
-            const auto reading = readCaptureDevice(input, device);
+            const auto reading = input.read(device);
             if (!reading.sample || reading.needsRest())
                 break;
             binding = capture.sample(*reading.sample).binding;
@@ -546,7 +541,7 @@ bool testCaptureDuringUnrelatedScan()
         input.report.axesPresent[0] = true;
         input.report.axes[0] = 31000;
         for (std::size_t i = 0; i < CalibrationCapture::sampleCount; ++i) {
-            const auto reading = readCaptureDevice(input, device);
+            const auto reading = input.read(device);
             if (!reading.sample || reading.needsRest() || !calibration.add(*reading.sample))
                 break;
         }
@@ -556,9 +551,9 @@ bool testCaptureDuringUnrelatedScan()
         binding->kind == AccessoryKind::Button && binding->index == 1 &&
         position && position->median[0] == 31000 && !gate->finished.load();
     input.readStatus = DeviceReadStatus::unavailable;
-    const auto disconnected = readCaptureDevice(input, device);
+    const auto disconnected = input.read(device);
     input.readStatus = DeviceReadStatus::resumed;
-    const auto resumed = readCaptureDevice(input, device);
+    const auto resumed = input.read(device);
     gate->unblock();
     if (!waitFor([&] { return static_cast<bool>(inventory.current()); }))
         return false;

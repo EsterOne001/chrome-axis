@@ -37,7 +37,8 @@ struct Snapshot {
 bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexcept;
 void detach() noexcept;
 bool available() noexcept;
-void setDriverVehicle(const RED4ext::Handle<RED4ext::ISerializable>& vehicle,
+// True when the mount has a different object identity, including address reuse.
+bool setDriverVehicle(const RED4ext::Handle<RED4ext::ISerializable>& vehicle,
                       std::optional<std::array<float, 3>> forward = std::nullopt) noexcept;
 // The absolute value is a selector level; delta is a single sequential input.
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute = std::nullopt,
@@ -53,6 +54,12 @@ constexpr std::uint64_t gearboxObservationLifetimeMs = 100;
 constexpr std::uint64_t headingLifetimeMs = 200;
 constexpr float directionChangeSpeed = 0.5f; // m/s
 constexpr float reverseEngagementSpeed = 5.0f / 6.0f; // 3 km/h in m/s
+
+struct VehicleIdentity {
+    const void* instance{};
+    const void* referenceCount{};
+    bool operator==(const VehicleIdentity&) const noexcept = default;
+};
 
 struct DriverLease {
     const void* vehicle{};

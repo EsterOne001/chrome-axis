@@ -89,7 +89,6 @@ private:
 
     int px(int value) const { return ui::px(value, dpi_); }
     bool scrollable() const { return decoration_ == DialogDecoration::scrollable; }
-    bool includesNestedControls() const { return decoration_ == DialogDecoration::standard || scrollable(); }
 
     HWND dialog_{};
     std::wstring subtitle_;
@@ -141,7 +140,7 @@ void ThemeState::initialise()
     }
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
         const auto& theme = *reinterpret_cast<const ThemeState*>(data);
-        if (!theme.includesNestedControls() && GetParent(control) != theme.dialog_)
+        if (!theme.scrollable() && GetParent(control) != theme.dialog_)
             return TRUE;
         if (classIs(control, L"Button") || classIs(control, L"ComboBox") ||
             (theme.scrollable() && GetParent(control) == theme.dialog_))
@@ -179,7 +178,7 @@ void ThemeState::updateDpi()
         logo_ = ui::loadLogo(GetModuleHandleW(nullptr), px(ui::headerLogoSize));
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
         const auto& theme = *reinterpret_cast<const ThemeState*>(data);
-        if (!theme.includesNestedControls() && GetParent(control) != theme.dialog_)
+        if (!theme.scrollable() && GetParent(control) != theme.dialog_)
             return TRUE;
         const auto id = GetDlgCtrlID(control);
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(theme.fonts_[isHeading(id) ? 1 : 0]), FALSE);
@@ -497,14 +496,18 @@ LRESULT ThemeState::handleControl(HWND window, UINT message, WPARAM wp, LPARAM l
 {
     if (message == WM_SETFOCUS && scrollable())
         viewport_.reveal(dialog_, window);
-    if (scrollable() && !classIs(window, L"Button") && !classIs(window, L"ComboBox"))
+    const bool button = classIs(window, L"Button");
+    // Keycaps use the dialog's WM_DRAWITEM handler. Keep native drawing and
+    // notification dispatch while still revealing a focused key in the viewport.
+    if ((button && (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) == BS_OWNERDRAW) ||
+        (!button && !classIs(window, L"ComboBox")))
         return DefSubclassProc(window, message, wp, lp);
     if (message == WM_ERASEBKGND)
         return 1;
     if (message == WM_PAINT || message == WM_PRINTCLIENT) {
         PAINTSTRUCT paint{};
         const auto dc = message == WM_PAINT ? BeginPaint(window, &paint) : reinterpret_cast<HDC>(wp);
-        if (classIs(window, L"Button"))
+        if (button)
             paintButton(window, dc);
         else
             paintCombo(window, dc);

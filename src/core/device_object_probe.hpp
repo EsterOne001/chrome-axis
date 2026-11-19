@@ -14,6 +14,11 @@ inline bool objectProbeDeferred(HRESULT result) noexcept {
         result == static_cast<HRESULT>(DIERR_UNPLUGGED);
 }
 
+inline bool objectProbeInconclusive(HRESULT result) noexcept {
+    // Only a successful query or explicit absence determines the object's layout.
+    return FAILED(result) && result != DIERR_OBJECTNOTFOUND;
+}
+
 // A refused acquisition must not skip a fresh metadata probe. Some drivers
 // briefly return E_PENDING even when the next GetObjectInfo works unacquired.
 template <class Acquire, class Refresh, class Release>
@@ -45,7 +50,7 @@ public:
         if (known_[index] || now < retryAt_[index])
             return false;
         const auto [result, present, completedAt] = probe(index);
-        if (SUCCEEDED(result) || result == DIERR_OBJECTNOTFOUND) {
+        if (!objectProbeInconclusive(result)) {
             known_.set(index);
             present_.set(index, SUCCEEDED(result) && present);
             deferred_.reset(index);

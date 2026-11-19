@@ -181,11 +181,13 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     // A new game session invalidates outstanding UI write markers.
     this.presetWriteSession += 1;
     this.activePresetWrite = null;
+    this.activePresetKey = this.ReadActivePresetKey();
     this.RefreshColors(true);
   }
 
   private cb func OnSessionResume(event: ref<GameSessionEvent>) {
     // A paused session may delay the flush without invalidating its pending save.
+    this.activePresetKey = this.ReadActivePresetKey();
     this.RefreshColors(true);
   }
 
@@ -197,18 +199,18 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
   }
 
   public func SyncActivePreset() -> Void {
-    let painter = HudPainterStorage.Get();
-    if !IsDefined(painter) {
-      return;
-    }
-    let name = painter.GetActivePresetName();
-    let key = StrLower(name);
+    let key = this.ReadActivePresetKey();
     if Equals(key, "") || Equals(key, this.activePresetKey) {
       return;
     }
 
     this.activePresetKey = key;
     this.RefreshColors();
+  }
+
+  private func ReadActivePresetKey() -> String {
+    let painter = HudPainterStorage.Get();
+    return IsDefined(painter) ? StrLower(painter.GetActivePresetName()) : "";
   }
 
   public func ChangeColor(isBorder: Bool, color: HDRColor) -> Void {
@@ -546,10 +548,12 @@ class ChromeAxisHudPainterMenu extends ScriptableService {
     if NotEquals(this.fileStatus, ChromeAxisHudSaveStatus.Available) {
       return this.fileStatus;
     }
-    let presets = this.colors.GetKey("presets") as JsonObject;
-    if IsDefined(presets) && presets.HasKey(this.activePresetKey)
-      && !IsDefined(presets.GetKey(this.activePresetKey) as JsonObject) {
-      return ChromeAxisHudSaveStatus.InvalidPreset;
+    if IsDefined(this.colors) {
+      let presets = this.colors.GetKey("presets") as JsonObject;
+      if IsDefined(presets) && presets.HasKey(this.activePresetKey)
+        && !IsDefined(presets.GetKey(this.activePresetKey) as JsonObject) {
+        return ChromeAxisHudSaveStatus.InvalidPreset;
+      }
     }
     return ArraySize(this.edits) > 0 ? ChromeAxisHudSaveStatus.OtherPresetPending : ChromeAxisHudSaveStatus.Available;
   }
@@ -992,13 +996,18 @@ class ChromeAxisHudPainterSection extends inkComponent {
     status: ChromeAxisHudSaveStatus, picker: wref<CustomColorPickerController>) -> Void {
     this.SyncItem(this.border, saved.border, current.border, picker);
     this.SyncItem(this.transmission, saved.transmission, current.transmission, picker);
-    this.message.SetText(this.SaveLabel(status));
+    if IsDefined(this.message) {
+      this.message.SetText(this.SaveLabel(status));
+    }
   }
 
   private func SyncItem(item: wref<ComponentColorItem>, saved: HDRColor, current: HDRColor,
     picker: wref<CustomColorPickerController>) -> Void {
+    if !IsDefined(item) {
+      return;
+    }
     let color = item.GetData();
-    if ChromeAxis_HudColorsMatch(color.presetColor, saved) && ChromeAxis_HudColorsMatch(color.customColor, current) {
+    if !IsDefined(color) || (ChromeAxis_HudColorsMatch(color.presetColor, saved) && ChromeAxis_HudColorsMatch(color.customColor, current)) {
       return;
     }
     color.presetColor = saved;
@@ -1239,7 +1248,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudModeLabel = modeLabel;
     this.ApplyHudPalette();
     this.ApplyHudStatus();
-    this.ApplyHudGear();
+    this.ApplyHudGear(true, true, true);
     this.TryShowHudGraphics();
     return true;
   }
@@ -1377,18 +1386,21 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     return -2;
   }
 
-  private func ApplyHudGear() -> Void {
-    if !IsDefined(this.hudGearLabel) || !IsDefined(this.hudGearCaption) || !IsDefined(this.hudModeLabel) {
-      return;
+  private func ApplyHudGear(updateCaption: Bool, updateGear: Bool, updateMode: Bool) -> Void {
+    if updateCaption && IsDefined(this.hudGearCaption) {
+      this.hudGearCaption.SetText(this.hudFrench ? "RAPPORT" : "GEAR");
     }
-    let value = this.hudGear > 0 ? IntToString(this.hudGear) : (this.hudGear == 0 ? "R" : (this.hudGear == -1 ? "N" : "—"));
-    let mode = this.hudManualMode ? (this.hudFrench ? "MANUEL" : "MANUAL") : "AUTO";
-    this.hudGearCaption.SetText(this.hudFrench ? "RAPPORT" : "GEAR");
-    this.hudGearLabel.SetText(value);
-    this.hudModeLabel.SetText(mode);
+    if updateGear && IsDefined(this.hudGearLabel) {
+      let value = this.hudGear > 0 ? IntToString(this.hudGear) : (this.hudGear == 0 ? "R" : (this.hudGear == -1 ? "N" : "—"));
+      this.hudGearLabel.SetText(value);
+    }
+    if updateMode && IsDefined(this.hudModeLabel) {
+      this.hudModeLabel.SetText(this.hudManualMode ? (this.hudFrench ? "MANUEL" : "MANUAL") : "AUTO");
+    }
   }
 
   private func UpdateHud(game: GameInstance, status: Int32, vehicle: wref<VehicleObject>) -> Void {
+    let previousFrench = this.hudFrench;
     if status != 0 && this.hudStatus == 0 {
       this.hudFrench = ChromeAxis_IsFrenchInterface(game);
     }
@@ -1399,10 +1411,6 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       manualMode = transmission >= 16;
       gear = this.ReadHudGear(vehicle, (manualMode ? transmission - 16 : transmission) - 2);
     }
-    let modeChanged = this.hudManualMode ? !manualMode : manualMode;
-    let gearLineChanged = this.hudGear != gear || modeChanged;
-    this.hudGear = gear;
-    this.hudManualMode = manualMode;
     let changed = this.hudStatus != status;
     this.hudStatus = status;
     if status == 0 {
@@ -1412,6 +1420,12 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       this.hudRetry = 0;
       return;
     }
+    // While hidden, keep the last rendered values so the next visible tick can compare against them.
+    let languageChanged = NotEquals(previousFrench, this.hudFrench);
+    let gearChanged = this.hudGear != gear;
+    let modeChanged = NotEquals(this.hudManualMode, manualMode) || (manualMode && languageChanged);
+    this.hudGear = gear;
+    this.hudManualMode = manualMode;
     if IsDefined(this.hudBadge) {
       if changed {
         this.ApplyHudStatus();
@@ -1419,8 +1433,8 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
           this.hudGraphicsRetries = 30;
         }
       }
-      if changed || gearLineChanged {
-        this.ApplyHudGear();
+      if languageChanged || gearChanged || modeChanged {
+        this.ApplyHudGear(languageChanged, gearChanged, modeChanged);
       }
       this.TryShowHudGraphics();
     }
@@ -1490,13 +1504,16 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     if !IsDefined(boards) {
       return false;
     }
-    let ui: ref<IBlackboard> = boards.Get(GetAllBlackboardDefs().UI_System);
+    let defs = GetAllBlackboardDefs();
+    let ui: ref<IBlackboard> = boards.Get(defs.UI_System);
     if !IsDefined(ui) {
       return false;
     }
-    let photoMode: ref<IBlackboard> = boards.Get(GetAllBlackboardDefs().PhotoMode);
-    paused = ui.GetBool(GetAllBlackboardDefs().UI_System.IsInMenu) ||
-             (IsDefined(photoMode) && photoMode.GetBool(GetAllBlackboardDefs().PhotoMode.IsActive));
+    paused = ui.GetBool(defs.UI_System.IsInMenu);
+    if !paused {
+      let photoMode: ref<IBlackboard> = boards.Get(defs.PhotoMode);
+      paused = IsDefined(photoMode) && photoMode.GetBool(defs.PhotoMode.IsActive);
+    }
     if paused {
       return false;
     }
@@ -1504,7 +1521,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     if !IsDefined(stateBoard) {
       return false;
     }
-    let state: gamePSMVehicle = IntEnum<gamePSMVehicle>(stateBoard.GetInt(GetAllBlackboardDefs().PlayerStateMachine.Vehicle));
+    let state: gamePSMVehicle = IntEnum<gamePSMVehicle>(stateBoard.GetInt(defs.PlayerStateMachine.Vehicle));
     return Equals(state, gamePSMVehicle.Driving) || Equals(state, gamePSMVehicle.DriverCombat);
   }
 

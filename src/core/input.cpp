@@ -135,21 +135,21 @@ void probeInventoryLayout(IDirectInputDevice8W& device, DeviceInfo& info) {
             continue;
         HRESULT result{};
         info.axes[index] = hasObject(device, axisOffsets[index], DIDFT_ABSAXIS, &result);
-        info.layoutPending.axes[index] = objectProbeDeferred(result);
+        info.layoutPending.axes[index] = objectProbeInconclusive(result);
     }
     for (DWORD index = 0; index < buttonCount; ++index) {
         if (!info.layoutPending.buttons[index])
             continue;
         HRESULT result{};
         info.buttons[index] = hasObject(device, DIJOFS_BUTTON(index), DIDFT_BUTTON, &result);
-        info.layoutPending.buttons[index] = objectProbeDeferred(result);
+        info.layoutPending.buttons[index] = objectProbeInconclusive(result);
     }
     for (DWORD index = 0; index < povCount; ++index) {
         if (!info.layoutPending.povs[index])
             continue;
         HRESULT result{};
         info.povs[index] = hasObject(device, DIJOFS_POV(index), DIDFT_POV, &result);
-        info.layoutPending.povs[index] = objectProbeDeferred(result);
+        info.layoutPending.povs[index] = objectProbeInconclusive(result);
     }
 }
 
@@ -708,7 +708,8 @@ struct DirectInput::Impl {
     }
 
     std::optional<DeviceSample> read(OpenDevice& opened, const std::string& id,
-                                     const DeviceObjectSelection& wanted, bool rawPovs = false);
+                                     const DeviceObjectSelection& wanted,
+                                     const DeviceObjectSelection* drivingSelection = nullptr);
 
     HWND window;
     DirectInputDiagnostic diagnostic;
@@ -800,7 +801,8 @@ void DirectInput::beginPoll() noexcept {
 }
 
 std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const std::string& id,
-                                                    const DeviceObjectSelection& wanted, bool rawPovs) {
+                                                    const DeviceObjectSelection& wanted,
+                                                    const DeviceObjectSelection* drivingSelection) {
     opened.readStatus = DeviceReadStatus::unavailable;
     if (opened.retryAfter != Clock::time_point{} && Clock::now() < opened.retryAfter) {
         return std::nullopt;
@@ -901,13 +903,18 @@ std::optional<DeviceSample> DirectInput::Impl::read(OpenDevice& opened, const st
     sample.recoveryToken = opened.recoveryToken;
     for (std::size_t index = 0; index < axisCount; ++index)
         sample.axesPresent[index] = opened.axes.present()[index];
-    for (std::size_t index = 0; index < buttonCount; ++index) {
-        if ((state.rgbButtons[index] & 0x80) != 0)
-            sample.buttons.set(index);
+    // App capture keeps the full state for other consumers of the cached report.
+    // Driving readers with only axes or POVs never consume a button report.
+    if (!drivingSelection || drivingSelection->buttons.any()) {
+        for (std::size_t index = 0; index < buttonCount; ++index) {
+            if ((state.rgbButtons[index] & 0x80) != 0)
+                sample.buttons.set(index);
+        }
     }
     for (std::size_t index = 0; index < povCount; ++index) {
         sample.povsPresent[index] = opened.povs.present()[index];
-        if ((rawPovs || sample.povsPresent[index]) && state.rgdwPOV[index] < 36000)
+        if ((drivingSelection ? drivingSelection->povs[index] : sample.povsPresent[index]) &&
+            state.rgdwPOV[index] < 36000)
             sample.povs[index] = static_cast<std::uint16_t>(state.rgdwPOV[index]);
     }
     return sample;
@@ -953,7 +960,7 @@ std::optional<DeviceSample> DirectInput::sampleForDriving(const std::string& id,
         return std::nullopt;
     }
     auto& opened = impl_->openDevices.try_emplace(id, impl_->activeCall).first->second;
-    auto sample = impl_->read(opened, id, {}, true);
+    auto sample = impl_->read(opened, id, {}, &wanted);
     status = opened.readStatus;
     if (!sample)
         return std::nullopt;

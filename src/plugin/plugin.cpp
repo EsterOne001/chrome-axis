@@ -95,7 +95,6 @@ bool usbHudStatus(HudStatus status) noexcept {
 
 struct DrivingContext {
     Vehicle* vehicle{};
-    Vehicle* mounted{};
     std::uint64_t generation{};
     std::uint64_t session{};
     Clock::time_point refreshed{};
@@ -947,14 +946,12 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
     bool invalidated;
     {
         std::scoped_lock lock(stateMutex);
-        if (transmissionAvailable) {
-            const auto heading = foreground ? std::optional{std::array{forward.X, forward.Y, forward.Z}} : std::nullopt;
-            if (mounted)
-                manual_backend::setDriverVehicle(vehicle, heading);
-            else
-                manual_backend::setDriverVehicle(nullptr);
-        }
-        const bool mountedChanged = context.mounted != mounted;
+        const auto heading = foreground && transmissionAvailable
+            ? std::optional{std::array{forward.X, forward.Y, forward.Z}} : std::nullopt;
+        // The backend retains the weak mount handle even if its gearbox hooks
+        // are unavailable. Both input paths must invalidate on the same lifetime.
+        const bool mountedChanged = mounted ? manual_backend::setDriverVehicle(vehicle, heading)
+                                            : manual_backend::setDriverVehicle(nullptr);
         invalidated = mountedChanged || context.vehicle != current || (current && now - context.refreshed > contextLifetime);
         if (mountedChanged) {
             transmissionInput = {};
@@ -975,7 +972,6 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
             appliedAxes = {};
         }
         context.vehicle = current;
-        context.mounted = mounted;
         context.refreshed = now;
         context.menuPaused = mounted && !canDrive;
         drivingVehicle.store(current, std::memory_order_release);

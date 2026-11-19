@@ -248,12 +248,12 @@ INT_PTR CALLBACK keyboardProc(HWND window, UINT message, WPARAM wParam, LPARAM l
         SetDlgItemTextW(window, IDC_KEYBOARD_NUMPAD_LABEL, tr(Text::DlgKeyboardNumpad));
         SetDlgItemTextW(window, IDC_KEYBOARD_NUMLOCK_HINT, tr(Text::DlgKeypadNumLockHint));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
-        DialogTheme::attach(window, tr(settings.transmission ? Text::mainMenuTransmissionKey : Text::DlgKeyboardHeading),
-                            0, 0, {});
         if (!Keyboard(window, settings.transmission).build(GetKeyboardLayout(0))) {
             EndDialog(window, -1);
             return TRUE;
         }
+        DialogTheme::attach(window, tr(settings.transmission ? Text::mainMenuTransmissionKey : Text::DlgKeyboardHeading),
+                            0, 0, {}, DialogDecoration::scrollable);
         const auto current = GetDlgItem(window, firstKeyId + static_cast<int>(settings.currentKey));
         SetFocus(current ? current : GetDlgItem(window, IDCANCEL));
         return FALSE;

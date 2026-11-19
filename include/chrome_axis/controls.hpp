@@ -68,7 +68,6 @@ bool validateAxisResponse(const AxisResponse& response) noexcept;
 // Signed for steering. Saturation is defined on the calibrated travel before deadzone.
 AxisPreview previewAxisResponse(ResponseAxis axis, const AxisCalibration& calibration, long raw,
                                const AxisResponse& response) noexcept;
-bool validateBrakeResponse(const BrakeResponse& response) noexcept;
 // A valid calibration and response produce fractions of calibrated travel and brake output.
 BrakePreview previewBrake(const AxisCalibration& calibration, long raw, const BrakeResponse& response) noexcept;
 

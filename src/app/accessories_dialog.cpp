@@ -214,7 +214,8 @@ INT_PTR CALLBACK thresholdsProc(HWND window, UINT message, WPARAM wParam, LPARAM
         SetDlgItemTextW(window, IDC_THRESHOLDS_DEFAULTS, tr(Text::DlgThresholdsDefaults));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgThresholdsApply));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
-        DialogTheme::attach(window, tr(Text::DlgThresholdsHeading), IDC_THRESHOLDS_STATUS, 0, {IDOK});
+        DialogTheme::attach(window, tr(Text::DlgThresholdsHeading), IDC_THRESHOLDS_STATUS, 0, {IDOK},
+                            DialogDecoration::scrollable);
         for (const int control : {IDC_THRESHOLDS_PRESS, IDC_THRESHOLDS_RELEASE})
             SendDlgItemMessageW(window, control, EM_SETLIMITTEXT, 3, 0);
         setThresholds(window, *reinterpret_cast<const AccessoryThresholds*>(lParam));

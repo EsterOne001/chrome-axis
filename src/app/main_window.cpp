@@ -333,16 +333,24 @@ public:
             fitMainWindow(window);
             return 0;
         case WM_VSCROLL:
-        case WM_HSCROLL:
+        case WM_HSCROLL: {
+            const auto before = viewport_.offset();
             if (!lp && viewport_.scroll(window, LOWORD(wp), message == WM_HSCROLL))
-                layout();
+                layoutIfScrolled(before);
             return 0;
+        }
         case WM_MOUSEWHEEL:
         case WM_MOUSEHWHEEL: {
-            const bool horizontal = message == WM_MOUSEHWHEEL || (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT);
+            const auto before = viewport_.offset();
+            const bool horizontalWheel = message == WM_MOUSEHWHEEL;
             const int delta = GET_WHEEL_DELTA_WPARAM(wp);
-            if (viewport_.wheel(window, horizontal && message == WM_MOUSEWHEEL ? -delta : delta, horizontal)) {
-                layout();
+            if ((horizontalWheel || (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT)) &&
+                viewport_.wheel(window, horizontalWheel ? delta : -delta, true)) {
+                layoutIfScrolled(before);
+                return 0;
+            }
+            if (!horizontalWheel && viewport_.wheel(window, delta, false)) {
+                layoutIfScrolled(before);
                 return 0;
             }
             break;
@@ -465,9 +473,7 @@ private:
             auto& app = *reinterpret_cast<App*>(data);
             const auto offset = app.viewport_.offset();
             app.viewport_.reveal(app.window_, control);
-            const auto next = app.viewport_.offset();
-            if (next.x != offset.x || next.y != offset.y)
-                app.layout();
+            app.layoutIfScrolled(offset);
         }
         return DefSubclassProc(control, message, wp, lp);
     }
@@ -648,11 +654,19 @@ private:
         ShowWindow(englishFlag_, shaped ? SW_SHOWNA : SW_HIDE);
     }
 
-    void layout()
+    void layoutIfScrolled(POINT before)
+    {
+        const auto after = viewport_.offset();
+        if (before.x != after.x || before.y != after.y)
+            layout(false);
+    }
+
+    void layout(bool resizeViewport = true)
     {
         if (std::exchange(layoutRunning_, true))
             return;
-        viewport_.resizeContent(window_, {px(minimumContentWidth), px(minimumContentHeight)});
+        if (resizeViewport)
+            viewport_.resizeContent(window_, {px(minimumContentWidth), px(minimumContentHeight)});
         const auto extent = viewport_.extent();
         const auto offset = viewport_.offset();
         const auto [left, width] = contentBounds(extent.cx);
@@ -1207,6 +1221,7 @@ private:
     chrome_axis::Simulator simulator_;
     chrome_axis::TransmissionShortcut transmissionShortcut_;
     unsigned int transmissionKey_{};
+    std::optional<bool> displayedTransmissionKeyReadable_;
     std::chrono::steady_clock::time_point previewTime_{};
     std::chrono::steady_clock::time_point nextUsbRefresh_{};
     std::optional<std::chrono::steady_clock::time_point> nextAccessoryRead_;
@@ -2309,9 +2324,13 @@ void App::refreshTransmissionKey()
             transmissionShortcut_.refresh(directory_, report.snapshot.transmission.shortcutKey);
     }
     const auto key = transmissionShortcut_.display().value_or(0);
+    const bool readable = transmissionShortcut_.saved().has_value();
+    if (key == transmissionKey_ && displayedTransmissionKeyReadable_ == readable)
+        return;
     if (key != transmissionKey_)
         simulator_.reset();
     transmissionKey_ = key;
+    displayedTransmissionKeyReadable_ = readable;
     const auto keyPair = [key](unsigned int first, unsigned int second, const wchar_t* separator) {
         if (key == first)
             return chrome_axis::accessoryKeyLabel(second);
@@ -2327,7 +2346,7 @@ void App::refreshTransmissionKey()
     setText(simKeys_[2], keyPair(VK_NUMPAD2, VK_F10, L"  ·  "));
     auto transmission = key ? chrome_axis::accessoryKeyLabel(key) : std::wstring(L"—");
     transmission += tr(Text::mainSimulationTransmissionKeys);
-    if (!transmissionShortcut_.saved())
+    if (!readable)
         transmission += L" · " + std::wstring(tr(Text::mainTransmissionKeyUnreadable));
     setText(simTransmission_, transmission);
     constexpr std::array<unsigned int, 5> clutchKeys{VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD3, VK_NUMPAD5, VK_NUMPAD7};

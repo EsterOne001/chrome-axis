@@ -59,14 +59,4 @@ inline bool collectGuidedCalibrationReading(CalibrationCapture& capture, const C
     return true;
 }
 
-// Once a device has been selected, its own readings govern capture.
-template <class Input>
-CaptureDeviceRead readCaptureDevice(Input& input, const std::string& deviceId)
-{
-    CaptureDeviceRead reading;
-    input.beginPoll();
-    reading.sample = input.sample(deviceId, {}, &reading.status);
-    return reading;
-}
-
 } // namespace chrome_axis
