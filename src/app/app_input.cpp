@@ -71,8 +71,10 @@ struct AppInput::State {
 
                 const auto startedAt = Clock::now();
                 CaptureDeviceRead reading;
+                bool readAttempted{};
                 if (state.read) {
                     reading = state.read(id, buttons);
+                    readAttempted = true;
                 } else {
                     if (!driver && startedAt >= nextInitialization) {
                         driver.emplace(window.get());
@@ -84,12 +86,19 @@ struct AppInput::State {
                     if (driver) {
                         driver->beginPoll();
                         reading.sample = driver->sample(id, buttons, &reading.status);
+                        readAttempted = true;
                     }
                 }
 
                 const auto completedAt = Clock::now();
                 lock.lock();
-                if (stopping || generation != revision)
+                if (stopping)
+                    continue;
+                // Track the device's actual result before rejecting an old capture
+                // revision or expiring a slow sample for the current consumer.
+                if (readAttempted)
+                    observeCalibrationConnection(reading);
+                if (generation != revision)
                     continue;
                 const auto number = state.sequence.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (reading.sample) {
@@ -165,12 +174,11 @@ struct AppInput::State {
             queued = deliveredExpiry = interruption = observedSample = false;
         }
 
-        std::optional<std::uint64_t> latestRecoveryToken()
+        bool takeCalibrationInterruption(bool failed = false)
         {
             std::scoped_lock lock(mutex);
-            if (!report || !report->reading.sample)
-                return std::nullopt;
-            return report->reading.sample->recoveryToken;
+            return std::exchange(calibrationInterrupted, false) ||
+                (failed && !stopping && observedDeviceSample);
         }
 
         void stop()
@@ -187,6 +195,20 @@ struct AppInput::State {
             return observedSample || interruption;
         }
 
+        void observeCalibrationConnection(const CaptureDeviceRead& reading)
+        {
+            if (reading.sample) {
+                const auto token = reading.sample->recoveryToken;
+                calibrationInterrupted |= reading.status == DeviceReadStatus::resumed ||
+                    (token != 0 && token != hardwareRecoveryToken);
+                hardwareRecoveryToken = token;
+                observedDeviceSample = true;
+                deviceUnavailable = false;
+            } else if (reading.status == DeviceReadStatus::unavailable) {
+                calibrationInterrupted |= !std::exchange(deviceUnavailable, true);
+            }
+        }
+
         const std::string id;
         const HANDLE wake{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
         std::mutex mutex;
@@ -194,14 +216,17 @@ struct AppInput::State {
         Buttons requested;
         Clock::time_point lastRequest{Clock::now()};
         std::uint64_t revision{}, delivered{};
+        std::uint64_t hardwareRecoveryToken{};
         bool requestedGuidedCalibration{};
         bool queued{}, deliveredExpiry{}, interruption{}, observedSample{}, stopping{};
+        bool calibrationInterrupted{}, observedDeviceSample{}, deviceUnavailable{};
     };
 
     struct Reader {
         std::shared_ptr<Device> device;
         Clock::time_point retryAfter{};
         bool interrupted{};
+        bool calibrationInterrupted{};
     };
 
     explicit State(Read read) : read(std::move(read)) {}
@@ -213,10 +238,15 @@ struct AppInput::State {
         if (found == devices.end() || found->second.device.get() != &device)
             return;
         // Publish the slot only after DirectInput and the cooperative window were destroyed.
-        if (exit == Device::Exit::failed)
-            found->second = {nullptr, Clock::now() + initializationRetry, device.readInterrupted()};
-        else
+        const bool failed = exit == Device::Exit::failed;
+        auto& reader = found->second;
+        reader.calibrationInterrupted |= device.takeCalibrationInterruption(failed);
+        if (failed || reader.calibrationInterrupted) {
+            reader = {nullptr, failed ? Clock::now() + initializationRetry : Clock::time_point{},
+                      failed && device.readInterrupted(), reader.calibrationInterrupted};
+        } else {
             devices.erase(found);
+        }
     }
 
     const Read read;
@@ -254,13 +284,19 @@ CaptureDeviceRead AppInput::captureGuidedPosition(const std::string& id)
     return request(id, {}, Purpose::guidedCalibration);
 }
 
-std::optional<std::uint64_t> AppInput::latestRecoveryToken(const std::string& id) const
+bool AppInput::takeCalibrationInterruption(const std::string& id)
 {
     std::scoped_lock lock(state_->mutex);
     const auto it = state_->devices.find(id);
-    if (it == state_->devices.end() || !it->second.device)
-        return std::nullopt;
-    return it->second.device->latestRecoveryToken();
+    if (it == state_->devices.end())
+        return false;
+    auto& reader = it->second;
+    bool interrupted = std::exchange(reader.calibrationInterrupted, false);
+    if (reader.device)
+        interrupted |= reader.device->takeCalibrationInterruption();
+    else if (reader.retryAfter == Clock::time_point{})
+        state_->devices.erase(it);
+    return interrupted;
 }
 
 CaptureDeviceRead AppInput::request(const std::string& id, const Buttons& buttons, Purpose purpose)
@@ -311,9 +347,12 @@ void AppInput::invalidate()
 void AppInput::close()
 {
     std::scoped_lock lock(state_->mutex);
-    std::erase_if(state_->devices, [](const auto& entry) { return !entry.second.device; });
+    std::erase_if(state_->devices, [](const auto& entry) {
+        return !entry.second.device && !entry.second.calibrationInterrupted;
+    });
     for (const auto& entry : state_->devices)
-        entry.second.device->stop();
+        if (entry.second.device)
+            entry.second.device->stop();
 }
 
 } // namespace chrome_axis

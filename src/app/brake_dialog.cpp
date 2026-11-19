@@ -158,7 +158,7 @@ void AxisResponseDialog::initialise(HWND window)
     SendDlgItemMessageW(window, IDC_BRAKE_SIMULATED_TRAVEL, EM_SETLIMITTEXT, steering() ? 4 : 3, 0);
     if (pedals)
         initialisePedals(window);
-    DialogTheme::attach(window, tr(labels.heading), IDC_BRAKE_STATUS, 0, {IDOK});
+    DialogTheme::attach(window, tr(labels.heading), IDC_BRAKE_STATUS, 0, {IDOK}, DialogDecoration::scrollable);
     assignResponse(window, initial);
     SetTimer(window, previewTimer, previewInterval, nullptr);
 }

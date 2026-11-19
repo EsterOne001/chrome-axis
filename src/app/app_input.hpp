@@ -23,8 +23,8 @@ public:
                                       DeviceReadStatus* status = nullptr) override;
     CaptureDeviceRead capture(const std::string& id);
     CaptureDeviceRead captureGuidedPosition(const std::string& id);
-    // Observe the transport epoch without consuming the reader's resume signal.
-    std::optional<std::uint64_t> latestRecoveryToken(const std::string& id) const;
+    // Consume confirmed reader interruptions independently of preview sample age.
+    bool takeCalibrationInterruption(const std::string& id);
     void invalidate();
     void close();
 

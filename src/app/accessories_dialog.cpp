@@ -286,6 +286,7 @@ bool saveAccessorySettings(HWND owner, const std::filesystem::path& root, const 
         : save.reason == ProfileEditorError::calibrationUnreadable ? Text::mainSaveCalibrationUnreadable
         : save.reason == ProfileEditorError::accessoriesUnreadable ? Text::DlgAccessoriesChanged
         : save.reason == ProfileEditorError::axisConflict ? Text::DlgAccessoryDriveAxisConflict
+        : save.reason == ProfileEditorError::dedicatedAccessoryAxisConflict ? Text::DlgDedicatedAccessoryAxisConflict
         : save.reason == ProfileEditorError::createDirectoryFailed ? Text::DlgAccessoriesCreateProfileFailed
         : Text::DlgAccessoriesSaveError;
     auto message = std::wstring(tr(reason));
@@ -648,7 +649,10 @@ void AccessoryDialog::refreshAnalogActions(bool idle, bool captured)
         selectedAxis = accessoryInputLabel(binding) + L" · ";
         selectedAxis += device == devices_.end() ? tr(Text::DlgAccessoryPreviewDevice)
             : wide(device->name.empty() ? binding.deviceId : device->name);
-        if (savedAxes_ && analogAccessoryAxisConflict(*savedAxes_, binding)) {
+        if (hasDedicatedAccessoryAxisConflict(bindings_)) {
+            selectedAxis += L"\r\n";
+            selectedAxis += tr(Text::DlgSavedDedicatedAccessoryAxisConflict);
+        } else if (savedAxes_ && analogAccessoryAxisConflict(*savedAxes_, binding)) {
             selectedAxis += L"\r\n";
             selectedAxis += tr(Text::DlgSavedAccessoryDriveAxisConflict);
         }
@@ -1451,7 +1455,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
         DialogTheme::attach(window, heading, IDC_ACCESSORY_STATUS, IDC_ACCESSORY_LIST,
-                            {IDC_ACCESSORY_CAPTURE, IDC_ACCESSORY_ADD, IDC_HANDBRAKE_APPLY_AXIS, IDOK});
+                            {IDC_ACCESSORY_CAPTURE, IDC_ACCESSORY_ADD, IDC_HANDBRAKE_APPLY_AXIS, IDOK},
+                            DialogDecoration::scrollable);
         return dialog.initialise(window);
     }
     auto* dialog = reinterpret_cast<AccessoryDialog*>(GetWindowLongPtrW(window, DWLP_USER));

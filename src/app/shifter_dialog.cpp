@@ -1326,7 +1326,7 @@ INT_PTR CALLBACK shifterProc(HWND window, UINT message, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(window, IDC_SHIFTER_THRESHOLDS, tr(Text::DlgShifterThresholds));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
         DialogTheme::attach(window, tr(Text::DlgShifterHeading), IDC_SHIFTER_STATUS, IDC_SHIFTER_LIST,
-                            {IDC_SHIFTER_START, IDC_SHIFTER_ADVANCE, IDOK});
+                            {IDC_SHIFTER_START, IDC_SHIFTER_ADVANCE, IDOK}, DialogDecoration::scrollable);
         dialog.initialise(window);
         return TRUE;
     }

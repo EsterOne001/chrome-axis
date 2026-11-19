@@ -128,6 +128,8 @@ CHROME_AXIS_TEXT(DlgClutchMultipleAxes, L"Plusieurs axes ont bougé. Choisissez 
 CHROME_AXIS_TEXT(DlgClutchChanged, L"Embrayage configuré. Enregistrez pour l’appliquer au profil.", L"Clutch configured. Save to apply it to the profile.")
 CHROME_AXIS_TEXT(DlgAccessoryDriveAxisConflict, L"Cet axe chevauche une commande du volant ou des pédales. Capturez un autre axe.", L"This axis overlaps a steering or pedal control. Capture a different axis.")
 CHROME_AXIS_TEXT(DlgSavedAccessoryDriveAxisConflict, L"Axe en conflit. Cette commande est désactivée en jeu.", L"Axis conflict. This control is disabled in game.")
+CHROME_AXIS_TEXT(DlgDedicatedAccessoryAxisConflict, L"L’embrayage et le frein à main utilisent la même course. Choisissez une autre course.", L"The clutch and handbrake use the same axis travel. Choose a different travel.")
+CHROME_AXIS_TEXT(DlgSavedDedicatedAccessoryAxisConflict, L"Course partagée · embrayage et frein à main suspendus.", L"Shared axis travel · clutch and handbrake suspended.")
 CHROME_AXIS_TEXT(DlgClutchInputConflict, L"Cette entrée est déjà affectée dans le profil. Libérez-la ou choisissez un autre axe.", L"This input is already assigned in the profile. Free it or choose another axis.")
 CHROME_AXIS_TEXT(DlgClutchPreview, L"Course de l’embrayage", L"Clutch pedal travel")
 CHROME_AXIS_TEXT(DlgClutchPreviewReady, L"Signal de la pédale (aperçu local)", L"Pedal signal (local preview)")

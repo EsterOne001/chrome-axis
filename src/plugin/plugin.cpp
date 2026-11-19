@@ -1323,9 +1323,8 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
             if (updated)
                 chrome_axis::removeDisabledDrivingAccessories(*updated);
             // Preserve old settings on disk. Only conflicting analog accessory outputs are suppressed.
-            accessoryAxisConflict = profile && updated && std::erase_if(*updated, [&](const auto& binding) {
-                return chrome_axis::analogAccessoryAxisConflict(*profile, binding);
-            }) != 0;
+            accessoryAxisConflict = updated && chrome_axis::suppressConflictingAnalogAccessories(
+                *updated, profile ? &*profile : nullptr);
             changes.accessories = !chrome_axis::sameAccessoryInputProfile(accessoryProfile, updated);
             accessoryProfile = std::move(updated);
             nativeShifter = accessoryProfile && std::ranges::any_of(*accessoryProfile, &chrome_axis::AccessoryBinding::nativeShifter);
@@ -1392,7 +1391,7 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
     reportChangedWarning(lastProfileWarning_, analogWarning);
     reportChangedWarning(lastAccessoryWarning_, accessoryError_);
     reportChangedWarning(lastAxisConflictWarning_, accessoryAxisConflict
-        ? "A clutch or handbrake axis conflicts with a driving axis. Conflicting analog accessory commands were disabled."
+        ? "A clutch or handbrake axis conflicts with another command. Conflicting analog accessory commands were disabled."
         : "");
     enabled = requested;
     return changes;

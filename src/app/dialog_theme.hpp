@@ -6,7 +6,7 @@
 
 namespace chrome_axis {
 
-enum class DialogDecoration { standard, header, content };
+enum class DialogDecoration { standard, header, content, scrollable };
 
 class DialogTheme {
 public:

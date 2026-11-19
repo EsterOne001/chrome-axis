@@ -381,6 +381,25 @@ bool hasAnalogAccessoryAxisConflict(const Profile& axes, std::span<const Accesso
     });
 }
 
+bool hasDedicatedAccessoryAxisConflict(std::span<const AccessoryBinding> bindings) noexcept
+{
+    const auto clutch = std::ranges::find_if(bindings, [](const auto& binding) {
+        return binding.kind == AccessoryKind::Axis && binding.clutchMode && isEnabledDrivingAccessory(binding);
+    });
+    return clutch != bindings.end() && std::ranges::any_of(bindings, [&](const auto& binding) {
+        return binding.handbrakeCeilingPercent && sameNativeInput(*clutch, binding);
+    });
+}
+
+bool suppressConflictingAnalogAccessories(AccessoryProfile& bindings, const Profile* axes)
+{
+    const bool sharedDedicatedAxis = hasDedicatedAccessoryAxisConflict(bindings);
+    return std::erase_if(bindings, [&](const auto& binding) {
+        return (sharedDedicatedAxis && (binding.clutchMode || binding.handbrakeCeilingPercent))
+            || (axes && analogAccessoryAxisConflict(*axes, binding));
+    }) != 0;
+}
+
 bool introducesAnalogAccessoryAxisConflict(const Profile* previousAxes, std::span<const AccessoryBinding> previousBindings,
                                            const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept
 {

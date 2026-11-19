@@ -70,7 +70,7 @@ CHROME_AXIS_TEXT(DlgDiagnosticsSampleExpired, L"Lecture trop lente", L"Input rea
 CHROME_AXIS_TEXT(DlgDiagnosticsAccessoriesUnconfigured, L"Aucune affectation", L"No bindings")
 CHROME_AXIS_TEXT(DlgDiagnosticsAccessoriesWaiting, L"Relâchez la commande ou vérifiez le périphérique", L"Release the control or check the device")
 CHROME_AXIS_TEXT(DlgDiagnosticsAccessoriesReady, L"Prêts", L"Ready")
-CHROME_AXIS_TEXT(DlgDiagnosticsAccessoryAxisConflict, L"Axe partagé avec la conduite · embrayage ou frein à main suspendu", L"Axis overlaps driving controls · clutch or handbrake suspended")
+CHROME_AXIS_TEXT(DlgDiagnosticsAccessoryAxisConflict, L"Conflit d’axes · embrayage ou frein à main suspendu", L"Axis conflict · clutch or handbrake suspended")
 CHROME_AXIS_TEXT(DlgDiagnosticsAccessoriesError, L"Affectations illisibles", L"Could not read bindings")
 CHROME_AXIS_TEXT(DlgDiagnosticsAccessoriesBlocked, L"Envoi bloqué · relâchez la touche ou vérifiez le jeu", L"Key send blocked · release the key or check the game")
 CHROME_AXIS_TEXT(DlgDiagnosticsAccessoriesModifier, L"Relâchez la touche de modification du clavier", L"Release the keyboard modifier")

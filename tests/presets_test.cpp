@@ -285,6 +285,55 @@ bool testSelectProfileWithUsb(const std::filesystem::path& fixture)
                  "The conflicting profile must remain selectable for repair with USB off");
 }
 
+bool testImportedDedicatedAccessoryConflict(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    const auto root = fixture / L"Imported accessory conflict";
+    const auto backup = fixture / L"Conflicting accessory backup";
+    std::filesystem::create_directories(root);
+    const auto preset = activePreset(root);
+    const auto path = root / accessoryFilename;
+    const std::string device = "{11111111-1111-1111-1111-444444444444}";
+    const std::string other = "{11111111-1111-1111-1111-555555555555}";
+    const AccessoryBinding clutch{.deviceId = device, .kind = AccessoryKind::Axis, .index = 4,
+        .rest = 500, .engaged = 1000, .clutchMode = ClutchMode::assist};
+    AccessoryBinding handbrake{.deviceId = device, .kind = AccessoryKind::Axis, .index = 4,
+        .rest = 500, .engaged = 1000, .handbrakeCeilingPercent = 15};
+    AccessoryBinding key{device, AccessoryKind::Button, 0, 0, 1, 'K'};
+    const AccessoryProfile conflicting{clutch, handbrake, key};
+    std::string error;
+    ProfileBackupError backupError{};
+    if (!saveAccessoryProfile(path, conflicting, error) || !setUsbEnabled(root, true, error)
+        || !createProfileBackup(root, backup, backupError))
+        return check(false, "Could not create a legacy accessory-only backup");
+    const auto originalBytes = readBytes(path);
+    if (!saveAccessoryProfile(path, {}, error))
+        return check(false, "Could not clear the live accessory profile before restoration");
+    ProfileBackupFailure details;
+    if (!check(restoreProfileBackup(root, backup, backupError, {}, nullptr, &details)
+                && details.dedicatedAccessoryAxisConflict && !details.axisConflict
+                && usbEnabled(root) && readBytes(path) == originalBytes,
+               "Restore must flag the dedicated pair while preserving its settings and independent USB commands"))
+        return false;
+
+    key.key = 'L';
+    if (!check(saveEditorAccessories(root, preset, profileFileRevision(path), {clutch, handbrake, key}).result
+                    == PresetSaveResult::saved,
+               "An existing conflict should not block changing an unrelated key"))
+        return false;
+    handbrake.deviceId = other;
+    const AccessoryProfile repaired{clutch, handbrake, key};
+    DeviceReplacementError replacement{};
+    return check(saveEditorAccessories(root, preset, profileFileRevision(path), repaired).result == PresetSaveResult::saved,
+                 "The saved pair must remain editable so the conflict can be fixed")
+        && check(saveEditorAccessories(root, preset, profileFileRevision(path), conflicting).reason
+                     == ProfileEditorError::dedicatedAccessoryAxisConflict,
+                 "Adding the same conflict through the editor must fail even without calibrated driving axes")
+        && check(!replacePresetDevice(root, preset, other, device, replacement)
+                 && replacement == DeviceReplacementError::conflict && loadAccessoryProfile(path, error) == repaired,
+                 "Reassociation must reject merging the conflicting pair and keep the repaired file");
+}
+
 bool testUsbActivation(const std::filesystem::path& fixture)
 {
     using namespace chrome_axis;
@@ -1065,6 +1114,7 @@ int main()
         && testEditorFileLocks(directory) && testUsbActivation(directory)
         && testInterruptedRestores(directory) && testReassignmentRecovery(directory, false)
         && testReassignmentRecovery(directory, true)
-        && testImportedAxisConflict(directory) && testSelectProfileWithUsb(directory);
+        && testImportedAxisConflict(directory) && testSelectProfileWithUsb(directory)
+        && testImportedDedicatedAccessoryConflict(directory);
     return fixture.cleanup() && passed ? 0 : 1;
 }

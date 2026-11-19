@@ -1,6 +1,7 @@
 #include "dialog_theme.hpp"
 
 #include "chrome_axis/accessories_dialog.hpp"
+#include "dialog_viewport.hpp"
 #include "ui_theme.hpp"
 
 #include <commctrl.h>
@@ -87,6 +88,8 @@ private:
     HBRUSH controlColor(HDC dc, HWND control, UINT message) const;
 
     int px(int value) const { return ui::px(value, dpi_); }
+    bool scrollable() const { return decoration_ == DialogDecoration::scrollable; }
+    bool includesNestedControls() const { return decoration_ == DialogDecoration::standard || scrollable(); }
 
     HWND dialog_{};
     std::wstring subtitle_;
@@ -101,6 +104,7 @@ private:
     HBRUSH panelBrush_{};
     HBRUSH fieldBrush_{};
     HBRUSH edgeBrush_{};
+    DialogViewport viewport_;
 };
 
 LRESULT CALLBACK controlProc(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data)
@@ -137,12 +141,17 @@ void ThemeState::initialise()
     }
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
         const auto& theme = *reinterpret_cast<const ThemeState*>(data);
-        if (theme.decoration_ != DialogDecoration::standard && GetParent(control) != theme.dialog_)
+        if (!theme.includesNestedControls() && GetParent(control) != theme.dialog_)
             return TRUE;
-        if (classIs(control, L"Button") || classIs(control, L"ComboBox"))
+        if (classIs(control, L"Button") || classIs(control, L"ComboBox") ||
+            (theme.scrollable() && GetParent(control) == theme.dialog_))
             SetWindowSubclass(control, controlProc, controlSubclassId, static_cast<DWORD_PTR>(data));
         return TRUE;
     }, reinterpret_cast<LPARAM>(this));
+    if (scrollable()) {
+        viewport_.initialise(dialog_);
+        viewport_.fit(dialog_);
+    }
     updateDpi();
 }
 
@@ -170,7 +179,7 @@ void ThemeState::updateDpi()
         logo_ = ui::loadLogo(GetModuleHandleW(nullptr), px(ui::headerLogoSize));
     EnumChildWindows(dialog_, [](HWND control, LPARAM data) -> BOOL {
         const auto& theme = *reinterpret_cast<const ThemeState*>(data);
-        if (theme.decoration_ != DialogDecoration::standard && GetParent(control) != theme.dialog_)
+        if (!theme.includesNestedControls() && GetParent(control) != theme.dialog_)
             return TRUE;
         const auto id = GetDlgCtrlID(control);
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(theme.fonts_[isHeading(id) ? 1 : 0]), FALSE);
@@ -190,9 +199,14 @@ void ThemeState::paintScene(HDC dc) const
     GetClientRect(dialog_, &client);
     const bool highContrast = ui::isHighContrast();
     ui::fill(dc, client, highContrast ? GetSysColor(COLOR_WINDOW) : ui::background);
-    if (decoration_ != DialogDecoration::content)
-        ui::paintHeader(dc, dpi_, client.right, 24, client.right * 3 / 4, logo_.get(), fonts_[0], fonts_[2],
-                        subtitle_.c_str());
+    if (decoration_ != DialogDecoration::content) {
+        const auto width = viewport_.layoutWidth() > 0 ? viewport_.layoutWidth() : client.right;
+        const auto offset = viewport_.offset();
+        POINT priorOrigin{};
+        OffsetViewportOrgEx(dc, -offset.x, -offset.y, &priorOrigin);
+        ui::paintHeader(dc, dpi_, width, 24, width * 3 / 4, logo_.get(), fonts_[0], fonts_[2], subtitle_.c_str());
+        SetViewportOrgEx(dc, priorOrigin.x, priorOrigin.y, nullptr);
+    }
     const auto border = highContrast ? GetSysColor(COLOR_WINDOWTEXT) : ui::edge;
     for (const int id : {IDC_MODAL_FORM, IDC_MODAL_RESULTS}) {
         const auto card = controlBounds(dialog_, id);
@@ -435,9 +449,42 @@ LRESULT ThemeState::handle(HWND window, UINT message, WPARAM wp, LPARAM lp)
     case WM_DPICHANGED: {
         const auto result = DefSubclassProc(window, message, wp, lp);
         updateDpi();
+        if (scrollable())
+            viewport_.fit(window);
         return result;
     }
+    case WM_HSCROLL:
+    case WM_VSCROLL:
+        if (scrollable() && !lp && viewport_.scroll(window, LOWORD(wp), message == WM_HSCROLL))
+            return 0;
+        break;
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL: {
+        if (!scrollable())
+            break;
+        const bool horizontalWheel = message == WM_MOUSEHWHEEL;
+        const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        if (horizontalWheel || (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT)) {
+            if (viewport_.wheel(window, horizontalWheel ? delta : -delta, true))
+                return 0;
+        }
+        if (!horizontalWheel && viewport_.wheel(window, delta, false))
+            return 0;
+        break;
+    }
+    case WM_SHOWWINDOW:
+        if (scrollable() && wp)
+            viewport_.fit(window);
+        break;
+    case WM_DISPLAYCHANGE:
+    case WM_EXITSIZEMOVE:
+        if (scrollable())
+            viewport_.fit(window);
+        break;
     case WM_SETTINGCHANGE:
+        if (scrollable() && wp == SPI_SETWORKAREA)
+            viewport_.fit(window);
+        [[fallthrough]];
     case WM_SYSCOLORCHANGE:
     case WM_THEMECHANGED:
         RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
@@ -448,6 +495,10 @@ LRESULT ThemeState::handle(HWND window, UINT message, WPARAM wp, LPARAM lp)
 
 LRESULT ThemeState::handleControl(HWND window, UINT message, WPARAM wp, LPARAM lp)
 {
+    if (message == WM_SETFOCUS && scrollable())
+        viewport_.reveal(dialog_, window);
+    if (scrollable() && !classIs(window, L"Button") && !classIs(window, L"ComboBox"))
+        return DefSubclassProc(window, message, wp, lp);
     if (message == WM_ERASEBKGND)
         return 1;
     if (message == WM_PAINT || message == WM_PRINTCLIENT) {

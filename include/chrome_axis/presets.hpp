@@ -88,6 +88,7 @@ struct ProfileBackupFailure {
     ProfileBackupStep step{};
     std::uint32_t windowsError{};
     bool axisConflict{};
+    bool dedicatedAccessoryAxisConflict{};
 };
 
 // The destination must be a new directory. A legacy language preference can be included in the export.

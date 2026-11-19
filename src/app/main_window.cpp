@@ -952,7 +952,6 @@ private:
     void beginCalibration(const CalibrationScope& scope);
     void invalidateDisconnectedCalibration();
     void invalidateCalibrationDevice(std::string_view id, bool interruptUnmeasuredCapture);
-    bool observeCalibrationDeviceRecovery(std::string_view id, std::uint64_t recovery);
     void watchCalibrationConnections();
     void measureStep();
     void previousStep();
@@ -1085,7 +1084,6 @@ private:
     std::chrono::steady_clock::time_point guideMotionStart_{};
     CalibrationScope calibrationScope_{};
     CalibrationScope calibrationRetryRequired_{};
-    std::array<std::optional<std::uint64_t>, commands.size()> calibrationRecoveryTokens_{};
     std::array<std::wstring, commands.size()> calibrationDeviceNames_{};
     std::array<Step, calibrationSteps.size()> steps_{};
     std::size_t step_{}, stepCount_{};
@@ -1518,6 +1516,8 @@ const wchar_t* App::accessoryProfileStatus() const
     case AccessoryPreviewStatus::unreadable:
         return tr(Text::mainAccessoriesUnavailable);
     case AccessoryPreviewStatus::available:
+        if (chrome_axis::hasDedicatedAccessoryAxisConflict(accessoryPreview_.bindings()))
+            return tr(Text::mainDedicatedAccessoryAxisConflict);
         return tr(accessoryPreview_.bindings().empty() ? Text::mainNoProfile : Text::mainAccessoriesSaved);
     }
     return tr(Text::mainAccessoriesUnavailable);
@@ -2123,6 +2123,8 @@ void App::transferProfiles(bool restoring)
             message += L"\n\n" + std::wstring(tr(Text::mainLanguageSaved));
         if (failure.axisConflict)
             message += L"\n\n" + std::wstring(tr(Text::mainRestoreAxisConflict));
+        if (failure.dedicatedAccessoryAxisConflict)
+            message += L"\n\n" + std::wstring(tr(Text::mainDedicatedAccessoryAxisConflict));
     } else {
         message += L"\n\n" + path.wstring();
     }
@@ -2633,7 +2635,6 @@ void App::beginCalibration(const CalibrationScope& scope)
         return;
     calibrationScope_ = scope;
     calibrationRetryRequired_ = {};
-    calibrationRecoveryTokens_ = {};
     const auto planned = std::ranges::copy_if(calibrationSteps, steps_.begin(),
         [&scope](const Step& step) { return scope[step.channel]; });
     stepCount_ = static_cast<std::size_t>(planned.out - steps_.begin());
@@ -2648,6 +2649,8 @@ void App::beginCalibration(const CalibrationScope& scope)
     for (std::size_t i = 0; i < axes.size(); ++i) {
         if (!scope[i] && draft_[i])
             *axes[i] = *draft_[i];
+        if (scope[i])
+            input_->takeCalibrationInterruption(deviceId(i));
         const auto* selected = scope[i] ? device(deviceId(i)) : nullptr;
         calibrationDeviceNames_[i] = selected ? deviceName(*selected) : std::wstring{};
     }
@@ -2708,19 +2711,6 @@ void App::invalidateCalibrationDevice(std::string_view id, bool interruptUnmeasu
         reviewPreview_.emplace(measured_);
 }
 
-bool App::observeCalibrationDeviceRecovery(std::string_view id, std::uint64_t recovery)
-{
-    for (std::size_t channel = 0; channel < calibrationScope_.size(); ++channel) {
-        if (!calibrationScope_[channel] || deviceId(channel) != id)
-            continue;
-        if (!chrome_axis::guidedDeviceRecovered(calibrationRecoveryTokens_[channel], recovery))
-            return false;
-        invalidateCalibrationDevice(id, captureHadSignal_);
-        return true;
-    }
-    return false;
-}
-
 void App::watchCalibrationConnections()
 {
     const std::string_view capturing = capture_ ? deviceId(steps_[step_].channel) : std::string_view{};
@@ -2731,13 +2721,12 @@ void App::watchCalibrationConnections()
             std::ranges::find(watched, id) != watched.end())
             continue;
         watched[channel] = id;
-        std::optional<std::uint64_t> recovery;
-        if (reviewingCalibration())
-            recovery = input_->latestRecoveryToken(id);
-        else if (const auto read = input_->captureGuidedPosition(id); read.sample)
-            recovery = read.sample->recoveryToken;
-        if (recovery && observeCalibrationDeviceRecovery(id, *recovery))
+        if (!reviewingCalibration())
+            input_->captureGuidedPosition(id);
+        if (input_->takeCalibrationInterruption(id)) {
+            invalidateCalibrationDevice(id, false);
             updateCalibrationView();
+        }
     }
 }
 
@@ -2745,8 +2734,9 @@ void App::measureStep()
 {
     if (!calibrating_ || capture_)
         return;
+    consumeDeviceInventory();
+    watchCalibrationConnections();
     if (step_ == stepCount_) {
-        watchCalibrationConnections();
         finishCalibration();
         return;
     }
@@ -3034,10 +3024,14 @@ void App::tick()
 void App::updateCapture()
 {
     const auto channel = steps_[step_].channel;
-    const auto reading = input_->captureGuidedPosition(deviceId(channel));
-    if (reading.sample && observeCalibrationDeviceRecovery(deviceId(channel), reading.sample->recoveryToken) && !capture_) {
-        updateCalibrationView();
-        return;
+    const auto& id = deviceId(channel);
+    const auto reading = input_->captureGuidedPosition(id);
+    if (input_->takeCalibrationInterruption(id)) {
+        invalidateCalibrationDevice(id, captureHadSignal_);
+        if (!capture_) {
+            updateCalibrationView();
+            return;
+        }
     }
     const bool expired = std::chrono::steady_clock::now() >= captureDeadline_;
     if (expired || !chrome_axis::collectGuidedCalibrationReading(*capture_, reading, captureHadSignal_)) {

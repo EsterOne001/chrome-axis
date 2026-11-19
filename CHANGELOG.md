@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.89
+
+- La calibration guidée tient compte d’une perte de lecture confirmée jusqu’à la validation finale et demande de reprendre les mesures de l’appareil concerné.
+- Les profils hérités qui attribuent la même course à l’embrayage et au frein à main progressif conservent les réglages pour pouvoir les corriger. Les deux commandes incompatibles sont suspendues en jeu.
+- Les fenêtres Boîte et palettes, Accessoires, Pédales et Retour de force s’adaptent à la zone de travail Windows pour donner accès aux commandes sur un écran de faible hauteur.
+
+[ZIP Vortex](out/Chromaxis-0.4.89.zip)
+
 ## Chrome Axis 0.4.88
 
 - La calibration guidée vérifie la continuité de chaque périphérique entre les positions. La reprise conserve les mesures des autres appareils.

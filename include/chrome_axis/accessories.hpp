@@ -100,6 +100,10 @@ struct Profile;
 // Match analog accessories against the driving axes in the same preset.
 bool analogAccessoryAxisConflict(const Profile& axes, const AccessoryBinding& binding) noexcept;
 bool hasAnalogAccessoryAxisConflict(const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept;
+// An enabled clutch and progressive handbrake cannot drive separate commands on the same half-axis.
+bool hasDedicatedAccessoryAxisConflict(std::span<const AccessoryBinding> bindings) noexcept;
+// Keep the original bindings on disk so the affected settings can be repaired.
+bool suppressConflictingAnalogAccessories(AccessoryProfile& bindings, const Profile* axes);
 // Older profiles can already contain conflicts. Allow editing unrelated settings and resolving conflicts one at a time.
 bool introducesAnalogAccessoryAxisConflict(const Profile* previousAxes, std::span<const AccessoryBinding> previousBindings,
                                            const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept;

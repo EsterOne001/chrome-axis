@@ -344,7 +344,8 @@ INT_PTR CALLBACK dialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         SetDlgItemTextW(window, IDC_MODAL_INTRO, tr(Text::DlgFeedbackIntro));
         SetDlgItemTextW(window, IDOK, tr(Text::DlgSave));
         SetDlgItemTextW(window, IDCANCEL, tr(Text::DlgCancel));
-        DialogTheme::attach(window, tr(Text::DlgFeedbackHeading), IDC_FEEDBACK_STATUS, 0, {IDOK});
+        DialogTheme::attach(window, tr(Text::DlgFeedbackHeading), IDC_FEEDBACK_STATUS, 0, {IDOK},
+                            DialogDecoration::scrollable);
         reinterpret_cast<FeedbackDialog*>(lParam)->initialise(window);
         return TRUE;
     }

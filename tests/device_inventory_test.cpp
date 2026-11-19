@@ -371,10 +371,11 @@ bool testGuidedSlowCaptureLimit()
         return status == DeviceReadStatus::unavailable;
     });
     const bool digitalRejects = waitFor([&] { return expired(input.capture("slow")); });
-    return guidedAccepts && guidedRejectsTooSlow && previewRejects && !previewLeaked && digitalRejects;
+    return guidedAccepts && guidedRejectsTooSlow && previewRejects && !previewLeaked && digitalRejects &&
+        !input.takeCalibrationInterruption("slow") && !input.takeCalibrationInterruption("very slow");
 }
 
-bool testReaderRecoveryAfterFailure()
+bool testReaderRecoveryAfterFailure(bool observeBeforeRecovery)
 {
     auto gate = std::make_shared<SampleGate>();
     AppInput input([gate](const std::string& id, const auto&) {
@@ -404,6 +405,7 @@ bool testReaderRecoveryAfterFailure()
         return reading.updated && !reading.sample && reading.status == DeviceReadStatus::unavailable;
     });
     const bool noEarlyRetry = gate->sampleCount.load() == 2;
+    const bool interruptionBeforeRecovery = !observeBeforeRecovery || input.takeCalibrationInterruption("wheel");
     const bool pedalsReady = waitFor([&] {
         const auto reading = input.capture("pedals");
         return reading.sample && reading.sample->axes[0] == 700;
@@ -413,7 +415,10 @@ bool testReaderRecoveryAfterFailure()
         recovered = input.capture("wheel");
         return recovered.sample.has_value();
     }) && recovered.sample->axes[0] == 300 && recovered.status == DeviceReadStatus::resumed;
-    return firstWheel && failedReadStarted && invalidated && noEarlyRetry && pedalsReady && sameDeviceResumed;
+    const bool interruptionAfterRecovery = input.takeCalibrationInterruption("wheel");
+    return firstWheel && failedReadStarted && invalidated && noEarlyRetry && pedalsReady && sameDeviceResumed &&
+        interruptionBeforeRecovery && interruptionAfterRecovery != observeBeforeRecovery &&
+        !input.takeCalibrationInterruption("pedals");
 }
 
 bool testIdleReaderRestartsAtNeutral()
@@ -550,20 +555,51 @@ bool testGuidedCalibrationWaitsForLayout()
     return completed && completed->median[0] == sample.axes[0] && !completed->axesPresent[1];
 }
 
-bool testGuidedDeviceRecovery()
+bool testGuidedDeviceInterruption()
 {
-    std::optional<std::uint64_t> wheel;
-    std::optional<std::uint64_t> pedals;
-    if (guidedDeviceRecovered(wheel, 0) || guidedDeviceRecovered(pedals, 11))
-        return false;
-    if (guidedDeviceRecovered(wheel, 0) || !guidedDeviceRecovered(wheel, 12) ||
-        guidedDeviceRecovered(pedals, 11))
-        return false;
-    // A fresh reader (for example after switching windows) starts at zero.
-    if (guidedDeviceRecovered(wheel, 0) || guidedDeviceRecovered(wheel, 12) ||
-        !guidedDeviceRecovered(wheel, 13))
-        return false;
-    return wheel == 13 && pedals == 11;
+    auto wheelStatus = std::make_shared<std::atomic<DeviceReadStatus>>(DeviceReadStatus::available);
+    AppInput input([wheelStatus](const std::string& id, const auto&) -> CaptureDeviceRead {
+        const auto status = id == "wheel" ? wheelStatus->load() : DeviceReadStatus::available;
+        if (status != DeviceReadStatus::available)
+            return {{}, status};
+        DeviceSample sample;
+        sample.axesPresent[0] = true;
+        return {sample, status};
+    });
+    const auto read = [&](const char* id, DeviceReadStatus expected) {
+        return waitFor([&] {
+            DeviceReadStatus status{};
+            const auto sample = input.sample(id, {}, &status);
+            return status == expected && sample.has_value() ==
+                (expected == DeviceReadStatus::available || expected == DeviceReadStatus::resumed);
+        });
+    };
+
+    // The review reads the devices through the normal live preview.
+    const bool initiallyAvailable = read("wheel", DeviceReadStatus::available) &&
+        read("pedals", DeviceReadStatus::available);
+    wheelStatus->store(DeviceReadStatus::pending);
+    const bool pending = read("wheel", DeviceReadStatus::pending) &&
+        !input.takeCalibrationInterruption("wheel");
+    wheelStatus->store(DeviceReadStatus::unavailable);
+    const bool interrupted = read("wheel", DeviceReadStatus::unavailable) &&
+        input.takeCalibrationInterruption("wheel") && !input.takeCalibrationInterruption("wheel") &&
+        !input.takeCalibrationInterruption("pedals");
+
+    wheelStatus->store(DeviceReadStatus::available);
+    const bool recovered = read("wheel", DeviceReadStatus::resumed);
+
+    // Invalidate discards the live report but retains an unread transport
+    // interruption. Deliberate reopening alone must not invalidate calibration.
+    wheelStatus->store(DeviceReadStatus::unavailable);
+    const bool secondInterruption = read("wheel", DeviceReadStatus::unavailable);
+    input.invalidate();
+    input.close();
+    wheelStatus->store(DeviceReadStatus::available);
+    const bool reopened = read("wheel", DeviceReadStatus::available);
+    return initiallyAvailable && pending && interrupted && recovered && secondInterruption && reopened &&
+        input.takeCalibrationInterruption("wheel") && !input.takeCalibrationInterruption("wheel") &&
+        !input.takeCalibrationInterruption("pedals");
 }
 
 bool testSlowGuidedCalibration()
@@ -679,11 +715,11 @@ int main()
     const bool independentCapture = testIndependentDeviceCapture();
     const bool slowCapture = testSlowCaptureBetweenReads();
     const bool guidedReadLimit = testGuidedSlowCaptureLimit();
-    const bool readerRecovery = testReaderRecoveryAfterFailure();
+    const bool readerRecovery = testReaderRecoveryAfterFailure(true) && testReaderRecoveryAfterFailure(false);
     const bool idleReader = testIdleReaderRestartsAtNeutral();
     const bool capture = testCaptureDuringUnrelatedScan();
     const bool guidedCalibration = testGuidedCalibrationWaitsForLayout();
-    const bool guidedRecovery = testGuidedDeviceRecovery();
+    const bool guidedRecovery = testGuidedDeviceInterruption();
     const bool shortcut = testShortcut(root);
     const bool usbStatus = testUsbStatus();
     const bool slowCalibration = testSlowGuidedCalibration();

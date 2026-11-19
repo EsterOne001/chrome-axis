@@ -125,8 +125,8 @@ private:
     AccessoryPreviewStatus status_{};
 };
 
-enum class ProfileEditorError { none, calibrationUnreadable, accessoriesUnreadable, axisConflict, feedbackUnreadable,
-                                feedbackWriteFailed, createDirectoryFailed };
+enum class ProfileEditorError { none, calibrationUnreadable, accessoriesUnreadable, axisConflict,
+                                dedicatedAccessoryAxisConflict, feedbackUnreadable, feedbackWriteFailed, createDirectoryFailed };
 
 struct ProfileEditorSave {
     PresetSaveResult result{PresetSaveResult::ioError};
@@ -221,14 +221,19 @@ inline ProfileEditorSave saveEditorAccessories(const std::filesystem::path& root
             save.reason = ProfileEditorError::calibrationUnreadable;
             return false;
         }
-        if (axes.profile) {
+        const bool dedicatedAxisConflict = hasDedicatedAccessoryAxisConflict(updated);
+        if (axes.profile || dedicatedAxisConflict) {
             const auto previous = expectedRevision->present ? loadAccessoryProfile(path, save.details)
                                                             : std::optional{AccessoryProfile{}};
             if (!previous) {
                 save.reason = ProfileEditorError::accessoriesUnreadable;
                 return false;
             }
-            if (introducesAnalogAccessoryAxisConflict(&*axes.profile, *previous, *axes.profile, updated)) {
+            if (dedicatedAxisConflict && !hasDedicatedAccessoryAxisConflict(*previous)) {
+                save.reason = ProfileEditorError::dedicatedAccessoryAxisConflict;
+                return false;
+            }
+            if (axes.profile && introducesAnalogAccessoryAxisConflict(&*axes.profile, *previous, *axes.profile, updated)) {
                 save.reason = ProfileEditorError::axisConflict;
                 return false;
             }

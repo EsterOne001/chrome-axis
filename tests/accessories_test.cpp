@@ -898,9 +898,62 @@ int testAnalogAccessoryAxisConflicts(const std::string& wheelId, const std::stri
         return 185;
 
     auto effective = bindings;
-    if (std::erase_if(effective, [&](const auto& binding) { return analogAccessoryAxisConflict(axes, binding); }) != 2
+    if (!suppressConflictingAnalogAccessories(effective, &axes)
         || effective != AccessoryProfile{button})
         return 186;
+    return 0;
+}
+
+int testDedicatedAccessoryAxisConflict(const std::filesystem::path& path, const std::string& deviceId)
+{
+    using namespace chrome_axis;
+    auto clutch = AccessoryBinding{.deviceId = deviceId, .kind = AccessoryKind::Axis, .index = 4,
+        .rest = 10000, .engaged = 20000, .clutchMode = ClutchMode::assist};
+    auto handbrake = AccessoryBinding{.deviceId = deviceId, .kind = AccessoryKind::Axis, .index = 4,
+        .rest = 10000, .engaged = 20000, .handbrakeCeilingPercent = 15};
+    const AccessoryBinding key{deviceId, AccessoryKind::Axis, 4, 10000, 20000, 'K'};
+    const AccessoryProfile original{handbrake, key, clutch};
+    std::string error;
+    if (!saveAccessoryProfile(path, original, error))
+        return 187;
+    auto effective = loadAccessoryProfile(path, error);
+    if (!effective || *effective != original || !hasDedicatedAccessoryAxisConflict(*effective)
+        || !suppressConflictingAnalogAccessories(*effective, nullptr) || *effective != AccessoryProfile{key}
+        || loadAccessoryProfile(path, error) != original)
+        return 188;
+
+    AccessoryReader reader(*effective);
+    DeviceSample sample;
+    sample.axesPresent[4] = true;
+    sample.axes[4] = clutch.rest;
+    const std::array<const DeviceSample*, 1> samples{&sample};
+    std::optional<float> brakeOutput;
+    AccessoryTransmissionSample transmission;
+    const auto observe = [&] {
+        ++sample.sequence;
+        sample.sampledAt = DeviceReadClock::now();
+        return reader.update(samples, {}, {}, nullptr, &brakeOutput, nullptr, &transmission);
+    };
+    for (int i = 0; i < 4; ++i)
+        observe();
+    sample.axes[4] = clutch.engaged;
+    if (!observe().test('K') || brakeOutput || transmission.clutch)
+        return 189;
+
+    clutch.clutchMode = ClutchMode::off;
+    AccessoryProfile disabled{clutch, handbrake, key};
+    removeDisabledDrivingAccessories(disabled);
+    if (hasDedicatedAccessoryAxisConflict(AccessoryProfile{clutch, handbrake, key})
+        || suppressConflictingAnalogAccessories(disabled, nullptr)
+        || disabled != AccessoryProfile{handbrake, key})
+        return 190;
+
+    clutch.clutchMode = ClutchMode::experiment;
+    handbrake.engaged = 0;
+    AccessoryProfile opposite{clutch, handbrake, key};
+    if (suppressConflictingAnalogAccessories(opposite, nullptr)
+        || opposite != AccessoryProfile{clutch, handbrake, key})
+        return 191;
     return 0;
 }
 
@@ -967,6 +1020,8 @@ int run()
     const auto nativeShifterProfileResult = testNativeShifterProfile(path, wheelId);
     const auto unverifiedShifterResult = testUnverifiedNativeShifter(path, wheelId);
     if (const auto result = testAnalogAccessoryAxisConflicts(wheelId, handbrakeId); result != 0)
+        return result;
+    if (const auto result = testDedicatedAccessoryAxisConflict(path, handbrakeId); result != 0)
         return result;
     if (const auto result = testClutchRestObservation(handbrakeId); result != 0)
         return result;

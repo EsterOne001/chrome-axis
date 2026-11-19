@@ -536,15 +536,18 @@ std::filesystem::path reassignmentTarget(const std::filesystem::path& root, cons
     return selected ? presetDirectory(root, *selected) : std::filesystem::path{};
 }
 
-bool activeSnapshotAxisConflict(const std::filesystem::path& path)
+void checkSnapshotAxisConflicts(const std::filesystem::path& path, ProfileBackupFailure& result)
 {
     const auto selected = activePreset(path);
     if (selected.directory.empty())
-        return false;
+        return;
     std::string error;
     const auto axes = loadProfile(selected.directory / profileFilename, error);
     const auto accessories = loadAccessoryProfile(selected.directory / accessoryFilename, error);
-    return axes && accessories && hasAnalogAccessoryAxisConflict(*axes, *accessories);
+    if (accessories) {
+        result.axisConflict = axes && hasAnalogAccessoryAxisConflict(*axes, *accessories);
+        result.dedicatedAccessoryAxisConflict = hasDedicatedAccessoryAxisConflict(*accessories);
+    }
 }
 
 std::filesystem::path createRecoveryDirectory(const std::filesystem::path& parent, std::uint32_t* windowsError,
@@ -1425,7 +1428,7 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
         error = ProfileBackupError::invalidBackup;
         return false;
     }
-    failure.axisConflict = activeSnapshotAxisConflict(temporary.path);
+    checkSnapshotAxisConflicts(temporary.path, failure);
     // Keep imported settings available for repair. Do not re-enable USB with a conflicting active profile.
     if (failure.axisConflict && !DeleteFileW((temporary.path / usbMarkerFilename).c_str()) && !missing(GetLastError())) {
         failure.windowsError = GetLastError();

@@ -80,6 +80,7 @@ CHROME_AXIS_TEXT(mainProfileRecoveryUnavailable, L"La restauration a été inter
 CHROME_AXIS_TEXT(mainUsbProfileAxisConflict, L"Le profil actif affecte le même axe à la conduite et à l’embrayage ou au frein à main. Corrigez l’affectation avant d’activer l’USB.", L"The active profile assigns the same axis to driving and to the clutch or handbrake. Change the assignment before enabling USB.")
 CHROME_AXIS_TEXT(mainUsbUnreadableAccessories, L"USB demandé pour les axes · les affectations d’accessoires sont illisibles.", L"USB requested for the driving axes · accessory mappings could not be read.")
 CHROME_AXIS_TEXT(mainRestoreAxisConflict, L"Un axe du profil restauré est partagé avec l’embrayage ou le frein à main. L’USB en jeu reste désactivé jusqu’à correction de l’affectation.", L"The restored profile shares a driving axis with the clutch or handbrake. In-game USB stays disabled until you change the assignment.")
+CHROME_AXIS_TEXT(mainDedicatedAccessoryAxisConflict, L"Embrayage et frein à main suspendus. Affectez-les à des courses différentes.", L"Clutch and handbrake suspended. Assign them to separate axis travels.")
 CHROME_AXIS_TEXT(mainMenuQuit, L"&Quitter", L"E&xit")
 CHROME_AXIS_TEXT(mainMenuProfile, L"&Profil", L"&Profile")
 CHROME_AXIS_TEXT(mainMenuRefresh, L"&Actualiser\tF5", L"&Refresh\tF5")
