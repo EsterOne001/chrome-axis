@@ -6,6 +6,20 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.92 · 19 novembre 2026
+
+Comparée à la **0.4.91**. Le paquet intègre les correctifs du commit d’audit `1285039`, puis leur préparation pour la livraison `14f2382`.
+
+- **Inventaire USB.** Une erreur temporaire de DirectInput pendant la lecture de la disposition laisse l’axe, le bouton ou la croix en attente de confirmation. Le sondage est retenté. Le défaut qui faisait disparaître un axe toujours présent a été reproduit sur la 0.4.91 et corrigé.
+- **Changement de véhicule.** La conduite et la boîte partagent l’identité du véhicule pour invalider les commandes de l’ancien véhicule et réarmer à la transition, même si Cyberpunk réutilise la même adresse mémoire.
+- **HUD Painter et affichage en jeu.** Le préréglage actif est relu au chargement et à la reprise avant de rafraîchir les couleurs. Les contrôles facultatifs sont vérifiés pendant la fermeture du menu. Le HUD actualise séparément ses textes lorsque leur valeur change.
+- **Dialogues compacts.** Le clavier virtuel, les profils, la réassociation et les seuils d’accessoires utilisent le défilement des dialogues et remettent en vue le contrôle focalisé. Le banc FR/EN a confirmé l’accès à la touche Pavé 9 dans une zone de travail réduite.
+- **Lecture USB et interface.** Le décodage des 128 emplacements de boutons est évité lorsqu’aucun bouton n’est configuré. Les durées USB sont collectées avec une prise de verrou par périphérique. Les remises en page suivent le défilement effectif et les libellés AUTO / MANUEL sont reconstruits quand leur état change. Le nettoyage retire des fonctions, traductions et états sans usage.
+- **Mesures au banc.** Sur sept séries de 400 000 rapports USB sans bouton configuré, le temps médian par rapport passe de 0,224 à 0,160 µs. Sur 14 transitions simulées, les écritures de texte du HUD passent de 33 à 10. Sur 100 notifications de défilement sans déplacement, les remises en page passent de 100 à 0. Ces résultats décrivent les scénarios mesurés.
+- **Validation.** Release x64, 21 tests CTest et 12 répétitions ciblées sur les entrées USB, la transmission native, la reprise DirectInput et la fermeture. Dix parcours de l’EXE extrait du ZIP et le clavier virtuel FR/EN ont réussi. REDscript compile sur trois copies du cache Cyberpunk 2.5, seul, avec HUD Painter et avec l’instantané élargi des scripts. La reprise avec le T300RS, le pédalier et la boîte physiques après changement de véhicule, chargement, voyage rapide, Alt+Tab ou reconnexion reste à vérifier en jeu, ainsi que le retour de force et les couleurs HUD Painter. Les petits écrans ont été simulés. Les écrans de DPI différents et le transfert réel au presse-papiers restent à confirmer.
+
+SHA-256 `aed649e103149df472d5ae379392994bdcc5cdd2b6c7c60545a4d22bed6179ac`. [ZIP Vortex](out/Chromaxis-0.4.92.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/14f23824856ca96629e9d186016441b6445d63c4)
+
 ## Chrome Axis 0.4.91 · 19 novembre 2026
 
 Comparée à la **0.4.90**.
