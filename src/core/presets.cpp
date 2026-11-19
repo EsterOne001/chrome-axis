@@ -24,10 +24,12 @@ constexpr wchar_t profileLockFilename[] = L".chrome_axis_profile_backup.lock";
 constexpr wchar_t profileRestoreJournal[] = L".chrome_axis_profile_restore.pending";
 constexpr wchar_t originalFiles[] = L"Fichiers-originaux";
 constexpr std::string_view backupVersion = "Chrome Axis profile backup 1";
+constexpr std::string_view recoveryVersion = "Chrome Axis profile recovery 2";
 constexpr std::string_view reassignmentVersion = "Chrome Axis device reassignment 1 ";
 constexpr std::string_view beforeRecoveryVersion = "Chrome Axis files before reassignment recovery 1 ";
 constexpr std::wstring_view reassignmentPrefix = L"Avant-reassociation-";
 constexpr std::wstring_view restorePrefix = L"Avant-restauration-";
+constexpr std::wstring_view discardedRecoveryPrefix = L".chrome_axis_discarded_";
 constexpr std::size_t maxNameLength = 64;
 constexpr std::array settingsFiles{profileFilename, accessoryFilename, feedbackFilename};
 constexpr std::array globalFiles{selectionFile, profileLanguageFilename, transmissionHotkeyFilename, usbMarkerFilename};
@@ -386,6 +388,17 @@ struct TemporaryDirectory {
     }
 };
 
+void discardRecovery(TemporaryDirectory& owner, const std::filesystem::path& published)
+{
+    const auto discarded = published.parent_path() / (std::wstring(discardedRecoveryPrefix) + published.filename().native());
+    // Withdraw the snapshot before removing any data. If even the marker is locked,
+    // keep the complete snapshot intact.
+    if (MoveFileExW(published.c_str(), discarded.c_str(), MOVEFILE_WRITE_THROUGH))
+        owner.path = discarded;
+    else
+        writeTextFile(published / backupMarker, "Chrome Axis discarded recovery");
+}
+
 struct ProfileLock {
     explicit ProfileLock(const std::filesystem::path& parent)
     {
@@ -408,9 +421,38 @@ struct ProfileLock {
     explicit operator bool() const noexcept { return handle != INVALID_HANDLE_VALUE; }
 };
 
-ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::filesystem::path& destination,
-                                bool allowEmpty, std::uint32_t* windowsError)
+bool validBackupMarker(const std::filesystem::path& source, bool& marked, bool journaled = false,
+                       bool* locked = nullptr)
 {
+    bool hasOriginals{};
+    const auto basename = source.filename();
+    if (compareNames(std::wstring_view(basename.native()).substr(0, discardedRecoveryPrefix.size()),
+                     discardedRecoveryPrefix) == CSTR_EQUAL
+        || !optionalEntry(source / backupMarker, false, marked)
+        || !optionalEntry(source / originalFiles, true, hasOriginals))
+        return false;
+    if (!marked)
+        return !hasOriginals;
+    const auto marker = readSmallTextFile(source / backupMarker, locked);
+    if (marker == recoveryVersion)
+        return hasOriginals;
+    if (marker != backupVersion)
+        return false;
+    if (!hasOriginals || journaled)
+        return true;
+    // The old rollback removed root settings and left the original-files directory
+    // empty. A legacy recovery without a journal needs evidence of a completed move.
+    std::error_code error;
+    const std::filesystem::directory_iterator originals(source / originalFiles, error);
+    return !error && originals != std::filesystem::directory_iterator{};
+}
+
+ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::filesystem::path& destination,
+                                bool allowEmpty, std::uint32_t* windowsError, bool journaled = false)
+{
+    bool marked{};
+    if (!validBackupMarker(source, marked, journaled))
+        return ProfileBackupError::invalidBackup;
     bool foundProfile = false;
     const auto copyFile = [&](const wchar_t* filename, bool profileSetting) {
         bool exists{};
@@ -467,10 +509,6 @@ ProfileBackupError copySnapshot(const std::filesystem::path& source, const std::
         }
     }
 
-    bool marked{};
-    if (!optionalEntry(source / backupMarker, false, marked)
-        || (marked && readSmallTextFile(source / backupMarker) != backupVersion))
-        return ProfileBackupError::invalidBackup;
     if (foundProfile || marked || allowEmpty)
         return ProfileBackupError::none;
     // A manually copied, explicitly selected named profile can have no settings yet.
@@ -508,7 +546,9 @@ bool validSnapshot(const std::filesystem::path& path, bool* locked = nullptr)
         || !optionalEntry(path / transmissionHotkeyFilename, false, hasHotkey))
         return false;
     // Read errors on the marker and global preferences must not cause the pending recovery to be discarded.
-    if (locked && (readSmallTextFile(path / backupMarker, locked) != backupVersion || !readSmallTextFile(path / usbMarkerFilename, locked)
+    bool marked{};
+    if (locked && (!validBackupMarker(path, marked, true, locked) || !marked
+        || !readSmallTextFile(path / usbMarkerFilename, locked)
         || (hasHotkey && !readSmallTextFile(path / transmissionHotkeyFilename, locked))))
         return false;
     if (hasHotkey && !readTransmissionHotkey(path))
@@ -547,6 +587,7 @@ void checkSnapshotAxisConflicts(const std::filesystem::path& path, ProfileBackup
     if (accessories) {
         result.axisConflict = axes && hasAnalogAccessoryAxisConflict(*axes, *accessories);
         result.dedicatedAccessoryAxisConflict = hasDedicatedAccessoryAxisConflict(*accessories);
+        result.nativeTransmissionInputConflict = hasNativeTransmissionInputConflict(*accessories);
     }
 }
 
@@ -911,7 +952,8 @@ bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std
     return writePresetSelection(root, name, error);
 }
 
-bool createPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error)
+bool createPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error,
+                  const ProfilePreset* expected)
 {
     error.clear();
     if (!validName(name) || !encodeName(name)) {
@@ -934,6 +976,10 @@ bool createPreset(const std::filesystem::path& root, std::wstring_view name, std
     const auto source = activePreset(root);
     if (source.directory.empty()) {
         error = "Sélectionnez un profil existant avant d’en créer une copie.";
+        return false;
+    }
+    if (expected && (source.name != expected->name || !samePathPart(source.directory, expected->directory))) {
+        error = "Le profil actif a changé. Cliquez sur Recharger pour le charger.";
         return false;
     }
 
@@ -1419,7 +1465,7 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
         error = ProfileBackupError::none;
         return true;
     }
-    error = copySnapshot(source, temporary.path, false, &failure.windowsError);
+    error = copySnapshot(source, temporary.path, false, &failure.windowsError, interrupted.backupUsable);
     if (error != ProfileBackupError::none) {
         failure.step = ProfileBackupStep::copyBackup;
         return false;
@@ -1471,21 +1517,40 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
         failure.windowsError = GetLastError();
         return fail(ProfileBackupStep::prepareRecovery);
     }
-    if (!writeTextFile(recovery.path / backupMarker, backupVersion, &failure.windowsError)
+    if (!writeTextFile(recovery.path / backupMarker, recoveryVersion, &failure.windowsError)
         || (!previousHotkey && !saveTransmissionHotkey(recovery.path, defaultTransmissionHotkey, details))
         || (!previousLanguage && !fallbackLanguage.empty()
             && !writeProfileLanguageFile(recovery.path, fallbackLanguage, &failure.windowsError)))
         return fail(ProfileBackupStep::prepareRecovery);
 
+    const bool recoveryUsable = validSnapshot(recovery.path);
+    if (!recoveryUsable && !writeTextFile(recovery.path / backupMarker, "Chrome Axis incomplete restore snapshot",
+                                          &failure.windowsError))
+        return fail(ProfileBackupStep::prepareRecovery);
+
+    TemporaryDirectory retrySource{};
+    if (!interrupted.backupUsable && !recoveryUsable) {
+        // A partially applied live profile may itself be invalid. Keep those files for
+        // inspection and use the user's verified incoming snapshot for another attempt.
+        retrySource.path = createRecoveryDirectory(backups, &failure.windowsError);
+        if (retrySource.path.empty()
+            || copySnapshot(temporary.path, retrySource.path, true, &failure.windowsError) != ProfileBackupError::none
+            || !validSnapshot(retrySource.path)
+            || !writeTextFile(retrySource.path / backupMarker, backupVersion, &failure.windowsError))
+            return fail(ProfileBackupStep::prepareRecovery);
+    }
     const auto recoveryLocation = profileRoot / profileBackupsFolder / recovery.path.filename();
-    const auto pendingLocation = interrupted.pending ? interrupted.backup : recoveryLocation;
-    if (!interrupted.pending) {
+    const auto& nextRecovery = retrySource.path.empty() ? recovery.path : retrySource.path;
+    const auto pendingLocation = interrupted.backupUsable ? interrupted.backup
+        : profileRoot / profileBackupsFolder / nextRecovery.filename();
+    if (!interrupted.backupUsable) {
         // Commit the recovery location before touching any live setting, including the USB marker.
-        if (!beginRecovery(root, recovery.path, &failure.windowsError))
+        if (!beginRecovery(root, nextRecovery, &failure.windowsError))
             return fail(ProfileBackupStep::prepareRecovery);
     }
     // All failures from here, including unexpected exceptions, must keep the recovery files.
     const auto publishedRecovery = std::exchange(recovery.path, {});
+    const auto publishedRetrySource = std::exchange(retrySource.path, {});
     const auto rollback = [&] {
         failure.step = ProfileBackupStep::applyRestore;
         bool recovered = true;
@@ -1505,7 +1570,9 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
             if (recoveryDirectory)
                 *recoveryDirectory = pendingLocation;
         } else {
-            removeTemporaryDirectory(publishedRecovery);
+            discardRecovery(recovery, publishedRecovery);
+            if (!publishedRetrySource.empty())
+                discardRecovery(retrySource, publishedRetrySource);
         }
         return false;
     };
@@ -1530,8 +1597,10 @@ bool restoreProfileBackup(const std::filesystem::path& profileRoot, const std::f
             *recoveryDirectory = pendingLocation;
         return false;
     }
+    if (!publishedRetrySource.empty())
+        discardRecovery(retrySource, publishedRetrySource);
     if (recoveryDirectory)
-        *recoveryDirectory = recoveryLocation;
+        *recoveryDirectory = recoveryUsable ? recoveryLocation : std::filesystem::path{};
     return true;
 }
 

@@ -242,6 +242,15 @@ int run()
                 status.file == first.file;
         }))
         return 8;
+    const auto interruptedId = performance.requestId;
+    if (!interruptedId)
+        return 24;
+    publisher->publish(snapshot, 1, {.state = PerformanceState::complete, .requestId = interruptedId});
+    if (!until(recorder, [&](const DiagnosticRecordingStatus& status) {
+            return status.state == DiagnosticRecordingState::recording && performance.requestId != interruptedId;
+        }))
+        return 25;
+
     const auto beforeRestart = recorder.status();
     publisher.reset();
     if (!until(recorder, [](const DiagnosticRecordingStatus& status) {
@@ -275,8 +284,13 @@ int run()
         csv.find("888877") != csv.npos || forceLine.find(",game_not_foreground,") == forceLine.npos ||
         !forceLine.ends_with(",feedback,,-50,usb,1\r") || csv.find("6A523E13") != csv.npos ||
         csv.find("505520") == csv.npos || csv.find(",usb,") == csv.npos ||
+        csv.find("capture_interrupted") == csv.npos || csv.find("capture_resumed") == csv.npos ||
         csv.find("connection_lost") == csv.npos || csv.find("connection_restored") == csv.npos || result.dropped)
         return 6;
+    for (const auto marker : {"capture_interrupted", "capture_resumed", "connection_lost", "connection_restored"}) {
+        if (csv.find(marker, csv.find(marker) + 1) != csv.npos)
+            return 26;
+    }
     const auto hasDeviceSlot = [&](std::string_view name, std::string_view suffix) {
         const auto at = csv.find(name);
         return at != csv.npos && std::string_view(csv).substr(at, csv.find('\n', at) - at).ends_with(suffix);

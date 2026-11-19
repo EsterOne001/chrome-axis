@@ -178,44 +178,54 @@ std::optional<bool> availableForceAxis(IDirectInputDevice8W& device, std::size_t
         (object.dwType & DIDFT_ABSAXIS) != 0;
 }
 
-struct Enumeration {
-    IDirectInput8W& input;
-    HWND window;
-    std::vector<DeviceInfo> devices;
+struct EnumeratedDevice {
+    GUID guid;
+    DeviceInfo info;
 };
 
 BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
-    auto& enumeration = *static_cast<Enumeration*>(context);
-    HRESULT result{};
-    const auto device = createDevice(enumeration.input, instance->guidInstance, &result);
-    if (device)
-        result = device->SetDataFormat(&c_dfDIJoystick2);
-    if (FAILED(result) && !objectProbeDeferred(result))
-        return DIENUM_CONTINUE;
-
-    DeviceInfo info{
+    auto& devices = *static_cast<std::vector<EnumeratedDevice>*>(context);
+    devices.push_back({instance->guidInstance, DeviceInfo{
         .id = deviceId(instance->guidInstance),
         .name = utf8(instance->tszInstanceName[0] ? instance->tszInstanceName : instance->tszProductName),
         .productName = utf8(instance->tszProductName),
-    };
-    info.layoutPending.axes.set();
-    info.layoutPending.buttons.set();
-    info.layoutPending.povs.set();
-    if (device && SUCCEEDED(result)) {
+    }});
+    return DIENUM_CONTINUE;
+}
+
+bool hasPendingLayout(const DeviceObjectSelection& pending) {
+    return pending.axes.any() || pending.buttons.any() || pending.povs.any();
+}
+
+void probeEnumeratedDevice(IDirectInput8W& input, HWND window, const GUID& guid, DeviceInfo& info,
+                           std::span<const DeviceInfo> known) {
+    const auto previous = std::ranges::find(known, info.id, &DeviceInfo::id);
+    if (previous != known.end() && previous->productName == info.productName) {
+        info.axes = previous->axes;
+        info.buttons = previous->buttons;
+        info.povs = previous->povs;
+        info.forceFeedbackAxes = previous->forceFeedbackAxes;
+        info.layoutPending = previous->layoutPending;
+        if (!hasPendingLayout(info.layoutPending))
+            return;
+    } else {
+        info.layoutPending.axes.set();
+        info.layoutPending.buttons.set();
+        info.layoutPending.povs.set();
+    }
+    const auto device = createDevice(input, guid);
+    if (!device || FAILED(device->SetDataFormat(&c_dfDIJoystick2)))
+        return; // The identity is attached even when the layout cannot be opened.
+
+    probeInventoryLayout(*device, info);
+    if (window && hasPendingLayout(info.layoutPending) &&
+        SUCCEEDED(device->SetCooperativeLevel(window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND))) {
+        const bool acquired = SUCCEEDED(device->Acquire());
+        // A refused acquisition can coincide with successful metadata on the next call.
         probeInventoryLayout(*device, info);
-        const auto& pending = info.layoutPending;
-        bool acquired = false;
-        if (enumeration.window && (pending.axes.any() || pending.buttons.any() || pending.povs.any()) &&
-            SUCCEEDED(device->SetCooperativeLevel(enumeration.window, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND))) {
-            acquired = SUCCEEDED(device->Acquire());
-            // A refused acquisition can coincide with successful metadata on the next call.
-            probeInventoryLayout(*device, info);
-        }
         if (acquired)
             device->Unacquire();
     }
-    enumeration.devices.push_back(std::move(info));
-    return DIENUM_CONTINUE;
 }
 
 InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = nullptr,
@@ -745,13 +755,22 @@ bool DirectInput::ready() const noexcept {
     return impl_->input != nullptr;
 }
 
-std::vector<DeviceInfo> DirectInput::devices() const {
-    if (!ready()) {
+std::vector<DeviceInfo> DirectInput::devices(HRESULT* enumerationStatus, std::span<const DeviceInfo> known) const {
+    std::vector<EnumeratedDevice> attached;
+    const auto result = ready() ? impl_->input->EnumDevices(
+        DI8DEVCLASS_GAMECTRL, addDevice, &attached, DIEDFL_ATTACHEDONLY) : DIERR_NOTINITIALIZED;
+    if (enumerationStatus)
+        *enumerationStatus = result;
+    if (FAILED(result))
         return {};
+
+    std::vector<DeviceInfo> devices;
+    devices.reserve(attached.size());
+    for (auto& entry : attached) {
+        probeEnumeratedDevice(*impl_->input, impl_->window, entry.guid, entry.info, known);
+        devices.push_back(std::move(entry.info));
     }
-    Enumeration enumeration{*impl_->input, impl_->window, {}};
-    impl_->input->EnumDevices(DI8DEVCLASS_GAMECTRL, addDevice, &enumeration, DIEDFL_ATTACHEDONLY);
-    return std::move(enumeration.devices);
+    return devices;
 }
 
 ForceFeedbackProbe DirectInput::probeWheelForce(std::string_view id, std::size_t axis) const {

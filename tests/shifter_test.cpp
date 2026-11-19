@@ -195,14 +195,65 @@ bool recoveredPovRequiresObservedCenter()
         return false;
 
     capture.deviceInterrupted();
+    const AccessoryProfile positions{{shifterId, AccessoryKind::Pov, 0, povCentered, 9000, 0}};
     for (int i = 0; i < 5; ++i) {
-        if (capture.sample(held).binding)
+        if (capture.captureNeutral(held, positions) || capture.sample(held).binding)
             return false;
     }
-    capture.sample(released);
+    if (capture.captureNeutral(released, positions) || capture.captureNeutral(released, positions)
+        || !capture.captureNeutral(released, positions))
+        return false;
     capture.sample(held);
     capture.sample(held);
     return capture.sample(held).status == ShifterCaptureStatus::Captured;
+}
+
+bool recapturesChangedNeutralWithoutLosingPositions()
+{
+    ShifterCapture capture(shifterId);
+    DeviceSample firstRest;
+    firstRest.buttons.set(8);
+    firstRest.buttonsPresent.set(2).set(3).set(8).set(9);
+    if (capture.captureNeutral(firstRest) || capture.captureNeutral(firstRest) || !capture.captureNeutral(firstRest))
+        return false;
+    auto firstGear = firstRest;
+    firstGear.buttons.set(2);
+    capture.sample(firstGear);
+    capture.sample(firstGear);
+    const auto first = capture.sample(firstGear).binding;
+    if (!first || first->index != 2)
+        return false;
+
+    capture.deviceInterrupted();
+    const AccessoryProfile positions{*first, {wheelId, AccessoryKind::Button, 4, 0, 1}};
+    auto newRest = firstRest;
+    newRest.buttons.reset(8);
+    newRest.buttons.set(9);
+    auto held = newRest;
+    held.buttons.set(2);
+    for (int i = 0; i < 5; ++i) {
+        if (capture.captureNeutral(held, positions))
+            return false;
+    }
+    auto pending = newRest;
+    pending.buttonsPending.set(2);
+    if (capture.captureNeutral(newRest, positions) || capture.captureNeutral(newRest, positions)
+        || capture.captureNeutral(pending, positions))
+        return false;
+    if (capture.captureNeutral(newRest, positions) || capture.captureNeutral(newRest, positions)
+        || !capture.captureNeutral(newRest, positions))
+        return false;
+
+    // A position captured before the interruption still participates in duplicate detection.
+    capture.sample(held, positions);
+    capture.sample(held, positions);
+    if (capture.sample(held, positions).status != ShifterCaptureStatus::Duplicate || !neutral(capture, newRest))
+        return false;
+    auto secondGear = newRest;
+    secondGear.buttons.set(3);
+    capture.sample(secondGear, positions);
+    capture.sample(secondGear, positions);
+    return capture.sample(secondGear, positions).binding == AccessoryBinding{shifterId, AccessoryKind::Button, 3, 0, 1};
 }
 
 bool comparesPhysicalGestures()
@@ -433,6 +484,10 @@ int main()
     if (!validatesPreviousAnalogRestAfterReconnect()) {
         std::cerr << "The previous analog rest must still satisfy the paddle's runtime neutral gate\n";
         return 9;
+    }
+    if (!recapturesChangedNeutralWithoutLosingPositions()) {
+        std::cerr << "Shifter capture did not safely replace a changed digital rest reference\n";
+        return 10;
     }
     return 0;
 }

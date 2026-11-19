@@ -9,6 +9,7 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include <tuple>
 
 namespace {
 
@@ -40,6 +41,8 @@ struct MockController {
     bool acquisitionRequired{true};
     bool feedback{};
     bool setupBlocked{};
+    HRESULT setupFailure{DI_OK};
+    std::atomic_uint objectInfoChecks{};
     DWORD blockedProbeObject{DIJOFS_X};
     DWORD autocenter{DIPROPAUTOCENTER_ON};
     LONG force{};
@@ -53,6 +56,7 @@ struct MockDriver {
     MockController pedals;
     DWORD samplingThread{GetCurrentThreadId()};
     HRESULT factoryResult{DI_OK};
+    HRESULT enumerationResult{DI_OK};
 };
 
 MockDriver* driver{};
@@ -173,6 +177,7 @@ public:
         return DI_OK;
     }
     HRESULT STDMETHODCALLTYPE GetObjectInfo(LPDIDEVICEOBJECTINSTANCEW object, DWORD offset, DWORD how) override {
+        ++controller_.objectInfoChecks;
         if (how != DIPH_BYOFFSET)
             return DIERR_INVALIDPARAM;
         if (!controller_.connected)
@@ -279,6 +284,8 @@ public:
             return DIERR_INPUTLOST;
         if (controller->setupBlocked)
             return DIERR_OTHERAPPHASPRIO;
+        if (FAILED(controller->setupFailure))
+            return controller->setupFailure;
         *device = new MockDevice(*controller, GetCurrentThreadId() != mock_.samplingThread);
         return DI_OK;
     }
@@ -289,7 +296,7 @@ public:
             instance.guidInstance = wheelGuid;
             callback(&instance, context);
         }
-        return DI_OK;
+        return mock_.enumerationResult;
     }
     HRESULT STDMETHODCALLTYPE GetDeviceStatus(REFGUID id) override {
         const auto* const controller = find(id);
@@ -841,6 +848,51 @@ int main()
         std::cerr << "The general inventory queried force capabilities\n";
         return 12;
     }
+
+    HRESULT topologyStatus{};
+    mock.enumerationResult = E_FAIL;
+    if (!input.devices(&topologyStatus).empty() || topologyStatus != E_FAIL) {
+        std::cerr << "A failed enumeration must not publish partially enumerated devices\n";
+        return 19;
+    }
+    mock.enumerationResult = DI_OK;
+    mock.wheel.setupFailure = E_FAIL;
+    const auto inaccessible = input.devices(&topologyStatus);
+    if (topologyStatus != DI_OK || inaccessible.size() != 1 ||
+        inaccessible.front().id != inventory.front().id || !inaccessible.front().layoutPending.axes.all()) {
+        std::cerr << "A confirmed attached controller must remain in the result when opening fails\n";
+        return 20;
+    }
+    mock.wheel.setupFailure = DI_OK;
+    mock.wheel.connected = false;
+    if (!input.devices(&topologyStatus).empty() || topologyStatus != DI_OK) {
+        std::cerr << "A successful empty enumeration must remain distinct from an unreliable topology\n";
+        return 21;
+    }
+    mock.wheel.connected = true;
+
+    const auto measureInventory = [&](std::span<const DeviceInfo> layoutCache) {
+        const auto before = mock.wheel.objectInfoChecks.load();
+        const auto started = std::chrono::steady_clock::now();
+        const auto devices = input.devices(nullptr, layoutCache);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        return std::tuple{devices, mock.wheel.objectInfoChecks - before,
+                          std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()};
+    };
+    const auto [fullLayout, fullQueries, fullTime] = measureInventory({});
+    const auto [cachedLayout, cachedQueries, cachedTime] = measureInventory(fullLayout);
+    auto unresolved = fullLayout;
+    unresolved.front().axes[0] = false;
+    unresolved.front().layoutPending.axes.set(0);
+    const auto [targetedLayout, targetedQueries, targetedTime] = measureInventory(unresolved);
+    if (fullLayout != inventory || cachedLayout != fullLayout || targetedLayout != fullLayout ||
+        fullQueries < axisCount + buttonCount + povCount || cachedQueries != 0 || targetedQueries != 2) {
+        std::cerr << "Inventory retries must probe only unresolved controls and preserve the confirmed layout\n";
+        return 22;
+    }
+    std::cout << "Inventory mock: complete=" << fullQueries << " probes/" << fullTime
+              << " ns, cached=" << cachedQueries << " probes/" << cachedTime
+              << " ns, one pending axis=" << targetedQueries << " probes/" << targetedTime << " ns\n";
 
     mock.wheel.feedback = true;
     const auto force = input.probeWheelForce(inventory[0].id, 0);

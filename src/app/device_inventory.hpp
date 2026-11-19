@@ -13,7 +13,7 @@ namespace chrome_axis {
 
 struct DeviceInventoryResult {
     std::vector<DeviceInfo> devices;
-    bool available{};
+    bool available{}; // Only a successful enumeration can confirm an absence.
     std::uint64_t revision{};
     std::optional<ForceFeedbackProbe> feedbackProbe{};
 };
@@ -34,7 +34,7 @@ public:
     void refresh();
     void refreshAfterDeviceChange();
     void setAutomaticRetries(bool active);
-    std::shared_ptr<const DeviceInventoryResult> current() const;
+    std::shared_ptr<const DeviceInventoryResult> current(bool requireIdle = false) const;
 
 private:
     struct State;

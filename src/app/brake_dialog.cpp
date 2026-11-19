@@ -112,6 +112,7 @@ struct AxisResponseDialog {
     std::optional<AxisPreview> displayed;
     std::deque<PedalFrame> localHistory;
     std::deque<PedalFrame> gameHistory;
+    std::uint64_t lastLocalValueAt{};
     std::uint64_t chartEnd{};
     bool showingGame{};
     bool showPreviousGame{};
@@ -342,6 +343,9 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
     }
 
     const auto now = GetTickCount64();
+    const bool previouslyShowingGame = showingGame;
+    const bool previouslyHadTrace = !(showingGame ? gameHistory : localHistory).empty();
+    const auto previousChartEnd = chartEnd;
     const auto gameFrame = currentGamePedals(now);
     if (gameFrame && (gameHistory.empty() || gameFrame->at > gameHistory.back().at))
         appendFrame(gameHistory, *gameFrame);
@@ -350,6 +354,7 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
     const bool simulated = std::ranges::any_of(pedalTestIds, hasTest);
     if (simulated != simulatingPedals) {
         localHistory.clear();
+        lastLocalValueAt = 0;
         for (auto& stabilizer : pedalStabilizers)
             stabilizer.reset();
         simulatingPedals = simulated;
@@ -396,14 +401,22 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
         pedalStabilizers[pedal].reset();
     }
 
-    if (hasPedalValues(local) || !localHistory.empty())
+    const bool localHasValues = hasPedalValues(local);
+    if (localHasValues)
+        lastLocalValueAt = now;
+    if (localHasValues || (lastLocalValueAt && now - lastLocalValueAt <= chartDuration))
         appendFrame(localHistory, local);
+    else
+        localHistory.clear();
     const bool historyAvailable = !gameHistory.empty();
     EnableWindow(GetDlgItem(window, IDC_PEDAL_HISTORY), historyAvailable && !simulated);
     showingGame = !simulated && (gameFrame.has_value() || (historyAvailable && showPreviousGame));
     const bool frozen = showingGame && !gameFrame;
     const auto& values = showingGame ? gameHistory.back() : local;
-    chartEnd = frozen ? values.at : now;
+    chartEnd = showingGame ? values.at : now;
+    const bool redrawGraphs = previouslyShowingGame != showingGame ||
+        (showingGame ? chartEnd != previousChartEnd : previouslyHadTrace || !localHistory.empty());
+    setChangedLabel(window, IDC_PEDAL_RAW_LABEL, tr(showingGame ? Text::DlgPedalChartInput : Text::DlgPedalChartRaw));
 
     for (std::size_t pedal = 0; pedal < pedalAxes.size(); ++pedal) {
         for (std::size_t series = 0; series < values.pedals[pedal].size(); ++series) {
@@ -412,7 +425,8 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
                 + tr(Text::mainPercentSuffix) : L"—";
             setChangedLabel(window, pedalValueIds[pedal][series], label);
         }
-        InvalidateRect(GetDlgItem(window, pedalGraphIds[pedal]), nullptr, FALSE);
+        if (redrawGraphs)
+            InvalidateRect(GetDlgItem(window, pedalGraphIds[pedal]), nullptr, FALSE);
     }
 
     const auto status = frozen ? Text::DlgPedalArchivedGame
@@ -420,7 +434,7 @@ void AxisResponseDialog::updatePedals(HWND window, const std::optional<AxisRespo
         : !settings ? Text::mainBrakeInvalidSettings
         : invalidTest ? Text::mainBrakeInvalidTestInput
         : simulated ? Text::DlgPedalSimulated
-        : hasPedalValues(local) ? Text::DlgPedalLocal
+        : localHasValues ? Text::DlgPedalLocal
         : Text::DlgPedalWait;
     setChangedLabel(window, IDC_BRAKE_STATUS, tr(status));
     setChangedLabel(window, IDC_PEDAL_TIME_END, tr(frozen ? Text::DlgPedalChartStop : Text::DlgPedalChartNow));

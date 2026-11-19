@@ -1,6 +1,7 @@
 #pragma once
 
 #include "device_capture.hpp"
+#include "chrome_axis/controls.hpp"
 
 #include <functional>
 #include <memory>
@@ -23,13 +24,14 @@ public:
                                       DeviceReadStatus* status = nullptr) override;
     CaptureDeviceRead capture(const std::string& id);
     CaptureDeviceRead captureGuidedPosition(const std::string& id);
+    ControlReader::CalibrationReadings reviewCalibration(ControlReader& reader);
     // Consume confirmed reader interruptions independently of preview sample age.
     bool takeCalibrationInterruption(const std::string& id);
     void invalidate();
     void close();
 
 private:
-    enum class Purpose { preview, capture, guidedCalibration };
+    enum class Purpose { preview, capture, guidedCalibration, calibrationReview };
     CaptureDeviceRead request(const std::string& id, const std::bitset<buttonCount>& buttons, Purpose purpose);
 
     struct State;

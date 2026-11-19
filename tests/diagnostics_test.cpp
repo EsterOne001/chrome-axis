@@ -225,8 +225,8 @@ int testPerformanceCapture(const std::filesystem::path& root)
         writeDiagnosticCaptureHeader(csv);
         writeDiagnosticCaptureRows(csv, std::span(records).first(3), performance.startedAt);
         writeDiagnosticCaptureRows(csv, std::span(records).subspan(3), performance.startedAt);
-        writeDiagnosticCaptureConnection(csv, performance.startedAt, performance.startedAt + 100, false);
-        writeDiagnosticCaptureConnection(csv, performance.startedAt, performance.startedAt + 200, true);
+        writeDiagnosticCaptureMarker(csv, performance.startedAt, performance.startedAt + 100, DiagnosticCaptureMarker::connectionLost);
+        writeDiagnosticCaptureMarker(csv, performance.startedAt, performance.startedAt + 200, DiagnosticCaptureMarker::connectionRestored);
         const auto text = csv.str();
         constexpr std::string_view pendingRow =
             "\r\n0,usb,\"Car, \"\"A\"\"\",12.5,,0.5,0,1,0.7,1,0,1,0.4,manual,sequential,3,3,2,pending,,1,0,1,1,1,1,0,driving,";
@@ -409,7 +409,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     std::ostringstream csv;
     writeDiagnosticCaptureHeader(csv);
     writeDiagnosticCaptureRows(csv, rows, tick, 1);
-    writeDiagnosticCaptureConnection(csv, tick, tick + 60, false);
+    writeDiagnosticCaptureMarker(csv, tick, tick + 60, DiagnosticCaptureMarker::connectionLost);
     const auto text = csv.str();
     constexpr std::string_view blockersCell =
         ",5,gear_1:button:2:0:waiting_for_neutral|clutch:axis:3:0:temporarily_unavailable|"

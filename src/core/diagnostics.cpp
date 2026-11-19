@@ -81,10 +81,10 @@ constexpr std::array<std::string_view, 20> usbTokens{
     "operation_running", "worker_start_failed", "worker_started", "ffb_ready"
 };
 constexpr std::array<std::string_view, 3> usbLaneTokens{"reader", "probe", "feedback"};
-constexpr std::array<std::string_view, 14> accessoryTokens{
+constexpr std::array<std::string_view, 15> accessoryTokens{
     "unconfigured", "waiting", "ready", "profile_error", "inactive", "blocked", "device_unavailable",
     "input_unavailable", "sample_expired", "temporarily_unavailable", "axis_conflict", "modifier_blocked",
-    "selector_ambiguous", "awaiting_first_report"
+    "selector_ambiguous", "awaiting_first_report", "native_input_conflict"
 };
 constexpr std::array<std::string_view, 9> commandTokens{
     "inactive", "waiting_for_vehicle", "waiting_for_neutral", "ready", "device_unavailable",
@@ -106,7 +106,7 @@ static_assert(shiftTokens.size() == static_cast<std::size_t>(DiagnosticShiftStat
 static_assert(axisTokens.size() == static_cast<std::size_t>(DiagnosticAxisState::awaitingFirstReport) + 1);
 static_assert(usbTokens.size() == static_cast<std::size_t>(DiagnosticUsbEventKind::feedbackReady) + 1);
 static_assert(usbLaneTokens.size() == static_cast<std::size_t>(DiagnosticUsbLane::feedback) + 1);
-static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::awaitingFirstReport) + 1);
+static_assert(accessoryTokens.size() == static_cast<std::size_t>(DiagnosticAccessoryState::nativeInputConflict) + 1);
 static_assert(commandTokens.size() == static_cast<std::size_t>(DiagnosticCommandState::awaitingFirstReport) + 1);
 static_assert(shortcutSourceTokens.size() == static_cast<std::size_t>(DiagnosticShortcutSource::poll) + 1);
 static_assert(clutchRestTokens.size() == static_cast<std::size_t>(DiagnosticClutchRest::outOfRange) + 1);
@@ -479,13 +479,14 @@ std::size_t writeDiagnosticCaptureRows(std::ostream& output, std::span<const Dia
     return written;
 }
 
-void writeDiagnosticCaptureConnection(std::ostream& output, std::uint64_t startedAt,
-                                      std::uint64_t sampledAt, bool connected)
+void writeDiagnosticCaptureMarker(std::ostream& output, std::uint64_t startedAt,
+                                  std::uint64_t sampledAt, DiagnosticCaptureMarker marker)
 {
+    constexpr std::array markers{"connection_lost", "connection_restored", "capture_interrupted", "capture_resumed"};
     output.imbue(std::locale::classic());
     output << elapsed(sampledAt, startedAt);
     emptyCsvColumns(output, drivingCsvColumns - 1);
-    output << (connected ? ",connection_restored" : ",connection_lost");
+    output << ',' << markers[static_cast<std::size_t>(marker)];
     emptyCsvColumns(output, captureCsvColumns - drivingCsvColumns - 1);
     output << "\r\n";
 }
@@ -805,6 +806,20 @@ DiagnosticRead DiagnosticReader::read() noexcept
     if (!last_.sampledAt || GetTickCount64() - last_.sampledAt > heartbeatLifetime)
         last_.connection = DiagnosticConnection::stale;
     return last_;
+}
+
+std::optional<std::uint64_t> DiagnosticReader::publisherSession() const noexcept
+{
+    if (!frame_)
+        return 0;
+    const auto lock = WaitForSingleObject(mutex_, 0);
+    if (lock != WAIT_OBJECT_0 && lock != WAIT_ABANDONED)
+        return std::nullopt;
+    std::optional<std::uint64_t> session;
+    if (frame_->version == protocolVersion)
+        session = publisherPresent() ? frame_->publisherId : 0;
+    ReleaseMutex(mutex_);
+    return session;
 }
 
 std::uint64_t DiagnosticReader::requestPerformanceCapture(bool enabled) noexcept

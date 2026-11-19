@@ -13,10 +13,13 @@ public:
     void initialise(HWND window);
     void fit(HWND window);
     void fit(HWND window, const RECT& workArea);
+    // For a resizable window whose caller lays out its children using extent() and offset().
+    void resizeContent(HWND window, SIZE minimum);
     bool scroll(HWND window, int action, bool horizontal);
     bool wheel(HWND window, int delta, bool horizontal);
     void reveal(HWND window, HWND control);
     POINT offset() const noexcept { return offset_; }
+    SIZE extent() const noexcept { return content_; }
     int layoutWidth() const noexcept { return content_.cx; }
 
 private:

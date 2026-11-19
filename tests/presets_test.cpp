@@ -75,6 +75,8 @@ bool testInterruptedRestores(const std::filesystem::path& fixture)
             if (!marker)
                 return check(false, "Could not write the interrupted restore journal");
         }
+        if (phase == 0)
+            std::filesystem::create_directory(backup / L"Fichiers-originaux");
         // Simulate an interruption before any changes, after removal of old entries, and after a partial apply.
         if (phase > 0) {
             std::filesystem::remove(root / usbMarkerFilename);
@@ -125,6 +127,58 @@ bool testInterruptedRestores(const std::filesystem::path& fixture)
                    "An explicit restore must recover every valid setting and clear the journal only after completion")
             || !check(std::filesystem::is_regular_file(backup / profileFilename),
                       "Restoring must preserve the previous recovery snapshot"))
+            return false;
+    }
+    return true;
+}
+
+bool testRetryAfterInvalidRecovery(const std::filesystem::path& fixture)
+{
+    using namespace chrome_axis;
+    for (const bool invalidLive : {false, true}) {
+        const auto parent = fixture / (invalidLive ? L"Invalid previous and live profiles" : L"Invalid previous profile");
+        const auto root = parent / L"Profil";
+        const auto invalid = root / profileBackupsFolder / L"Avant-restauration-invalid";
+        const auto selected = parent / L"Alternative";
+        const std::string originalWheel = "{11111111-1111-1111-1111-111111111111}";
+        const std::string replacement = "{22222222-2222-2222-2222-222222222222}";
+        const Profile original{{originalWheel, 0, 500, 0, 1000, 0.02f}};
+        const Profile incoming{{replacement, 0, 500, 0, 1000, 0.09f}};
+        std::filesystem::create_directories(invalid);
+        std::filesystem::create_directory(selected);
+        std::ofstream(invalid / L"chrome_axis_backup.txt") << "Chrome Axis profile backup 1\n";
+        std::ofstream(invalid / profileFilename) << "invalid previous recovery\n";
+        std::ofstream(root / L".chrome_axis_profile_restore.pending") << "Avant-restauration-invalid\n";
+        std::string error;
+        if (!saveProfile(root / profileFilename, original, error) || !saveProfile(selected / profileFilename, incoming, error))
+            return check(false, "Could not prepare the replacement recovery fixture");
+        if (invalidLive)
+            std::ofstream(root / profileFilename) << "invalid partially applied calibration\n";
+        const auto handle = CreateFileW((root / profileFilename).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (!check(handle != INVALID_HANDLE_VALUE, "Could not lock the live profile during recovery"))
+            return false;
+        std::filesystem::path recovery;
+        ProfileBackupError result{};
+        ProfileBackupFailure failure;
+        const auto restored = restoreProfileBackup(root, selected, result, {}, &recovery, &failure);
+        CloseHandle(handle);
+        const auto pending = readInterruptedProfileRestore(root);
+        const auto retained = loadProfile(recovery / profileFilename, error);
+        const auto& expectedWheel = invalidLive ? replacement : originalWheel;
+        if (!check(!restored && result == ProfileBackupError::recoveryRequired
+                   && failure.windowsError == ERROR_SHARING_VIOLATION
+                   && pending.pending && pending.backupUsable && pending.backup == recovery && recovery != invalid
+                   && retained && retained->steering.deviceId == expectedWheel,
+                   "A second failed restore must publish a validated recovery instead of the invalid previous path"))
+            return false;
+        if (!check(restoreProfileBackup(root, recovery, result) && !profileRestorePending(root),
+                   "Recovery must succeed from the path advertised after a second failure"))
+            return false;
+        const auto current = loadProfile(root / profileFilename, error);
+        if (!check(current && current->steering.deviceId == expectedWheel
+                   && std::filesystem::is_regular_file(invalid / profileFilename),
+                   "Retry must preserve the earlier copy and restore the verified calibration"))
             return false;
     }
     return true;
@@ -615,6 +669,9 @@ bool testStaleWrites(const std::filesystem::path& fixture)
     if (!check(createPreset(root, L"Pilote", error)
                   && savePresetSettings(root, preset, accessoriesCheck, shouldNotSave) == PresetSaveResult::changed,
                "A save for a preset that is no longer active must be rejected")
+        || !check(!createPreset(root, L"Wrong source", error, &preset)
+                  && activePreset(root).name == L"Pilote" && listPresets(root) == std::vector<std::wstring>{L"Pilote"},
+                  "A profile copy confirmed before a concurrent selection must not copy a different preset")
         || !check(savePresetSettings(root, preset, {}, [&] { return setUsbEnabled(root, true, error); }) ==
                    PresetSaveResult::changed && !usbEnabled(root),
                   "A changed active profile must prevent the previous window from enabling USB")
@@ -926,6 +983,9 @@ bool testProfileBackups(const std::filesystem::path& fixture)
         return false;
     const bool restoredWhileLocked = restoreProfileBackup(root, backup, backupError, {}, &recovery, &failure);
     CloseHandle(locked);
+    const auto isRecovery = [](const auto& entry) {
+        return entry.path().filename().native().starts_with(L"Avant-restauration-");
+    };
     if (!check(!restoredWhileLocked && backupError == ProfileBackupError::ioError
                && failure.step == ProfileBackupStep::applyRestore && failure.windowsError == ERROR_SHARING_VIOLATION
                && recovery.empty()
@@ -933,6 +993,21 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                && !usbEnabled(root) && loadAccessoryProfile(root / accessoryFilename, error) == AccessoryProfile{}
                && readTransmissionHotkey(root) == newerHotkey,
                "A blocked file must roll back all settings moved before the failure"))
+        return false;
+    if (!check(!profileRestorePending(root)
+               && std::ranges::none_of(std::filesystem::directory_iterator(root / profileBackupsFolder), isRecovery),
+               "A completed rollback must not leave a marked recovery folder without its settings"))
+        return false;
+
+    const auto oldOrphan = root / profileBackupsFolder / L"Avant-restauration-old-rollback";
+    std::filesystem::create_directories(oldOrphan / L"Fichiers-originaux");
+    std::ofstream(oldOrphan / L"chrome_axis_backup.txt") << "Chrome Axis profile backup 1\n";
+    std::filesystem::copy(root / L"Profils", oldOrphan / L"Profils", std::filesystem::copy_options::recursive);
+    if (!check(writeProfileLanguage(oldOrphan, "fr")
+               && !restoreProfileBackup(root, oldOrphan, backupError)
+               && backupError == ProfileBackupError::invalidBackup && activePreset(root).name == L"Plus récent"
+               && loadProfile(root / profileFilename, error).has_value() && readTransmissionHotkey(root) == newerHotkey,
+               "A legacy rollback artifact must remain unusable even when named profiles survived"))
         return false;
 
     if (!check(restoreProfileBackup(root, backup, backupError, {}, &recovery)
@@ -1025,6 +1100,16 @@ bool testProfileBackups(const std::filesystem::path& fixture)
                                 "Restoring a backup"))
         return false;
 
+    const auto emptyRecoveryRoot = fixture / L"First restore into empty profile";
+    std::filesystem::create_directory(emptyRecoveryRoot);
+    if (!check(restoreProfileBackup(emptyRecoveryRoot, legacy, backupError, {}, &recovery)
+               && !recovery.empty() && std::filesystem::is_empty(recovery / L"Fichiers-originaux")
+               && std::filesystem::is_regular_file(emptyRecoveryRoot / profileFilename)
+               && restoreProfileBackup(emptyRecoveryRoot, recovery, backupError)
+               && !std::filesystem::exists(emptyRecoveryRoot / profileFilename),
+               "A new automatic recovery of an intentionally empty profile must remain restorable"))
+        return false;
+
     return check(createProfileBackup(empty, emptyBackup, backupError)
                  && readTransmissionHotkey(emptyBackup) == defaultTransmissionHotkey
                  && restoreProfileBackup(root, emptyBackup, backupError) && activePreset(root).name.empty()
@@ -1079,7 +1164,8 @@ int main()
     if (!check(initial != INVALID_FILE_ATTRIBUTES && SetFileAttributesW(source.c_str(), initial | FILE_ATTRIBUTE_READONLY),
                "Could not make the fixture read-only"))
         return 1;
-    const bool created = createPreset(root, name, error);
+    const auto confirmed = activePreset(root);
+    const bool created = createPreset(root, name, error, &confirmed);
     const bool originalReadOnly = (GetFileAttributesW(source.c_str()) & FILE_ATTRIBUTE_READONLY) != 0;
     const bool restored = SetFileAttributesW(source.c_str(), initial) != FALSE;
     if (!check(created && originalReadOnly && restored, "Creating a named copy must preserve the source attributes"))
@@ -1112,7 +1198,8 @@ int main()
         && check(selectPreset(root, name, error) && activePreset(root).name == name, "Explicit selection must repair corrupt selection")
         && testProfileBackups(directory) && testDeviceReplacement(directory) && testStaleWrites(directory)
         && testEditorFileLocks(directory) && testUsbActivation(directory)
-        && testInterruptedRestores(directory) && testReassignmentRecovery(directory, false)
+        && testInterruptedRestores(directory) && testRetryAfterInvalidRecovery(directory)
+        && testReassignmentRecovery(directory, false)
         && testReassignmentRecovery(directory, true)
         && testImportedAxisConflict(directory) && testSelectProfileWithUsb(directory)
         && testImportedDedicatedAccessoryConflict(directory);

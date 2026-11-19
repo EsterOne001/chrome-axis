@@ -114,6 +114,33 @@ bool verify(int dialogId)
     return ok;
 }
 
+bool verifyResizableContent()
+{
+    const auto window = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 600, 440,
+                                        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!window)
+        return false;
+
+    chrome_axis::DialogViewport viewport;
+    bool ok = true;
+    for (const int dpi : {96, 120, 144}) {
+        const SIZE minimum{MulDiv(736, dpi, 96), MulDiv(622, dpi, 96)};
+        SetWindowPos(window, nullptr, 0, 0, minimum.cx, minimum.cy - 100, SWP_NOZORDER | SWP_NOACTIVATE);
+        viewport.resizeContent(window, minimum);
+        const auto compact = viewport.extent();
+        ok &= check(compact.cx == minimum.cx && compact.cy == minimum.cy, 0, "compact window keeps its full layout");
+        ok &= check(viewport.scroll(window, SB_BOTTOM, false) && viewport.offset().y >= 100, 0, "scroll reaches the footer");
+        ok &= check(viewport.scroll(window, SB_BOTTOM, true) && viewport.offset().x > 0, 0, "vertical bar can require horizontal scrolling");
+        SetWindowPos(window, nullptr, 0, 0, minimum.cx + 100, minimum.cy + 100, SWP_NOZORDER | SWP_NOACTIVATE);
+        viewport.resizeContent(window, minimum);
+        ok &= check(viewport.offset().x == 0 && viewport.offset().y == 0 &&
+                    !(GetWindowLongPtrW(window, GWL_STYLE) & (WS_HSCROLL | WS_VSCROLL)), 0,
+                    "restoring the full work area clears the scroll position and both bars");
+    }
+    DestroyWindow(window);
+    return ok;
+}
+
 } // namespace
 
 int main()
@@ -126,5 +153,5 @@ int main()
     bool ok = true;
     for (const auto dialog : dialogs)
         ok &= verify(dialog);
-    return ok ? 0 : 1;
+    return verifyResizableContent() && ok ? 0 : 1;
 }

@@ -1186,11 +1186,13 @@ public:
     bool hasProfileDirectory() const noexcept { return !directory_.empty(); }
     bool hasAccessoryError() const noexcept { return !accessoryError_.empty(); }
     bool profilesValid() const noexcept {
-        return (!watchedProfile_.stamp || profileError_.empty()) && !hasAccessoryError() && !accessoryAxisConflict;
+        return (!watchedProfile_.stamp || profileError_.empty()) && !hasAccessoryError()
+            && !accessoryAxisConflict && !nativeTransmissionInputConflict;
     }
 
     bool enabled{};
     bool accessoryAxisConflict{};
+    bool nativeTransmissionInputConflict{};
     bool nativeShifter{};
     bool nativeShifterVerified{};
     bool nativeSequential{};
@@ -1215,6 +1217,7 @@ private:
     std::optional<chrome_axis::AccessoryProfile> savedAccessories_;
     std::string profileError_, accessoryError_;
     std::string lastProfileWarning_, lastAccessoryWarning_, lastFeedbackWarning_, lastAxisConflictWarning_;
+    std::string lastNativeConflictWarning_;
     bool forceRefreshPending_{};
     bool reportedUsbState_{};
     bool reportedAccessoriesOnly_{};
@@ -1330,7 +1333,8 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
             auto updated = savedAccessories_;
             if (updated)
                 chrome_axis::removeDisabledDrivingAccessories(*updated);
-            // Preserve old settings on disk. Only conflicting analog accessory outputs are suppressed.
+            // Keep the profile editable on disk. A conflicting native H position cannot be omitted on its own.
+            nativeTransmissionInputConflict = updated && chrome_axis::suppressConflictingNativeTransmission(*updated);
             accessoryAxisConflict = updated && chrome_axis::suppressConflictingAnalogAccessories(
                 *updated, profile ? &*profile : nullptr);
             changes.accessories = !chrome_axis::sameAccessoryInputProfile(accessoryProfile, updated);
@@ -1377,6 +1381,7 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
         accessoryProfile.reset();
         savedAccessories_.reset();
         accessoryAxisConflict = false;
+        nativeTransmissionInputConflict = false;
         nativeShifter = false;
         nativeShifterVerified = false;
         nativeSequential = false;
@@ -1400,6 +1405,9 @@ UsbConfigurationChanges UsbConfiguration::refresh(const std::filesystem::path& r
     reportChangedWarning(lastAccessoryWarning_, accessoryError_);
     reportChangedWarning(lastAxisConflictWarning_, accessoryAxisConflict
         ? "A clutch or handbrake axis conflicts with another command. Conflicting analog accessory commands were disabled."
+        : "");
+    reportChangedWarning(lastNativeConflictWarning_, nativeTransmissionInputConflict
+        ? "The native transmission was suspended because a physical input is shared with an accessory."
         : "");
     enabled = requested;
     return changes;
@@ -2791,6 +2799,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
             if (!simulated && usb.enabled && usb.accessoryAxisConflict)
                 diagnostic.accessories = DiagnosticAccessoryState::axisConflict;
+            if (!simulated && usb.enabled && usb.nativeTransmissionInputConflict)
+                diagnostic.accessories = DiagnosticAccessoryState::nativeInputConflict;
             for (std::size_t i = 0; i < diagnostic.accessoryCount; ++i) {
                 const auto& binding = (*usb.accessoryProfile)[i];
                 const auto key = binding.key;

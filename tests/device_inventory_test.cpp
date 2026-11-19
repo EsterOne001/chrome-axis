@@ -204,6 +204,64 @@ bool testPendingLayout()
     });
 }
 
+bool testIndeterminateInventory()
+{
+    auto scans = std::make_shared<std::atomic<unsigned int>>();
+    DeviceInventory inventory([scans] {
+        switch (scans->fetch_add(1)) {
+        case 0: {
+            DeviceInfo wheel{.id = "wheel"};
+            wheel.axes[0] = true;
+            return DeviceInventoryResult{{std::move(wheel)}, true};
+        }
+        case 1:
+            return DeviceInventoryResult{{DeviceInfo{.id = "partial"}}, false};
+        case 2: {
+            DeviceInfo wheel{.id = "wheel"};
+            wheel.layoutPending.axes.set();
+            return DeviceInventoryResult{{std::move(wheel)}, true};
+        }
+        default:
+            return DeviceInventoryResult{{}, true};
+        }
+    });
+    inventory.setAutomaticRetries(false);
+    const auto refresh = [&] {
+        inventory.refresh();
+        waitFor([&] { return static_cast<bool>(inventory.current()); });
+        return inventory.current();
+    };
+    const auto known = refresh();
+    const auto failed = refresh();
+    const auto inaccessible = refresh();
+    const auto absent = refresh();
+    return known && known->available && failed && !failed->available && failed->devices == known->devices
+        && inaccessible && inaccessible->available && inaccessible->devices.size() == 1
+        && inaccessible->devices.front().axes[0] && inaccessible->devices.front().layoutPending.axes[0]
+        && absent && absent->available && absent->devices.empty();
+}
+
+bool testReviewWaitsForAutomaticScan()
+{
+    auto gate = std::make_shared<ScanGate>();
+    gate->blockedScan = 2;
+    DeviceInventory inventory([gate] {
+        auto result = gate->scan();
+        if (result.devices.front().id == "1")
+            result.devices.front().layoutPending.axes.set(0);
+        return result;
+    });
+    inventory.refresh();
+    const bool initial = waitFor([&] { return static_cast<bool>(inventory.current(true)); });
+    const bool retrying = waitFor([&] { return gate->started == 2; }) &&
+        inventory.current() && !inventory.current(true);
+    gate->unblock();
+    return initial && retrying && waitFor([&] {
+        const auto finished = inventory.current(true);
+        return finished && finished->devices.front().id == "2";
+    });
+}
+
 struct SampleGate {
     std::atomic<unsigned int> sampleCount{};
     std::atomic<bool> released{}, extraReleased{}, stoppingStarted{}, stoppingReleased{}, stoppingFinished{};
@@ -575,7 +633,7 @@ bool testGuidedDeviceInterruption()
         });
     };
 
-    // The review reads the devices through the normal live preview.
+    // Interruptions are independent of a consumer's report-latency policy.
     const bool initiallyAvailable = read("wheel", DeviceReadStatus::available) &&
         read("pedals", DeviceReadStatus::available);
     wheelStatus->store(DeviceReadStatus::pending);
@@ -618,6 +676,44 @@ bool testSlowGuidedCalibration()
             return false;
     }
     return capture.complete() && capture.result()->median[0] == sample.axes[0];
+}
+
+bool testCalibrationReviewReadings()
+{
+    auto pedalAvailable = std::make_shared<std::atomic_bool>();
+    AppInput input([pedalAvailable](const std::string& id, const auto&) -> CaptureDeviceRead {
+        if (id == "pedals" && !pedalAvailable->load())
+            return {{}, DeviceReadStatus::pending};
+        DeviceSample sample;
+        sample.sampledAt = DeviceReadClock::now();
+        sample.axesPresent[0] = true;
+        sample.axes[0] = 0;
+        if (id == "wheel")
+            std::this_thread::sleep_for(150ms);
+        return {sample, DeviceReadStatus::available};
+    });
+    const Profile profile{
+        .steering = {"wheel", 0, 0, -1000, 1000, 0.0f},
+        .throttle = {"pedals", 0, 0, 0, 1000, 0.05f},
+    };
+    ControlReader reader(profile);
+    constexpr std::array scope{true, true, false};
+    const auto ready = [&] {
+        return calibrationReviewHasReadings(scope, input.reviewCalibration(reader).travel);
+    };
+    const bool beforeFirstReport = !ready();
+    const bool onlyWheel = waitFor([&] {
+        const auto readings = input.reviewCalibration(reader);
+        return readings.travel[0] == 0.0f && !readings.travel[1] && !calibrationReviewHasReadings(scope, readings.travel);
+    });
+    pedalAvailable->store(true);
+    const bool allReady = waitFor(ready);
+    input.invalidate();
+    const bool waitsAfterTopologyChange = !ready() && waitFor(ready);
+    input.close();
+    reader.reset();
+    const bool waitsAfterRefocus = !ready() && waitFor(ready);
+    return beforeFirstReport && onlyWheel && allReady && waitsAfterTopologyChange && waitsAfterRefocus;
 }
 
 bool testAnalogCaptureWarmup()
@@ -711,6 +807,8 @@ int main()
     const bool feedbackProbe = testTargetedFeedbackInventory();
     const bool feedbackRefresh = testClassifiedFeedbackInventoryRefresh();
     const bool pendingLayout = testPendingLayout();
+    const bool indeterminateInventory = testIndeterminateInventory();
+    const bool reviewWaitsForInventory = testReviewWaitsForAutomaticScan();
     const bool asyncCapture = testAsynchronousCapture();
     const bool independentCapture = testIndependentDeviceCapture();
     const bool slowCapture = testSlowCaptureBetweenReads();
@@ -723,21 +821,27 @@ int main()
     const bool shortcut = testShortcut(root);
     const bool usbStatus = testUsbStatus();
     const bool slowCalibration = testSlowGuidedCalibration();
+    const bool reviewReadings = testCalibrationReviewReadings();
     const bool analogWarmup = testAnalogCaptureWarmup();
     const bool explicitSelection = testExplicitDeviceSelection();
     std::error_code error;
     std::filesystem::remove(root / transmissionHotkeyFilename, error);
     std::filesystem::remove(root, error);
-    if (!inventory || !feedbackProbe || !feedbackRefresh || !pendingLayout || !asyncCapture || !independentCapture || !slowCapture || !readerRecovery || !idleReader || !capture ||
-        !guidedReadLimit || !guidedCalibration || !guidedRecovery || !shortcut || !usbStatus || !slowCalibration || !analogWarmup || !explicitSelection)
+    if (!inventory || !feedbackProbe || !feedbackRefresh || !pendingLayout || !indeterminateInventory ||
+        !reviewWaitsForInventory || !asyncCapture || !independentCapture || !slowCapture || !readerRecovery || !idleReader ||
+        !capture || !guidedReadLimit || !guidedCalibration || !guidedRecovery || !shortcut || !usbStatus || !slowCalibration ||
+        !reviewReadings || !analogWarmup || !explicitSelection)
         std::cerr << "inventory=" << inventory << " feedback_probe=" << feedbackProbe << " feedback_refresh=" << feedbackRefresh
-                  << " pending_layout=" << pendingLayout << " async_capture=" << asyncCapture
+                  << " pending_layout=" << pendingLayout << " indeterminate_inventory=" << indeterminateInventory
+                  << " review_inventory=" << reviewWaitsForInventory << " async_capture=" << asyncCapture
                   << " independent_capture=" << independentCapture << " slow_capture=" << slowCapture
                   << " guided_read_limit=" << guidedReadLimit << " reader_recovery=" << readerRecovery
                   << " idle_reader=" << idleReader << " capture=" << capture
                   << " guided_calibration=" << guidedCalibration << " guided_recovery=" << guidedRecovery << " shortcut=" << shortcut
-                  << " usb_state=" << usbStatus << " slow_calibration=" << slowCalibration
+                  << " usb_state=" << usbStatus << " slow_calibration=" << slowCalibration << " review_readings=" << reviewReadings
                   << " analog_warmup=" << analogWarmup << " explicit_selection=" << explicitSelection << '\n';
-    return inventory && feedbackProbe && feedbackRefresh && pendingLayout && asyncCapture && independentCapture && slowCapture && readerRecovery && idleReader && capture &&
-        guidedReadLimit && guidedCalibration && guidedRecovery && shortcut && usbStatus && slowCalibration && analogWarmup && explicitSelection ? 0 : 1;
+    return inventory && feedbackProbe && feedbackRefresh && pendingLayout && indeterminateInventory &&
+        reviewWaitsForInventory && asyncCapture && independentCapture && slowCapture && readerRecovery && idleReader &&
+        capture && guidedReadLimit && guidedCalibration && guidedRecovery && shortcut && usbStatus && slowCalibration &&
+        reviewReadings && analogWarmup && explicitSelection ? 0 : 1;
 }

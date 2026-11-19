@@ -51,21 +51,6 @@ int nativeGearNumber(ShifterRole role) noexcept
     return position ? std::countr_zero(position) : -1;
 }
 
-bool sameNativeInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept
-{
-    if (first.deviceId != second.deviceId || first.kind != second.kind || first.index != second.index)
-        return false;
-    switch (first.kind) {
-    case AccessoryKind::Button:
-        return true;
-    case AccessoryKind::Pov:
-        return first.engaged == second.engaged;
-    case AccessoryKind::Axis:
-        return (first.engaged > first.rest) == (second.engaged > second.rest);
-    }
-    return false;
-}
-
 ShifterRole parseRole(std::string_view entry)
 {
     if (!entry.starts_with(rolePrefix))
@@ -199,7 +184,7 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
             }
             auto& position = nativePositions[static_cast<std::size_t>(gear)];
             if (position || std::ranges::any_of(nativePositions, [&](const AccessoryBinding* other) {
-                return other && sameNativeInput(binding, *other);
+                return other && sameShifterInput(binding, *other);
             })) {
                 error = "Invalid accessory input";
                 return false;
@@ -218,7 +203,7 @@ bool validateAccessories(const AccessoryProfile& profile, std::string& error)
             }
             auto& position = paddles[up ? 0 : 1];
             if (position || std::ranges::any_of(paddles, [&](const AccessoryBinding* other) {
-                return other && sameNativeInput(binding, *other);
+                return other && sameShifterInput(binding, *other);
             })) {
                 error = "Duplicate native sequential input";
                 return false;
@@ -387,8 +372,63 @@ bool hasDedicatedAccessoryAxisConflict(std::span<const AccessoryBinding> binding
         return binding.kind == AccessoryKind::Axis && binding.clutchMode && isEnabledDrivingAccessory(binding);
     });
     return clutch != bindings.end() && std::ranges::any_of(bindings, [&](const auto& binding) {
-        return binding.handbrakeCeilingPercent && sameNativeInput(*clutch, binding);
+        return binding.handbrakeCeilingPercent && sameShifterInput(*clutch, binding);
     });
+}
+
+bool sameShifterInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept
+{
+    if (first.deviceId != second.deviceId || first.kind != second.kind || first.index != second.index)
+        return false;
+    if (first.kind != AccessoryKind::Axis)
+        return first.rest == second.rest && first.engaged == second.engaged;
+    return (first.engaged > first.rest && second.engaged > second.rest)
+        || (first.engaged < first.rest && second.engaged < second.rest);
+}
+
+bool nativeTransmissionInputConflict(const AccessoryBinding& first, const AccessoryBinding& second) noexcept
+{
+    return isNativeTransmissionBinding(first) != isNativeTransmissionBinding(second)
+        && isEnabledDrivingAccessory(first) && isEnabledDrivingAccessory(second)
+        && sameShifterInput(first, second);
+}
+
+bool hasNativeTransmissionInputConflict(std::span<const AccessoryBinding> bindings) noexcept
+{
+    return std::ranges::any_of(bindings, [&](const auto& native) {
+        return isNativeTransmissionBinding(native) && std::ranges::any_of(bindings, [&](const auto& other) {
+            return nativeTransmissionInputConflict(native, other);
+        });
+    });
+}
+
+bool introducesNativeTransmissionInputConflict(std::span<const AccessoryBinding> previous,
+                                               std::span<const AccessoryBinding> updated) noexcept
+{
+    // Legacy conflicts can be repaired one at a time. An existing conflict is tied
+    // to the physical gesture and both command identities, independently of tuning.
+    const auto wasAssigned = [&](const AccessoryBinding& binding) {
+        return std::ranges::any_of(previous, [&](const auto& other) {
+            return isEnabledDrivingAccessory(other) && sameShifterInput(binding, other)
+                && binding.nativeShifter == other.nativeShifter && binding.nativeSequential == other.nativeSequential
+                && binding.role == other.role && binding.key == other.key
+                && binding.clutchMode.has_value() == other.clutchMode.has_value()
+                && (binding.handbrakeCeilingPercent != 0) == (other.handbrakeCeilingPercent != 0);
+        });
+    };
+    return std::ranges::any_of(updated, [&](const auto& native) {
+        return isNativeTransmissionBinding(native) && std::ranges::any_of(updated, [&](const auto& other) {
+            return nativeTransmissionInputConflict(native, other) && !(wasAssigned(native) && wasAssigned(other));
+        });
+    });
+}
+
+bool suppressConflictingNativeTransmission(AccessoryProfile& bindings)
+{
+    if (!hasNativeTransmissionInputConflict(bindings))
+        return false;
+    std::erase_if(bindings, isNativeTransmissionBinding);
+    return true;
 }
 
 bool suppressConflictingAnalogAccessories(AccessoryProfile& bindings, const Profile* axes)

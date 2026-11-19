@@ -15,16 +15,6 @@ bool povReadable(const DeviceSample& sample, std::size_t index) noexcept
 
 } // namespace
 
-bool sameShifterInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept
-{
-    if (first.deviceId != second.deviceId || first.kind != second.kind || first.index != second.index)
-        return false;
-    if (first.kind != AccessoryKind::Axis)
-        return first.rest == second.rest && first.engaged == second.engaged;
-    return (first.engaged > first.rest && second.engaged > second.rest)
-        || (first.engaged < first.rest && second.engaged < second.rest);
-}
-
 void PovCapture::observe(const DeviceSample& sample) noexcept
 {
     for (std::size_t i = 0; i < povCount; ++i) {
@@ -48,8 +38,16 @@ ShifterCapture::DigitalState ShifterCapture::digitalState(const DeviceSample& sa
     return state;
 }
 
-bool ShifterCapture::captureNeutral(const DeviceSample& sample) noexcept
+bool ShifterCapture::captureNeutral(const DeviceSample& sample, std::span<const AccessoryBinding> existing) noexcept
 {
+    if (std::ranges::any_of(existing, [&](const auto& position) {
+            return position.deviceId == deviceId_ && position.kind != AccessoryKind::Axis
+                && discreteAccessoryLevel(position, sample, false) != DiscreteAccessoryLevel::neutral;
+        })) {
+        neutralCaptured_ = false;
+        resetPosition();
+        return false;
+    }
     if (neutralCaptured_)
         return true;
 
@@ -79,6 +77,8 @@ void ShifterCapture::resetPosition() noexcept
 
 void ShifterCapture::deviceInterrupted() noexcept
 {
+    neutralCaptured_ = false;
+    neutral_ = {};
     povCapture_.reset();
     resetPosition();
 }

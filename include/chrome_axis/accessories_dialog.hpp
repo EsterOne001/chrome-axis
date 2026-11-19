@@ -93,10 +93,6 @@ bool editProfileShifter(HWND owner, AppInput& input, DeviceInventory& inventory,
 bool editShifter(HWND owner, AppInput& input, DeviceInventory& inventory, AccessoryProfile& bindings,
                  const std::filesystem::path& profileRoot, TransmissionShortcut& shortcut,
                  std::function<bool(HWND, const AccessoryProfile&)> save);
-inline bool isNativeTransmissionBinding(const AccessoryBinding& binding) noexcept
-{
-    return binding.nativeShifter || binding.nativeSequential;
-}
 std::wstring accessoryKeyLabel(unsigned int key);
 std::wstring accessoryInputLabel(const AccessoryBinding& binding);
 std::wstring shifterRoleLabel(ShifterRole role);

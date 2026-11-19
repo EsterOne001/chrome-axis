@@ -17,6 +17,7 @@ CHROME_AXIS_TEXT(mainPressBrake, L"Appuyez à fond sur le frein seul et maintene
 CHROME_AXIS_TEXT(mainTextUnavailable, L"Texte indisponible", L"Text unavailable")
 CHROME_AXIS_TEXT(mainDecimalSeparator, L",", L".")
 CHROME_AXIS_TEXT(mainDiscardOnClose, L"Fermer sans enregistrer les modifications du profil ?", L"Close without saving changes to the profile?")
+CHROME_AXIS_TEXT(mainExportClosePending, L"Le CSV est en cours d’exportation. Vous pourrez fermer Chrome Axis une fois l’exportation terminée.", L"The CSV is still being exported. You can close Chrome Axis once the export finishes.")
 CHROME_AXIS_TEXT(mainMenuSave, L"&Enregistrer\tCtrl+S", L"&Save\tCtrl+S")
 CHROME_AXIS_TEXT(mainMenuReload, L"&Recharger", L"&Reload")
 CHROME_AXIS_TEXT(mainMenuSelectProfile, L"&Sélectionner un profil…", L"Selec&t profile…")

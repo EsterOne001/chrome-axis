@@ -126,7 +126,8 @@ private:
 };
 
 enum class ProfileEditorError { none, calibrationUnreadable, accessoriesUnreadable, axisConflict,
-                                dedicatedAccessoryAxisConflict, feedbackUnreadable, feedbackWriteFailed, createDirectoryFailed };
+                                dedicatedAccessoryAxisConflict, nativeInputConflict, feedbackUnreadable,
+                                feedbackWriteFailed, createDirectoryFailed };
 
 struct ProfileEditorSave {
     PresetSaveResult result{PresetSaveResult::ioError};
@@ -222,7 +223,8 @@ inline ProfileEditorSave saveEditorAccessories(const std::filesystem::path& root
             return false;
         }
         const bool dedicatedAxisConflict = hasDedicatedAccessoryAxisConflict(updated);
-        if (axes.profile || dedicatedAxisConflict) {
+        const bool nativeInputConflict = hasNativeTransmissionInputConflict(updated);
+        if (axes.profile || dedicatedAxisConflict || nativeInputConflict) {
             const auto previous = expectedRevision->present ? loadAccessoryProfile(path, save.details)
                                                             : std::optional{AccessoryProfile{}};
             if (!previous) {
@@ -231,6 +233,10 @@ inline ProfileEditorSave saveEditorAccessories(const std::filesystem::path& root
             }
             if (dedicatedAxisConflict && !hasDedicatedAccessoryAxisConflict(*previous)) {
                 save.reason = ProfileEditorError::dedicatedAccessoryAxisConflict;
+                return false;
+            }
+            if (nativeInputConflict && introducesNativeTransmissionInputConflict(*previous, updated)) {
+                save.reason = ProfileEditorError::nativeInputConflict;
                 return false;
             }
             if (axes.profile && introducesAnalogAccessoryAxisConflict(&*axes.profile, *previous, *axes.profile, updated)) {

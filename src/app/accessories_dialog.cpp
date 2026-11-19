@@ -287,6 +287,7 @@ bool saveAccessorySettings(HWND owner, const std::filesystem::path& root, const 
         : save.reason == ProfileEditorError::accessoriesUnreadable ? Text::DlgAccessoriesChanged
         : save.reason == ProfileEditorError::axisConflict ? Text::DlgAccessoryDriveAxisConflict
         : save.reason == ProfileEditorError::dedicatedAccessoryAxisConflict ? Text::DlgDedicatedAccessoryAxisConflict
+        : save.reason == ProfileEditorError::nativeInputConflict ? Text::DlgShifterNativeInputConflict
         : save.reason == ProfileEditorError::createDirectoryFailed ? Text::DlgAccessoriesCreateProfileFailed
         : Text::DlgAccessoriesSaveError;
     auto message = std::wstring(tr(reason));
@@ -649,7 +650,10 @@ void AccessoryDialog::refreshAnalogActions(bool idle, bool captured)
         selectedAxis = accessoryInputLabel(binding) + L" · ";
         selectedAxis += device == devices_.end() ? tr(Text::DlgAccessoryPreviewDevice)
             : wide(device->name.empty() ? binding.deviceId : device->name);
-        if (hasDedicatedAccessoryAxisConflict(bindings_)) {
+        if (std::ranges::any_of(bindings_, [&](const auto& saved) { return nativeTransmissionInputConflict(binding, saved); })) {
+            selectedAxis += L"\r\n";
+            selectedAxis += tr(Text::DlgSavedNativeInputConflict);
+        } else if (hasDedicatedAccessoryAxisConflict(bindings_)) {
             selectedAxis += L"\r\n";
             selectedAxis += tr(Text::DlgSavedDedicatedAccessoryAxisConflict);
         } else if (savedAxes_ && analogAccessoryAxisConflict(*savedAxes_, binding)) {
@@ -1156,6 +1160,10 @@ void AccessoryDialog::refreshBindings(std::optional<std::size_t> selection)
                 + std::to_wstring(binding.thresholds.release) + L"%";
         }
         label += L"  ·  " + deviceLabel(binding.deviceId);
+        if (std::ranges::any_of(bindings_, [&](const auto& saved) { return nativeTransmissionInputConflict(binding, saved); })) {
+            label += L"  ·  ";
+            label += tr(Text::DlgAccessoryNativeConflictRow);
+        }
         const auto row = send(IDC_ACCESSORY_LIST, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
         if (row >= 0) {
             send(IDC_ACCESSORY_LIST, LB_SETITEMDATA, static_cast<WPARAM>(row), static_cast<LPARAM>(i));
@@ -1183,7 +1191,7 @@ void AccessoryDialog::add()
     }
     auto binding = captured_[*input];
     if (std::ranges::any_of(bindings_, [&](const auto& saved) {
-            return isNativeTransmissionBinding(saved) && sameShifterInput(binding, saved);
+            return nativeTransmissionInputConflict(binding, saved);
         })) {
         setStatus(tr(Text::DlgAccessoryNativeInputConflict));
         return;
@@ -1259,7 +1267,7 @@ void AccessoryDialog::applyHandbrake(AccessoryBinding binding)
         return;
     }
     if (std::ranges::any_of(bindings_, [&](const auto& saved) {
-            return isNativeTransmissionBinding(saved) && sameShifterInput(binding, saved);
+            return nativeTransmissionInputConflict(binding, saved);
         })) {
         setStatus(tr(Text::DlgAccessoryNativeInputConflict));
         return;
@@ -1299,8 +1307,13 @@ void AccessoryDialog::applyHandbrake(AccessoryBinding binding)
 
 void AccessoryDialog::applyClutch(AccessoryBinding binding)
 {
+    binding.clutchMode = clutchMode_;
+    if (std::ranges::any_of(bindings_, [&](const auto& saved) { return nativeTransmissionInputConflict(binding, saved); })) {
+        setStatus(tr(Text::DlgAccessoryNativeInputConflict));
+        return;
+    }
     if (std::ranges::any_of(bindings_, [&](const auto& saved) {
-            return !saved.clutchMode && sameShifterInput(binding, saved);
+            return !saved.clutchMode && !isNativeTransmissionBinding(saved) && sameShifterInput(binding, saved);
         })) {
         setStatus(tr(Text::DlgClutchInputConflict));
         return;
@@ -1310,7 +1323,6 @@ void AccessoryDialog::applyClutch(AccessoryBinding binding)
         setStatus(tr(Text::DlgAccessoriesBindingLimit));
         return;
     }
-    binding.clutchMode = clutchMode_;
     if (savedAxes_ && analogAccessoryAxisConflict(*savedAxes_, binding)) {
         setStatus(tr(Text::DlgAccessoryDriveAxisConflict));
         return;

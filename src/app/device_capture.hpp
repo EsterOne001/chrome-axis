@@ -3,7 +3,9 @@
 #include "chrome_axis/calibration.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <optional>
 
 namespace chrome_axis {
 
@@ -22,6 +24,16 @@ struct CaptureDeviceRead {
 inline bool restartAnalogCapture(const CaptureDeviceRead& reading, bool measuringRest, bool hadSignal) noexcept
 {
     return reading.needsRest() && (!measuringRest || hadSignal);
+}
+
+inline bool calibrationReviewHasReadings(const std::array<bool, 3>& scope,
+                                         const std::array<std::optional<float>, 3>& travel) noexcept
+{
+    for (std::size_t axis = 0; axis < scope.size(); ++axis) {
+        if (scope[axis] && !travel[axis])
+            return false;
+    }
+    return true;
 }
 
 inline bool collectGuidedCalibrationReading(CalibrationCapture& capture, const CaptureDeviceRead& reading,

@@ -580,6 +580,8 @@ bool ShifterDialog::legacyNativeMode() const
 
 Text ShifterDialog::setupStatus() const
 {
+    if (hasNativeTransmissionInputConflict(edited_))
+        return Text::DlgSavedNativeInputConflict;
     if (legacyNativeMode())
         return Text::DlgShifterNativeH8Limit;
     if (!inventory_.current())
@@ -717,9 +719,13 @@ void ShifterDialog::recaptureAnalogUpshift(unsigned int previousKey, std::option
 
 void ShifterDialog::sampleNeutral(const DeviceSample& sample, const AccessoryBinding* priorAnalog)
 {
-    status(tr(Text::DlgShifterHoldNeutral));
-    if (digital_ && !digital_->captureNeutral(sample))
+    status(tr(digital_ && std::ranges::any_of(draft_, [this](const auto& position) {
+        return position.deviceId == deviceId_ && position.kind != AccessoryKind::Axis;
+    }) ? Text::DlgShifterRecaptureDigitalNeutral : Text::DlgShifterHoldNeutral));
+    if (digital_ && !digital_->captureNeutral(sample, draft_)) {
+        measurements_ = {};
         return;
+    }
     if (digital_ && !priorAnalog) {
         position();
         return;
@@ -759,7 +765,7 @@ void ShifterDialog::interruptCapture(Text analogMessage, Text positionMessage, T
     }
     KillTimer(window_, captureTimer);
     input_.invalidate();
-    if (stage_ == Stage::Neutral && native_ && forward_ == 0 && step_ == 1) {
+    if (stage_ == Stage::Neutral && ((digital_ && key_.hasPosition()) || (native_ && forward_ == 0 && step_ == 1))) {
         stage_ = Stage::NeutralPaused;
         status(tr(Text::DlgShifterCaptureInterrupted));
     } else if (stage_ == Stage::AnalogMeasure) {
@@ -985,10 +991,14 @@ void ShifterDialog::position()
 
 void ShifterDialog::captured(AccessoryBinding binding)
 {
+    binding.nativeShifter = native_ && forward_ != 0;
+    binding.nativeSequential = native_ && forward_ == 0;
     const auto existing = std::ranges::find_if(edited_, [&](const auto& other) {
-        return !captureSetup().replaces(other) && sameShifterInput(binding, other);
+        return !captureSetup().replaces(other) && (native_ ? nativeTransmissionInputConflict(binding, other)
+                                                           : sameShifterInput(binding, other));
     });
-    if (native_ && existing != edited_.end()) {
+    const bool conflict = existing != edited_.end() && nativeTransmissionInputConflict(binding, *existing);
+    if (conflict) {
         if (!analog_)
             KillTimer(window_, captureTimer);
         stage_ = analog_ ? Stage::AnalogReady : Stage::Paused;
@@ -998,8 +1008,6 @@ void ShifterDialog::captured(AccessoryBinding binding)
     }
     if (existing != edited_.end())
         binding.activation = existing->activation;
-    binding.nativeShifter = native_ && forward_ != 0;
-    binding.nativeSequential = native_ && forward_ == 0;
     pending_ = std::move(binding);
     stage_ = Stage::Captured;
     if (!analog_ && !pendingMixedDownshift())
@@ -1084,8 +1092,20 @@ void ShifterDialog::poll()
         return;
     }
     if (!sample || reading.needsRest()) {
-        if (digital_)
-            digital_->deviceInterrupted();
+        if (digital_) {
+            if (reading.needsRest()) {
+                digital_->deviceInterrupted();
+                if (stage_ == Stage::Position) {
+                    stage_ = Stage::Neutral;
+                    updateControls();
+                    runTimer();
+                    if (stage_ != Stage::Neutral)
+                        return;
+                }
+            } else {
+                digital_->resetPosition();
+            }
+        }
         measurements_ = {};
     }
     if (!sample) {

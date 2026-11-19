@@ -15,6 +15,7 @@
 #include "device_inventory.hpp"
 #include "diagnostic_recording.hpp"
 #include "diagnostics_dialog.hpp"
+#include "dialog_viewport.hpp"
 #include "profile_editor.hpp"
 #include "transmission_shortcut.hpp"
 #include "ui_theme.hpp"
@@ -52,6 +53,8 @@ constexpr wchar_t title[] = L"Chrome Axis";
 constexpr wchar_t nexusModUrl[] = L"https://www.nexusmods.com/cyberpunk2077/mods/38104";
 constexpr UINT_PTR inputTimer = 1;
 constexpr int contentWidthLimit = 1120;
+constexpr int minimumContentWidth = 736;
+constexpr int minimumContentHeight = 622;
 constexpr int languageButtonSize = 36;
 constexpr int languageButtonSpace = languageButtonSize + 12;
 constexpr int headerUsbWidth = 182;
@@ -241,6 +244,30 @@ void addChoice(HWND combo, const std::wstring& text)
     SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
 }
 
+RECT fitMainWindowRect(RECT bounds)
+{
+    MONITORINFO monitor{sizeof(monitor)};
+    if (!GetMonitorInfoW(MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST), &monitor))
+        return bounds;
+    const auto& work = monitor.rcWork;
+    const auto width = std::min(bounds.right - bounds.left, work.right - work.left);
+    const auto height = std::min(bounds.bottom - bounds.top, work.bottom - work.top);
+    const auto left = std::clamp(bounds.left, work.left, work.right - width);
+    const auto top = std::clamp(bounds.top, work.top, work.bottom - height);
+    return {left, top, left + width, top + height};
+}
+
+void fitMainWindow(HWND window)
+{
+    RECT bounds{};
+    if (IsZoomed(window) || IsIconic(window) || !GetWindowRect(window, &bounds))
+        return;
+    const auto fitted = fitMainWindowRect(bounds);
+    if (!EqualRect(&fitted, &bounds))
+        SetWindowPos(window, nullptr, fitted.left, fitted.top, fitted.right - fitted.left,
+                     fitted.bottom - fitted.top, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 class App {
 public:
     explicit App(std::filesystem::path directory)
@@ -274,28 +301,56 @@ public:
                 suspendHardware();
             return 0;
         case WM_SETTINGCHANGE:
+            if (wp == SPI_SETWORKAREA)
+                fitMainWindow(window);
             updateAnimationPreference();
             updateCalibrationMotion(GetForegroundWindow() == window_ && !IsIconic(window_));
             return 0;
         case WM_GETMINMAXINFO: {
             auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
-            RECT minimum{0, 0, px(736), px(622)};
+            RECT minimum{0, 0, px(minimumContentWidth), px(minimumContentHeight)};
             AdjustWindowRectExForDpi(&minimum, WS_OVERLAPPEDWINDOW, TRUE, WS_EX_CONTROLPARENT, dpi_);
             limits->ptMinTrackSize = {minimum.right - minimum.left, minimum.bottom - minimum.top};
+            MONITORINFO monitor{sizeof(monitor)};
+            if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor)) {
+                limits->ptMinTrackSize.x = std::min(limits->ptMinTrackSize.x, monitor.rcWork.right - monitor.rcWork.left);
+                limits->ptMinTrackSize.y = std::min(limits->ptMinTrackSize.y, monitor.rcWork.bottom - monitor.rcWork.top);
+            }
             return 0;
         }
         case WM_DPICHANGED: {
             dpi_ = HIWORD(wp);
-            const auto& rect = *reinterpret_cast<const RECT*>(lp);
+            const auto& suggested = *reinterpret_cast<const RECT*>(lp);
+            const auto rect = IsZoomed(window) ? suggested : fitMainWindowRect(suggested);
             updateDpiResources();
             SetWindowPos(window, nullptr, rect.left, rect.top, rect.right - rect.left,
                          rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
             layout();
             return 0;
         }
+        case WM_DISPLAYCHANGE:
+        case WM_EXITSIZEMOVE:
+            fitMainWindow(window);
+            return 0;
+        case WM_VSCROLL:
+        case WM_HSCROLL:
+            if (!lp && viewport_.scroll(window, LOWORD(wp), message == WM_HSCROLL))
+                layout();
+            return 0;
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL: {
+            const bool horizontal = message == WM_MOUSEHWHEEL || (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT);
+            const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+            if (viewport_.wheel(window, horizontal && message == WM_MOUSEWHEEL ? -delta : delta, horizontal)) {
+                layout();
+                return 0;
+            }
+            break;
+        }
         case WM_DEVICECHANGE:
             if (wp == DBT_DEVNODES_CHANGED || wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
                 inventory_.refreshAfterDeviceChange();
+                invalidateCalibrationReviewReadings();
                 if (hardware_)
                     updateHardwareStatus();
             }
@@ -382,6 +437,10 @@ public:
             break;
         }
         case WM_CLOSE:
+            if (diagnosticRecorder_.exportState() == chrome_axis::DiagnosticExportState::exporting) {
+                MessageBoxW(window, tr(Text::mainExportClosePending), title, MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
             if (!dirty_ || MessageBoxW(window, tr(Text::mainDiscardOnClose),
                                        title, MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES)
                 DestroyWindow(window);
@@ -397,10 +456,28 @@ public:
     }
 
 private:
+    static LRESULT CALLBACK revealFocusedControl(HWND control, UINT message, WPARAM wp, LPARAM lp,
+                                                 UINT_PTR id, DWORD_PTR data)
+    {
+        if (message == WM_NCDESTROY)
+            RemoveWindowSubclass(control, revealFocusedControl, id);
+        if (message == WM_SETFOCUS) {
+            auto& app = *reinterpret_cast<App*>(data);
+            const auto offset = app.viewport_.offset();
+            app.viewport_.reveal(app.window_, control);
+            const auto next = app.viewport_.offset();
+            if (next.x != offset.x || next.y != offset.y)
+                app.layout();
+        }
+        return DefSubclassProc(control, message, wp, lp);
+    }
+
     HWND child(const wchar_t* kind, const wchar_t* text, DWORD style = 0, int id = 0, DWORD ex = 0)
     {
         const auto control = CreateWindowExW(ex, kind, text, WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | style,
             0, 0, 1, 1, window_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
+        if (control && (style & WS_TABSTOP))
+            SetWindowSubclass(control, revealFocusedControl, 1, reinterpret_cast<DWORD_PTR>(this));
         return control;
     }
 
@@ -573,9 +650,12 @@ private:
 
     void layout()
     {
-        RECT rect{};
-        GetClientRect(window_, &rect);
-        const auto [left, width] = contentBounds(rect.right);
+        if (std::exchange(layoutRunning_, true))
+            return;
+        viewport_.resizeContent(window_, {px(minimumContentWidth), px(minimumContentHeight)});
+        const auto extent = viewport_.extent();
+        const auto offset = viewport_.offset();
+        const auto [left, width] = contentBounds(extent.cx);
         struct Placement {
             HWND control;
             int x, y, width, height;
@@ -584,7 +664,7 @@ private:
         placements.reserve(70);
         const auto place = [&](HWND control, int x, int y, int w, int h) {
             if (control)
-                placements.push_back({control, px(left + x), px(y), px(w), px(h)});
+                placements.push_back({control, px(left + x) - offset.x, px(y) - offset.y, px(w), px(h)});
         };
 
         place(hardwareTab_, width - headerHardwareInset, 26, headerHardwareWidth, 36);
@@ -673,7 +753,7 @@ private:
         place(select_, width - 492, footer, 180, 31);
         place(reload_, width - 302, footer, 106, 31);
         place(save_, width - 186, footer, 162, 31);
-        const int simFooter = MulDiv(rect.bottom, USER_DEFAULT_SCREEN_DPI, static_cast<int>(dpi_)) - 49;
+        const int simFooter = MulDiv(extent.cy, USER_DEFAULT_SCREEN_DPI, static_cast<int>(dpi_)) - 49;
         place(simBack_, width - 144, simFooter, 120, 31);
         if (simulation_) {
             place(status_, 24, simFooter + 5, width - 182, 22);
@@ -702,26 +782,31 @@ private:
             }
         }
         redrawControls();
+        layoutRunning_ = false;
     }
 
     void paint()
     {
         PAINTSTRUCT paintData{};
         const auto dc = BeginPaint(window_, &paintData);
-        RECT client{};
-        GetClientRect(window_, &client);
+        const auto extent = viewport_.extent();
+        const RECT client{0, 0, extent.cx, extent.cy};
+        const auto offset = viewport_.offset();
         const auto& region = paintData.rcPaint;
         const int width = region.right - region.left;
         const int height = region.bottom - region.top;
         if (width > 0 && height > 0) {
             const auto left = contentBounds(client.right).first;
-            const auto illustration = guideIllustrationBounds(left);
+            const auto illustration = visibleContentRect(guideIllustrationBounds(left));
             const bool illustrationOnly = calibrating_ && step_ < stepCount_ && EqualRect(&region, &illustration);
             const auto paintRegion = [&](HDC target) {
+                POINT original{};
+                OffsetViewportOrgEx(target, -offset.x, -offset.y, &original);
                 if (illustrationOnly)
                     paintGuideIllustration(target, left);
                 else
                     paintScene(target, client);
+                SetViewportOrgEx(target, original.x, original.y, nullptr);
             };
             const auto buffer = CreateCompatibleDC(dc);
             const auto bitmap = buffer ? CreateCompatibleBitmap(dc, width, height) : nullptr;
@@ -777,6 +862,13 @@ private:
     RECT guideIllustrationBounds(int left) const
     {
         return {px(left + 46), px(198), px(left + 254), px(400)};
+    }
+
+    RECT visibleContentRect(RECT rect) const
+    {
+        const auto offset = viewport_.offset();
+        OffsetRect(&rect, -offset.x, -offset.y);
+        return rect;
     }
 
     void paintGuideIllustration(HDC dc, int left)
@@ -959,6 +1051,8 @@ private:
     void cancelCurrentCalibration();
     void enterCalibrationReview();
     void updateCalibrationReview(bool foreground);
+    bool updateCalibrationReviewConfirmation();
+    void invalidateCalibrationReviewReadings();
     Text calibrationReviewStatus(std::size_t channel, chrome_axis::AxisStatus status) const;
     void updateReviewBrakeOutput(std::optional<float> value);
     void updateCapture();
@@ -1031,6 +1125,8 @@ private:
     chrome_axis::ProfilePreset preset_;
     HWND window_{};
     UINT dpi_{USER_DEFAULT_SCREEN_DPI};
+    chrome_axis::DialogViewport viewport_;
+    bool layoutRunning_{};
     std::array<HFONT, 3> fonts_{};
     Icon headerLogo_;
     HBRUSH backgroundBrush_{}, panelBrush_{}, fieldBrush_{};
@@ -1084,6 +1180,7 @@ private:
     std::chrono::steady_clock::time_point guideMotionStart_{};
     CalibrationScope calibrationScope_{};
     CalibrationScope calibrationRetryRequired_{};
+    bool calibrationReviewReadingsReady_{};
     std::array<std::wstring, commands.size()> calibrationDeviceNames_{};
     std::array<Step, calibrationSteps.size()> steps_{};
     std::size_t step_{}, stepCount_{};
@@ -1106,6 +1203,7 @@ private:
     chrome_axis::DiagnosticRecorder diagnosticRecorder_;
     std::uint64_t simulationRequestedAt_{};
     std::uint64_t nextSimulationStatus_{};
+    std::uint64_t nextSimulationShortcutRefresh_{};
     chrome_axis::Simulator simulator_;
     chrome_axis::TransmissionShortcut transmissionShortcut_;
     unsigned int transmissionKey_{};
@@ -1355,6 +1453,7 @@ void App::scanDevices()
     installed_ = chrome_axis::isInstalledPluginDirectory(directory_.parent_path());
     temporaryDirectory_ = chrome_axis::isTemporaryProfileDirectory(directory_);
     inventory_.refresh();
+    invalidateCalibrationReviewReadings();
     refreshUsbToggle();
     updateHardwareStatus();
 }
@@ -1526,6 +1625,8 @@ const wchar_t* App::accessoryProfileStatus() const
 const wchar_t* App::transmissionHardwareStatus() const
 {
     const auto& bindings = accessoryPreview_.bindings();
+    if (chrome_axis::hasNativeTransmissionInputConflict(bindings))
+        return tr(Text::DlgSavedNativeInputConflict);
     const auto native = std::ranges::find_if(bindings, chrome_axis::isNativeTransmissionBinding);
     if (native == bindings.end())
         return nullptr;
@@ -1724,7 +1825,8 @@ void App::chooseStoredProfile()
         return;
 
     const auto names = chrome_axis::listPresets(directory_);
-    const auto choice = chrome_axis::chooseProfile(window_, names, preset_.name);
+    const auto copySource = preset_;
+    const auto choice = chrome_axis::chooseProfile(window_, names, copySource.name);
     if (!choice)
         return;
     if (!choice->copy && !activeDirectory().empty() && choice->name == preset_.name
@@ -1753,7 +1855,7 @@ void App::chooseStoredProfile()
         return;
 
     std::string error;
-    const bool selected = choice->copy ? chrome_axis::createPreset(directory_, choice->name, error)
+    const bool selected = choice->copy ? chrome_axis::createPreset(directory_, choice->name, error, &copySource)
         : chrome_axis::selectPreset(directory_, choice->name, error);
     if (!selected) {
         MessageBoxW(window_, chrome_axis::localizedError(error).c_str(), title, MB_OK | MB_ICONWARNING);
@@ -1927,6 +2029,10 @@ void App::reassignStoredDevice()
         MessageBoxW(window_, tr(Text::mainScanningDevices), title, MB_OK | MB_ICONINFORMATION);
         return;
     }
+    if (!connected->available) {
+        MessageBoxW(window_, tr(Text::mainDirectInputUnavailable), title, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
     const auto choice = chrome_axis::chooseDeviceReassignment(window_, profile, accessories, connected->devices);
     if (!choice)
         return;
@@ -1944,7 +2050,7 @@ void App::reassignStoredDevice()
     const auto currentInventory = inventory_.current();
     const auto target = currentInventory ? std::ranges::find(currentInventory->devices, choice->target, &chrome_axis::DeviceInfo::id)
         : std::vector<chrome_axis::DeviceInfo>::const_iterator{};
-    if (!currentInventory || target == currentInventory->devices.end() ||
+    if (!currentInventory || !currentInventory->available || target == currentInventory->devices.end() ||
         !readSavedBindings(currentProfile, currentAccessories) ||
         !chrome_axis::supportsReassignment(choice->source, *target, currentProfile, currentAccessories)) {
         MessageBoxW(window_, tr(Text::mainReassignChanged), title, MB_OK | MB_ICONWARNING);
@@ -2125,6 +2231,8 @@ void App::transferProfiles(bool restoring)
             message += L"\n\n" + std::wstring(tr(Text::mainRestoreAxisConflict));
         if (failure.dedicatedAccessoryAxisConflict)
             message += L"\n\n" + std::wstring(tr(Text::mainDedicatedAccessoryAxisConflict));
+        if (failure.nativeTransmissionInputConflict)
+            message += L"\n\n" + std::wstring(tr(Text::DlgSavedNativeInputConflict));
     } else {
         message += L"\n\n" + path.wstring();
     }
@@ -2193,8 +2301,9 @@ void App::refreshUsbToggle()
 
 void App::refreshTransmissionKey()
 {
+    nextSimulationShortcutRefresh_ = GetTickCount64() + 500;
     transmissionShortcut_.refresh(directory_);
-    if (!transmissionShortcut_.saved()) {
+    if (!transmissionShortcut_.display()) {
         const auto report = drivingDiagnostics_.read();
         if (report.connection == chrome_axis::DiagnosticConnection::connected)
             transmissionShortcut_.refresh(directory_, report.snapshot.transmission.shortcutKey);
@@ -2353,15 +2462,11 @@ void App::updateCalibrationView()
         setText(guideStep_, tr(Text::guideReview));
         setText(guideAction_, tr(needsRetry ? Text::guideReviewRetryTitle : Text::guideReviewTitle));
         setText(guideDevice_, L"");
-        bool disconnected = false;
         for (std::size_t i = 0; i < retryAxes_.size(); ++i) {
             EnableWindow(retryAxes_[i], available[i]);
-            disconnected = disconnected || (calibrationScope_[i] && !available[i]);
         }
-        setText(instruction_, tr(needsRetry ? Text::guideReviewRetryReconnected
-            : disconnected ? Text::guideReviewReconnect : Text::guideReviewInstruction));
         setText(measure_, tr(Text::guideFinish));
-        EnableWindow(measure_, !needsRetry);
+        updateCalibrationReviewConfirmation();
         InvalidateRect(window_, nullptr, FALSE);
         return;
     }
@@ -2415,9 +2520,7 @@ void App::updateCalibrationMotion(bool foreground)
 
     if (motion != guideMotion_) {
         guideMotion_ = motion;
-        RECT client{};
-        GetClientRect(window_, &client);
-        const auto illustration = guideIllustrationBounds(contentBounds(client.right).first);
+        const auto illustration = visibleContentRect(guideIllustrationBounds(contentBounds(viewport_.extent().cx).first));
         InvalidateRect(window_, &illustration, FALSE);
     }
 }
@@ -2707,8 +2810,10 @@ void App::invalidateCalibrationDevice(std::string_view id, bool interruptUnmeasu
         input_->invalidate();
         calibrationMessage_ = tr(Text::guideReconnectedMeasureAgain);
     }
-    if (changed && reviewPreview_)
+    if (changed && reviewPreview_) {
         reviewPreview_.emplace(measured_);
+        calibrationReviewReadingsReady_ = false;
+    }
 }
 
 void App::watchCalibrationConnections()
@@ -2816,17 +2921,18 @@ void App::enterCalibrationReview()
     reviewPreview_.emplace(measured_);
     updateCalibrationReview(GetForegroundWindow() == window_ && !IsIconic(window_));
     updateCalibrationView();
-    SetFocus(measure_);
+    SetFocus(IsWindowEnabled(measure_) ? measure_ : previous_);
 }
 
 void App::updateCalibrationReview(bool foreground)
 {
     chrome_axis::ControlReader::CalibrationReadings readings;
     if (foreground)
-        readings = reviewPreview_->review(*input_);
+        readings = input_->reviewCalibration(*reviewPreview_);
     else
         reviewPreview_->reset();
 
+    calibrationReviewReadingsReady_ = chrome_axis::calibrationReviewHasReadings(calibrationScope_, readings.travel);
     chrome_axis::ControlState travel;
     const std::array values{&travel.values.steering, &travel.values.throttle, &travel.values.brake};
     const std::array ready{&travel.steeringReady, &travel.throttleReady, &travel.brakeReady};
@@ -2845,6 +2951,30 @@ void App::updateCalibrationReview(bool foreground)
     }
     updateLiveControls(travel);
     updateReviewBrakeOutput(calibrationScope_[2] ? readings.adjustedBrake : std::nullopt);
+    updateCalibrationReviewConfirmation();
+}
+
+bool App::updateCalibrationReviewConfirmation()
+{
+    const auto inventory = inventory_.current(true);
+    const bool current = inventory && inventoryRevision_ == inventory->revision;
+    const auto instruction = calibrationNeedsRetry() ? Text::guideReviewRetryReconnected
+        : !current ? Text::guideReviewCheckingDevices
+        : !inventory->available ? Text::mainDirectInputUnavailable
+        : !calibrationReviewReadingsReady_ ? Text::guideReviewWaitingForReadings : Text::guideReviewInstruction;
+    setText(instruction_, tr(instruction));
+    const bool ready = instruction == Text::guideReviewInstruction;
+    if ((IsWindowEnabled(measure_) != FALSE) != ready)
+        EnableWindow(measure_, ready);
+    return ready;
+}
+
+void App::invalidateCalibrationReviewReadings()
+{
+    if (!reviewPreview_)
+        return;
+    input_->invalidate();
+    updateCalibrationReview(false);
 }
 
 Text App::calibrationReviewStatus(std::size_t channel, chrome_axis::AxisStatus status) const
@@ -2973,7 +3103,13 @@ void App::acceptAxis(const chrome_axis::AxisCandidate& candidate)
 
 void App::finishCalibration()
 {
-    if (calibrationNeedsRetry())
+    if (!reviewPreview_ || GetForegroundWindow() != window_ || IsIconic(window_))
+        return;
+    updateCalibrationReview(true);
+    // Check again after requesting data. A driver can publish an interruption
+    // between the initial button dispatch and the review refresh.
+    watchCalibrationConnections();
+    if (!updateCalibrationReviewConfirmation())
         return;
     calibrating_ = false;
     reviewPreview_.reset();
@@ -2995,8 +3131,13 @@ void App::tick()
     publisher_.heartbeat();
     if (!IsWindowEnabled(window_))
         return;
-    if (simulation_ && publisher_.enabled() && GetTickCount64() >= nextSimulationStatus_)
-        updateSimulationStatus();
+    if (simulation_) {
+        const auto now = GetTickCount64();
+        if (now >= nextSimulationShortcutRefresh_)
+            refreshTransmissionKey();
+        if (publisher_.enabled() && now >= nextSimulationStatus_)
+            updateSimulationStatus();
+    }
     const bool foreground = GetForegroundWindow() == window_ && !IsIconic(window_);
     if (!simulation_) {
         consumeDeviceInventory();
@@ -3053,9 +3194,7 @@ void App::updateCapture()
             finishCapture(*result);
         return;
     }
-    RECT client{};
-    GetClientRect(window_, &client);
-    const auto track = captureProgressBounds(contentBounds(client.right).first);
+    const auto track = visibleContentRect(captureProgressBounds(contentBounds(viewport_.extent().cx).first));
     InvalidateRect(window_, &track, FALSE);
 }
 
@@ -3087,7 +3226,7 @@ void App::suspendHardware()
     if (preview_)
         preview_->reset();
     if (reviewPreview_)
-        reviewPreview_->reset();
+        updateCalibrationReview(false);
     if (capture_) {
         capture_.reset();
         calibrationMessage_ = tr(Text::mainMeasureInterrupted);
@@ -3180,6 +3319,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int show)
         nullptr, nullptr, instance, &app);
     if (!window)
         return 1;
+    fitMainWindow(window);
     ShowWindow(window, show);
     UpdateWindow(window);
 

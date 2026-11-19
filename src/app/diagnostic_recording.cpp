@@ -133,10 +133,10 @@ public:
         return file_.append(output.view()) && file_.flush();
     }
 
-    bool appendConnection(bool connected)
+    bool appendMarker(DiagnosticCaptureMarker marker)
     {
         std::ostringstream output;
-        writeDiagnosticCaptureConnection(output, status_.startedAt, GetTickCount64(), connected);
+        writeDiagnosticCaptureMarker(output, status_.startedAt, GetTickCount64(), marker);
         return file_.append(output.view());
     }
 
@@ -487,8 +487,10 @@ private:
             return DiagnosticRecordingFailure::file;
 
         std::uint64_t captureId{};
-        bool wasConnected = false;
+        std::uint64_t recordedPublisher{};
         bool hadCapture = false;
+        bool captureEnded = false;
+        bool captureInterrupted = false;
         while (!stop.stop_requested()) {
             const auto read = session.reader.read();
             if (read.connection == DiagnosticConnection::unavailable)
@@ -497,23 +499,36 @@ private:
             DiagnosticCaptureBatch batch;
             if (captureId && !session.drain(batch))
                 return DiagnosticRecordingFailure::file;
-            if (batch.finished)
+            if (batch.finished) {
                 captureId = 0;
+                captureEnded = true;
+            }
 
             const bool connected = read.connection == DiagnosticConnection::connected;
-            const bool drainedBacklog = batch.finished || batch.count < batchSize;
-            if (wasConnected && (batch.finished || (!connected && drainedBacklog))) {
-                if (!session.appendConnection(false))
+            const auto publisher = session.reader.publisherSession();
+            // Drain the previous capture before writing its boundary, including after a fast game relaunch.
+            if (publisher && !captureId && recordedPublisher && *publisher != recordedPublisher) {
+                if (!session.appendMarker(DiagnosticCaptureMarker::connectionLost))
                     return DiagnosticRecordingFailure::file;
-                wasConnected = false;
+                recordedPublisher = 0;
+                captureEnded = captureInterrupted = false;
             }
-            if (!captureId && connected && !stop.stop_requested())
-                captureId = session.reader.requestPerformanceCapture(true);
-            if (connected && captureId && !wasConnected) {
-                if (hadCapture && !session.appendConnection(true))
+            if (publisher && captureEnded && recordedPublisher) {
+                if (!session.appendMarker(DiagnosticCaptureMarker::captureInterrupted))
                     return DiagnosticRecordingFailure::file;
-                wasConnected = true;
-                hadCapture = true;
+                captureEnded = false;
+                captureInterrupted = true;
+            }
+            if (!captureId && connected && publisher && *publisher && !stop.stop_requested()) {
+                captureId = session.reader.requestPerformanceCapture(true);
+                if (captureId) {
+                    if (hadCapture && !session.appendMarker(captureInterrupted
+                            ? DiagnosticCaptureMarker::captureResumed : DiagnosticCaptureMarker::connectionRestored))
+                        return DiagnosticRecordingFailure::file;
+                    recordedPublisher = *publisher;
+                    hadCapture = true;
+                    captureInterrupted = false;
+                }
             }
 
             if (!session.flushIfDue())

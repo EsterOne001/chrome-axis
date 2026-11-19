@@ -6,6 +6,16 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.91
+
+- La restauration protège les copies de récupération après une interruption. La création d’un profil vérifie sous verrou le profil source confirmé.
+- L’inventaire USB distingue un retrait et un relevé indisponible. La calibration attend une lecture fraîche des axes concernés avant la validation.
+- Les éditeurs partagent la détection des conflits entre boîte native et accessoires. Après une reconnexion, la capture numérique vérifie le neutre et conserve les positions déjà capturées.
+- Le CSV distingue fin de capture et déconnexion du plugin. Une exportation en cours reste visible à la fermeture. Le raccourci AUTO / MANUEL se réactualise en simulation.
+- Les légendes des courbes de pédales précisent la mesure affichée. La fenêtre principale défile lorsqu’elle manque de place.
+
+[ZIP Vortex](out/Chromaxis-0.4.91.zip)
+
 ## Chrome Axis 0.4.90
 
 - La transmission native vérifie la validité de son contexte et conserve une référence au véhicule pendant son traitement. Les rappels d’une ancienne session ou d’un autre véhicule cessent d’actualiser les commandes et le retour de force.

@@ -60,6 +60,7 @@ constexpr ErrorTranslation errors[]{
     {"Un profil porte déjà ce nom.", {L"Un profil porte déjà ce nom.", L"A profile with that name already exists."}},
     {"Impossible de préparer la copie du profil.", {L"Impossible de préparer la copie du profil.", L"Could not prepare a copy of the profile."}},
     {"Impossible de copier les réglages vers le nouveau profil.", {L"Impossible de copier les réglages vers le nouveau profil.", L"Could not copy the settings to the new profile."}},
+    {"Le profil actif a changé. Cliquez sur Recharger pour le charger.", {L"Le profil actif a changé. Cliquez sur Recharger pour le charger.", L"The active profile changed. Click Reload to load it."}},
     {"Le profil a été créé, mais sa sélection n’a pas pu être enregistrée.", {L"Le profil a été créé. Sélectionnez-le dans la liste des profils.", L"The profile was created. Select it in the profile list."}},
 };
 

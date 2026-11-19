@@ -38,7 +38,7 @@ enum class DiagnosticAxisState : std::uint32_t {
 
 enum class DiagnosticAccessoryState : std::uint32_t {
     unconfigured, waiting, ready, profileError, inactive, blocked, deviceUnavailable, inputUnavailable, sampleExpired,
-    temporarilyUnavailable, axisConflict, modifierBlocked, selectorAmbiguous, awaitingFirstReport
+    temporarilyUnavailable, axisConflict, modifierBlocked, selectorAmbiguous, awaitingFirstReport, nativeInputConflict
 };
 
 enum class DiagnosticCommandState : std::uint8_t {
@@ -335,8 +335,9 @@ void writeDiagnosticCaptureHeader(std::ostream& output);
 // Returns the number of session records written, excluding the leading dropped-record marker.
 std::size_t writeDiagnosticCaptureRows(std::ostream& output, std::span<const DiagnosticCaptureRecord> records,
                                        std::uint64_t startedAt, std::uint64_t dropped = 0);
-void writeDiagnosticCaptureConnection(std::ostream& output, std::uint64_t startedAt,
-                                      std::uint64_t sampledAt, bool connected);
+enum class DiagnosticCaptureMarker { connectionLost, connectionRestored, captureInterrupted, captureResumed };
+void writeDiagnosticCaptureMarker(std::ostream& output, std::uint64_t startedAt,
+                                  std::uint64_t sampledAt, DiagnosticCaptureMarker marker);
 
 struct PerformanceRequest {
     std::uint64_t id{};
@@ -409,6 +410,8 @@ public:
     DiagnosticReader& operator=(const DiagnosticReader&) = delete;
 
     DiagnosticRead read() noexcept;
+    // Zero means no publisher, nullopt means the observation could not be made.
+    std::optional<std::uint64_t> publisherSession() const noexcept;
     // Submit a command for this reader's capture. A zero result means no request was sent.
     std::uint64_t requestPerformanceCapture(bool enabled) noexcept;
     bool ownsPerformanceCapture() const noexcept { return captureOwner_ != 0; }

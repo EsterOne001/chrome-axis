@@ -50,8 +50,10 @@ std::optional<ProfilePreset> readActivePreset(const std::filesystem::path& root)
 std::vector<std::wstring> listPresets(const std::filesystem::path& root);
 bool selectPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error);
 
-// Copy the active profile's saved files, then select the new profile.
-bool createPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error);
+// Copy the active profile's saved files, then select the new profile. A supplied
+// source must still be active under the write lock.
+bool createPreset(const std::filesystem::path& root, std::wstring_view name, std::string& error,
+                  const ProfilePreset* expected = nullptr);
 
 enum class DeviceReplacementError { none, invalidSelection, invalidProfile, deviceNotMapped, conflict, ioError, recoveryRequired };
 
@@ -89,6 +91,7 @@ struct ProfileBackupFailure {
     std::uint32_t windowsError{};
     bool axisConflict{};
     bool dedicatedAccessoryAxisConflict{};
+    bool nativeTransmissionInputConflict{};
 };
 
 // The destination must be a new directory. A legacy language preference can be included in the export.

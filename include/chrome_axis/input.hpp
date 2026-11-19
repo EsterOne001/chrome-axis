@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -199,7 +200,10 @@ public:
     DirectInput& operator=(const DirectInput&) = delete;
 
     bool ready() const noexcept;
-    std::vector<DeviceInfo> devices() const;
+    // A failed enumeration has no authoritative topology, even if its callback ran.
+    // Only supply known layouts on retries without a driver or topology change.
+    std::vector<DeviceInfo> devices(HRESULT* enumerationStatus = nullptr,
+                                    std::span<const DeviceInfo> known = {}) const;
     ForceFeedbackProbe probeWheelForce(std::string_view id, std::size_t axis) const;
     // Start a sampling cycle when several readers use the same device states.
     void beginPoll() noexcept;

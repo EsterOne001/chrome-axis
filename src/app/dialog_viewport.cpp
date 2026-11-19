@@ -91,6 +91,31 @@ void DialogViewport::fit(HWND window, const RECT& workArea)
     reveal(window, GetFocus());
 }
 
+void DialogViewport::resizeContent(HWND window, SIZE minimum)
+{
+    const auto previousDpi = dpi_;
+    if (const auto dpi = GetDpiForWindow(window))
+        dpi_ = dpi;
+    const auto style = GetWindowLongPtrW(window, GWL_STYLE);
+    const bool hadVertical = (style & WS_VSCROLL) != 0;
+    const bool hadHorizontal = (style & WS_HSCROLL) != 0;
+    const auto barWidth = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_);
+    const auto barHeight = GetSystemMetricsForDpi(SM_CYHSCROLL, dpi_);
+    const auto old = clientBounds(window);
+    const auto width = old.right + (hadVertical ? barWidth : 0);
+    const auto height = old.bottom + (hadHorizontal ? barHeight : 0);
+    const bool horizontal = width < minimum.cx + (height < minimum.cy ? barWidth : 0);
+    const bool vertical = height < minimum.cy + (horizontal ? barHeight : 0);
+    if (hadHorizontal != horizontal)
+        ShowScrollBar(window, SB_HORZ, horizontal);
+    if (hadVertical != vertical)
+        ShowScrollBar(window, SB_VERT, vertical);
+    const auto client = clientBounds(window);
+    page_ = {client.right, client.bottom};
+    content_ = {std::max(minimum.cx, page_.cx), std::max(minimum.cy, page_.cy)};
+    scrollTo(window, {MulDiv(offset_.x, dpi_, previousDpi), MulDiv(offset_.y, dpi_, previousDpi)}, true);
+}
+
 void DialogViewport::scrollTo(HWND window, POINT position, bool reposition)
 {
     const POINT next{std::clamp(position.x, 0L, std::max(0L, content_.cx - page_.cx)),

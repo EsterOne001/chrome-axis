@@ -1,5 +1,6 @@
 #include "chrome_axis/accessories.hpp"
 #include "chrome_axis/controls.hpp"
+#include "../src/app/profile_editor.hpp"
 #include "../src/plugin/accessory_key_polling.hpp"
 
 #include <algorithm>
@@ -980,6 +981,99 @@ bool testAccessoryPollingGuard()
         && chrome_axis::AccessoryKeyPollingGuard{}.allowsPolling(VK_F8);
 }
 
+int testNativeAccessoryInputConflict(const std::filesystem::path& fixture,
+                                    const std::string& wheelId, const std::string& pedalsId)
+{
+    using namespace chrome_axis;
+    const AccessoryBinding up{.deviceId = wheelId, .kind = AccessoryKind::Button, .index = 0, .engaged = 1,
+                              .role = ShifterRole::Upshift, .nativeSequential = true};
+    const AccessoryBinding down{.deviceId = wheelId, .kind = AccessoryKind::Button, .index = 1, .engaged = 1,
+                                .role = ShifterRole::Downshift, .nativeSequential = true};
+    const AccessoryBinding key{wheelId, AccessoryKind::Button, 0, 0, 1, VK_SPACE};
+    const AccessoryBinding other{pedalsId, AccessoryKind::Button, 0, 0, 1, 'K'};
+    const AccessoryProfile legacy{up, down, key, other};
+    if (!nativeTransmissionInputConflict(up, key) || !nativeTransmissionInputConflict(key, up)
+        || nativeTransmissionInputConflict(up, down) || nativeTransmissionInputConflict(up, other))
+        return 193;
+
+    const AccessoryBinding axisUp{.deviceId = wheelId, .kind = AccessoryKind::Axis, .index = 3,
+        .rest = 32000, .engaged = 60000, .role = ShifterRole::Upshift, .nativeSequential = true};
+    AccessoryBinding clutch{.deviceId = wheelId, .kind = AccessoryKind::Axis, .index = 3,
+        .rest = 32000, .engaged = 63000, .clutchMode = ClutchMode::off};
+    if (nativeTransmissionInputConflict(axisUp, clutch))
+        return 194;
+    clutch.clutchMode = ClutchMode::assist;
+    if (!nativeTransmissionInputConflict(axisUp, clutch))
+        return 194;
+    clutch.engaged = 0;
+    const AccessoryBinding povUp{.deviceId = wheelId, .kind = AccessoryKind::Pov, .index = 0,
+        .rest = povCentered, .engaged = 18000, .role = ShifterRole::Upshift, .nativeSequential = true};
+    AccessoryBinding hat{wheelId, AccessoryKind::Pov, 0, povCentered, 18000, 'H'};
+    if (nativeTransmissionInputConflict(axisUp, clutch) || !nativeTransmissionInputConflict(povUp, hat))
+        return 195;
+    hat.engaged = 9000;
+    if (nativeTransmissionInputConflict(povUp, hat))
+        return 195;
+
+    const auto root = fixture / L"Profil";
+    const auto cfg = root / accessoryFilename;
+    std::string error;
+    std::filesystem::create_directories(root);
+    const auto preset = activePreset(root);
+    const AccessoryProfile digital{key, other};
+    const AccessoryProfile native{up, down, other};
+    for (const auto& baseline : {digital, native}) {
+        if (!saveAccessoryProfile(cfg, baseline, error))
+            return 196;
+        const auto blocked = saveEditorAccessories(root, preset, profileFileRevision(cfg), legacy);
+        if (blocked.result == PresetSaveResult::saved || blocked.reason != ProfileEditorError::nativeInputConflict
+            || loadAccessoryProfile(cfg, error) != baseline)
+            return 197;
+    }
+
+    // Import a legacy profile, then restore it without discarding the data needed to repair it.
+    ProfileBackupError backupError{};
+    ProfileBackupFailure failure;
+    const auto backup = fixture / L"Sauvegarde";
+    if (!saveAccessoryProfile(cfg, legacy, error)
+        || !createProfileBackup(root, backup, backupError)
+        || !saveAccessoryProfile(cfg, digital, error)
+        || !restoreProfileBackup(root, backup, backupError, {}, nullptr, &failure)
+        || !failure.nativeTransmissionInputConflict || loadAccessoryProfile(cfg, error) != legacy)
+        return 198;
+    auto effective = legacy;
+    if (!suppressConflictingNativeTransmission(effective) || effective != digital)
+        return 199;
+    AccessoryReader reader(effective);
+    DeviceSample wheel, pedals;
+    wheel.buttonsPresent.set(0);
+    pedals.buttonsPresent.set(0);
+    std::array<const DeviceSample*, 2> reports{&wheel, &pedals};
+    AccessoryTransmissionSample transmission;
+    for (int i = 0; i < 4; ++i)
+        reader.update(reports, {}, {}, nullptr, nullptr, nullptr, &transmission);
+    wheel.buttons.set(0);
+    pedals.buttons.set(0);
+    const auto keys = reader.update(reports, {}, {}, nullptr, nullptr, nullptr, &transmission);
+    if (!keys.test(VK_SPACE) || !keys.test('K') || transmission.shiftDelta)
+        return 200;
+
+    auto moved = native;
+    DeviceReplacementError replacementError{};
+    if (!saveAccessoryProfile(cfg, moved, error)
+        || replacePresetDevice(root, preset, pedalsId, wheelId, replacementError)
+        || replacementError != DeviceReplacementError::conflict || loadAccessoryProfile(cfg, error) != moved)
+        return 201;
+    auto edited = legacy;
+    edited.back().key = 'J';
+    if (!saveAccessoryProfile(cfg, legacy, error)
+        || saveEditorAccessories(root, preset, profileFileRevision(cfg), edited).result != PresetSaveResult::saved
+        || saveEditorAccessories(root, preset, profileFileRevision(cfg), native).result != PresetSaveResult::saved
+        || loadAccessoryProfile(cfg, error) != native)
+        return 202;
+    return 0;
+}
+
 int run()
 {
     if (!testAccessoryPollingGuard())
@@ -996,6 +1090,11 @@ int run()
     };
     const auto path = std::filesystem::current_path()
         / (L"accessories-test-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
+    const auto fixture = path.parent_path() / (path.stem().wstring() + L"-profiles");
+    const auto conflictResult = testNativeAccessoryInputConflict(fixture, wheelId, handbrakeId);
+    std::filesystem::remove_all(fixture);
+    if (conflictResult != 0)
+        return conflictResult;
     std::string error;
     const bool saved = chrome_axis::saveAccessoryProfile(path, profile, error);
     auto invalid = profile;

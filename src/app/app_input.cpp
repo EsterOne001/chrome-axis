@@ -128,8 +128,9 @@ struct AppInput::State {
                 return pending;
             lastRequest = Clock::now();
             requested |= buttons;
-            const bool capture = purpose != Purpose::preview;
-            const bool guidedCalibration = purpose == Purpose::guidedCalibration;
+            const bool capture = purpose == Purpose::capture || purpose == Purpose::guidedCalibration;
+            const bool review = purpose == Purpose::calibrationReview;
+            const bool guidedCalibration = purpose == Purpose::guidedCalibration || review;
             requestedGuidedCalibration = guidedCalibration;
             if (!std::exchange(queued, true))
                 SetEvent(wake);
@@ -138,8 +139,9 @@ struct AppInput::State {
                 return pending;
 
             auto reading = report->reading;
+            const auto lifetime = review ? guidedReadLimit : sampleLifetime;
             const bool expired = reading.sample &&
-                lastRequest - (guidedCalibration ? report->completedAt : reading.sample->sampledAt) > sampleLifetime;
+                lastRequest - (guidedCalibration ? report->completedAt : reading.sample->sampledAt) > lifetime;
             // A slow successful read can become too old to use before the next one arrives.
             // Capture waits for a fresh result while the reader is still making progress.
             const auto nextReadLimit = guidedCalibration ? guidedReadLimit : sampleLifetime;
@@ -282,6 +284,29 @@ CaptureDeviceRead AppInput::capture(const std::string& id)
 CaptureDeviceRead AppInput::captureGuidedPosition(const std::string& id)
 {
     return request(id, {}, Purpose::guidedCalibration);
+}
+
+ControlReader::CalibrationReadings AppInput::reviewCalibration(ControlReader& reader)
+{
+    // Use the guided latency budget without consuming a completed report on the
+    // first UI update. ControlReader independently counts distinct reports.
+    class Source final : public DeviceSampleSource {
+    public:
+        explicit Source(AppInput& input) : input_(input) {}
+
+        std::optional<DeviceSample> sample(const std::string& id, const Buttons& buttons,
+                                           DeviceReadStatus* status) override
+        {
+            auto reading = input_.request(id, buttons, Purpose::calibrationReview);
+            if (status)
+                *status = reading.status;
+            return std::move(reading.sample);
+        }
+
+    private:
+        AppInput& input_;
+    } source(*this);
+    return reader.review(source);
 }
 
 bool AppInput::takeCalibrationInterruption(const std::string& id)

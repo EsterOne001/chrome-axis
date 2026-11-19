@@ -175,6 +175,7 @@ const wchar_t* accessoryText(DiagnosticAccessoryState state)
     case DiagnosticAccessoryState::ready: return tr(Text::DlgDiagnosticsAccessoriesReady);
     case DiagnosticAccessoryState::profileError: return tr(Text::DlgDiagnosticsAccessoriesError);
     case DiagnosticAccessoryState::axisConflict: return tr(Text::DlgDiagnosticsAccessoryAxisConflict);
+    case DiagnosticAccessoryState::nativeInputConflict: return tr(Text::DlgSavedNativeInputConflict);
     case DiagnosticAccessoryState::inactive: return tr(Text::DlgDiagnosticsInactive);
     case DiagnosticAccessoryState::blocked: return tr(Text::DlgDiagnosticsAccessoriesBlocked);
     case DiagnosticAccessoryState::modifierBlocked: return tr(Text::DlgDiagnosticsAccessoriesModifier);

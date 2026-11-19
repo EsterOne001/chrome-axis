@@ -4,8 +4,6 @@
 
 namespace chrome_axis {
 
-bool sameShifterInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept;
-
 class PovCapture {
 public:
     void observe(const DeviceSample& sample) noexcept;
@@ -28,9 +26,10 @@ public:
     explicit ShifterCapture(std::string deviceId);
 
     // Call while the user holds the lever or paddles in their released position.
-    bool captureNeutral(const DeviceSample& sample) noexcept;
+    bool captureNeutral(const DeviceSample& sample, std::span<const AccessoryBinding> existing = {}) noexcept;
     // Use after a skipped or interrupted position. The next capture requires a release.
     void resetPosition() noexcept;
+    // A reconnected device needs a new reference. Already captured positions are kept by the caller.
     void deviceInterrupted() noexcept;
     ShifterCaptureResult sample(const DeviceSample& sample,
                                 std::span<const AccessoryBinding> existing = {});

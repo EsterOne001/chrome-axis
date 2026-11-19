@@ -78,6 +78,19 @@ struct AccessoryBinding {
 
 using AccessoryProfile = std::vector<AccessoryBinding>;
 
+constexpr bool isNativeTransmissionBinding(const AccessoryBinding& binding) noexcept
+{
+    return binding.nativeShifter || binding.nativeSequential;
+}
+
+bool sameShifterInput(const AccessoryBinding& first, const AccessoryBinding& second) noexcept;
+bool nativeTransmissionInputConflict(const AccessoryBinding& first, const AccessoryBinding& second) noexcept;
+bool hasNativeTransmissionInputConflict(std::span<const AccessoryBinding> bindings) noexcept;
+bool introducesNativeTransmissionInputConflict(std::span<const AccessoryBinding> previous,
+                                               std::span<const AccessoryBinding> updated) noexcept;
+// Suspend the whole native source, since removing a position in isolation could be read as neutral.
+bool suppressConflictingNativeTransmission(AccessoryProfile& bindings);
+
 // Position selectors and analog controls are read from their current report.
 constexpr bool isDiscreteAccessory(const AccessoryBinding& binding) noexcept
 {
