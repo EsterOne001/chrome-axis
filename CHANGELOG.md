@@ -6,6 +6,15 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.92
+
+- L’inventaire USB retente les lectures dont l’issue est indéterminée. En conduite, le décodage des boutons est évité lorsque seuls des axes ou des croix directionnelles sont utilisés. Les mesures USB sont collectées avec un seul verrou par périphérique.
+- La conduite et la boîte native partagent l’identité du véhicule pour invalider les anciennes commandes lors d’un changement, même si le moteur réutilise la même adresse mémoire.
+- Le HUD relit le préréglage actif de HUD Painter au chargement et à la reprise. Il actualise chaque texte lors d’un changement de sa valeur.
+- Le clavier virtuel, les profils, la réassociation et les seuils d’accessoires défilent sur les écrans compacts. L’application limite les remises en page au défilement effectif et conserve les libellés du raccourci AUTO / MANUEL entre deux changements.
+
+[ZIP Vortex](out/Chromaxis-0.4.92.zip)
+
 ## Chrome Axis 0.4.91
 
 - La restauration protège les copies de récupération après une interruption. La création d’un profil vérifie sous verrou le profil source confirmé.
