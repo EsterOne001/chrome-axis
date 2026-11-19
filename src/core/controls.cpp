@@ -393,6 +393,11 @@ ControlState ControlReader::update(const std::array<const DeviceSample*, 3>& sam
             pedalStabilizers_[i - 1].reset();
         if (statuses[i] == DeviceReadStatus::resumed)
             neutralPolls_[i] = 0;
+        if (statuses[i] == DeviceReadStatus::awaitingFirstReport) {
+            neutralPolls_[i] = 0;
+            axisStatuses_[i] = AxisStatus::awaitingFirstReport;
+            continue;
+        }
         if ((!sample && statuses[i] == DeviceReadStatus::pending) ||
             (sample && calibration.axis < axisCount && sample->axesPending[calibration.axis])) {
             if (neutralPolls_[i] < requiredNeutralPolls)

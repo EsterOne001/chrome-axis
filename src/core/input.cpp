@@ -34,6 +34,7 @@ constexpr auto stalledProbeRetryInterval = std::chrono::milliseconds(500);
 constexpr auto forceDuration = std::chrono::milliseconds(100);
 constexpr auto forceRefresh = std::chrono::milliseconds(60);
 std::atomic<std::uint64_t> hardwareRecoverySerial{};
+std::atomic<std::uint64_t> hardwareConnectionSerial{};
 static_assert(forceRefresh < forceDuration);
 constexpr std::array<const char*, axisCount> axisNames{
     "X", "Y", "Z", "Rx", "Ry", "Rz", "Slider0", "Slider1"
@@ -49,15 +50,23 @@ static_assert(buttonCount == std::size(DIJOYSTATE2{}.rgbButtons));
 static_assert(povCount == std::size(DIJOYSTATE2{}.rgdwPOV));
 
 template <class Call>
-decltype(auto) trackedCall(DirectInputActiveCall* tracker, const char* operation, Call&& call)
+decltype(auto) trackedCall(DirectInputActiveCall* tracker, const char* operation, Call&& call,
+                           DirectInputCallTrace* trace = nullptr)
     noexcept(noexcept(call())) {
     if (!tracker)
         return call();
     struct EndCall {
         DirectInputActiveCall& tracker;
-        ~EndCall() { tracker.end(); }
-    } end{*tracker};
-    tracker->begin(operation);
+        DirectInputCallTrace* trace;
+        ~EndCall() {
+            if (trace)
+                trace->finish = tracker.observe();
+            tracker.end();
+        }
+    } end{*tracker, trace};
+    const auto start = tracker->begin(operation);
+    if (trace)
+        trace->start = start;
     return call();
 }
 
@@ -210,7 +219,7 @@ BOOL CALLBACK addDevice(const DIDEVICEINSTANCEW* instance, void* context) {
 }
 
 InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = nullptr,
-                           DirectInputActiveCall* tracker = nullptr) {
+                           DirectInputActiveCall* tracker = nullptr, DirectInputCallTrace* trace = nullptr) {
     static const char moduleAnchor = 0;
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -226,7 +235,7 @@ InputPtr createDirectInput(DirectInputDiagnostic diagnostic, HRESULT* status = n
     void* input = nullptr;
     const auto result = trackedCall(tracker, "DirectInput8Create", [&] {
         return DirectInput8Create(module, DIRECTINPUT_VERSION, IID_IDirectInput8W, &input, nullptr);
-    });
+    }, trace);
     if (status)
         *status = result;
     InputPtr instance(SUCCEEDED(result) ? static_cast<IDirectInput8W*>(input) : nullptr,
@@ -257,6 +266,7 @@ struct OpenDevice {
         nextStalledProbe = {};
         lastLayoutEvents = {};
         ++layoutConnection;
+        connectionToken = 0;
     }
 
     void report(DirectInputDiagnostic diagnostic, std::string_view id, std::string_view stage,
@@ -293,6 +303,7 @@ struct OpenDevice {
     Clock::time_point lastSlowReport{};
     bool reportedReadTimeout{};
     std::uint64_t recoveryToken{};
+    std::uint64_t connectionToken{};
     std::uint64_t layoutConnection{};
     Clock::time_point nextReadHandleProbe{};
     std::size_t nextReadHandleObject{};
@@ -306,17 +317,18 @@ struct OpenDevice {
 class ReadObserver {
 public:
     ReadObserver(OpenDevice& device, std::string_view id, DirectInputReadObserver callback, void* context,
-                 DirectInputActiveCall* activeCall = nullptr) noexcept
-        : device_(device), id_(id), callback_(callback), context_(context), activeCall_(activeCall) {}
+                 DirectInputActiveCall* activeCall = nullptr, bool probe = false) noexcept
+        : device_(device), id_(id), callback_(callback), context_(context), activeCall_(activeCall), probe_(probe) {}
 
     template <class Call>
     HRESULT measure(const char* operation, Call call) noexcept(noexcept(call())) {
         if (!callback_ && !activeCall_)
             return call();
         const auto started = Clock::now();
-        const auto result = trackedCall(activeCall_, operation, call);
+        const auto result = trackedCall(activeCall_, operation, call, callback_ ? &lastTrace_ : nullptr);
         if (!callback_)
             return result;
+        lastOperation_ = operation;
         const auto now = Clock::now();
         const auto duration = now - started;
         micros_ = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(duration).count());
@@ -365,7 +377,9 @@ public:
 
 private:
     void report(DirectInputReadEventKind kind, std::string_view operation, HRESULT result) const noexcept {
-        callback_(context_, {kind, id_, operation, result, micros_});
+        const bool measured = lastOperation_ == operation;
+        callback_(context_, {kind, id_, operation, result, measured ? micros_ : 0,
+                             measured ? lastTrace_ : DirectInputCallTrace{}, probe_});
     }
 
     OpenDevice& device_;
@@ -373,6 +387,9 @@ private:
     DirectInputReadObserver callback_;
     void* context_;
     DirectInputActiveCall* activeCall_;
+    bool probe_{};
+    std::string_view lastOperation_;
+    DirectInputCallTrace lastTrace_;
     std::uint64_t micros_{};
 };
 
@@ -419,7 +436,7 @@ public:
             connection_ = request.connection;
         }
         auto& opened = *opened_;
-        ReadObserver observer(opened, request.id, observer_, context_, activeCall_);
+        ReadObserver observer(opened, request.id, observer_, context_, activeCall_, true);
         const auto& wanted = request.wanted;
         if (!opened.device && !open(observer)) {
             auto result = snapshot(wanted);
@@ -573,19 +590,24 @@ struct WheelOutput {
         if (!observer)
             return trackedCall(activeCall, operation, call);
         const auto start = Clock::now();
-        const auto result = trackedCall(activeCall, operation, call);
+        DirectInputCallTrace trace;
+        const auto result = trackedCall(activeCall, operation, call, &trace);
         const auto elapsed = Clock::now() - start;
         if (elapsed >= slowInputOperation) {
             const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
             observer(observerContext, {DirectInputReadEventKind::slow, id, operation, result,
-                static_cast<std::uint64_t>(micros)});
+                static_cast<std::uint64_t>(micros), trace});
         }
         return result;
     }
 
     void close() noexcept {
+        const auto checked = [&](const char* operation, auto&& call) {
+            if (FAILED(measure(operation, call)))
+                verifiedConnection = 0;
+        };
         if (effect) {
-            measure("FFB Stop", [&] { return effect->Stop(); });
+            checked("FFB Stop", [&] { return effect->Stop(); });
             measure("FFB ReleaseEffect", [&] {
                 effect.reset();
                 return S_OK;
@@ -595,10 +617,10 @@ struct WheelOutput {
         neutral = false;
         if (device) {
             if (acquired)
-                measure("FFB Unacquire", [&] { return device->Unacquire(); });
+                checked("FFB Unacquire", [&] { return device->Unacquire(); });
             if (autocenter) {
                 DIPROPDWORD property{{sizeof(DIPROPDWORD), sizeof(DIPROPHEADER), 0, DIPH_DEVICE}, *autocenter};
-                measure("FFB RestoreAutoCenter", [&] { return device->SetProperty(DIPROP_AUTOCENTER, &property.diph); });
+                checked("FFB RestoreAutoCenter", [&] { return device->SetProperty(DIPROP_AUTOCENTER, &property.diph); });
             }
             measure("FFB ReleaseDevice", [&] {
                 device.reset();
@@ -623,6 +645,7 @@ struct WheelOutput {
     std::string id;
     std::size_t axis{axisCount};
     WheelForceRetry retry;
+    std::uint64_t verifiedConnection{};
     Clock::time_point submitted{};
     std::string_view lastStage;
     HRESULT lastResult{};
@@ -638,16 +661,18 @@ struct WheelOutput {
 } // namespace
 
 DeviceReadStatus DeviceReadContinuity::pending(Clock::time_point now) noexcept {
-    pending_ = true;
-    return lastSampled_ != Clock::time_point{} && now - lastSampled_ < pendingGrace
+    if (!pendingSince_)
+        pendingSince_ = now;
+    const auto lastSignal = lastSampled_ == Clock::time_point{} ? *pendingSince_ : lastSampled_;
+    return now - lastSignal < pendingGrace
         ? DeviceReadStatus::pending : DeviceReadStatus::unavailable;
 }
 
 DeviceReadStatus DeviceReadContinuity::available(Clock::time_point sampledAt) noexcept {
-    const bool interrupted = pending_ &&
+    const bool interrupted = pendingSince_ &&
         (lastSampled_ == Clock::time_point{} || sampledAt - lastSampled_ >= pendingGrace);
     lastSampled_ = sampledAt;
-    pending_ = false;
+    pendingSince_.reset();
     return interrupted ? DeviceReadStatus::resumed : DeviceReadStatus::available;
 }
 
@@ -663,11 +688,12 @@ struct DirectInput::Impl {
           wheel(readObserver, observerContext, activeCall) {
         HRESULT result{};
         const auto started = Clock::now();
-        input = createDirectInput(callback, &result, activeCall);
+        DirectInputCallTrace trace;
+        input = createDirectInput(callback, &result, activeCall, readObserver ? &trace : nullptr);
         if (!input && readObserver) {
             const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started);
             readObserver(observerContext, {DirectInputReadEventKind::unavailable, {}, "DirectInput8Create",
-                FAILED(result) ? result : E_FAIL, static_cast<std::uint64_t>(duration.count())});
+                FAILED(result) ? result : E_FAIL, static_cast<std::uint64_t>(duration.count()), trace});
         }
     }
 
@@ -912,6 +938,9 @@ std::optional<DeviceSample> DirectInput::sampleForDriving(const std::string& id,
     status = opened.readStatus;
     if (!sample)
         return std::nullopt;
+    if (!opened.connectionToken)
+        opened.connectionToken = hardwareConnectionSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+    sample->connectionToken = opened.connectionToken;
 
     if (!impl_->drivingLayout)
         impl_->drivingLayout = std::make_unique<DeviceLayoutWorker<LayoutDiscovery>>(
@@ -987,6 +1016,7 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
     const bool recovered = wheel.retry.recovered(guard.recoveryToken);
     if (changedTarget || recovered) {
         wheel.close();
+        wheel.verifiedConnection = 0;
         wheel.id = id;
         wheel.axis = axis;
         wheel.lastStage = {};
@@ -995,6 +1025,7 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
     wheel.neutral = false;
     bool cancelled = false;
     const auto fail = [&](std::string_view stage, HRESULT result) {
+        wheel.verifiedConnection = 0;
         wheel.close();
         if (cancelled)
             return;
@@ -1059,12 +1090,16 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
             fail("force feedback SetDataFormat", result);
             return std::nullopt;
         }
-        DIDEVCAPS caps{};
-        caps.dwSize = sizeof(caps);
-        result = initialize("FFB GetCapabilities", [&] { return wheel.device->GetCapabilities(&caps); });
-        if (FAILED(result) || !(caps.dwFlags & DIDC_FORCEFEEDBACK)) {
-            fail("force feedback GetCapabilities", FAILED(result) ? result : DIERR_UNSUPPORTED);
-            return std::nullopt;
+        // Only carry over a positive result from the same confirmed USB connection.
+        // The device, actuator and effect are acquired and checked again below.
+        if (!guard.recoveryToken || wheel.verifiedConnection != guard.recoveryToken) {
+            DIDEVCAPS caps{};
+            caps.dwSize = sizeof(caps);
+            result = initialize("FFB GetCapabilities", [&] { return wheel.device->GetCapabilities(&caps); });
+            if (FAILED(result) || !(caps.dwFlags & DIDC_FORCEFEEDBACK)) {
+                fail("force feedback GetCapabilities", FAILED(result) ? result : DIERR_UNSUPPORTED);
+                return std::nullopt;
+            }
         }
         DIEFFECTINFOW info{};
         info.dwSize = sizeof(info);
@@ -1153,6 +1188,7 @@ std::optional<float> DirectInput::setWheelForce(std::string_view id, std::size_t
             return std::nullopt;
         }
         wheel.effect = std::move(initialized);
+        wheel.verifiedConnection = guard.recoveryToken;
     }
 
     // Opening an effect does not play it. Keep a successfully initialized effect
@@ -1202,6 +1238,7 @@ void DirectInput::stopWheelForce() noexcept {
 void DirectInput::close() {
     impl_->drivingLayout.reset();
     stopWheelForce();
+    impl_->wheel.verifiedConnection = 0;
     impl_->openDevices.clear();
 }
 

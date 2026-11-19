@@ -20,6 +20,29 @@ struct DrivingInputDevice {
     std::shared_ptr<AccessoryProfile> discrete;
 };
 
+struct DrivingInputSchedule {
+    using Clock = DeviceReadClock;
+
+    Clock::time_point deadline{};
+    std::uint64_t revision{};
+    bool retry{};
+
+    static DrivingInputSchedule after(Clock::time_point start, Clock::duration interval,
+                                      DeviceReadStatus status, std::uint64_t revision) noexcept {
+        const auto retryInterval = std::chrono::duration_cast<Clock::duration>(std::chrono::milliseconds(25));
+        const bool retry = status == DeviceReadStatus::unavailable && interval < retryInterval;
+        return {start + (retry ? retryInterval : interval), revision, retry};
+    }
+
+    bool matches(std::uint64_t currentRevision) const noexcept {
+        return revision == currentRevision && deadline != Clock::time_point{};
+    }
+
+    bool missed(Clock::time_point start) const noexcept {
+        return start - deadline > std::chrono::milliseconds(1);
+    }
+};
+
 class PaddleInputBatch {
 public:
     void observe(const AccessoryTransmissionSample& sample, DeviceReadClock::duration lifetime,
@@ -74,16 +97,22 @@ public:
         HRESULT result{};
         std::uint64_t durationMicros{};
         std::uint64_t sampledAt{};
+        std::uint64_t callStartedAt{};
+        std::optional<DiagnosticMode> callStartMode;
+        std::optional<DiagnosticMode> mode;
+        bool probe{};
     };
 
     struct Cycle {
         Clock::time_point finishedAt{};
         std::uint64_t durationMicros{};
         bool missedCadence{};
+        bool retryAfterUnavailable{};
     };
 
-    DrivingInputs(Clock::duration interval, Clock::duration lifetime, DirectInputDiagnostic logger = nullptr)
-        : interval_(interval), lifetime_(lifetime), logger_(logger) {}
+    DrivingInputs(Clock::duration interval, Clock::duration lifetime, DirectInputDiagnostic logger = nullptr,
+                  DirectInputActiveCall::ObserveMode observeMode = nullptr)
+        : interval_(interval), lifetime_(lifetime), logger_(logger), observeMode_(observeMode) {}
 
     ~DrivingInputs() override { requestStop(); }
 
@@ -202,12 +231,14 @@ public:
                 replays_.resize(start);
             if (!report.sample || now - report.sample->sampledAt > lifetime_) {
                 if (report.sample || (report.status == DeviceReadStatus::pending &&
-                    (report.lastValid == Clock::time_point{} || now - report.lastValid > lifetime_)))
+                    report.lastValid != Clock::time_point{} && now - report.lastValid > lifetime_))
                     report.status = DeviceReadStatus::unavailable;
                 report.sample.reset();
-                entry.needsRearm |= report.status == DeviceReadStatus::unavailable;
+                const bool mustRearm = report.status == DeviceReadStatus::unavailable ||
+                    report.status == DeviceReadStatus::awaitingFirstReport;
+                entry.needsRearm |= mustRearm;
                 replays_.resize(start);
-                entry.resetAccessories |= report.status == DeviceReadStatus::unavailable;
+                entry.resetAccessories |= mustRearm;
                 entry.disruptedAccessories = true;
                 continue;
             }
@@ -304,11 +335,16 @@ public:
             ? it->second.report.sample->recoveryToken : 0;
     }
 
+    std::uint64_t connectionToken(const std::string& id) const noexcept {
+        const auto it = active_.find(id);
+        return it != active_.end() && it->second.report.sample ? it->second.report.sample->connectionToken : 0;
+    }
+
     template <class Visit>
     void drainEvents(Visit&& visit) {
-        for (const auto& [id, event] : workerStartEvents_)
+        for (const auto& [id, event] : pendingWorkerEvents_)
             visit(id, event);
-        workerStartEvents_.clear();
+        pendingWorkerEvents_.clear();
         for (auto& [id, entry] : active_)
             while (const auto event = entry.worker->nextEvent())
                 visit(id, *event);
@@ -332,7 +368,7 @@ public:
             for (const bool layoutProbe : {false, true}) {
                 const auto call = worker.activeCall(layoutProbe);
                 if (call.overdue(now, slowCallMilliseconds))
-                    visit(std::string_view(worker.id()), std::string_view(call.operation), call.startedAt, layoutProbe);
+                    visit(std::string_view(worker.id()), call, layoutProbe);
             }
         };
         for (const auto& [id, entry] : active_)
@@ -408,8 +444,10 @@ private:
 
     class Worker {
     public:
-        Worker(std::string id, Clock::duration interval, Clock::duration lifetime, DirectInputDiagnostic logger)
+        Worker(std::string id, Clock::duration interval, Clock::duration lifetime, DirectInputDiagnostic logger,
+               DirectInputActiveCall::ObserveMode observeMode)
             : id_(std::move(id)), interval_(interval), lifetime_(lifetime), logger_(logger),
+              activeCall_(observeMode), layoutCall_(observeMode),
               thread_([this](std::stop_token stop) {
                   try {
                       run(stop);
@@ -431,6 +469,7 @@ private:
                 config_ = std::move(config);
                 ++revision_;
                 latest_ = {};
+                latest_.status = DeviceReadStatus::awaitingFirstReport;
                 discardDiscrete();
                 cycles_ = {};
                 changed_.notify_one();
@@ -534,7 +573,9 @@ private:
                 discrete_.clear();
                 paddleEvidence_.clear();
                 discreteOverflow_ = true;
-                Event event{.kind = DirectInputReadEventKind::discreteOverflow, .sampledAt = GetTickCount64()};
+                const auto observed = activeCall_.observe();
+                Event event{.kind = DirectInputReadEventKind::discreteOverflow, .sampledAt = observed.tick,
+                            .mode = observed.mode};
                 std::ranges::copy(std::string_view("USB discrete inputs"), event.operation.begin());
                 events_.push(event);
                 return;
@@ -544,8 +585,10 @@ private:
 
         static void observe(void* opaque, const DirectInputReadEvent& read) noexcept {
             auto& worker = *static_cast<Worker*>(opaque);
+            const auto finish = read.call.finish.tick ? read.call.finish : worker.activeCall_.observe();
             Event event{.kind = read.kind, .result = read.result, .durationMicros = read.durationMicros,
-                        .sampledAt = GetTickCount64()};
+                        .sampledAt = finish.tick, .callStartedAt = read.call.start.tick,
+                        .callStartMode = read.call.start.mode, .mode = finish.mode, .probe = read.probe};
             std::ranges::copy(read.operation.substr(0, event.operation.size() - 1), event.operation.begin());
             std::scoped_lock lock(worker.mutex_);
             if (read.kind == DirectInputReadEventKind::unavailable && read.operation == "DirectInput8Create") {
@@ -560,9 +603,9 @@ private:
             std::optional<Driver> driver;
             HWND window{};
             Clock::time_point retry{};
-            Clock::time_point lastValid{}, previousStart{};
+            Clock::time_point lastValid{};
+            DrivingInputSchedule schedule;
             std::uint64_t sequence{}, loss{};
-            std::uint64_t previousRevision{};
             bool hadReport{};
             while (!stop.stop_requested()) {
                 Configuration config;
@@ -578,10 +621,9 @@ private:
                     discreteRevision = discreteRevision_;
                     started = Clock::now();
                 }
-                const bool missedCadence = previousRevision == revision && previousStart != Clock::time_point{} &&
-                    started - previousStart > interval_ + std::chrono::milliseconds(1);
-                previousStart = started;
-                previousRevision = revision;
+                const bool hasSchedule = schedule.matches(revision);
+                const bool missedCadence = hasSchedule && schedule.missed(started);
+                const bool retryAfterUnavailable = hasSchedule && schedule.retry;
                 if (window != config.window) {
                     driver.reset();
                     window = config.window;
@@ -621,9 +663,7 @@ private:
                     hadReport = report.sample.has_value();
                 report.loss = loss;
                 report.lastValid = lastValid;
-                const auto interval = report.status == DeviceReadStatus::unavailable
-                    ? std::max(interval_, std::chrono::duration_cast<Clock::duration>(std::chrono::milliseconds(25)))
-                    : interval_;
+                schedule = DrivingInputSchedule::after(started, interval_, report.status, revision);
                 {
                     std::unique_lock lock(mutex_);
                     if (driver)
@@ -632,9 +672,9 @@ private:
                         if (config.discrete && discreteRevision == discreteRevision_)
                             publishDiscrete(report, *config.discrete, config.trackPaddle, finishedAt);
                         latest_ = std::move(report);
-                        cycles_.push({finishedAt, elapsedMicros(finishedAt - started), missedCadence});
+                        cycles_.push({finishedAt, elapsedMicros(finishedAt - started), missedCadence, retryAfterUnavailable});
                     }
-                    changed_.wait_until(lock, stop, started + interval, [&] { return revision != revision_; });
+                    changed_.wait_until(lock, stop, schedule.deadline, [&] { return revision != revision_; });
                 }
             }
         }
@@ -668,7 +708,7 @@ private:
     std::unique_ptr<Worker> tryStartWorker(const std::string& id, bool retrying) {
         std::unique_ptr<Worker> worker;
         try {
-            worker = std::make_unique<Worker>(id, interval_, lifetime_, logger_);
+            worker = std::make_unique<Worker>(id, interval_, lifetime_, logger_, observeMode_);
         } catch (const std::system_error& error) {
             // A thread startup failure on one device leaves the other readers available.
             if (!retrying) {
@@ -687,9 +727,10 @@ private:
 
     void recordWorkerStart(const std::string& id, bool started, HRESULT result) {
         const auto kind = started ? DirectInputReadEventKind::workerStarted : DirectInputReadEventKind::workerStartFailed;
-        Event event{.kind = kind, .result = result, .sampledAt = GetTickCount64()};
+        Event event{.kind = kind, .result = result, .sampledAt = GetTickCount64(),
+                    .mode = observeMode_ ? std::optional{observeMode_()} : std::nullopt};
         std::ranges::copy(usbReaderStartOperation, event.operation.begin());
-        workerStartEvents_.emplace_back(id, event);
+        pendingWorkerEvents_.emplace_back(id, event);
         if (logger_)
             logger_(id, usbReaderStartOperation, result, started);
     }
@@ -714,14 +755,22 @@ private:
     };
 
     void reap() {
-        std::erase_if(retired_, [](const auto& worker) { return worker->finished(); });
+        std::erase_if(retired_, [&](const auto& worker) {
+            if (!worker->finished())
+                return false;
+            // A completed call may have reported just before this device left the profile.
+            while (const auto event = worker->nextEvent())
+                pendingWorkerEvents_.emplace_back(worker->id(), *event);
+            return true;
+        });
     }
 
     Clock::duration interval_, lifetime_;
     DirectInputDiagnostic logger_{};
+    DirectInputActiveCall::ObserveMode observeMode_{};
     std::unordered_map<std::string, Entry> active_;
     std::unordered_map<std::string, Clock::time_point> startRetries_;
-    std::vector<std::pair<std::string, Event>> workerStartEvents_;
+    std::vector<std::pair<std::string, Event>> pendingWorkerEvents_;
     std::array<Entry*, 2> splitPaddles_{}; // Node addresses survive rehash; configure rebuilds the pair.
     std::vector<std::unique_ptr<Worker>> retired_;
     std::vector<Replay> replays_;

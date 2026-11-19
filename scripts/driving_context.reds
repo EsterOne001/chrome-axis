@@ -1092,6 +1092,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let generation: Int32;
   private let driverVehicle: wref<VehicleObject>;
   private let feedbackPolling: Bool;
+  private let feedbackGeneration: Int32;
   private let hudBadge: wref<inkCanvas>;
   private let hudBorder: array<wref<inkRectangle>>;
   private let hudDivider: wref<inkRectangle>;
@@ -1112,15 +1113,24 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   private let hudFrench: Bool;
 
   private func OnPlayerAttach(request: ref<PlayerAttachRequest>) -> Void {
-    this.player = request.owner as PlayerPuppet;
-    this.generation += 1;
-    this.driverVehicle = null;
-    this.feedbackPolling = false;
-    ChromeAxis_DriverHeartbeat(null, false, new Vector4(0.0, 0.0, 0.0, 0.0));
+    if !IsDefined(request) {
+      return;
+    }
+    let player = request.owner as PlayerPuppet;
+    if !IsDefined(player) {
+      return;
+    }
+    this.Clear();
+    this.player = player;
     this.Refresh(this.generation);
   }
 
   private func OnPlayerDetach(request: ref<PlayerDetachRequest>) -> Void {
+    let player: ref<PlayerPuppet> = this.player;
+    if IsDefined(request) && EntityID.IsDefined(request.ownerID) && IsDefined(player) &&
+       !Equals(request.ownerID, player.GetEntityID()) {
+      return;
+    }
     this.Clear();
   }
 
@@ -1133,11 +1143,13 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.generation += 1;
     this.driverVehicle = null;
     this.feedbackPolling = false;
+    this.feedbackGeneration += 1;
     ChromeAxis_DriverHeartbeat(null, false, new Vector4(0.0, 0.0, 0.0, 0.0));
-    if IsDefined(this.hudBadge) {
-      let parent = this.hudBadge.GetParentWidget() as inkCompoundWidget;
+    let badge: ref<inkCanvas> = this.hudBadge;
+    if IsDefined(badge) {
+      let parent = badge.GetParentWidget() as inkCompoundWidget;
       if IsDefined(parent) {
-        parent.RemoveChild(this.hudBadge);
+        parent.RemoveChild(badge);
       }
     }
     this.hudBadge = null;
@@ -1173,9 +1185,10 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
       ancestor = ancestor.GetParentWidget();
     }
 
-    if IsDefined(this.hudBadge) {
-      if NotEquals(this.hudBadge.GetParentWidget(), rootWidget) {
-        this.hudBadge.Reparent(root);
+    let existingBadge: ref<inkCanvas> = this.hudBadge;
+    if IsDefined(existingBadge) {
+      if NotEquals(existingBadge.GetParentWidget(), rootWidget) {
+        existingBadge.Reparent(root);
         this.ApplyHudPalette();
         this.ApplyHudStatus();
       }
@@ -1471,7 +1484,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.hudBadge.SetVisible(true);
   }
 
-  private func CanDrive(game: GameInstance, out paused: Bool) -> Bool {
+  private func CanDrive(game: GameInstance, player: ref<PlayerPuppet>, out paused: Bool) -> Bool {
     paused = false;
     let boards: ref<BlackboardSystem> = GameInstance.GetBlackboardSystem(game);
     if !IsDefined(boards) {
@@ -1487,7 +1500,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     if paused {
       return false;
     }
-    let stateBoard: ref<IBlackboard> = this.player.GetPlayerStateMachineBlackboard();
+    let stateBoard: ref<IBlackboard> = player.GetPlayerStateMachineBlackboard();
     if !IsDefined(stateBoard) {
       return false;
     }
@@ -1496,29 +1509,35 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
   }
 
   public func Refresh(generation: Int32) -> Void {
-    if generation != this.generation || !IsDefined(this.player) {
+    let player: ref<PlayerPuppet> = this.player;
+    if generation != this.generation || !IsDefined(player) {
       return;
     }
-    let game: GameInstance = this.player.GetGame();
+    let game: GameInstance = player.GetGame();
     let paused: Bool;
-    let canDrive = this.CanDrive(game, paused);
-    let vehicle: wref<VehicleObject> = this.driverVehicle;
+    let canDrive = this.CanDrive(game, player, paused);
+    let mounted: wref<VehicleObject> = this.driverVehicle;
     if canDrive {
-      if !(VehicleComponent.GetVehicle(game, this.player.GetEntityID(), vehicle) &&
-           IsDefined(vehicle) && VehicleComponent.IsDriver(game, this.player)) {
-        vehicle = null;
+      if !(VehicleComponent.GetVehicle(game, player.GetEntityID(), mounted) &&
+           IsDefined(mounted) && VehicleComponent.IsDriver(game, player)) {
+        mounted = null;
       }
-    } else {
-      if !paused || !IsDefined(vehicle) || !vehicle.IsPlayerDriver() {
-        vehicle = null;
-      }
+    }
+    let vehicle: ref<VehicleObject> = mounted;
+    if !canDrive && (!paused || !IsDefined(vehicle) || !vehicle.IsPlayerDriver()) {
+      vehicle = null;
     }
     let forward: Vector4;
     if canDrive && IsDefined(vehicle) {
       forward = vehicle.GetWorldForward();
     }
+    let currentMount: wref<VehicleObject> = vehicle;
+    if NotEquals(this.driverVehicle, currentMount) {
+      this.feedbackGeneration += 1;
+      this.feedbackPolling = false;
+    }
     let status = ChromeAxis_DriverHeartbeat(vehicle, canDrive, forward);
-    this.driverVehicle = vehicle;
+    this.driverVehicle = currentMount;
     if !canDrive {
       vehicle = null;
     }
@@ -1527,7 +1546,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     }
     if IsDefined(vehicle) && !this.feedbackPolling && ChromeAxis_FeedbackEnabled() {
       this.feedbackPolling = true;
-      this.RefreshFeedback(generation);
+      this.RefreshFeedback(generation, this.feedbackGeneration);
     }
 
     let next: ref<ChromeAxisDrivingTick> = new ChromeAxisDrivingTick();
@@ -1537,21 +1556,22 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     this.UpdateHud(game, status, vehicle);
   }
 
-  public func RefreshFeedback(generation: Int32) -> Void {
-    if generation != this.generation || !IsDefined(this.player) {
+  public func RefreshFeedback(generation: Int32, feedbackGeneration: Int32) -> Void {
+    let player: ref<PlayerPuppet> = this.player;
+    if generation != this.generation || feedbackGeneration != this.feedbackGeneration || !IsDefined(player) {
       return;
     }
     if !ChromeAxis_FeedbackEnabled() {
       this.feedbackPolling = false;
       return;
     }
-    let game: GameInstance = this.player.GetGame();
-    let vehicle = this.driverVehicle;
+    let game: GameInstance = player.GetGame();
+    let vehicle: ref<VehicleObject> = this.driverVehicle;
     if !IsDefined(vehicle) || !vehicle.IsPlayerDriver() {
       vehicle = null;
     }
     let paused: Bool;
-    if !IsDefined(vehicle) || !this.CanDrive(game, paused) {
+    if !IsDefined(vehicle) || !this.CanDrive(game, player, paused) {
       this.feedbackPolling = false;
       if !paused {
         vehicle = null;
@@ -1567,6 +1587,7 @@ public class ChromeAxisDrivingContext extends ScriptableSystem {
     let next: ref<ChromeAxisFeedbackTick> = new ChromeAxisFeedbackTick();
     next.context = this;
     next.generation = generation;
+    next.feedbackGeneration = feedbackGeneration;
     GameInstance.GetDelaySystem(game).DelayCallback(next, 0.04, false);
   }
 }
@@ -1585,10 +1606,11 @@ public class ChromeAxisDrivingTick extends DelayCallback {
 public class ChromeAxisFeedbackTick extends DelayCallback {
   public let context: wref<ChromeAxisDrivingContext>;
   public let generation: Int32;
+  public let feedbackGeneration: Int32;
 
   public func Call() -> Void {
     if IsDefined(this.context) {
-      this.context.RefreshFeedback(this.generation);
+      this.context.RefreshFeedback(this.generation, this.feedbackGeneration);
     }
   }
 }
@@ -1601,7 +1623,7 @@ public class ChromeAxisAttachHudEvent extends Event {
 
 @addMethod(inkGameController)
 protected cb func OnChromeAxisAttachHudEvent(evt: ref<ChromeAxisAttachHudEvent>) -> Bool {
-  if this.IsA(n"gameuiRootHudGameController") && !evt.attached && IsDefined(evt.context) {
+  if IsDefined(evt) && this.IsA(n"gameuiRootHudGameController") && !evt.attached && IsDefined(evt.context) {
     evt.attached = evt.context.AttachHud(this.GetRootCompoundWidget(), evt.generation);
   }
   return false;

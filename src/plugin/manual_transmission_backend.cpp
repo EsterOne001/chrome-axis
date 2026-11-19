@@ -1,5 +1,7 @@
 #include "manual_transmission_backend.hpp"
 
+#include <RED4ext/Handle.hpp>
+#include <RED4ext/ISerializable.hpp>
 #include <windows.h>
 
 #include <array>
@@ -68,6 +70,7 @@ constexpr auto telemetryIntervalMs = 50ULL;
 
 using Step = void (*)(void*, float);
 using Shift = bool (*)(void*, int, bool, bool);
+using VehicleHandle = RED4ext::Handle<RED4ext::ISerializable>;
 
 RED4ext::v1::PluginHandle hookPlugin{};
 const RED4ext::v1::Sdk* hookSdk{};
@@ -87,9 +90,8 @@ struct ShiftRequest {
 };
 
 struct SharedState {
-    void* vehicle{};
-    ULONGLONG expiresAt{};
-    std::uint64_t generation{};
+    DriverLease lease;
+    RED4ext::WeakHandle<RED4ext::ISerializable> mounted;
     std::uint64_t selectionRevision{};
     std::uint64_t reverseIssueSerial{};
     std::optional<int> selectedGear;
@@ -193,18 +195,28 @@ void* verifiedAddress(HMODULE module, std::uintptr_t rva, const std::array<std::
     }
 }
 
-bool liveLease(const void* owner, std::uint64_t generation) noexcept {
-    return state.vehicle == owner && state.generation == generation && GetTickCount64() < state.expiresAt;
+bool liveLease(const ManualStep& step) noexcept {
+    return state.lease.allows(step.owner, step.generation, GetTickCount64());
+}
+
+bool ownerKeepsGearbox(const ManualStep& step) noexcept {
+    return readField<void*>(step.owner, vehicleGearboxOffset) == step.gearbox;
+}
+
+// Caller holds StateGuard and a strong reference to the mount. The gearbox
+// argument is borrowed for the duration of the game's synchronous step hook.
+bool liveGearbox(const ManualStep& step) noexcept {
+    return liveLease(step) && ownerKeepsGearbox(step) &&
+        readField<void*>(step.gearbox, ownerOffset) == step.owner;
 }
 
 bool filterAutomatic(void* gearbox, int target, bool immediate, bool bypassCooldown) noexcept {
     const auto original = std::bit_cast<Shift>(originalShift);
     if (gearbox && activeStep.gearbox == gearbox && !immediate && gameForeground()) {
-        const auto engaged = readField<int>(gearbox, engagedGearOffset);
-        const auto entries = readField<int>(gearbox, gearCountOffset);
         StateGuard guard;
-        const bool live = state.enabled && liveLease(activeStep.owner, activeStep.generation);
-        if (live) {
+        if (state.enabled && liveGearbox(activeStep)) {
+            const auto engaged = readField<int>(gearbox, engagedGearOffset);
+            const auto entries = readField<int>(gearbox, gearCountOffset);
             auto held = state.heldGear;
             if (!held && state.selectedGear && (engaged == neutralGear || state.selectedGear == neutralGear))
                 held = neutralGear;
@@ -230,19 +242,32 @@ std::optional<float> speedOf(const std::optional<std::array<float, 3>>& velocity
     return std::isfinite(absoluteSpeed) ? std::optional{absoluteSpeed} : std::nullopt;
 }
 
-void sampleTelemetry(const void* vehicle, std::uint64_t now) noexcept {
-    if (!state.captureTelemetry || (state.view.telemetrySampledAt &&
-        now - state.view.telemetrySampledAt < telemetryIntervalMs))
-        return;
+struct StepMotion {
+    std::optional<std::array<float, 3>> velocity;
+    std::optional<float> engineRpm;
+    std::uint64_t sampledAt{};
+    std::uint64_t selectionRevision{};
+    std::uint64_t requestDeadline{};
+    bool telemetry{};
+};
 
-    state.view.telemetrySampledAt = now;
-    state.view.speedMetersPerSecond = speedOf(vehicleVelocity(vehicle));
-    state.view.engineRpm.reset();
-    if (const auto* engine = engineRpmAvailable ? readField<void*>(vehicle, vehicleEngineOffset) : nullptr) {
+// Capture linked engine/body data before invoking the game, while the active
+// native step owns its components. Only values survive the external call.
+StepMotion captureStepMotion(const void* vehicle, std::uint64_t now) noexcept {
+    const bool telemetry = state.captureTelemetry && (!state.view.telemetrySampledAt ||
+        now - state.view.telemetrySampledAt >= telemetryIntervalMs);
+    if (!telemetry && !state.request)
+        return {};
+
+    StepMotion motion{.velocity = vehicleVelocity(vehicle), .sampledAt = now,
+                      .selectionRevision = state.selectionRevision,
+                      .requestDeadline = state.request ? state.request->expiresAt : 0, .telemetry = telemetry};
+    if (const auto* engine = telemetry && engineRpmAvailable ? readField<void*>(vehicle, vehicleEngineOffset) : nullptr) {
         const float rpm = readField<float>(engine, engineRpmOffset);
         if (std::isfinite(rpm) && rpm >= 0.0f)
-            state.view.engineRpm = rpm;
+            motion.engineRpm = rpm;
     }
+    return motion;
 }
 
 void resetSelection() noexcept {
@@ -290,12 +315,23 @@ struct ReadyRequest {
     std::optional<std::array<float, 3>> forward;
 };
 
-std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t generation,
-                                             int engaged, int target, int entries, const void* gearbox) noexcept {
+struct GearboxObservation {
+    int engaged{};
+    int entries{};
+};
+
+std::optional<ReadyRequest> takeReadyRequest(const ManualStep& step, const StepMotion& motion,
+                                             GearboxObservation& observation) noexcept {
     StateGuard guard;
-    if (!liveLease(owner, generation))
+    if (!liveGearbox(step))
         return std::nullopt;
 
+    const auto* owner = step.owner;
+    const auto* gearbox = step.gearbox;
+    const int engaged = readField<int>(gearbox, engagedGearOffset);
+    const int entries = readField<int>(gearbox, gearCountOffset);
+    const int target = readField<int>(gearbox, targetGearOffset);
+    observation = {engaged, entries};
     const auto now = GetTickCount64();
     const bool observedBeforeStep = freshGearbox(state.view, now);
     const bool validGear = supportedGear(engaged, entries);
@@ -304,7 +340,13 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
     state.view.targetGear = supportedGear(target, entries) ? target : unavailableGear;
     state.view.gearCount = validGear ? entries : 0;
     state.view.sampledAt = validGear ? now : 0;
-    sampleTelemetry(owner, now);
+    const bool motionFresh = motion.sampledAt && now >= motion.sampledAt &&
+        now - motion.sampledAt <= gearboxObservationLifetimeMs;
+    if (motionFresh && motion.telemetry && state.captureTelemetry) {
+        state.view.telemetrySampledAt = motion.sampledAt;
+        state.view.speedMetersPerSecond = speedOf(motion.velocity);
+        state.view.engineRpm = motion.engineRpm;
+    }
     expireRequests(now);
     if (!state.enabled && !state.view.reverseIssued)
         return std::nullopt;
@@ -328,7 +370,8 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
         state.view.reverseIssued = false;
 
     // First acquire a current gearbox observation. A held selector can wait within its request deadline.
-    if (!state.enabled || !state.request || !observedBeforeStep)
+    if (!state.enabled || !state.request || !observedBeforeStep || !motionFresh ||
+        motion.selectionRevision != state.selectionRevision || motion.requestDeadline != state.request->expiresAt)
         return std::nullopt;
     const float cooldown = readField<float>(gearbox, shiftCooldownOffset);
     const bool cooldownReady = std::isfinite(cooldown) && cooldown < 0.0f;
@@ -339,23 +382,22 @@ std::optional<ReadyRequest> takeReadyRequest(const void* owner, std::uint64_t ge
                         state.heading.current(owner, now)};
 }
 
-bool liveRequest(const void* owner, std::uint64_t generation, const ReadyRequest& command) noexcept {
-    return state.enabled && liveLease(owner, generation) &&
+bool liveRequest(const ManualStep& step, const ReadyRequest& command) noexcept {
+    return state.enabled && liveLease(step) && ownerKeepsGearbox(step) &&
            state.selectionRevision == command.selectionRevision &&
            (!command.request.absolute || state.selectedGear == command.request.absolute);
 }
 
 enum class FollowUp { none, afterNeutral, engagement };
 
-void recordRequest(const void* owner, std::uint64_t generation, const ReadyRequest& command,
-                   int requested, const char* outcome, const void* gearbox,
+void recordRequest(const ManualStep& step, const ReadyRequest& command, int requested, const char* outcome,
                    std::optional<int> held = std::nullopt, FollowUp followUp = FollowUp::none) noexcept {
     StateGuard guard;
-    if (!liveRequest(owner, generation, command))
+    if (!liveRequest(step, command))
         return;
     state.view.requestedGear = requested;
-    state.view.engagedGear = readField<int>(gearbox, engagedGearOffset);
-    state.view.targetGear = readField<int>(gearbox, targetGearOffset);
+    // A shift can change the native components. The next verified step updates
+    // the observed gears; report only the outcome of the command here.
     state.view.outcome = outcome;
     state.dispatchExpiresAt = 0;
     if (command.request.absolute && held)
@@ -370,32 +412,40 @@ void recordRequest(const void* owner, std::uint64_t generation, const ReadyReque
 void updateGearbox(void* gearbox, float deltaTime) noexcept {
     const auto original = std::bit_cast<Step>(originalStep);
     auto* owner = publishedVehicle.load(std::memory_order_acquire);
-    if (!gearbox || !owner || readField<void*>(gearbox, ownerOffset) != owner ||
-        readField<void*>(owner, vehicleGearboxOffset) != gearbox) {
+    // This one read uses the game-owned callback argument and avoids taking
+    // the state lock for traffic. The cached owner pointer is only an identity.
+    if (!gearbox || !owner || readField<void*>(gearbox, ownerOffset) != owner) {
         original(gearbox, deltaTime);
         return;
     }
 
-    std::uint64_t generation{};
+    ManualStep step{gearbox, owner};
+    VehicleHandle ownerPin;
+    StepMotion motion;
     bool enabled{};
-    bool leased{};
+    bool current{};
     {
         StateGuard guard;
-        generation = state.generation;
-        leased = liveLease(owner, generation);
-        enabled = state.enabled && freshGearbox(state.view, GetTickCount64());
+        step.generation = state.lease.generation;
+        if (liveLease(step)) {
+            ownerPin = state.mounted.Lock();
+            current = ownerPin.GetPtr() == owner && liveGearbox(step);
+            enabled = state.enabled && freshGearbox(state.view, GetTickCount64());
+            if (current)
+                motion = captureStepMotion(owner, GetTickCount64());
+        }
     }
-    if (!leased) {
+    if (!current) {
         original(gearbox, deltaTime);
         return;
     }
     if (!gameForeground()) {
         {
             StateGuard guard;
-            if (liveLease(owner, generation)) {
+            if (liveLease(step)) {
                 state.enabled = false;
                 resetSelection();
-                state.expiresAt = 0;
+                state.lease.expiresAt = 0;
                 publishedVehicle.store(nullptr, std::memory_order_release);
             }
         }
@@ -405,37 +455,36 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
 
     {
         // Scope the filter to native requests issued by this exact step and vehicle.
-        const StepScope scope(enabled ? ManualStep{gearbox, owner, generation} : ManualStep{});
+        const StepScope scope(enabled ? step : ManualStep{});
         original(gearbox, deltaTime);
     }
 
-    const auto engaged = readField<int>(gearbox, engagedGearOffset);
-    const auto target = readField<int>(gearbox, targetGearOffset);
-    const auto entries = readField<int>(gearbox, gearCountOffset);
-    const auto command = takeReadyRequest(owner, generation, engaged, target, entries, gearbox);
+    GearboxObservation observation;
+    const auto command = takeReadyRequest(step, motion, observation);
     if (!command)
         return;
 
+    const auto [engaged, entries] = observation;
     const auto& request = command->request;
     const int requested = request.absolute.value_or(sequentialDestination(engaged, request.delta, entries));
     const bool forwardFromNeutral = engaged == neutralGear && forwardGear(requested, entries);
-    const auto velocity = forwardFromNeutral ? vehicleVelocity(owner) : std::nullopt;
-    const auto motion = velocity && command->forward ? movementDirection(*velocity, *command->forward) : Direction::unknown;
-    const auto plan = planShift(engaged, requested, entries, command->lastDirection, motion);
+    const auto direction = forwardFromNeutral && motion.velocity && command->forward
+        ? movementDirection(*motion.velocity, *command->forward) : Direction::unknown;
+    const auto plan = planShift(engaged, requested, entries, command->lastDirection, direction);
     if (plan == ShiftPlan::unsupported || (!request.absolute && !forwardGear(requested, entries))) {
-        recordRequest(owner, generation, *command, requested, "outside_supported_range", gearbox);
+        recordRequest(step, *command, requested, "outside_supported_range");
         return;
     }
     const bool throughNeutral = plan == ShiftPlan::stoppedThroughNeutral;
     if (throughNeutral || plan == ShiftPlan::stoppedDirect) {
-        const auto speed = speedOf(forwardFromNeutral ? velocity : vehicleVelocity(owner));
+        const auto speed = speedOf(motion.velocity);
         if (!shiftSpeedAllowed(requested, speed)) {
-            recordRequest(owner, generation, *command, requested, "direction_change_requires_stop", gearbox);
+            recordRequest(step, *command, requested, "direction_change_requires_stop");
             return;
         }
     }
     if (plan == ShiftPlan::alreadyEngaged) {
-        recordRequest(owner, generation, *command, requested, "already_engaged", gearbox, request.absolute);
+        recordRequest(step, *command, requested, "already_engaged", request.absolute);
         return;
     }
 
@@ -445,7 +494,7 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
     {
         StateGuard guard;
         expireRequests(GetTickCount64());
-        if (!liveRequest(owner, generation, *command))
+        if (!liveRequest(step, *command) || readField<void*>(gearbox, ownerOffset) != owner)
             return;
         // Remember an issued R shift across mode toggles and missing observations.
         if (requested == reverseGear && !throughNeutral) {
@@ -463,14 +512,14 @@ void updateGearbox(void* gearbox, float deltaTime) noexcept {
     if (!accepted) {
         if (newReverseIssue) {
             StateGuard guard;
-            if (state.vehicle == owner && state.reverseIssueSerial == newReverseIssue)
+            if (state.lease.vehicle == owner && state.reverseIssueSerial == newReverseIssue)
                 state.view.reverseIssued = false;
         }
-        recordRequest(owner, generation, *command, requested, "native_rejected", gearbox);
+        recordRequest(step, *command, requested, "native_rejected");
     } else if (throughNeutral) {
-        recordRequest(owner, generation, *command, requested, "neutral_transition", gearbox, neutralGear, FollowUp::afterNeutral);
+        recordRequest(step, *command, requested, "neutral_transition", neutralGear, FollowUp::afterNeutral);
     } else {
-        recordRequest(owner, generation, *command, requested, "native_accepted", gearbox, request.absolute, FollowUp::engagement);
+        recordRequest(step, *command, requested, "native_accepted", request.absolute, FollowUp::engagement);
     }
 }
 
@@ -529,25 +578,35 @@ bool available() noexcept {
     return installed.load(std::memory_order_acquire);
 }
 
-void setDriverVehicle(const void* vehicle, std::optional<std::array<float, 3>> forward) noexcept {
+void setDriverVehicle(const VehicleHandle& vehicle, std::optional<std::array<float, 3>> forward) noexcept {
     StateGuard guard;
-    state.directionHistory.setVehicle(vehicle);
-    state.heading = vehicle && forward ? VehicleHeading{vehicle, *forward, GetTickCount64()} : VehicleHeading{};
+    const auto* owner = vehicle.GetPtr();
+    if (state.mounted.instance != owner || state.mounted.refCount != vehicle.refCount) {
+        state.mounted = vehicle;
+        state.lease = {.generation = state.lease.generation + 1};
+        state.enabled = false;
+        resetSelection();
+        state.view = {};
+        state.directionHistory.setVehicle(nullptr);
+        publishedVehicle.store(nullptr, std::memory_order_release);
+    }
+    state.directionHistory.setVehicle(owner);
+    state.heading = owner && forward ? VehicleHeading{owner, *forward, GetTickCount64()} : VehicleHeading{};
 }
 
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute, bool captureTelemetry) noexcept {
     StateGuard guard;
-    if (!available())
+    if (!available() || state.mounted.instance != vehicle)
         vehicle = nullptr;
 
     const auto now = GetTickCount64();
     enabled = vehicle && enabled;
-    const bool newVehicle = state.vehicle != vehicle || (vehicle && now >= state.expiresAt);
+    const bool newVehicle = state.lease.vehicle != vehicle || (vehicle && now >= state.lease.expiresAt);
     if (newVehicle || state.enabled != enabled) {
-        ++state.generation;
+        ++state.lease.generation;
         resetSelection();
         if (newVehicle) {
-            const bool reverseIssued = state.vehicle == vehicle && state.view.reverseIssued;
+            const bool reverseIssued = state.lease.vehicle == vehicle && state.view.reverseIssued;
             state.view = {.reverseIssued = reverseIssued};
         }
         state.view.requestedGear = unavailableGear;
@@ -556,9 +615,9 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
         state.view.outcome = enabled ? "manual_ready" : "automatic";
     }
 
-    state.vehicle = vehicle;
+    state.lease.vehicle = vehicle;
     state.enabled = enabled;
-    state.expiresAt = vehicle ? now + leaseDurationMs : 0;
+    state.lease.expiresAt = vehicle ? now + leaseDurationMs : 0;
     if (state.captureTelemetry && !captureTelemetry) {
         state.view.telemetrySampledAt = 0;
         state.view.engineRpm.reset();
@@ -585,9 +644,9 @@ void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute
 Snapshot snapshot(void* vehicle) noexcept {
     StateGuard guard;
     const auto now = GetTickCount64();
-    if ((vehicle && state.vehicle != vehicle) || !state.vehicle)
+    if ((vehicle && state.lease.vehicle != vehicle) || !state.lease.vehicle)
         return {};
-    if (now >= state.expiresAt)
+    if (now >= state.lease.expiresAt)
         return {.reverseIssued = state.view.reverseIssued};
 
     expireRequests(now);

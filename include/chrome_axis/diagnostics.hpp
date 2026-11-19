@@ -33,17 +33,17 @@ constexpr bool canRetainDrivingSample(DiagnosticMode mode, bool usbReady, bool f
 
 enum class DiagnosticAxisState : std::uint32_t {
     unassigned, deviceUnavailable, axisUnavailable, waitingForNeutral, armed, awaitingProfile, inactive, simulated,
-    sampleExpired, temporarilyUnavailable
+    sampleExpired, temporarilyUnavailable, awaitingFirstReport
 };
 
 enum class DiagnosticAccessoryState : std::uint32_t {
     unconfigured, waiting, ready, profileError, inactive, blocked, deviceUnavailable, inputUnavailable, sampleExpired,
-    temporarilyUnavailable, axisConflict, modifierBlocked, selectorAmbiguous
+    temporarilyUnavailable, axisConflict, modifierBlocked, selectorAmbiguous, awaitingFirstReport
 };
 
 enum class DiagnosticCommandState : std::uint8_t {
     inactive, waitingForVehicle, waitingForNeutral, ready, deviceUnavailable, inputUnavailable,
-    temporarilyUnavailable, sampleExpired
+    temporarilyUnavailable, sampleExpired, awaitingFirstReport
 };
 
 enum class DiagnosticCommandOutput : std::uint8_t {
@@ -188,7 +188,8 @@ struct DiagnosticEvent {
 enum class DiagnosticUsbEventKind : std::uint8_t {
     deviceSlow, devicePending, deviceUnavailable, deviceRecovered, pollExpired, pollGap,
     commandsWaiting, commandsReady, contextChanged, menuPaused, directInputReopened, discreteOverflow,
-    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered, operationRunning, workerStartFailed, workerStarted
+    layoutPending, layoutAcquireDenied, layoutMissing, layoutRecovered, operationRunning, workerStartFailed, workerStarted,
+    feedbackReady
 };
 
 enum class DiagnosticUsbLane : std::uint8_t { reader, probe, feedback };
@@ -200,6 +201,7 @@ struct DiagnosticUsbOperation {
     DiagnosticUsbLane lane{};
     std::uint8_t deviceAxisMask{};
     std::uint8_t deviceAccessoryCount{};
+    std::optional<DiagnosticMode> startMode;
 };
 
 // At most one reader and one probe per configured device, plus the force feedback worker.
@@ -233,7 +235,11 @@ struct DiagnosticUsbEvent {
     std::uint8_t deviceAccessoryCount{};
     std::array<DiagnosticUsbBlocker, 4> blockers{};
     std::uint32_t blockerCount{}; // Total, including any entries omitted from blockers.
-    DiagnosticUsbLane lane{}; // Used by operationRunning and completed slow force feedback calls.
+    DiagnosticUsbLane lane{};
+    bool hasCallLane{};
+    std::uint64_t callStartedAt{}; // GetTickCount64() when a named driver call began.
+    std::optional<DiagnosticMode> callStartMode; // mode describes the completion or live observation.
+    std::uint16_t captureDevice{}; // An anonymous slot assigned for the active capture only.
 };
 
 DiagnosticUsbEvent usbOperationEvent(const DiagnosticUsbOperation& operation, std::uint64_t observedAt,
@@ -276,6 +282,7 @@ struct PerformanceReport {
     float peakSubmittedForce{}; // Absolute normalized peak of the effects accepted by the driver.
     std::uint64_t usbSlowReads{};
     std::uint64_t usbLateStarts{};
+    std::uint64_t usbRetryWaits{};
     std::uint64_t feedbackIntervalOverruns{};
     float peakContinuousForce{};
     int referenceFeedbackGain{};
@@ -428,6 +435,9 @@ private:
     std::uint64_t captureRead_{};
     std::uint64_t nextSequence_{};
     bool captureSlotOccupied_{};
+    // The recording keeps the same reader and slot numbers across game restarts.
+    std::array<std::array<char, 39>, 256> captureDevices_{};
+    std::size_t captureDeviceCount_{};
 };
 
 } // namespace chrome_axis

@@ -57,6 +57,7 @@ struct DeviceSample {
     DeviceReadClock::time_point sampledAt{};
     std::uint64_t sequence{}; // Zero for synchronous reads.
     std::uint64_t recoveryToken{};
+    std::uint64_t connectionToken{}; // Fresh driving report from this acquired input handle.
 };
 
 const char* axisName(std::size_t index) noexcept;
@@ -74,12 +75,26 @@ enum class DirectInputReadEventKind : std::uint8_t {
 
 inline constexpr std::string_view usbReaderStartOperation = "Start USB reader thread";
 
+enum class DiagnosticMode : std::uint32_t;
+
+struct DirectInputCallObservation {
+    std::uint64_t tick{};
+    std::optional<DiagnosticMode> mode;
+};
+
+struct DirectInputCallTrace {
+    DirectInputCallObservation start;
+    DirectInputCallObservation finish;
+};
+
 struct DirectInputReadEvent {
     DirectInputReadEventKind kind{};
     std::string_view deviceId;
     std::string_view operation;
     HRESULT result{};
     std::uint64_t durationMicros{};
+    DirectInputCallTrace call;
+    bool probe{};
 };
 
 using DirectInputReadObserver = void (*)(void*, const DirectInputReadEvent&) noexcept;
@@ -89,19 +104,32 @@ public:
     struct Snapshot {
         const char* operation{};
         std::uint64_t startedAt{};
+        std::optional<DiagnosticMode> startMode;
 
         bool overdue(std::uint64_t now, std::uint64_t milliseconds) const noexcept {
             return operation && now >= startedAt && now - startedAt >= milliseconds;
         }
     };
 
+    using ObserveMode = DiagnosticMode (*)() noexcept;
+
+    DirectInputActiveCall() noexcept = default;
+    explicit DirectInputActiveCall(ObserveMode mode) noexcept : observeMode_(mode) {}
+
+    DirectInputCallObservation observe() const noexcept {
+        return {GetTickCount64(), observeMode_ ? std::optional{observeMode_()} : std::nullopt};
+    }
+
     // Each tracker has one writer. The name must have static storage.
-    void begin(const char* operation) noexcept {
-        const auto startedAt = GetTickCount64();
+    DirectInputCallObservation begin(const char* operation) noexcept {
+        const auto start = observe();
         ++revision_;
-        startedAt_.store(startedAt);
+        startedAt_.store(start.tick);
+        if (start.mode)
+            startMode_.store(*start.mode);
         operation_.store(operation);
         ++revision_;
+        return start;
     }
 
     void end() noexcept { operation_.store(nullptr); }
@@ -112,13 +140,16 @@ public:
             return {};
         const auto operation = operation_.load();
         const auto startedAt = startedAt_.load();
+        const auto mode = observeMode_ ? std::optional{startMode_.load()} : std::nullopt;
         // The sequentially consistent revision detects overlapping starts without waiting.
-        return operation && revision_.load() == revision ? Snapshot{operation, startedAt} : Snapshot{};
+        return operation && revision_.load() == revision ? Snapshot{operation, startedAt, mode} : Snapshot{};
     }
 
 private:
+    ObserveMode observeMode_{};
     std::atomic<const char*> operation_{};
     std::atomic<std::uint64_t> startedAt_{}, revision_{};
+    std::atomic<DiagnosticMode> startMode_{};
 };
 
 enum class WheelForceState { waiting, active, unavailable, neutral };
@@ -128,12 +159,12 @@ struct WheelForceGuard {
     Check current{};
     Check canInitialize{};
     const void* context{};
-    // A nonzero token identifies an input connection confirmed after a physical interruption.
+    // A nonzero token identifies the input connection confirmed by a fresh report.
     std::uint64_t recoveryToken{};
 };
 
 // Only available and resumed carry fresh data. Resumed starts a new neutral check.
-enum class DeviceReadStatus { unavailable, pending, available, resumed };
+enum class DeviceReadStatus { unavailable, pending, available, resumed, awaitingFirstReport };
 
 class DeviceSampleSource {
 public:
@@ -152,7 +183,7 @@ public:
 
 private:
     Clock::time_point lastSampled_{};
-    bool pending_{};
+    std::optional<Clock::time_point> pendingSince_;
 };
 
 enum class ForceFeedbackProbe { pending, disconnected, unsupported, supported };

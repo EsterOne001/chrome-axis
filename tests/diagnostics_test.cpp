@@ -235,14 +235,14 @@ int testPerformanceCapture(const std::filesystem::path& root)
         if (!text.starts_with("elapsed_ms,mode,vehicle,speed_mps,engine_rpm,") ||
             text.find(pendingRow) == std::string::npos || text.find(acceptedRow) == std::string::npos ||
             text.find(",transmission_shortcut_press_count,transmission_shortcut_source,") == std::string::npos ||
-            text.find(",119,1,0,1,hook,manual,0,inactive,,unknown,none,,disabled\r\n") == std::string::npos ||
-            text.find(",119,1,5,3,hook,manual,2,inactive,,unknown,none,,disabled\r\n") == std::string::npos ||
-            text.find(",temporarily_unavailable,,unknown,signal_pending,,disabled\r\n") == std::string::npos ||
-            text.find(",119,1,10,4,poll,manual,7,inactive,,unknown,none,,disabled\r\n") == std::string::npos ||
+            text.find(",119,1,0,1,hook,manual,0,inactive,,unknown,none,,disabled,,,\r\n") == std::string::npos ||
+            text.find(",119,1,5,3,hook,manual,2,inactive,,unknown,none,,disabled,,,\r\n") == std::string::npos ||
+            text.find(",temporarily_unavailable,,unknown,signal_pending,,disabled,,,\r\n") == std::string::npos ||
+            text.find(",119,1,10,4,poll,manual,7,inactive,,unknown,none,,disabled,,,\r\n") == std::string::npos ||
             text.find("\r\n30,usb_disabled,") == std::string::npos ||
             text.find("\r\n50,waiting_for_vehicle_input,") == std::string::npos ||
             text.find("\r\n70,waiting_for_vehicle_input,,,,,,,,,,,,manual,,2,2,2,accepted,,,,,,,,,context,") == std::string::npos ||
-            text.find(",76,0,,0,,manual,,,,,,,disabled\r\n") == std::string::npos ||
+            text.find(",76,0,,0,,manual,,,,,,,disabled,,,\r\n") == std::string::npos ||
             text.find(",context,") == std::string::npos ||
             text.find(",device_slow,\"Poll\",0x80070005,52100,") == std::string::npos ||
             text.find(privateId) != std::string::npos ||
@@ -413,10 +413,11 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     const auto text = csv.str();
     constexpr std::string_view blockersCell =
         ",5,gear_1:button:2:0:waiting_for_neutral|clutch:axis:3:0:temporarily_unavailable|"
-        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,,,,,,,,,\r\n";
-    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,0,,,,,,,,,waiting_for_motion\r\n") == std::string::npos ||
-        text.find(",clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker,usb_call_lane,feedback_state\r\n") == std::string::npos ||
-        text.find(",waiting_for_neutral,-0.034,out_of_range,waiting_for_neutral,,settings_locked\r\n") == std::string::npos ||
+        "accessory:pov:1:119:input_unavailable|handbrake:axis:4:0:sample_expired,,,,,,,,,,,,,,,,\r\n";
+    if (text.find(blockersCell) == std::string::npos || text.find(",76,0,,0,,,,,,,,,waiting_for_motion,,,\r\n") == std::string::npos ||
+        text.find(",clutch_signal,clutch_raw_travel,clutch_rest,clutch_shift_blocker,usb_call_lane,feedback_state,"
+                  "usb_call_started_elapsed_ms,usb_call_start_mode,usb_device_slot\r\n") == std::string::npos ||
+        text.find(",waiting_for_neutral,-0.034,out_of_range,waiting_for_neutral,,settings_locked,,,\r\n") == std::string::npos ||
         text.find(",clutch_required,") == std::string::npos ||
         text.find(",modifier_blocked,0,5,") == std::string::npos ||
         text.find(",selector_ambiguous,,") == std::string::npos ||
@@ -431,7 +432,7 @@ bool testUsbBlockerRecording(const std::filesystem::path& root)
     std::string row;
     while (std::getline(lines, row)) {
         // These fixtures contain no quoted commas, so all row types share the same column count.
-        if (std::ranges::count(row, ',') != 58)
+        if (std::ranges::count(row, ',') != 61)
             return false;
     }
     return true;
@@ -441,6 +442,7 @@ bool testUsbOperations(const std::filesystem::path& root)
 {
     using namespace chrome_axis;
     constexpr std::string_view deviceId = "{6A523E13-8D9C-4CA3-A19C-8B317DFBE275}";
+    constexpr std::string_view secondDeviceId = "{6A523E13-8D9C-4CA3-A19C-8B317DFBE276}";
     DiagnosticReader reader(root);
     {
         DiagnosticPublisher publisher(root);
@@ -449,8 +451,10 @@ bool testUsbOperations(const std::filesystem::path& root)
         driving.axes[0] = {.state = DiagnosticAxisState::armed, .value = 0.25f, .appliedAt = tick};
 
         const auto operation = [&](std::uint64_t began, std::string_view name, DiagnosticUsbLane lane) {
-            DiagnosticUsbOperation call{.startedAt = began, .lane = lane, .deviceAxisMask = 1};
-            std::ranges::copy(deviceId, call.deviceId.begin());
+            DiagnosticUsbOperation call{.startedAt = began, .lane = lane, .deviceAxisMask = 1,
+                                        .startMode = DiagnosticMode::usb};
+            const auto id = lane == DiagnosticUsbLane::probe ? secondDeviceId : deviceId;
+            std::ranges::copy(id, call.deviceId.begin());
             std::ranges::copy(name, call.operation.begin());
             return call;
         };
@@ -505,7 +509,9 @@ bool testUsbOperations(const std::filesystem::path& root)
         const auto complete = [&](const DiagnosticUsbOperation& call, DiagnosticMode mode, std::uint64_t duration) {
             publisher.recordUsbEvent({.sampledAt = GetTickCount64(), .durationMicros = duration,
                                       .deviceId = call.deviceId, .operation = call.operation,
-                                      .kind = DiagnosticUsbEventKind::deviceSlow, .mode = mode, .lane = call.lane});
+                                      .kind = DiagnosticUsbEventKind::deviceSlow, .mode = mode, .lane = call.lane,
+                                      .hasCallLane = true, .callStartedAt = call.startedAt,
+                                      .callStartMode = call.startMode});
         };
         // The stop finished in the background and was reported after focus returned.
         complete(forceCall, DiagnosticMode::gameNotForeground, 750000);
@@ -525,24 +531,26 @@ bool testUsbOperations(const std::filesystem::path& root)
         std::ostringstream csv;
         writeDiagnosticCaptureRows(csv, std::span(rows).first(stream.count), tick);
         const auto text = csv.str();
-        if (text.find(deviceId) != std::string::npos ||
+        if (text.find(deviceId) != std::string::npos || text.find(secondDeviceId) != std::string::npos ||
             text.find(",operation_running,\"GetDeviceState\",,") != std::string::npos ||
             text.find(",operation_running,\"Probe GetObjectInfo axis\",,") == std::string::npos ||
             text.find(",operation_running,\"Acquire\",,") == std::string::npos ||
-            text.find(",reader,\r\n") == std::string::npos || text.find(",probe,\r\n") == std::string::npos ||
-            text.find(",feedback,\r\n") == std::string::npos)
+            text.find(",reader,,-350,usb,1\r\n") == std::string::npos ||
+            text.find(",probe,,-700,usb,2\r\n") == std::string::npos)
             return false;
         bool recordedStop{}, recordedEffect{}, completedStop{}, completedEffect{};
         std::istringstream csvRows(text);
         for (std::string row; std::getline(csvRows, row);) {
             if (row.find(",operation_running,\"FFB Stop\",,") != std::string::npos)
-                recordedStop = row.find(",game_not_foreground,") != std::string::npos && row.ends_with(",feedback,\r");
+                recordedStop = row.find(",game_not_foreground,") != std::string::npos &&
+                    row.ends_with(",feedback,,-500,usb,1\r");
             if (row.find(",operation_running,\"FFB SetParameters\",,") != std::string::npos)
-                recordedEffect = row.find(",usb,") != std::string::npos && row.ends_with(",feedback,\r");
+                recordedEffect = row.find(",usb,") != std::string::npos && row.ends_with(",feedback,,-300,usb,1\r");
             if (row.find(",device_slow,\"FFB Stop\",0x00000000,750000,") != std::string::npos)
-                completedStop = row.find(",game_not_foreground,") != std::string::npos && row.ends_with(",feedback,\r");
+                completedStop = row.find(",game_not_foreground,") != std::string::npos &&
+                    row.ends_with(",feedback,,-500,usb,1\r");
             if (row.find(",device_slow,\"FFB SetParameters\",0x00000000,350000,") != std::string::npos)
-                completedEffect = row.find(",usb,") != std::string::npos && row.ends_with(",feedback,\r");
+                completedEffect = row.find(",usb,") != std::string::npos && row.ends_with(",feedback,,-300,usb,1\r");
         }
         if (!recordedStop || !recordedEffect || !completedStop || !completedEffect)
             return false;

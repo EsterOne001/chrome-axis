@@ -218,6 +218,7 @@ std::jthread readerThread;
 std::atomic<bool> active{};
 std::atomic<bool> feedbackRequested{};
 std::atomic<DiagnosticMode> feedbackSource{DiagnosticMode::usbDisabled};
+std::atomic<DiagnosticMode> usbReaderMode{DiagnosticMode::waitingForDriver};
 std::atomic<bool> transmissionAvailable{};
 std::atomic<Vehicle*> drivingVehicle{};
 std::atomic<std::uint64_t> drivingGeneration{};
@@ -392,6 +393,10 @@ DiagnosticMode feedbackObservationMode() noexcept {
         return DiagnosticMode::waitingForDriver;
     return chrome_axis::isDrivingCaptureMode(source) && !vehicleInputFresh(context, now)
         ? DiagnosticMode::waitingForVehicleInput : source;
+}
+
+DiagnosticMode usbReaderObservationMode() noexcept {
+    return usbReaderMode.load(std::memory_order_acquire);
 }
 
 struct DriverWorkers {
@@ -944,7 +949,10 @@ void driverHeartbeat(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, std::in
         std::scoped_lock lock(stateMutex);
         if (transmissionAvailable) {
             const auto heading = foreground ? std::optional{std::array{forward.X, forward.Y, forward.Z}} : std::nullopt;
-            manual_backend::setDriverVehicle(mounted, heading);
+            if (mounted)
+                manual_backend::setDriverVehicle(vehicle, heading);
+            else
+                manual_backend::setDriverVehicle(nullptr);
         }
         const bool mountedChanged = context.mounted != mounted;
         invalidated = mountedChanged || context.vehicle != current || (current && now - context.refreshed > contextLifetime);
@@ -1408,6 +1416,7 @@ DiagnosticAxisState diagnosticAxisState(chrome_axis::AxisStatus state, bool samp
     case AxisStatus::waitingForNeutral: return DiagnosticAxisState::waitingForNeutral;
     case AxisStatus::armed: return DiagnosticAxisState::armed;
     case AxisStatus::temporarilyUnavailable: return DiagnosticAxisState::temporarilyUnavailable;
+    case AxisStatus::awaitingFirstReport: return DiagnosticAxisState::awaitingFirstReport;
     }
     return DiagnosticAxisState::inactive;
 }
@@ -1424,6 +1433,8 @@ DiagnosticAccessoryState diagnosticAccessoryState(chrome_axis::AccessoryReadines
         return DiagnosticAccessoryState::inputUnavailable;
     if (readiness.temporarilyUnavailable)
         return DiagnosticAccessoryState::temporarilyUnavailable;
+    if (readiness.awaitingFirstReport)
+        return DiagnosticAccessoryState::awaitingFirstReport;
     return ready ? DiagnosticAccessoryState::ready : DiagnosticAccessoryState::waiting;
 }
 
@@ -1435,6 +1446,7 @@ DiagnosticCommandState diagnosticCommandState(chrome_axis::AccessoryStatus statu
     case AccessoryStatus::inputUnavailable: return DiagnosticCommandState::inputUnavailable;
     case AccessoryStatus::armed: return DiagnosticCommandState::ready;
     case AccessoryStatus::temporarilyUnavailable: return DiagnosticCommandState::temporarilyUnavailable;
+    case AccessoryStatus::awaitingFirstReport: return DiagnosticCommandState::awaitingFirstReport;
     }
     return DiagnosticCommandState::inactive;
 }
@@ -1457,7 +1469,8 @@ void describeClutchBlocker(chrome_axis::DiagnosticTransmission& transmission, ch
         clutch.blocker = DiagnosticClutchBlocker::belowThreshold;
     } else if (clutch.signal == DiagnosticCommandState::waitingForNeutral) {
         clutch.blocker = DiagnosticClutchBlocker::waitingForNeutral;
-    } else if (clutch.signal == DiagnosticCommandState::temporarilyUnavailable) {
+    } else if (clutch.signal == DiagnosticCommandState::temporarilyUnavailable ||
+               clutch.signal == DiagnosticCommandState::awaitingFirstReport) {
         clutch.blocker = DiagnosticClutchBlocker::signalPending;
     } else {
         clutch.blocker = DiagnosticClutchBlocker::signalUnavailable;
@@ -1515,10 +1528,6 @@ struct UsbReadDiagnostics {
         }
     }
 
-    static void observe(void* observerState, const chrome_axis::DirectInputReadEvent& read) noexcept {
-        static_cast<UsbReadDiagnostics*>(observerState)->record(read, GetTickCount64());
-    }
-
     void record(const chrome_axis::DirectInputReadEvent& read, std::uint64_t tick, DiagnosticMode mode = DiagnosticMode::usb,
                 chrome_axis::DiagnosticUsbLane lane = chrome_axis::DiagnosticUsbLane::reader) noexcept {
         using ReadKind = chrome_axis::DirectInputReadEventKind;
@@ -1539,7 +1548,9 @@ struct UsbReadDiagnostics {
         }
         DiagnosticUsbEvent event{.sampledAt = tick, .durationMicros = read.durationMicros,
                                  .result = static_cast<std::uint32_t>(read.result), .kind = kind,
-                                 .mode = mode, .lane = lane};
+                                 .mode = mode, .lane = lane,
+                                 .hasCallLane = !read.operation.empty() && read.kind != ReadKind::discreteOverflow,
+                                 .callStartedAt = read.call.start.tick, .callStartMode = read.call.start.mode};
         describeDevice(event, read.deviceId, read.operation);
         publisher.recordUsbEvent(event);
     }
@@ -1721,18 +1732,19 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const auto feedbackOperation = workers.force.activeOperation();
         if (feedbackOperation.call.overdue(GetTickCount64(), 250)) {
             auto& entry = usbOperations[activeOperationCount++];
-            entry = {.startedAt = feedbackOperation.call.startedAt, .lane = chrome_axis::DiagnosticUsbLane::feedback};
+            entry = {.startedAt = feedbackOperation.call.startedAt, .lane = chrome_axis::DiagnosticUsbLane::feedback,
+                     .startMode = feedbackOperation.call.startMode};
             usbReadDiagnostics->describeDevice(entry, feedbackOperation.deviceId.data(), feedbackOperation.call.operation);
         }
         if (workers.input) {
-            workers.input->visitActiveCalls([&](std::string_view id, std::string_view operation,
-                                                std::uint64_t startedAt, bool layoutProbe) {
+            workers.input->visitActiveCalls([&](std::string_view id, const auto& call, bool layoutProbe) {
                 if (activeOperationCount == usbOperations.size())
                     return;
                 auto& entry = usbOperations[activeOperationCount++];
-                entry = {.startedAt = startedAt, .lane = layoutProbe ? chrome_axis::DiagnosticUsbLane::probe
-                                                                     : chrome_axis::DiagnosticUsbLane::reader};
-                usbReadDiagnostics->describeDevice(entry, id, operation);
+                entry = {.startedAt = call.startedAt, .lane = layoutProbe ? chrome_axis::DiagnosticUsbLane::probe
+                                                                         : chrome_axis::DiagnosticUsbLane::reader,
+                         .startMode = call.startMode};
+                usbReadDiagnostics->describeDevice(entry, id, call.operation);
             });
         }
         const auto performanceRequest = diagnostics->performanceRequest();
@@ -1977,11 +1989,17 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     auto& feedbackOutput = workers.force;
     auto feedbackState = chrome_axis::WheelForceState::waiting;
     Clock::time_point lastFeedbackUpdate{};
+    std::uint64_t feedbackConnection{};
+    std::uint64_t firstForceRequestedAt{};
+    bool firstEffectAccepted{};
     const auto resetFeedback = [&] {
         feedbackOutput.cancel();
         wheelFeedback.reset();
         feedbackState = chrome_axis::WheelForceState::waiting;
         lastFeedbackUpdate = {};
+        feedbackConnection = 0;
+        firstForceRequestedAt = 0;
+        firstEffectAccepted = false;
         diagnostic.feedbackData = {};
     };
     const auto collectFeedback = [&] {
@@ -1989,7 +2007,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (usbReadDiagnostics) {
                 usbReadDiagnostics->record({chrome_axis::DirectInputReadEventKind::slow,
                     operation->deviceId.data(), operation->name.data(), operation->result,
-                    operation->durationMicros}, operation->sampledAt, operation->mode, chrome_axis::DiagnosticUsbLane::feedback);
+                    operation->durationMicros, {.start = operation->start}},
+                    operation->sampledAt, operation->mode, chrome_axis::DiagnosticUsbLane::feedback);
             }
         }
         while (const auto result = feedbackOutput.nextCompletion()) {
@@ -2007,6 +2026,17 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             if (result->accepted) {
                 diagnostic.feedbackData.submittedAt = result->submittedAt;
                 diagnostic.feedbackData.submitted = *result->accepted;
+                if (!firstEffectAccepted && firstForceRequestedAt && result->submittedAt >= firstForceRequestedAt) {
+                    firstEffectAccepted = true;
+                    if (usbReadDiagnostics && usb.profile) {
+                        DiagnosticUsbEvent event{.sampledAt = result->submittedAt,
+                            .durationMicros = (result->submittedAt - firstForceRequestedAt) * 1000,
+                            .kind = DiagnosticUsbEventKind::feedbackReady, .mode = DiagnosticMode::usb,
+                            .lane = chrome_axis::DiagnosticUsbLane::feedback, .hasCallLane = true};
+                        usbReadDiagnostics->describeDevice(event, usb.profile->steering.deviceId, {});
+                        usbReadDiagnostics->publisher.recordUsbEvent(event);
+                    }
+                }
                 if (capture) {
                     ++performance.submittedEffects;
                     performance.peakSubmittedForce = std::max(performance.peakSubmittedForce,
@@ -2021,6 +2051,21 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
     };
     chrome_axis::SimulationReceiver simulation(gameRoot);
     auto& input = workers.input;
+    const auto collectInputEvents = [&] {
+        if (!input)
+            return;
+        input->drainEvents([&](const std::string& id, const auto& event) {
+            if (performance.state == chrome_axis::PerformanceState::capturing &&
+                event.sampledAt >= performance.startedAt &&
+                event.kind == chrome_axis::DirectInputReadEventKind::sampleExpired)
+                ++performance.expiredReads;
+            if (usbReadDiagnostics)
+                usbReadDiagnostics->record({event.kind, id, event.operation.data(), event.result,
+                    event.durationMicros, {.start = {event.callStartedAt, event.callStartMode}}},
+                    event.sampledAt, event.mode.value_or(usbReaderObservationMode()),
+                    event.probe ? chrome_axis::DiagnosticUsbLane::probe : chrome_axis::DiagnosticUsbLane::reader);
+        });
+    };
     struct StopWorkers {
         DriverWorkers& workers;
 
@@ -2067,8 +2112,9 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             std::scoped_lock lock(stateMutex);
             current = context;
         }
+        const HWND gameForeground = foregroundGameWindow();
         const HWND foreground = current.vehicle && start - current.refreshed <= contextLifetime
-            ? foregroundGameWindow() : nullptr;
+            ? gameForeground : nullptr;
         if (current.session != diagnosticSession) {
             diagnosticSession = current.session;
             diagnostic.lastAccessoryKey = 0;
@@ -2091,6 +2137,10 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const auto diagnosticSource = simulated ? DiagnosticMode::simulation : !usb.enabled ? DiagnosticMode::usbDisabled
             : !physical ? DiagnosticMode::profileUnavailable : DiagnosticMode::usb;
         feedbackSource.store(diagnosticSource, std::memory_order_release);
+        const auto readerMode = !gameForeground ? DiagnosticMode::gameNotForeground :
+            !foreground ? DiagnosticMode::waitingForDriver : !vehicleInputFresh(current, start)
+                ? DiagnosticMode::waitingForVehicleInput : diagnosticSource;
+        usbReaderMode.store(readerMode, std::memory_order_release);
         const auto source = transmissionAvailable
             ? chrome_axis::transmissionSource(simulated, usb.nativeShifterVerified, usb.nativeSequential)
             : chrome_axis::TransmissionSource::none;
@@ -2131,6 +2181,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                 }
             }
             collectFeedback();
+            collectInputEvents();
             wasDriving = false;
             lastAxisStatuses.reset();
             if (diagnostics && (start >= nextDiagnostic || changes.feedback)) {
@@ -2235,7 +2286,8 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         }
         if (physical) {
             if (!input)
-                input = std::make_unique<chrome_axis::DrivingInputs<>>(physicalPollInterval, inputLifetime, &logDirectInput);
+                input = std::make_unique<chrome_axis::DrivingInputs<>>(physicalPollInterval, inputLifetime,
+                    &logDirectInput, &usbReaderObservationMode);
             if (!inputActive || windowChanged || sourceChanged || changes.calibration || changes.accessories) {
                 inputConfigured = false;
                 inputDevices.clear();
@@ -2367,18 +2419,12 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                         usbWaitStartedAt = tick;
                 }
             }
-            input->drainEvents([&](const std::string& id, const auto& event) {
-                if (measuring && event.kind == chrome_axis::DirectInputReadEventKind::sampleExpired)
-                    ++performance.expiredReads;
-                if (usbReadDiagnostics)
-                    usbReadDiagnostics->record({event.kind, id, event.operation.data(), event.result,
-                        event.durationMicros}, event.sampledAt);
-            });
             input->drainCycles([&](const auto& cycle) {
                 if (measuring) {
                     performance.usbRead.add(cycle.durationMicros);
                     performance.usbSlowReads += cycle.durationMicros > elapsedMicros(physicalPollInterval);
                     performance.usbLateStarts += cycle.missedCadence;
+                    performance.usbRetryWaits += cycle.retryAfterUnavailable;
                 }
             });
             if (sampleExpired) {
@@ -2435,13 +2481,14 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         const bool selectorUsable = !usb.nativeShifter || (usb.nativeShifterVerified && nativeGear.has_value());
         const auto readiness = physical && usb.accessories
             ? usb.accessories->readiness(selectorUsable) : chrome_axis::AccessoryReadiness{};
-        const auto axisPending = [&] {
-            return usb.reader && std::ranges::find(usb.reader->axisStatuses(),
-                chrome_axis::AxisStatus::temporarilyUnavailable) != usb.reader->axisStatuses().end();
+        const auto hasAxisStatus = [&](chrome_axis::AxisStatus status) {
+            return usb.reader && std::ranges::find(usb.reader->axisStatuses(), status) != usb.reader->axisStatuses().end();
         };
+        const bool pendingRead = readiness.temporarilyUnavailable ||
+            hasAxisStatus(chrome_axis::AxisStatus::temporarilyUnavailable);
         if (measuring && physical) {
             performance.expiredReads += sampleExpired;
-            performance.transientReads += readiness.temporarilyUnavailable || axisPending();
+            performance.transientReads += pendingRead;
         }
         const bool accessoriesReady = usb.accessoryProfile && !usb.accessoryProfile->empty() &&
             readiness.armed == usb.accessoryProfile->size();
@@ -2652,10 +2699,21 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             forceDiagnostic.requestAvailable = 1;
             forceDiagnostic.clipped = clipped;
             forceDiagnostic.impactClipped = impactClipped;
-            const auto recovery = input ? input->recoveryToken(steering.deviceId) : 0;
+            const auto connection = input ? input->connectionToken(steering.deviceId) : 0;
+            if (feedbackConnection != connection) {
+                // A result from the old connection cannot become the first accepted effect of the new one.
+                feedbackOutput.cancel();
+                feedbackConnection = connection;
+                firstForceRequestedAt = 0;
+                firstEffectAccepted = false;
+            }
+            const auto requestedAt = GetTickCount64();
             if (!feedbackOutput.submit(foreground, steering.deviceId, steering.axis, force, forceOutput,
-                                       measuring ? performance.requestId : 0, missedCadence, recovery))
+                                       measuring ? performance.requestId : 0, missedCadence, connection)) {
                 feedbackState = chrome_axis::WheelForceState::unavailable;
+            } else if (!firstForceRequestedAt && std::abs(force) >= 0.001f) {
+                firstForceRequestedAt = requestedAt;
+            }
             if (measuring) {
                 performance.motionAge.add(forceDiagnostic.motionAgeMicros);
                 feedbackMeasurement.identify(performance, usb.feedbackSettings, *usb.profile, diagnostic);
@@ -2668,6 +2726,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
             }
         }
         collectFeedback();
+        collectInputEvents();
         if (!simulated && usb.reader && input && input->ready()) {
             const auto& statuses = usb.reader->axisStatuses();
             if (start >= nextAxisLog && statuses != lastAxisStatuses && sdk && sdk->logger) {
@@ -2680,6 +2739,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
                     case AxisStatus::waitingForNeutral: return "waiting for neutral";
                     case AxisStatus::armed: return "armed";
                     case AxisStatus::temporarilyUnavailable: return "temporarily unavailable";
+                    case AxisStatus::awaitingFirstReport: return "waiting for first report";
                     }
                     return "unknown";
                 };
@@ -2700,7 +2760,7 @@ void pollInput(std::stop_token stop, const std::filesystem::path& configurationD
         // A slow effect submission does not change whether the earlier input read succeeded.
         const auto diagnosticAt = Clock::now();
         const bool reportPending = diagnostics && physical && diagnosticAt >= nextPendingReport &&
-            (readiness.temporarilyUnavailable || axisPending());
+            (pendingRead || readiness.awaitingFirstReport || hasAxisStatus(chrome_axis::AxisStatus::awaitingFirstReport));
         if (diagnostics && (changes.feedback || diagnosticAt >= nextDiagnostic || (sampleExpired && diagnosticAt >= nextTimeoutReport) ||
             reportPending)) {
             if (sampleExpired)

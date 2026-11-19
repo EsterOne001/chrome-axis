@@ -709,6 +709,7 @@ AccessoryReadiness AccessoryReader::readiness(bool nativeSelectorUsable) const n
         result.deviceUnavailable |= state.status == AccessoryStatus::deviceUnavailable;
         result.inputUnavailable |= state.status == AccessoryStatus::inputUnavailable;
         result.temporarilyUnavailable |= state.status == AccessoryStatus::temporarilyUnavailable;
+        result.awaitingFirstReport |= state.status == AccessoryStatus::awaitingFirstReport;
     }
     return result;
 }
@@ -739,6 +740,11 @@ float AccessoryReader::advance(const AccessoryBinding& binding, BindingState& st
 {
     if (status == DeviceReadStatus::resumed)
         state = {};
+    if (status == DeviceReadStatus::awaitingFirstReport) {
+        state = {};
+        state.status = AccessoryStatus::awaitingFirstReport;
+        return 0.0f;
+    }
     const bool fresh = sample && (!sample->sequence || state.sequence != sample->sequence);
     if (sample)
         state.sequence = sample->sequence;

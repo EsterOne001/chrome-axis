@@ -734,6 +734,46 @@ bool forceWithDeferredActuator(bool invalidateDuringAcquire)
     return mock.wheel.exclusiveAcquires == 1 && (invalidateDuringAcquire ? rejected : active) && released;
 }
 
+bool reuseForceCapabilityOnSameConnection()
+{
+    MockDriver mock;
+    mock.wheel.feedback = true;
+    mock.wheel.acquisitionRequired = false;
+    driver = &mock;
+    DirectInput reader(GetDesktopWindow());
+    DirectInput output(mockForegroundWindow());
+    DeviceReadStatus status{};
+    const auto first = reader.sampleForDriving(wheelId, {}, status);
+    if (!first || !first->connectionToken)
+        return false;
+    const auto apply = [&](std::uint64_t connection) {
+        return output.setWheelForce(wheelId, 0, -0.5f, {.recoveryToken = connection}) == -0.5f;
+    };
+    if (!apply(first->connectionToken) || mock.wheel.capabilityChecks != 1)
+        return false;
+    output.stopWheelForce();
+    if (mock.wheel.exclusivelyAcquired || mock.wheel.force || mock.wheel.autocenter != DIPROPAUTOCENTER_ON)
+        return false;
+    const auto resumed = reader.sampleForDriving(wheelId, {}, status);
+    if (!resumed || resumed->connectionToken != first->connectionToken || !apply(resumed->connectionToken) ||
+        mock.wheel.capabilityChecks != 1 || mock.wheel.exclusiveAcquires != 2 || mock.wheel.effects != 2)
+        return false;
+    output.stopWheelForce();
+
+    mock.wheel.connected = false;
+    if (reader.sampleForDriving(wheelId, {}, status))
+        return false;
+    mock.wheel.connected = true;
+    if (!waitFor([&] {
+        const auto sample = reader.sampleForDriving(wheelId, {}, status);
+        return sample && sample->connectionToken && sample->connectionToken != first->connectionToken &&
+            apply(sample->connectionToken);
+    }) || mock.wheel.capabilityChecks != 2)
+        return false;
+    output.stopWheelForce();
+    return apply(0) && mock.wheel.capabilityChecks == 3;
+}
+
 } // namespace
 
 int main()
@@ -746,6 +786,10 @@ int main()
     if (!forceWithDeferredActuator(false) || !forceWithDeferredActuator(true)) {
         std::cerr << "Force feedback did not recover deferred actuator metadata or safely stop\n";
         return 6;
+    }
+    if (!reuseForceCapabilityOnSameConnection()) {
+        std::cerr << "Force capability reuse did not follow the confirmed input connection\n";
+        return 10;
     }
 
     MockDriver mock;

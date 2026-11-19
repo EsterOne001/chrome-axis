@@ -44,6 +44,7 @@ public:
         std::uint64_t durationMicros{};
         std::uint64_t sampledAt{};
         DiagnosticMode mode{DiagnosticMode::usb};
+        DirectInputCallObservation start;
     };
 
     struct ActiveOperation {
@@ -51,9 +52,9 @@ public:
         DirectInputActiveCall::Snapshot call;
     };
 
-    using ObserveMode = DiagnosticMode (*)() noexcept;
+    using ObserveMode = DirectInputActiveCall::ObserveMode;
     explicit ForceOutputWorker(DirectInputDiagnostic logger = nullptr, ObserveMode observeMode = nullptr) noexcept
-        : logger_(logger), observeMode_(observeMode) {}
+        : logger_(logger), activeCall_(observeMode) {}
 
     bool submit(HWND window, std::string_view id, std::size_t axis, float force, Context validity,
                 std::uint64_t captureId = 0, bool missedCadence = false, std::uint64_t recoveryToken = 0) {
@@ -190,9 +191,10 @@ private:
         if (event.kind != DirectInputReadEventKind::slow)
             return;
         auto& worker = *static_cast<ForceOutputWorker*>(opaque);
+        const auto finish = event.call.finish.tick ? event.call.finish : worker.activeCall_.observe();
         Operation operation{.result = event.result, .durationMicros = event.durationMicros,
-                            .sampledAt = GetTickCount64(),
-                            .mode = worker.observeMode_ ? worker.observeMode_() : DiagnosticMode::usb};
+                            .sampledAt = finish.tick, .mode = finish.mode.value_or(DiagnosticMode::usb),
+                            .start = event.call.start};
         std::ranges::copy(event.deviceId.substr(0, operation.deviceId.size() - 1), operation.deviceId.begin());
         std::ranges::copy(event.operation.substr(0, operation.name.size() - 1), operation.name.begin());
         std::scoped_lock lock(worker.mutex_);
@@ -301,7 +303,6 @@ private:
     }
 
     DirectInputDiagnostic logger_{};
-    ObserveMode observeMode_{};
     std::atomic<std::uint64_t> generation_{};
     std::mutex mutex_;
     std::condition_variable_any changed_;

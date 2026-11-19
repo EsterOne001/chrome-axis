@@ -817,6 +817,7 @@ void AccessoryDialog::pollPreview()
         switch (observation.status) {
         case AccessoryStatus::deviceUnavailable: return Text::DlgAccessoryPreviewDevice;
         case AccessoryStatus::inputUnavailable: return Text::DlgAccessoryPreviewInput;
+        case AccessoryStatus::awaitingFirstReport:
         case AccessoryStatus::temporarilyUnavailable: return Text::DlgAccessoryPreviewPending;
         case AccessoryStatus::waitingForNeutral: return Text::DlgAccessoryPreviewNeutral;
         case AccessoryStatus::armed:

@@ -519,6 +519,7 @@ void ShifterDialog::pollPreview()
     case AccessoryStatus::inputUnavailable:
         message = tr(Text::DlgAccessoryPreviewInput);
         break;
+    case AccessoryStatus::awaitingFirstReport:
     case AccessoryStatus::temporarilyUnavailable:
         message = tr(Text::DlgAccessoryPreviewPending);
         break;

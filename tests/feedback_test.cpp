@@ -219,13 +219,14 @@ struct FakeForceDriver {
         if (!initialized) {
             if (++testState->initialized == 1) {
                 const auto start = TestClock::now();
-                activeCall->begin("FFB Acquire");
+                DirectInputCallTrace trace{.start = activeCall->begin("FFB Acquire")};
                 testState->entered.store(true);
                 testState->resume.wait(false);
+                trace.finish = activeCall->observe();
                 activeCall->end();
                 const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(TestClock::now() - start);
                 observer(observerContext, {DirectInputReadEventKind::slow, id, "FFB Acquire", S_OK,
-                    static_cast<std::uint64_t>(duration.count())});
+                    static_cast<std::uint64_t>(duration.count()), trace});
             }
             if (!guard.canInitialize(guard.context))
                 return std::nullopt;
@@ -284,6 +285,7 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
 
     const std::string wheel = "{11111111-1111-1111-1111-111111111111}";
     const std::string pedal = "{22222222-2222-2222-2222-222222222222}";
+    const std::string lever = "{33333333-3333-3333-3333-333333333333}";
     const HWND window = GetDesktopWindow();
     auto now = TestClock::now();
     if (!worker.submit(window, wheel, 0, 0.75f, {now + 100ms}, 42) ||
@@ -291,27 +293,38 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
         return 51;
 
     Profile profile;
+    profile.steering = {wheel, 0, 0, -1000, 1000, 0.0f};
     profile.brake = {pedal, 0, 0, 0, 1000, 0.02f};
     ControlReader controls(profile);
-    AccessoryReader accessories({{pedal, AccessoryKind::Button, 0, 0, 1, VK_SPACE}});
-    DeviceSample input;
-    input.axesPresent[0] = true;
-    input.buttonsPresent.set(0);
-    std::array<const DeviceSample*, 3> axisSamples{nullptr, nullptr, &input};
-    std::array<const DeviceSample*, 1> buttonSamples{&input};
-    for (int i = 0; i < 5; ++i) {
-        input.axes[0] = 0;
-        input.buttons.reset(0);
+    AccessoryReader accessories({{pedal, AccessoryKind::Button, 0, 0, 1, VK_SPACE},
+                                {lever, AccessoryKind::Button, 0, 0, 1, '1'}});
+    DeviceSample wheelInput, pedalInput, leverInput;
+    wheelInput.axesPresent[0] = true;
+    pedalInput.axesPresent[0] = true;
+    pedalInput.buttonsPresent.set(0);
+    leverInput.buttonsPresent.set(0);
+    const std::array<const DeviceSample*, 3> axisSamples{&wheelInput, nullptr, &pedalInput};
+    const std::array<const DeviceSample*, 2> buttonSamples{&pedalInput, &leverInput};
+    const auto exerciseUntil = TestClock::now() + 500ms;
+    do {
+        wheelInput.axes[0] = 0;
+        pedalInput.axes[0] = 0;
+        pedalInput.buttons.reset(0);
+        leverInput.buttons.reset(0);
         for (int neutral = 0; neutral < 3; ++neutral) {
             controls.update(axisSamples);
             accessories.update(buttonSamples);
         }
-        input.axes[0] = 1000;
-        input.buttons.set(0);
-        if (controls.update(axisSamples).values.brake != 1.0f || !accessories.update(buttonSamples).test(VK_SPACE))
+        wheelInput.axes[0] = 1000;
+        pedalInput.axes[0] = 1000;
+        pedalInput.buttons.set(0);
+        leverInput.buttons.set(0);
+        const auto values = controls.update(axisSamples).values;
+        const auto keys = accessories.update(buttonSamples);
+        if (values.steering <= 0 || values.brake != 1.0f || !keys.test(VK_SPACE) || !keys.test('1'))
             return 52;
         std::this_thread::sleep_for(25ms);
-    }
+    } while (TestClock::now() < exerciseUntil);
 
     if (cancel)
         worker.cancel();
@@ -319,6 +332,7 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
             const auto operation = worker.activeOperation();
             return operation.deviceId.data() == std::string_view(wheel) &&
                 operation.call.overdue(GetTickCount64(), 250) &&
+                operation.call.startMode == otherMode &&
                 operation.call.operation == std::string_view("FFB Acquire");
         }))
         return 85;
@@ -347,6 +361,7 @@ int testSlowForceDuringIndependentInput(bool cancel, bool recover = false)
     const auto slow = worker.nextOperation();
     if (!slow || slow->name.data() != std::string_view("FFB Acquire") || slow->deviceId.data() != wheel ||
         slow->durationMicros <= 100000 || slow->sampledAt < releasedAt || slow->mode != resultMode ||
+        !slow->start.tick || slow->start.tick >= slow->sampledAt || slow->start.mode != otherMode ||
         worker.activeOperation().call.operation)
         return 55;
     if (cancel)

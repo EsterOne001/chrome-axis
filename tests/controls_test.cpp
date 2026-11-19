@@ -94,7 +94,7 @@ int testTransientRead(const chrome_axis::Profile& profile)
     using Status = DeviceReadStatus;
     DeviceReadContinuity continuity;
     const auto first = DeviceReadContinuity::Clock::time_point{} + 1s;
-    if (continuity.pending(first) != Status::unavailable ||
+    if (continuity.pending(first) != Status::pending ||
         continuity.available(first + 1ms) != Status::resumed ||
         continuity.pending(first + 95ms) != Status::pending ||
         continuity.available(first + 100ms) != Status::available ||
@@ -103,7 +103,9 @@ int testTransientRead(const chrome_axis::Profile& profile)
         continuity.pending(first + 300ms) != Status::unavailable)
         return 35;
     continuity.reset();
-    if (continuity.pending(first + 400ms) != Status::unavailable)
+    if (continuity.pending(first + 400ms) != Status::pending ||
+        continuity.pending(first + 499ms) != Status::pending ||
+        continuity.pending(first + 500ms) != Status::unavailable)
         return 36;
 
     DeviceSample wheel, pedals;

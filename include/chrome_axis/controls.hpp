@@ -105,6 +105,7 @@ enum class AxisStatus {
     waitingForNeutral,
     armed,
     temporarilyUnavailable,
+    awaitingFirstReport,
 };
 
 inline constexpr wchar_t profileFilename[] = L"chrome_axis.ini";

@@ -162,6 +162,7 @@ const wchar_t* axisText(DiagnosticAxisState state)
     case DiagnosticAxisState::simulated: return tr(Text::DlgDiagnosticsSimulated);
     case DiagnosticAxisState::sampleExpired: return tr(Text::DlgDiagnosticsSampleExpired);
     case DiagnosticAxisState::temporarilyUnavailable: return tr(Text::DlgDiagnosticsTemporaryRead);
+    case DiagnosticAxisState::awaitingFirstReport: return tr(Text::DlgDiagnosticsFirstUsbReport);
     }
     return unavailableValue;
 }
@@ -182,6 +183,7 @@ const wchar_t* accessoryText(DiagnosticAccessoryState state)
     case DiagnosticAccessoryState::inputUnavailable: return tr(Text::DlgDiagnosticsAccessoryInputUnavailable);
     case DiagnosticAccessoryState::sampleExpired: return tr(Text::DlgDiagnosticsSampleExpired);
     case DiagnosticAccessoryState::temporarilyUnavailable: return tr(Text::DlgDiagnosticsTemporaryRead);
+    case DiagnosticAccessoryState::awaitingFirstReport: return tr(Text::DlgDiagnosticsFirstUsbReport);
     }
     return unavailableValue;
 }
@@ -446,6 +448,7 @@ const wchar_t* commandState(DiagnosticCommandState state)
     case DiagnosticCommandState::inputUnavailable: return tr(Text::DlgDiagnosticsAccessoryInputUnavailable);
     case DiagnosticCommandState::temporarilyUnavailable: return tr(Text::DlgDiagnosticsTemporaryRead);
     case DiagnosticCommandState::sampleExpired: return tr(Text::DlgDiagnosticsSampleExpired);
+    case DiagnosticCommandState::awaitingFirstReport: return tr(Text::DlgDiagnosticsFirstUsbReport);
     }
     return unavailableValue;
 }
@@ -560,7 +563,7 @@ std::string_view usbOperation(const DiagnosticUsbEvent& event)
 
 bool slowFeedbackEvent(const DiagnosticUsbEvent& event)
 {
-    return event.kind == DiagnosticUsbEventKind::deviceSlow && usbOperation(event).starts_with("FFB ");
+    return event.kind == DiagnosticUsbEventKind::deviceSlow && event.lane == DiagnosticUsbLane::feedback;
 }
 
 bool usbLayoutFailureCode(const DiagnosticUsbEvent& event) noexcept
@@ -602,6 +605,7 @@ const wchar_t* usbEventTitle(const DiagnosticUsbEvent& event, bool live = false)
     case DiagnosticUsbEventKind::layoutRecovered: return tr(Text::DlgDiagnosticsUsbEventLayoutRecovered);
     case DiagnosticUsbEventKind::workerStartFailed: return tr(Text::DlgDiagnosticsUsbWorkerStartFailed);
     case DiagnosticUsbEventKind::workerStarted: return tr(Text::DlgDiagnosticsUsbWorkerStarted);
+    case DiagnosticUsbEventKind::feedbackReady: return tr(Text::DlgDiagnosticsFeedbackFirstAccepted);
     case DiagnosticUsbEventKind::operationRunning:
         return tr(live ? Text::DlgDiagnosticsUsbEventOperationRunning : Text::DlgDiagnosticsUsbEventOperationObserved);
     }
@@ -665,6 +669,7 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     case DiagnosticUsbEventKind::layoutRecovered:
     case DiagnosticUsbEventKind::workerStartFailed:
     case DiagnosticUsbEventKind::workerStarted:
+    case DiagnosticUsbEventKind::feedbackReady:
     case DiagnosticUsbEventKind::operationRunning:
     case DiagnosticUsbEventKind::discreteOverflow: {
         const auto id = bounded(event.deviceId);
@@ -675,6 +680,8 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
             append(usbLaneText(event.lane));
             appendOperation();
             append(milliseconds(static_cast<double>(event.durationMicros)));
+        } else if (event.hasCallLane) {
+            append(usbLaneText(event.lane));
         }
         append(model.empty() ? std::wstring_view(tr(fallback)) : std::wstring_view(model));
         for (std::size_t index = 0; index < axisControls.size(); ++index) {
@@ -722,8 +729,15 @@ std::wstring usbEventDetails(const DiagnosticUsbEvent& event, std::span<const De
     default:
         break;
     }
-    if (!running && (event.durationMicros || event.kind == DiagnosticUsbEventKind::pollExpired))
+    if (event.callStartMode && *event.callStartMode != event.mode)
+        append(std::wstring(modeText(*event.callStartMode)) + L" → " + modeText(event.mode));
+    if (event.kind == DiagnosticUsbEventKind::commandsReady && event.durationMicros) {
+        append(std::wstring(tr(Text::DlgDiagnosticsUsbObservedRearm)) + L" " +
+               milliseconds(static_cast<double>(event.durationMicros)));
+    } else if (!running && (event.durationMicros || event.kind == DiagnosticUsbEventKind::pollExpired ||
+                           event.kind == DiagnosticUsbEventKind::feedbackReady)) {
         append(milliseconds(static_cast<double>(event.durationMicros)));
+    }
     return detail;
 }
 
@@ -1280,6 +1294,7 @@ std::wstring diagnosticReport(const DiagnosticRead& read, const DialogState& sta
         line(Text::DlgDiagnosticsPerformanceTransient, std::to_wstring(read.performance.transientReads));
         line(Text::DlgDiagnosticsPerformanceUsbSlowReads, std::to_wstring(read.performance.usbSlowReads));
         line(Text::DlgDiagnosticsPerformanceUsbLateStarts, std::to_wstring(read.performance.usbLateStarts));
+        line(Text::DlgDiagnosticsPerformanceUsbRetryWaits, std::to_wstring(read.performance.usbRetryWaits));
         line(Text::DlgDiagnosticsPerformanceFeedbackOverruns, std::to_wstring(read.performance.feedbackIntervalOverruns));
         line(Text::DlgDiagnosticsPerformanceAccepted, std::to_wstring(read.performance.submittedEffects));
         const auto& capture = read.performance;
@@ -1483,7 +1498,8 @@ void refreshPerformance(HWND window, HWND content, const DialogState& state, con
         setChangedText(content, control.valueId, performanceTiming(performance.*control.timing));
     setChangedText(content, IDC_DIAGNOSTICS_PERFORMANCE_WARNINGS, showResults
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceExpired)) + L" · " + std::to_wstring(performance.expiredReads) +
-            L"    " + tr(Text::DlgDiagnosticsPerformanceTransient) + L" · " + std::to_wstring(performance.transientReads)
+            L"    " + tr(Text::DlgDiagnosticsPerformanceTransient) + L" · " + std::to_wstring(performance.transientReads) +
+            L"    " + tr(Text::DlgDiagnosticsPerformanceUsbRetryWaits) + L" · " + std::to_wstring(performance.usbRetryWaits)
         : L"");
     setChangedText(content, IDC_DIAGNOSTICS_PERFORMANCE_OVERRUNS, showResults
         ? std::wstring(tr(Text::DlgDiagnosticsPerformanceUsbSlowReads)) + L" · " +

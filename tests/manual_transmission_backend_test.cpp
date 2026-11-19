@@ -26,6 +26,24 @@ static_assert(!requestExpired(0, 1000));
 static_assert(!requestExpired(900, 899));
 static_assert(requestExpired(900, 900));
 
+constexpr bool rejectsSupersededGearboxStep() {
+    int vehicle{}, otherVehicle{};
+    constexpr std::uint64_t firstGeneration = 12;
+    const DriverLease before{&vehicle, firstGeneration, 250};
+    const DriverLease paused{nullptr, firstGeneration, 0};
+    const DriverLease resumed{&vehicle, firstGeneration + 1, 450};
+    const DriverLease replaced{&otherVehicle, firstGeneration + 1, 450};
+    return before.allows(&vehicle, firstGeneration, 100) &&
+        !before.allows(&vehicle, firstGeneration, 250) &&
+        !paused.allows(&vehicle, firstGeneration, 105) &&
+        !resumed.allows(&vehicle, firstGeneration, 200) &&
+        !replaced.allows(&vehicle, firstGeneration, 200) &&
+        resumed.allows(&vehicle, firstGeneration + 1, 200) &&
+        replaced.allows(&otherVehicle, firstGeneration + 1, 200);
+}
+
+static_assert(rejectsSupersededGearboxStep());
+
 static_assert(observeEngagement(3, neutralGear, false, 100, 200) == Engagement::pending);
 static_assert(observeEngagement(3, 3, false, 180, 200) == Engagement::pending);
 static_assert(observeEngagement(3, 3, true, 181, 200) == Engagement::confirmed);

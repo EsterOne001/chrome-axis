@@ -160,6 +160,10 @@ int run()
         return 1;
 
     bool emittedIncident = false;
+    bool restartedGame = false;
+    bool emittedAfterRestart = false;
+    constexpr std::string_view wheelId = "{6A523E13-8D9C-4CA3-A19C-8B317DFBE275}";
+    constexpr std::string_view pedalId = "{6A523E13-8D9C-4CA3-A19C-8B317DFBE276}";
     const auto pump = [&] {
         if (!publisher) {
             std::this_thread::sleep_for(28ms);
@@ -175,11 +179,25 @@ int run()
                         .kind = DiagnosticUsbEventKind::pollExpired, .mode = DiagnosticMode::usb});
                     DiagnosticUsbEvent returned{.sampledAt = GetTickCount64(), .durationMicros = 510000,
                         .kind = DiagnosticUsbEventKind::deviceSlow, .mode = DiagnosticMode::gameNotForeground,
-                        .lane = DiagnosticUsbLane::feedback};
+                        .lane = DiagnosticUsbLane::feedback, .hasCallLane = true, .callStartedAt = started - 50,
+                        .callStartMode = DiagnosticMode::usb};
                     constexpr std::string_view call = "FFB SetParameters";
                     std::ranges::copy(call, returned.operation.begin());
+                    std::ranges::copy(wheelId, returned.deviceId.begin());
                     publisher->recordUsbEvent(returned);
                     emittedIncident = true;
+                }
+                if (performance.requestId == request->id && restartedGame && !emittedAfterRestart) {
+                    const auto resumed = [&](std::string_view device, std::string_view name) {
+                        DiagnosticUsbEvent event{.sampledAt = GetTickCount64(), .kind = DiagnosticUsbEventKind::deviceRecovered,
+                            .mode = DiagnosticMode::usb, .lane = DiagnosticUsbLane::reader, .hasCallLane = true};
+                        std::ranges::copy(device, event.deviceId.begin());
+                        std::ranges::copy(name, event.operation.begin());
+                        publisher->recordUsbEvent(event);
+                    };
+                    resumed(pedalId, "Pedal restart fixture");
+                    resumed(wheelId, "Wheel restart fixture");
+                    emittedAfterRestart = true;
                 }
                 publisher->recordDrivingSample(request->id, {.sampledAt = GetTickCount64(), .mode = DiagnosticMode::usb,
                     .speedMps = 13.0f, .speedAvailable = true});
@@ -232,9 +250,10 @@ int run()
         return 3;
     performance = {};
     publisher.emplace(session.path);
+    restartedGame = true;
     if (!until(recorder, [&](const DiagnosticRecordingStatus& status) {
             return status.state == DiagnosticRecordingState::recording && status.rows > beforeRestart.rows &&
-                status.file == beforeRestart.file;
+                status.file == beforeRestart.file && emittedAfterRestart;
         }))
         return 4;
     recorder.stop();
@@ -254,10 +273,17 @@ int run()
     const auto forceLine = std::string_view(csv).substr(start, csv.find('\n', force) - start);
     if (!emittedIncident || header == csv.npos || csv.find("elapsed_ms,mode", header + 1) != csv.npos ||
         csv.find("888877") != csv.npos || forceLine.find(",game_not_foreground,") == forceLine.npos ||
-        forceLine.find(",feedback,") == forceLine.npos ||
+        !forceLine.ends_with(",feedback,,-50,usb,1\r") || csv.find("6A523E13") != csv.npos ||
         csv.find("505520") == csv.npos || csv.find(",usb,") == csv.npos ||
         csv.find("connection_lost") == csv.npos || csv.find("connection_restored") == csv.npos || result.dropped)
         return 6;
+    const auto hasDeviceSlot = [&](std::string_view name, std::string_view suffix) {
+        const auto at = csv.find(name);
+        return at != csv.npos && std::string_view(csv).substr(at, csv.find('\n', at) - at).ends_with(suffix);
+    };
+    if (!hasDeviceSlot("Pedal restart fixture", ",reader,,,,2\r") ||
+        !hasDeviceSlot("Wheel restart fixture", ",reader,,,,1\r"))
+        return 12;
     input.close();
     const auto afterReconnect = result.file.parent_path() / L"after-reconnect.csv";
     if (!exportDiagnosticRecording(result.file, afterReconnect))

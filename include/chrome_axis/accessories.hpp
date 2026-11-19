@@ -108,13 +108,16 @@ bool suppressConflictingAnalogAccessories(AccessoryProfile& bindings, const Prof
 bool introducesAnalogAccessoryAxisConflict(const Profile* previousAxes, std::span<const AccessoryBinding> previousBindings,
                                            const Profile& axes, std::span<const AccessoryBinding> bindings) noexcept;
 
-enum class AccessoryStatus { waitingForNeutral, deviceUnavailable, inputUnavailable, armed, temporarilyUnavailable };
+enum class AccessoryStatus {
+    waitingForNeutral, deviceUnavailable, inputUnavailable, armed, temporarilyUnavailable, awaitingFirstReport
+};
 
 struct AccessoryReadiness {
     std::size_t armed{};
     bool deviceUnavailable{};
     bool inputUnavailable{};
     bool temporarilyUnavailable{};
+    bool awaitingFirstReport{};
 };
 
 struct AccessoryObservation {

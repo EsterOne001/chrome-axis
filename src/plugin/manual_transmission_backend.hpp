@@ -8,6 +8,11 @@
 #include <cstdint>
 #include <optional>
 
+namespace RED4ext {
+struct ISerializable;
+template<typename T> class Handle;
+}
+
 namespace manual_backend {
 
 struct Snapshot {
@@ -32,7 +37,8 @@ struct Snapshot {
 bool attach(RED4ext::v1::PluginHandle plugin, const RED4ext::v1::Sdk* sdk) noexcept;
 void detach() noexcept;
 bool available() noexcept;
-void setDriverVehicle(const void* vehicle, std::optional<std::array<float, 3>> forward = std::nullopt) noexcept;
+void setDriverVehicle(const RED4ext::Handle<RED4ext::ISerializable>& vehicle,
+                      std::optional<std::array<float, 3>> forward = std::nullopt) noexcept;
 // The absolute value is a selector level; delta is a single sequential input.
 void publish(void* vehicle, bool enabled, int delta, std::optional<int> absolute = std::nullopt,
              bool captureTelemetry = false) noexcept;
@@ -47,6 +53,16 @@ constexpr std::uint64_t gearboxObservationLifetimeMs = 100;
 constexpr std::uint64_t headingLifetimeMs = 200;
 constexpr float directionChangeSpeed = 0.5f; // m/s
 constexpr float reverseEngagementSpeed = 5.0f / 6.0f; // 3 km/h in m/s
+
+struct DriverLease {
+    const void* vehicle{};
+    std::uint64_t generation{};
+    std::uint64_t expiresAt{};
+
+    constexpr bool allows(const void* owner, std::uint64_t observedGeneration, std::uint64_t now) const noexcept {
+        return owner && vehicle == owner && generation == observedGeneration && now < expiresAt;
+    }
+};
 
 constexpr bool shiftSpeedAllowed(int requested, std::optional<float> speed) noexcept {
     const float limit = requested == reverseGear ? reverseEngagementSpeed : directionChangeSpeed;

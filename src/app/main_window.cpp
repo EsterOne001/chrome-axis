@@ -2856,6 +2856,7 @@ Text App::calibrationReviewStatus(std::size_t channel, chrome_axis::AxisStatus s
         return Text::guideReviewAxisUnavailable;
     case AxisStatus::deviceUnavailable:
         return device(deviceId(channel)) ? Text::guideReviewNoSignal : Text::guideReviewDeviceDisconnected;
+    case AxisStatus::awaitingFirstReport:
     case AxisStatus::temporarilyUnavailable:
         return Text::guideReviewAwaitSignal;
     case AxisStatus::waitingForNeutral:

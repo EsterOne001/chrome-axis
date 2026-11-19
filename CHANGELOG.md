@@ -6,6 +6,14 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.90
+
+- La transmission native vérifie la validité de son contexte et conserve une référence au véhicule pendant son traitement. Les rappels d’une ancienne session ou d’un autre véhicule cessent d’actualiser les commandes et le retour de force.
+- La reprise USB distingue le premier relevé attendu d’une indisponibilité détectée. Le diagnostic sépare les réessais programmés des véritables départs en retard et indique le contexte des appels asynchrones.
+- Le retour de force réutilise la capacité confirmée du même volant sur la même connexion. L’effet est arrêté pendant la pause et recréé à la reprise. Le diagnostic relève le délai de la première demande d’effort au premier effet accepté.
+
+[ZIP Vortex](out/Chromaxis-0.4.90.zip)
+
 ## Chrome Axis 0.4.89
 
 - La calibration guidée tient compte d’une perte de lecture confirmée jusqu’à la validation finale et demande de reprendre les mesures de l’appareil concerné.
