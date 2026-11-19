@@ -6,6 +6,42 @@ Les entrées sont classées de la plus récente à la plus ancienne. Les dates i
 
 Les ZIP de distribution se trouvent dans [`out/`](out/). Ce dossier est local et ignoré par Git. Le [guide de validation](docs/manual-validation.md#français) décrit les essais matériels, en jeu et de coexistence avec les autres mods.
 
+## Chrome Axis 0.4.91 · 19 novembre 2026
+
+Comparée à la **0.4.90**.
+
+- **Restauration et copie des profils.** Après un retour arrière, une copie de récupération partielle est retirée ou rendue irrecevable avant son nettoyage. Si une nouvelle restauration est interrompue, le journal propose une copie vérifiée. Les anciennes récupérations ambiguës sont refusées et les sauvegardes volontairement vides restent restaurables. La création d’un profil vérifie sous verrou l’identité du profil confirmé pour éviter de copier celui sélectionné par une autre instance.
+- **Inventaire USB et calibration.** Une erreur temporaire d’énumération conserve les appareils déjà confirmés. L’application distingue un appareil présent mais inaccessible d’un retrait confirmé et réutilise les informations disponibles lors des nouvelles tentatives. Terminer attend la fin de l’actualisation et un relevé frais de chaque axe concerné. Une coupure impose de refaire uniquement les mesures de l’appareil touché.
+- **Boîte et accessoires.** Les deux éditeurs partagent la détection des conflits entre commandes. Les profils hérités restent éditables. En cas de conflit, le plugin suspend la boîte native dans son ensemble pour préserver la signification du point mort. Après reconnexion, la capture numérique redemande une référence de neutre, vérifie le relâchement des positions connues et conserve les rapports déjà capturés.
+- **Diagnostic et raccourcis.** Le CSV distingue une fin ou une reprise de capture d’une déconnexion du plugin. Une tentative de fermeture pendant un export affiche l’attente et garde l’application ouverte jusqu’à sa fin. En simulation clavier, le raccourci AUTO / MANUEL se réactualise après le déverrouillage de son fichier et conserve la dernière touche valide pendant le verrou.
+- **Graphiques et petite fenêtre.** Les légendes distinguent la course brute de la valeur après zone morte. Les graphiques vides ou figés cessent de demander un redessin à chaque actualisation. La fenêtre principale défile sur les deux axes et remet en vue le contrôle focalisé. Sur le même banc, les demandes de redessin passent de 200 à 0 pour 100 actualisations figées. Une analyse complète utilise 145 appels DirectInput, contre 0 lorsque la disposition confirmée est réutilisable et 2 pour un axe encore en attente.
+- **Validation.** Release x64, 21 tests CTest, 30 répétitions sur les profils, l’enregistrement du diagnostic et la liaison application/plugin, et dix vérifications d’interface sur l’EXE du ZIP. L’export de 240 000 lignes a été vérifié en FR/EN avec intégrité de la source. REDscript compile sur copies, seul, avec HUD Painter et avec l’instantané élargi des scripts. Les mesures d’appels portent sur des bancs simulés. Le T300RS, la boîte physique, le retour de force, les transitions du jeu et la persistance HUD Painter restent à vérifier en jeu. Les petits affichages ont été simulés et l’interface exercée à 96 DPI. Le texte du rapport copié a été contrôlé dans une sortie de test, le transfert réel au presse-papiers reste à confirmer.
+
+SHA-256 `152e194975292d56ec1c34a024574bf9b7ee8439def73c5b730e812588700070`. [ZIP Vortex](out/Chromaxis-0.4.91.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/a9d1c5bb6d1bc18d215dcdd0fc5282178b09c0c0)
+
+## Chrome Axis 0.4.90 · 19 novembre 2026
+
+Comparée à la **0.4.89**.
+
+- **Transitions en jeu.** Le plugin vérifie le contexte conducteur et le rattachement de la boîte avant d’accéder au véhicule. Il conserve une référence pendant le traitement et revalide le contexte après l’appel au jeu. Les rappels d’une ancienne session ou d’un ancien véhicule cessent de publier des commandes et du retour de force.
+- **Reprise USB et diagnostic.** Le premier relevé attendu, une réponse temporairement en attente, une indisponibilité constatée et une commande à relâcher ont des états distincts. Les réessais volontairement espacés de 25 ms ont leur propre compteur. Les véritables départs tardifs sont comparés à l’échéance programmée.
+- **CSV et mesures.** Les appels sont rattachés au lecteur USB, à la sonde ou au retour de force, avec le contexte de leur début et de leur fin. Un numéro anonyme suit le même périphérique pendant l’enregistrement, même après une relance du jeu. Le diagnostic relève séparément le délai de réarmement observé et celui du premier effet de force accepté.
+- **Retour de force et compatibilité.** Une pause suivie d’une reprise sur la même connexion réutilise la capacité positive confirmée du même volant et du même axe. Une vraie coupure, un changement de cible ou une erreur pertinente impose une nouvelle vérification. Les effets sont arrêtés et libérés pendant la pause puis recréés à la reprise. Le protocole de diagnostic passe à v25 et demande l’EXE et la DLL du même paquet.
+- **Validation et limites.** Release x64, 21 tests CTest et 27 répétitions ciblées. Le banc a simulé un appel de retour de force de 500 ms pendant que les commandes indépendantes restaient utilisables. Parcours FR/EN sur l’EXE du ZIP et REDscript compilé sur copies, seul, avec HUD Painter et avec la pile locale. La signature de crash Cyberpunk2077.exe+0x270242 et le T300RS restent à vérifier en jeu. L’audit ultérieur a reproduit des récupérations de profils incomplètes, une double affectation de bouton et une fin de capture classée comme déconnexion. Il a aussi relevé des limites d’inventaire USB et de validation avant un premier relevé frais. Ces points sont traités en 0.4.91.
+
+SHA-256 `b33642ca48c4f06da3d78366779d5c6541922768dc5a3330c73a3fdf39460bc3`. [ZIP Vortex](out/Chromaxis-0.4.90.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/603436249c21058210460adc373e08c8b76fb020)
+
+## Chrome Axis 0.4.89 · 19 novembre 2026
+
+Comparée à la **0.4.88**.
+
+- **Calibration après coupure USB.** La perte de lecture et le redémarrage du lecteur sont surveillés jusqu’au bouton Terminer. L’assistant demande de reprendre les mesures du seul appareil concerné et conserve celles des autres appareils. Une lecture simplement lente reste tolérée.
+- **Embrayage et frein à main.** Un profil hérité qui attribue la même course à ces deux fonctions reste chargeable et modifiable, avec un avertissement FR/EN. Le plugin suspend les deux commandes incompatibles et conserve les autres affectations. L’éditeur permet de réparer le profil et empêche de créer un nouveau chevauchement.
+- **Fenêtres de réglage.** Boîte et palettes, Accessoires, Pédales et Retour de force s’adaptent à la zone de travail Windows. Le défilement et le maintien du contrôle focalisé en vue donnent accès aux boutons. Les fenêtres retrouvent leur taille normale lorsque l’espace le permet.
+- **Validation.** Release x64, 21 tests CTest et 27 répétitions ciblées. Les parcours FR/EN sur l’EXE du ZIP couvrent conduite simulée, transmission, réarmement USB, retour de force, profils, fermeture, diagnostic et CSV. La correction du profil conserve les affectations indépendantes dans les deux langues. REDscript compile sur copies, seul, avec HUD Painter et avec la pile locale. Le chargement de sauvegarde et le voyage rapide qui déclenchaient les crashs de la 0.4.88, le T300RS, l’affichage réel à 150 % et le presse-papiers restent à confirmer. Une revue complémentaire a réussi dix exécutions ciblées et relevé des limites de diagnostic et d’interrogation du retour de force, reprises en 0.4.90.
+
+SHA-256 `97e0b20cf909756b93eb3a54cf5a7f8f8ec5b619b2ea580ac74ea49a42725b68`. [ZIP Vortex](out/Chromaxis-0.4.89.zip) · [Commit de livraison](https://github.com/EsterOne001/chrome-axis/commit/691749481d8e6868d0b64823ad9c2782547a43f0)
+
 ## Chrome Axis 0.4.88 · 17 novembre 2026
 
 Comparée à la **0.4.87**.
